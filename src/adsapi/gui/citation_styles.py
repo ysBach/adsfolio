@@ -52,8 +52,8 @@ Additional notes:
 - No .pdf extension is appended.
 - Unmatched braces, unknown fields, empty fields, format specifiers, conversions,
   and attribute/item access block saving.
-- Empty names, empty templates, invalid author settings, duplicate names, or
-  duplicate IDs block saving and identify the affected style."""
+- Empty names, empty templates, empty IDs, invalid author settings, duplicate names,
+  or duplicate IDs block saving and identify the affected style."""
 
 BUILTIN_PREVIEW_RECORD: dict[str, Any] = {
     "metadata": {
@@ -317,8 +317,8 @@ class CitationStylesDialog(QDialog):
                 self.list_widget.addItem(item)
 
             if 0 <= select_index < self.list_widget.count():
-                self._current_index = select_index
                 self.list_widget.setCurrentRow(select_index)
+                self._current_index = select_index
         finally:
             self._is_updating_ui = False
 

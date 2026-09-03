@@ -95,6 +95,7 @@ def test_template_help_text_completeness() -> None:
         "attribute/item access",
         "empty names",
         "empty templates",
+        "empty ids",
         "invalid author settings",
         "duplicate names",
         "duplicate ids",
@@ -118,6 +119,36 @@ def test_template_help_button_and_accessible_description(
         dialog.help_view.toPlainText() == TEMPLATE_HELP_TEXT
         or TEMPLATE_HELP_TEXT in dialog.help_view.toPlainText()
     )
+
+
+def test_initial_selection_does_not_preassign_current_style(
+    application: QApplication,
+    qtbot,
+) -> None:
+    """Initial selection signals must not see a blank editor as the current draft."""
+    style = CitationStyle(id="s1", name="Solo", template="{year}")
+    observed_states: list[tuple[int, int, bool]] = []
+    original_handler = CitationStylesDialog._on_current_row_changed
+
+    def record_selection_state(dialog: CitationStylesDialog, row: int) -> None:
+        observed_states.append((row, dialog._current_index, dialog._is_updating_ui))
+        original_handler(dialog, row)
+
+    with (
+        patch.object(
+            CitationStylesDialog,
+            "_on_current_row_changed",
+            record_selection_state,
+        ),
+        patch.object(QMessageBox, "critical") as mock_critical,
+    ):
+        dialog = CitationStylesDialog([style])
+    qtbot.addWidget(dialog)
+
+    assert mock_critical.call_count == 0
+    assert (0, -1, True) in observed_states
+    assert dialog._current_index == 0
+    assert dialog.template_edit.text() == "{year}"
 
 
 def test_dialog_loads_styles_and_synchronizes_editor(application: QApplication) -> None:
@@ -294,10 +325,12 @@ def test_delete_to_empty(application: QApplication) -> None:
 
 def test_delete_validates_current_draft_before_removing_style(
     application: QApplication,
+    qtbot,
 ) -> None:
     """Delete blocks removal when the current editor draft is invalid."""
     style = CitationStyle(id="s1", name="Solo", template="{year}")
     dialog = CitationStylesDialog([style])
+    qtbot.addWidget(dialog)
     dialog.template_edit.setText("{broken_field}")
 
     try:
@@ -349,10 +382,12 @@ def test_preview_with_built_in_example_when_preview_record_is_none(
 
 def test_validation_error_on_preview_shows_message_box(
     application: QApplication,
+    qtbot,
 ) -> None:
     """Preview error displays QMessageBox.critical and does not crash."""
     s1 = CitationStyle(id="s1", name="Solo", template="{year}")
     dialog = CitationStylesDialog([s1])
+    qtbot.addWidget(dialog)
     dialog.template_edit.setText("{unknown_field}")
 
     with patch.object(QMessageBox, "critical") as mock_critical:
@@ -363,11 +398,13 @@ def test_validation_error_on_preview_shows_message_box(
 
 def test_validation_error_on_save_calls_critical_and_selects_affected_control(
     application: QApplication,
+    qtbot,
 ) -> None:
     """Atomic save validates all styles; an error calls QMessageBox.critical, keeps dialog open, selects control."""
     s1 = CitationStyle(id="s1", name="Style 1", template="{year}")
     s2 = CitationStyle(id="s2", name="Style 2", template="{bibcode}")
     dialog = CitationStylesDialog([s1, s2])
+    qtbot.addWidget(dialog)
 
     # Make second style template invalid
     dialog.show()
@@ -386,11 +423,15 @@ def test_validation_error_on_save_calls_critical_and_selects_affected_control(
         )
 
 
-def test_validation_error_duplicate_name(application: QApplication) -> None:
+def test_validation_error_duplicate_name(
+    application: QApplication,
+    qtbot,
+) -> None:
     """Atomic save detects duplicate name across styles (case-folded and trimmed)."""
     s1 = CitationStyle(id="s1", name="Style 1", template="{year}")
     s2 = CitationStyle(id="s2", name="Style 2", template="{bibcode}")
     dialog = CitationStylesDialog([s1, s2])
+    qtbot.addWidget(dialog)
 
     dialog.show()
     application.processEvents()
