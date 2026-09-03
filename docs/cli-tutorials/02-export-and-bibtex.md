@@ -1,0 +1,87 @@
+# Tutorial 2: Export and BibTeX
+
+This tutorial covers `adsapi export` output formats and BibTeX workflows.
+
+## 0) Start with `--help`
+
+Check complete export options before running the examples:
+
+~~~bash
+adsapi export --help
+~~~
+
+Key export options to understand:
+
+| Option | Meaning | When to use |
+| --- | --- | --- |
+| `--format` | Export format (`bibtex`, `aastex`, `mnras`, `custom`, etc.) | Match your journal or manuscript toolchain |
+| `--output` | Write result to file instead of stdout | Build or update `.bib` files directly |
+| `--sort` | Sorting rule in export endpoint | Keep deterministic bibliography ordering |
+| `--custom` | Custom ADS format string (used with `--format custom`) | Produce compact custom references/labels |
+| `--journal` | Journal style (`ads`, `full`, `iso4`) | Select macro/full/ISO4 journal naming policy |
+
+## 1) Export a single bibcode
+
+```bash
+adsapi export 2024A&A...684A..80B
+```
+
+Default format is `bibtex`.
+
+## 2) Export multiple bibcodes
+
+```bash
+adsapi export 2024A&A...684A..80B 2021A&A...654A.113B
+```
+
+## 3) Save to file
+
+```bash
+adsapi export 2024A&A...684A..80B 2021A&A...654A.113B \
+  --format bibtex \
+  --output references.bib
+```
+
+## 4) Choose format and sort
+
+```bash
+adsapi export 2024A&A...684A..80B \
+  --format aastex \
+  --sort "first_author asc"
+```
+
+## 5) Custom export template
+
+```bash
+adsapi export 2024A&A...684A..80B \
+  --format custom \
+  --custom "%R %T"
+```
+
+## 6) Journal name style
+
+```bash
+# ADS macro style (default, e.g. \apj)
+adsapi export 2024A&A...684A..80B --journal ads
+
+# Full journal name
+adsapi export 2024A&A...684A..80B --journal full
+
+# ISO4 abbreviation (requires iso4 from adsapi[full])
+adsapi export 2024A&A...684A..80B --journal iso4
+```
+
+## 7) Typical flow from search to export
+
+1. Run `adsapi search` to find bibcodes.
+2. Copy selected bibcodes.
+3. Export them into a `.bib` file.
+
+```bash
+adsapi search "author:Einstein" --rows 5
+adsapi export <bibcode1> <bibcode2> --output refs.bib
+```
+
+## Next
+
+Continue with [Tutorial 3: Library Workflows](./03-library-workflows.md).
