@@ -5,12 +5,19 @@ from __future__ import annotations
 import json
 import logging
 import sqlite3
+from collections.abc import Callable, Sequence
 from copy import deepcopy
 from dataclasses import replace
 from pathlib import Path
-from typing import Any, Callable, Generic, TypeVar
+from typing import Any, Generic, TypeVar
 
-from PySide6.QtCore import QModelIndex, QSignalBlocker, Qt, QTimer
+from PySide6.QtCore import (
+    QItemSelectionModel,
+    QModelIndex,
+    QSignalBlocker,
+    Qt,
+    QTimer,
+)
 from PySide6.QtGui import QAction, QColor, QFont, QKeySequence
 from PySide6.QtWidgets import (
     QApplication,
@@ -37,18 +44,21 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from ..citations import CitationStyle, citation_preference_key
 from ..config import Config
 from ..pdf.identify_settings import IdentifySettings
 from ..pdf.registry import CentralPdfRegistryState, PdfRegistry
 from ..pdf.rename_settings import RenameSettings
 from ..pdf.watch_session import WatchEvent, WatchOutcome, WatchState
 from ..pdf.watcher import WatchIdentifyPolicy
+from .ads_library_dialog import AdsLibraryDialog
 from .appearance import AppearanceDialog
+from .citation_styles import CitationStylesDialog
 from .config import RootEntry, load_config, save_config
 from .detail_pane import DetailPane
 from .dialogs import IdentifyDialog, RenameDialog, UserProfileDialog
 from .jobs import CommandJob, cli_argv
-from .library import COLUMNS, FileQuery, LibraryView, ads_url, arxiv_url
+from .library import Column, FileQuery, LibraryView, ads_url, arxiv_url, build_columns
 from .models import (
     FileTableModel,
     FirstAuthorDelegate,
@@ -169,6 +179,7 @@ class MainWindow(QMainWindow):
         super().__init__(parent)
         self.setWindowTitle("adsapi PDF Library")
         self.config = load_config()
+        self.columns = build_columns(self.config.citation_styles)
         self.registries: dict[str, PdfRegistry] = {}
         self.root_entries: dict[str, RootEntry] = {}
         self.current_root: Path | None = None
@@ -177,9 +188,10 @@ class MainWindow(QMainWindow):
             if self.config.last_view in {view.value for view in LibraryView}
             else LibraryView.ALL
         )
-        sort_column_is_valid = self.config.sort_column in {
-            column.key for column in COLUMNS
+        sortable_columns = {
+            column.key for column in self.columns if column.sortable is True
         }
+        sort_column_is_valid = self.config.sort_column in sortable_columns
         sort_column = (
             self.config.sort_column if sort_column_is_valid else "first_seen_at"
         )
@@ -187,10 +199,19 @@ class MainWindow(QMainWindow):
             view=self.current_view,
             order_by=sort_column,
             descending=(self.config.sort_descending if sort_column_is_valid else True),
-            secondary_order_by=self.config.secondary_sort_column,
-            tertiary_order_by=self.config.tertiary_sort_column,
+            secondary_order_by=(
+                self.config.secondary_sort_column
+                if self.config.secondary_sort_column in sortable_columns
+                else None
+            ),
+            tertiary_order_by=(
+                self.config.tertiary_sort_column
+                if self.config.tertiary_sort_column in sortable_columns
+                else None
+            ),
         )
         self.job: Any | None = None
+        self._ads_library_dialog: AdsLibraryDialog | None = None
         self._close_requested = False
         self._refresh_selection_id: int | None = None
         self._ads_match_candidates: list[dict[str, str]] = []
@@ -221,7 +242,12 @@ class MainWindow(QMainWindow):
         self.views_item.setData(0, Qt.UserRole + 1, "views")
         self.sidebar.addTopLevelItem(self.libraries_item)
         self.sidebar.addTopLevelItem(self.views_item)
-        self.model = FileTableModel(None, self.current_query, self)
+        self.model = FileTableModel(
+            None,
+            self.current_query,
+            columns=self.columns,
+            parent=self,
+        )
         self.model.rowsInserted.connect(lambda *_args: self._update_status())
         self.model.query_failed.connect(self.statusBar().showMessage)
         self.table = QTreeView(self)
@@ -236,31 +262,17 @@ class MainWindow(QMainWindow):
         header.setSectionsMovable(True)
         header.setContextMenuPolicy(Qt.CustomContextMenu)
         header.customContextMenuRequested.connect(self._show_header_context_menu)
-        self._table_row_delegates: list[RowHeightDelegate] = []
-        default_delegate = RowHeightDelegate(self.table)
-        self.table.setItemDelegate(default_delegate)
-        self._table_row_delegates.append(default_delegate)
-        for index, column in enumerate(COLUMNS):
-            self.table.setColumnWidth(index, column.width)
-            delegate: RowHeightDelegate | None = None
-            if column.key == "author":
-                delegate = FirstAuthorDelegate(self.table)
-            elif column.key == "status":
-                delegate = ResolutionDelegate(self.table)
-            elif column.key in {"bibcode", "arxiv"}:
-                delegate = LinkDelegate(
-                    "ADS" if column.key == "bibcode" else "arXiv",
-                    self.table,
-                )
-            if delegate is not None:
-                self.table.setItemDelegateForColumn(index, delegate)
-                self._table_row_delegates.append(delegate)
+        self._rebuild_table_delegates()
         self.table.doubleClicked.connect(self._open_index)
         self.table.clicked.connect(self._table_clicked)
         self.table.selectionModel().currentChanged.connect(self._current_changed)
+        self.table.selectionModel().selectionChanged.connect(
+            lambda *_args: self._sync_ads_library_action()
+        )
         self.table.setContextMenuPolicy(Qt.CustomContextMenu)
         self.table.customContextMenuRequested.connect(self._table_menu)
         self.detail = DetailPane(self)
+        self.detail.set_citation_styles(self.config.citation_styles)
         self.detail.set_row_order(self.config.detail_row_order)
         self.detail.set_hidden_rows(self.config.detail_hidden_rows)
         self.detail.set_expand_abstracts(self.config.expand_abstracts)
@@ -345,6 +357,7 @@ class MainWindow(QMainWindow):
             file_menu.addAction(action)
         tools = self.menuBar().addMenu("Tools")
         self.profile_action = QAction("My Publication Profile…", self)
+        self.citation_styles_action = QAction("Custom Citation Styles…", self)
         self.identify_action = QAction("Identify…", self)
         self.rename_action = QAction("Rename…", self)
         self.cancel_job_action = QAction("Cancel Current Job", self)
@@ -353,6 +366,7 @@ class MainWindow(QMainWindow):
         self.refresh_all_citation_metrics_action = QAction(
             "Refresh All Citation Splits…", self
         )
+        self.add_to_ads_library_action = QAction("Add to ADS Library…", self)
         self.watch_current_action = QAction("Watch Current Library", self)
         self.watch_on_start_action = QAction("Autowatch at Start", self)
         self.auto_process_action = QAction("Automatically Identify & Rename", self)
@@ -364,6 +378,7 @@ class MainWindow(QMainWindow):
             action.setCheckable(True)
         self.cancel_job_action.setEnabled(False)
         self.profile_action.triggered.connect(self._edit_user_profile)
+        self.citation_styles_action.triggered.connect(self._edit_citation_styles)
         self.identify_action.triggered.connect(self._identify)
         self.rename_action.triggered.connect(self._rename)
         self.cancel_job_action.triggered.connect(self._cancel_job)
@@ -372,6 +387,7 @@ class MainWindow(QMainWindow):
         self.refresh_all_citation_metrics_action.triggered.connect(
             self._refresh_all_citation_metrics
         )
+        self.add_to_ads_library_action.triggered.connect(self._add_to_ads_library)
         self.watch_current_action.triggered.connect(self._toggle_current_watch)
         self.watch_on_start_action.triggered.connect(
             lambda checked: self._set_current_watch_policy("watch_on_start", checked)
@@ -382,6 +398,7 @@ class MainWindow(QMainWindow):
             )
         )
         tools.addAction(self.profile_action)
+        tools.addAction(self.citation_styles_action)
         tools.addSeparator()
         tools.addAction(self.identify_action)
         tools.addAction(self.rename_action)
@@ -390,6 +407,7 @@ class MainWindow(QMainWindow):
         tools.addAction(self.refresh_selected_ads_action)
         tools.addAction(self.refresh_all_ads_action)
         tools.addAction(self.refresh_all_citation_metrics_action)
+        tools.addAction(self.add_to_ads_library_action)
         tools.addSeparator()
         tools.addAction(self.watch_current_action)
         tools.addAction(self.watch_on_start_action)
@@ -424,6 +442,7 @@ class MainWindow(QMainWindow):
                 self.clear_search_action,
             ]
         )
+        self._sync_ads_library_action()
 
     def _restore_config(self) -> None:
         if self.config.window_geometry:
@@ -455,7 +474,7 @@ class MainWindow(QMainWindow):
             from PySide6.QtCore import QByteArray
 
             self.restoreState(QByteArray.fromBase64(self.config.window_state.encode()))
-        for index, column in enumerate(COLUMNS):
+        for index, column in enumerate(self.columns):
             width = self.config.column_widths.get(column.key)
             if width is not None:
                 self.table.setColumnWidth(index, width)
@@ -555,6 +574,67 @@ class MainWindow(QMainWindow):
             )
         finally:
             del blockers
+
+    def _sync_ads_library_action(self) -> None:
+        """Enable the ADS library action only for an available current window."""
+        if not hasattr(self, "add_to_ads_library_action"):
+            return
+        self.add_to_ads_library_action.setEnabled(self._can_add_to_ads_library())
+
+    def _can_add_to_ads_library(self) -> bool:
+        """Return whether this window can open an ADS library dialog."""
+        return (
+            self.current_root is not None
+            and self.job is None
+            and self._ads_library_dialog is None
+        )
+
+    def _selected_records(self) -> tuple[dict[str, Any], ...]:
+        """Return deep-copied selected records in visual table-row order."""
+        rows = sorted(
+            {index.row() for index in self.table.selectionModel().selectedRows()}
+        )
+        return tuple(
+            deepcopy(record)
+            for row in rows
+            if (record := self.model.record_at(row)) is not None
+        )
+
+    def _ads_library_dialog_closed(self, dialog: AdsLibraryDialog) -> None:
+        """Release the window's ADS library dialog after it closes."""
+        if self._ads_library_dialog is dialog:
+            self._ads_library_dialog = None
+            self._sync_ads_library_action()
+
+    def _add_to_ads_library(self) -> None:
+        """Open an ADS library dialog with immutable local record snapshots."""
+        if not self._can_add_to_ads_library():
+            self._sync_ads_library_action()
+            return
+        assert self.current_root is not None
+        root = self.current_root.expanduser().resolve()
+        registry = self.registries[str(root)]
+        selected_records = self._selected_records()
+        try:
+            all_records = tuple(
+                deepcopy(record) for record in registry.query_files(resolved=True)
+            )
+        except sqlite3.OperationalError as exc:
+            if "locked" not in str(exc).lower() and "busy" not in str(exc).lower():
+                raise
+            self.status.showMessage("Library is busy; try again in a moment.")
+            return
+
+        dialog = AdsLibraryDialog(
+            root,
+            selected_records,
+            all_records,
+            parent=self,
+        )
+        self._ads_library_dialog = dialog
+        dialog.finished.connect(lambda _result: self._ads_library_dialog_closed(dialog))
+        self._sync_ads_library_action()
+        dialog.show()
 
     def _start_root_watch(self, root: Path) -> bool:
         normalized = root.expanduser().resolve()
@@ -953,6 +1033,7 @@ class MainWindow(QMainWindow):
             self._populate_views(registry)
         self._update_status()
         self._sync_watch_actions()
+        self._sync_ads_library_action()
 
     def _search_changed(self) -> None:
         self.current_query = FileQuery(
@@ -999,13 +1080,29 @@ class MainWindow(QMainWindow):
         record = self.model.record_at(index.row())
         if record is None or self.current_root is None:
             return
-        if index.column() < len(COLUMNS):
-            column_key = COLUMNS[index.column()].key
+        columns = self._columns_for_table_model()
+        if columns is not None and index.column() < len(columns):
+            column_key = columns[index.column()].key
             if column_key in {"bibcode", "arxiv"}:
                 return
             if column_key == "filename":
                 return
         self._open_pdf_record(record)
+
+    def _columns_for_table_model(self) -> tuple[Column, ...] | None:
+        """Return column definitions matching the model installed on the table."""
+        table_model = self.table.model()
+        if table_model is None:
+            return None
+        model_columns = getattr(table_model, "columns", None)
+        if model_columns is not None:
+            return tuple(model_columns)
+        base_columns = build_columns()
+        if table_model.columnCount() == len(base_columns):
+            return base_columns
+        if table_model.columnCount() == len(self.columns):
+            return self.columns
+        return None
 
     def _table_clicked(self, index: QModelIndex) -> None:
         """Activate links and filename actions from single table clicks."""
@@ -1014,9 +1111,16 @@ class MainWindow(QMainWindow):
         record = self.model.record_at(index.row())
         if record is None or self.current_root is None:
             return
-        if index.column() >= len(COLUMNS):
+        columns = self._columns_for_table_model()
+        if columns is None or index.column() >= len(columns):
             return
-        column = COLUMNS[index.column()]
+        column = columns[index.column()]
+        if column.key.startswith("citation:"):
+            display_text = index.data(Qt.DisplayRole)
+            if display_text is not None and str(display_text) != "":
+                self._copy_text(str(display_text))
+                self.status.showMessage("Copied", 1500)
+            return
         value = column.getter(record)
         if column.key == "bibcode" and value:
             self._open_external_url(ads_url(value))
@@ -1131,6 +1235,14 @@ class MainWindow(QMainWindow):
         record = self.model.record_at(index.row()) if index.isValid() else None
         if record is None or self.current_root is None:
             return
+        selection = self.table.selectionModel()
+        if not selection.isRowSelected(index.row(), QModelIndex()):
+            selection.clearSelection()
+            selection.select(
+                index,
+                QItemSelectionModel.SelectionFlag.Select
+                | QItemSelectionModel.SelectionFlag.Rows,
+            )
         path = self.current_root / str(record.get("current_path") or "")
         menu = QMenu(self)
         menu.addAction("Open", lambda: self._open_pdf_record(record))
@@ -1142,6 +1254,10 @@ class MainWindow(QMainWindow):
             "Copy DOI", lambda: self._copy_text(str(record.get("doi") or ""))
         )
         menu.addAction("Copy Path", lambda: self._copy_text(str(path)))
+        add_to_ads_library_action = menu.addAction(
+            "Add to ADS Library…", self._add_to_ads_library
+        )
+        add_to_ads_library_action.setEnabled(self._can_add_to_ads_library())
         menu.exec(self.table.viewport().mapToGlobal(position))
 
     def _show_header_context_menu(self, position: Any) -> None:
@@ -1159,7 +1275,7 @@ class MainWindow(QMainWindow):
         )
         for visual in range(header.count()):
             logical = header.logicalIndex(visual)
-            column = COLUMNS[logical]
+            column = self.columns[logical]
             label = column.header or "Resolution marker"
             action = menu.addAction(label)
             action.setCheckable(True)
@@ -1185,33 +1301,34 @@ class MainWindow(QMainWindow):
     def _set_column_visibility(self, key: str, visible: bool) -> None:
         """Set one column's visibility while keeping one column visible."""
         logical = next(
-            (index for index, column in enumerate(COLUMNS) if column.key == key),
+            (index for index, column in enumerate(self.columns) if column.key == key),
             None,
         )
         if logical is None:
             return
         if not visible:
             visible_count = sum(
-                not self.table.isColumnHidden(index) for index in range(len(COLUMNS))
+                not self.table.isColumnHidden(index)
+                for index in range(len(self.columns))
             )
             if visible_count <= 1:
                 return
         self.table.setColumnHidden(logical, not visible)
         self.config.hidden_table_columns = [
             column.key
-            for index, column in enumerate(COLUMNS)
+            for index, column in enumerate(self.columns)
             if self.table.isColumnHidden(index)
         ]
 
     def _show_all_columns(self) -> None:
         """Make every table column visible and update persisted preferences."""
-        for index in range(len(COLUMNS)):
+        for index in range(len(self.columns)):
             self.table.setColumnHidden(index, False)
         self.config.hidden_table_columns = []
 
     def _restore_default_column_order(self) -> None:
         """Restore the declaration order of table columns."""
-        self.config.table_column_order = [column.key for column in COLUMNS]
+        self.config.table_column_order = [column.key for column in self.columns]
         self._apply_table_layout()
 
     def _copy_text(self, text: str) -> None:
@@ -1278,7 +1395,12 @@ class MainWindow(QMainWindow):
     def _edit_appearance(self) -> None:
         """Configure table and detail-pane appearance preferences."""
         original_config = deepcopy(self.config)
-        dialog = AppearanceDialog(self.config, self.detail.available_rows(), self)
+        dialog = AppearanceDialog(
+            self.config,
+            self.columns,
+            self.detail.available_rows(),
+            self,
+        )
         dialog.settings_changed.connect(lambda: self._apply_appearance_dialog(dialog))
         result = dialog.exec()
         if result == QDialog.DialogCode.Accepted:
@@ -1286,6 +1408,134 @@ class MainWindow(QMainWindow):
             return
         self.config = original_config
         self._apply_appearance_config()
+
+    def _edit_citation_styles(self) -> None:
+        """Edit global citation styles and apply accepted definitions live."""
+        selected_rows = self.table.selectionModel().selectedRows()
+        preview_record = (
+            self.model.record_at(selected_rows[0].row())
+            if len(selected_rows) == 1
+            else None
+        )
+        dialog = CitationStylesDialog(
+            self.config.citation_styles,
+            preview_record=preview_record,
+            parent=self,
+        )
+        dialog.saved.connect(self._apply_citation_styles)
+        dialog.exec()
+
+    @staticmethod
+    def _merge_citation_order(
+        order: Sequence[str],
+        deleted_keys: set[str],
+        citation_keys: Sequence[str],
+        added_keys: Sequence[str],
+    ) -> list[str]:
+        """Reorder active citation keys and place new ones after Bibcode."""
+        citations = tuple(dict.fromkeys(citation_keys))
+        citation_set = set(citations)
+        added_set = set(added_keys)
+        retained = [
+            key for key in order if key not in deleted_keys and key not in added_set
+        ]
+        present = {key for key in retained if key in citation_set}
+        citation_slots = [
+            index for index, key in enumerate(retained) if key in citation_set
+        ]
+        existing = [key for key in citations if key in present]
+        for index, key in zip(citation_slots, existing):
+            retained[index] = key
+
+        missing = [key for key in citations if key not in present]
+        if not missing or "bibcode" not in retained:
+            return retained
+        insertion = retained.index("bibcode") + 1
+        return [*retained[:insertion], *missing, *retained[insertion:]]
+
+    def _apply_citation_styles(self, styles: Sequence[CitationStyle]) -> None:
+        """Apply accepted citation styles and update all dependent UI state."""
+        prior_widths = {
+            column.key: self.table.columnWidth(index)
+            for index, column in enumerate(self.columns)
+        }
+        current_index = self.table.currentIndex()
+        selected_row = current_index.row() if current_index.isValid() else None
+        selected_record = (
+            self.model.record_at(selected_row) if selected_row is not None else None
+        )
+        selected_location_id = (
+            selected_record.get("location_id") if selected_record is not None else None
+        )
+
+        old_keys = {
+            citation_preference_key(style.id) for style in self.config.citation_styles
+        }
+        normalized_styles = tuple(styles)
+        new_keys = [citation_preference_key(style.id) for style in normalized_styles]
+        new_key_set = set(new_keys)
+        deleted_keys = old_keys - new_key_set
+        added_keys = [key for key in new_keys if key not in old_keys]
+        added_key_set = set(added_keys)
+
+        for preferences in (
+            self.config.column_widths,
+            self.config.column_fonts,
+            self.config.detail_fonts,
+        ):
+            for key in deleted_keys:
+                preferences.pop(key, None)
+        self.config.table_column_order = self._merge_citation_order(
+            self.config.table_column_order,
+            deleted_keys,
+            new_keys,
+            added_keys,
+        )
+        self.config.detail_row_order = self._merge_citation_order(
+            self.config.detail_row_order,
+            deleted_keys,
+            new_keys,
+            added_keys,
+        )
+        self.config.hidden_table_columns = [
+            key
+            for key in self.config.hidden_table_columns
+            if key not in deleted_keys and key not in added_key_set
+        ]
+        self.config.detail_hidden_rows = [
+            key
+            for key in self.config.detail_hidden_rows
+            if key not in deleted_keys and key not in added_key_set
+        ]
+        self.config.citation_styles = list(normalized_styles)
+        save_config(self.config)
+
+        self.columns = build_columns(self.config.citation_styles)
+        self.model.set_columns(self.columns)
+        self.detail.set_row_order(self.config.detail_row_order)
+        self.detail.set_hidden_rows(self.config.detail_hidden_rows)
+        self.detail.set_citation_styles(self.config.citation_styles)
+        self._rebuild_table_delegates(prior_widths)
+        self._apply_table_appearance()
+        if selected_record is not None:
+            restored_row = selected_row
+            if selected_location_id is not None:
+                restored_row = next(
+                    (
+                        row
+                        for row in range(self.model.rowCount())
+                        if (
+                            self.model.record_at(row) is not None
+                            and self.model.record_at(row).get("location_id")
+                            == selected_location_id
+                        )
+                    ),
+                    None,
+                )
+            if restored_row is not None and restored_row < self.model.rowCount():
+                restored_index = self.model.index(restored_row, 0)
+                self.table.setCurrentIndex(restored_index)
+                self._current_changed(restored_index, QModelIndex())
 
     def _apply_appearance_dialog(self, dialog: AppearanceDialog) -> None:
         """Apply the current Appearance dialog values to the running window."""
@@ -1320,7 +1570,10 @@ class MainWindow(QMainWindow):
 
     def _edit_sort_priorities(self) -> None:
         """Configure persisted primary, secondary, and tertiary sort keys."""
-        choices = ["(none)", *(column.key for column in COLUMNS)]
+        choices = [
+            "(none)",
+            *(column.key for column in self.columns if column.sortable is True),
+        ]
         dialog = QDialog(self)
         dialog.setWindowTitle("Sort Priorities")
         layout = QVBoxLayout(dialog)
@@ -1416,9 +1669,40 @@ class MainWindow(QMainWindow):
         self.table.doItemsLayout()
         self.table.viewport().update()
 
+    def _rebuild_table_delegates(
+        self,
+        preserved_widths: dict[str, int] | None = None,
+    ) -> None:
+        """Recreate delegates and widths for the active runtime columns."""
+        self._table_row_delegates = []
+        default_delegate = RowHeightDelegate(self.table)
+        self.table.setItemDelegate(default_delegate)
+        self._table_row_delegates.append(default_delegate)
+        widths = preserved_widths or {}
+        for index, column in enumerate(self.columns):
+            width = widths.get(
+                column.key,
+                self.config.column_widths.get(column.key, column.width),
+            )
+            self.table.setColumnWidth(index, width)
+            self.table.setItemDelegateForColumn(index, default_delegate)
+            delegate: RowHeightDelegate | None = None
+            if column.key == "author":
+                delegate = FirstAuthorDelegate(self.table)
+            elif column.key == "status":
+                delegate = ResolutionDelegate(self.table)
+            elif column.key in {"bibcode", "arxiv"}:
+                delegate = LinkDelegate(
+                    "ADS" if column.key == "bibcode" else "arXiv",
+                    self.table,
+                )
+            if delegate is not None:
+                self.table.setItemDelegateForColumn(index, delegate)
+                self._table_row_delegates.append(delegate)
+
     def _apply_table_layout(self) -> None:
         """Apply persisted column order and visibility to the library table."""
-        positions = {column.key: index for index, column in enumerate(COLUMNS)}
+        positions = {column.key: index for index, column in enumerate(self.columns)}
         order = list(
             dict.fromkeys(
                 [
@@ -1427,7 +1711,7 @@ class MainWindow(QMainWindow):
                         for key in self.config.table_column_order
                         if key in positions
                     ),
-                    *(column.key for column in COLUMNS),
+                    *(column.key for column in self.columns),
                 ]
             )
         )
@@ -1479,6 +1763,7 @@ class MainWindow(QMainWindow):
             self.views_item.takeChildren()
         self._sync_config_roots()
         self._sync_watch_actions()
+        self._sync_ads_library_action()
 
     def refresh(self, root: Path | None = None) -> None:
         """Reload the current registry and sidebar counts."""
@@ -1561,15 +1846,14 @@ class MainWindow(QMainWindow):
             settings: IdentifySettings,
         ) -> None:
             saved = settings
-            if scope == "library":
-                if settings.output_unresolved:
-                    output = Path(settings.output_unresolved).expanduser()
-                    if output.is_absolute():
-                        try:
-                            output = output.resolve().relative_to(root)
-                        except ValueError:
-                            pass
-                    saved = settings.with_overrides(output_unresolved=str(output))
+            if scope == "library" and settings.output_unresolved:
+                output = Path(settings.output_unresolved).expanduser()
+                if output.is_absolute():
+                    try:
+                        output = output.resolve().relative_to(root)
+                    except ValueError:
+                        pass
+                saved = settings.with_overrides(output_unresolved=str(output))
             WatchIdentifyPolicy.from_settings(root, saved)
             persistence.persist(scope, saved)
 
@@ -1871,6 +2155,7 @@ class MainWindow(QMainWindow):
     def _watch_job(self, job: Any) -> None:
         job.setParent(self)
         self.job = job
+        self._sync_ads_library_action()
         self.job_progress.show()
         self.log_dock.show()
         self.identify_action.setEnabled(False)
@@ -1902,6 +2187,7 @@ class MainWindow(QMainWindow):
         self.cancel_job_action.setEnabled(False)
         self.job_progress.hide()
         self.job = None
+        self._sync_ads_library_action()
         self._refresh_selection_id = None
         self._resume_foreground_watch()
         if self._close_requested:
@@ -1922,6 +2208,7 @@ class MainWindow(QMainWindow):
         self.cancel_job_action.setEnabled(False)
         self.job_progress.hide()
         self.job = None
+        self._sync_ads_library_action()
         self._resume_foreground_watch()
         self.refresh()
         if self._refresh_selection_id is not None:
@@ -1932,7 +2219,7 @@ class MainWindow(QMainWindow):
         if self._close_requested:
             self.close()
 
-    def closeEvent(self, event: Any) -> None:  # noqa: N802
+    def closeEvent(self, event: Any) -> None:
         """Persist window state and close registry connections."""
         if self.job is not None and self.job.running:
             self._close_requested = True
@@ -1957,15 +2244,15 @@ class MainWindow(QMainWindow):
         self.config.window_state = bytes(self.saveState().toBase64()).decode()
         self.config.column_widths = {
             column.key: self.table.columnWidth(index)
-            for index, column in enumerate(COLUMNS)
+            for index, column in enumerate(self.columns)
         }
         self.config.table_column_order = [
-            COLUMNS[self.table.header().logicalIndex(index)].key
+            self.columns[self.table.header().logicalIndex(index)].key
             for index in range(self.table.header().count())
         ]
         self.config.hidden_table_columns = [
             column.key
-            for index, column in enumerate(COLUMNS)
+            for index, column in enumerate(self.columns)
             if self.table.isColumnHidden(index)
         ]
         self.config.sort_column = self.current_query.order_by

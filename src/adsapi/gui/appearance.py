@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from collections.abc import Sequence
+from datetime import datetime, timezone
 from typing import Any
 
 from PySide6.QtCore import Qt, Signal
@@ -28,7 +29,7 @@ from PySide6.QtWidgets import (
 )
 
 from .config import MAX_ROW_HEIGHT, MAX_ROW_SPACING, GuiConfig
-from .library import COLUMNS, ISO8601_TIMESTAMP_FORMAT, format_mtime
+from .library import ISO8601_TIMESTAMP_FORMAT, Column, format_mtime
 
 _DETAIL_KEY = "detail"
 _DRAG_HANDLE = "≡"
@@ -48,7 +49,8 @@ class AppearanceDialog(QDialog):
     def __init__(
         self,
         config: GuiConfig,
-        detail_rows: list[tuple[str, str]],
+        table_columns: Sequence[Column],
+        detail_rows: Sequence[tuple[str, str]],
         parent: Any = None,
     ) -> None:
         super().__init__(parent)
@@ -65,6 +67,7 @@ class AppearanceDialog(QDialog):
         ] = {}
         self._table_row_keys: list[str] = []
         self._detail_row_keys: list[str] = []
+        self._table_columns = tuple(table_columns)
         layout = QVBoxLayout(self)
         self.tabs = QTabWidget(self)
         self.tabs.addTab(self._build_fonts_tab(config), "Table")
@@ -170,7 +173,7 @@ class AppearanceDialog(QDialog):
                 column.key,
                 "Resolution marker" if column.key == "status" else column.header,
             )
-            for column in COLUMNS
+            for column in self._table_columns
         ]
         rows = list(self._ordered_rows(labels, config.table_column_order))
         self._table_row_keys = [key for key, _label in rows]
@@ -573,7 +576,9 @@ class AppearanceDialog(QDialog):
             self.timestamp_format.setText(value)
 
     def _update_timestamp_example(self) -> None:
-        sample = {"mtime_ns": int(datetime.now().timestamp() * 1_000_000_000)}
+        sample = {
+            "mtime_ns": int(datetime.now(timezone.utc).timestamp() * 1_000_000_000)
+        }
         self.timestamp_example.setText(
             format_mtime(sample, self.timestamp_format_value)
         )

@@ -7,9 +7,10 @@ from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Sequence
 from urllib.parse import quote
 
+from ..citations import CitationFormatter, CitationStyle, citation_preference_key
 from ..formatting import html_to_text
 
 ISO8601_TIMESTAMP_FORMAT = "iso8601"
@@ -190,6 +191,7 @@ class Column:
     header: str
     width: int
     getter: Callable[[dict[str, Any]], str]
+    sortable: bool = True
 
 
 @dataclass(frozen=True)
@@ -225,7 +227,7 @@ class FileQuery:
         return filters
 
 
-COLUMNS: tuple[Column, ...] = (
+BASE_COLUMNS: tuple[Column, ...] = (
     Column("title", "Title", 380, _title),
     Column("author", "First author", 160, _author),
     Column("year", "Year", 60, lambda record: _text(record, "year")),
@@ -244,8 +246,59 @@ COLUMNS: tuple[Column, ...] = (
     Column("mtime_ns", "Modified", 140, _mtime),
 )
 
+COLUMNS = BASE_COLUMNS
+
+
+def build_columns(styles: Sequence[CitationStyle] = ()) -> tuple[Column, ...]:
+    """Construct the active table column definitions including custom citation columns.
+
+    Parameters
+    ----------
+    styles : Sequence[CitationStyle], optional
+        Custom citation styles to insert as runtime columns, by default ().
+
+    Returns
+    -------
+    tuple[Column, ...]
+        Immutable column sequence with generated citation columns inserted
+        directly after Bibcode.
+    """
+    if not styles:
+        return BASE_COLUMNS
+
+    formatter = CitationFormatter()
+    generated: list[Column] = []
+    for style in styles:
+
+        def getter(
+            record: dict[str, Any],
+            bound_style: CitationStyle = style,
+        ) -> str:
+            return formatter.render(bound_style, record)
+
+        generated.append(
+            Column(
+                key=citation_preference_key(style.id),
+                header=style.name,
+                width=190,
+                getter=getter,
+                sortable=False,
+            )
+        )
+
+    bibcode_index = next(
+        (i for i, col in enumerate(BASE_COLUMNS) if col.key == "bibcode"),
+        len(BASE_COLUMNS) - 1,
+    )
+    return (
+        BASE_COLUMNS[: bibcode_index + 1]
+        + tuple(generated)
+        + BASE_COLUMNS[bibcode_index + 1 :]
+    )
+
 
 __all__ = [
+    "BASE_COLUMNS",
     "COLUMNS",
     "ISO8601_TIMESTAMP_FORMAT",
     "Column",
@@ -254,6 +307,7 @@ __all__ = [
     "ads_url",
     "arxiv_id",
     "arxiv_url",
+    "build_columns",
     "format_first_seen",
     "format_mtime",
 ]

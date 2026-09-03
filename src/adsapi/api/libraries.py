@@ -8,8 +8,11 @@ Provides access to personal library management:
 - Set operations (union, intersection, difference)
 """
 
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Literal
+
+from ..config import ADSError
 
 if TYPE_CHECKING:
     from ..client import BaseClient
@@ -122,6 +125,64 @@ class LibrariesAPI:
         response = self._client.get("/biblib/libraries", params=params)
         return [Library.from_response(lib) for lib in response.get("libraries", [])]
 
+    def iter_libraries(
+        self,
+        *,
+        rows: int = 100,
+        sort: Literal["date_created", "date_last_modified"] = "date_created",
+        order: Literal["asc", "desc"] = "asc",
+    ) -> Iterator[Library]:
+        """
+        Lazily iterate over all libraries for the authenticated user.
+
+        Parameters
+        ----------
+        rows : int, optional
+            Number of libraries to request per page.
+        sort : str, optional
+            Sort field: "date_created" or "date_last_modified".
+        order : str, optional
+            Sort order: "asc" or "desc".
+
+        Returns
+        -------
+        iterator of Library
+            Libraries returned across all pages.
+
+        Raises
+        ------
+        ValueError
+            If `rows` is not positive.
+        ADSError
+            If the API repeats a non-empty page.
+        """
+        if rows <= 0:
+            raise ValueError("rows must be greater than zero.")
+
+        def _iterate() -> Iterator[Library]:
+            start = 0
+            previous_page: tuple[Library, ...] | None = None
+
+            while True:
+                page = tuple(
+                    self.list_libraries(
+                        start=start,
+                        rows=rows,
+                        sort=sort,
+                        order=order,
+                    )
+                )
+                if not page:
+                    return
+                if page == previous_page:
+                    raise ADSError("API returned a repeated library page.")
+                previous_page = page
+
+                yield from page
+                start += len(page)
+
+        return _iterate()
+
     def get_library(
         self,
         library_id: str,
@@ -154,6 +215,81 @@ class LibrariesAPI:
 
         response = self._client.get(f"/biblib/libraries/{library_id}", params=params)
         return Library.from_response(response)
+
+    def iter_documents(
+        self,
+        library_id: str,
+        *,
+        raw: bool = False,
+        rows: int = 2000,
+    ) -> Iterator[str]:
+        """
+        Lazily iterate over every document in a library.
+
+        Parameters
+        ----------
+        library_id : str
+            Unique library identifier.
+        raw : bool, optional
+            If True, return exact bibcodes even if not in ADS.
+        rows : int, optional
+            Number of documents to request per page, up to 2,000.
+
+        Returns
+        -------
+        iterator of str
+            Bibcodes returned across all pages.
+
+        Raises
+        ------
+        ValueError
+            If `rows` is not positive or exceeds 2,000.
+        ADSError
+            If the API repeats a non-empty page.
+        """
+        if rows <= 0:
+            raise ValueError("rows must be greater than zero.")
+        if rows > 2000:
+            raise ValueError("rows must not exceed 2000 for documents.")
+
+        def _iterate() -> Iterator[str]:
+            start = 0
+            fetched = 0
+            target: int | None = None
+            previous_page: tuple[str, ...] | None = None
+
+            while True:
+                library = self.get_library(
+                    library_id,
+                    raw=raw,
+                    start=start,
+                    rows=rows,
+                )
+                page = tuple(library.documents)
+                if page and page == previous_page:
+                    raise ADSError("API returned a repeated document page.")
+                previous_page = page or previous_page
+
+                if start == 0 and library.num_documents > 0:
+                    target = library.num_documents
+
+                if not page:
+                    return
+
+                documents = page
+                if target is not None:
+                    documents = page[: max(target - fetched, 0)]
+
+                yield from documents
+                fetched += len(documents)
+
+                if target is not None and fetched >= target:
+                    return
+                if len(page) < rows:
+                    return
+                start += len(page)
+
+        return _iterate()
 
     def create_library(
         self,

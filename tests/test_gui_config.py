@@ -1,5 +1,7 @@
 import json
+import logging
 
+from adsapi.citations import CitationStyle, initial_citation_styles
 from adsapi.config import Config
 from adsapi.gui.config import (
     GUI_CONFIG_VERSION,
@@ -192,7 +194,7 @@ def test_version_two_config_loads_safe_watch_defaults(monkeypatch, tmp_path):
         encoding="utf-8",
     )
     loaded = load_config()
-    assert loaded.version == 3
+    assert loaded.version == GUI_CONFIG_VERSION
     assert not loaded.roots[0].watch_on_start
     assert not loaded.roots[0].auto_process_new_pdfs
 
@@ -206,3 +208,88 @@ def test_watch_policy_and_rename_scope_roundtrip(monkeypatch, tmp_path):
     )
     save_config(expected)
     assert load_config() == expected
+
+
+def test_citation_styles_roundtrip(monkeypatch, tmp_path) -> None:
+    _use_tmp_config(monkeypatch, tmp_path)
+    styles = [CitationStyle(id="alpha", name="Compact", template="{bibcode}")]
+    save_config(GuiConfig(citation_styles=styles))
+    assert load_config().citation_styles == styles
+
+
+def test_missing_citation_key_gets_initial_style_but_saved_empty_stays_empty(
+    monkeypatch, tmp_path
+) -> None:
+    _use_tmp_config(monkeypatch, tmp_path)
+    config_path().write_text('{"version": 3}', encoding="utf-8")
+    assert load_config().citation_styles == list(initial_citation_styles())
+    save_config(GuiConfig(citation_styles=[]))
+    assert load_config().citation_styles == []
+
+
+def test_malformed_citation_styles_skipped_normalized_and_deduplicated(
+    monkeypatch, tmp_path, caplog
+) -> None:
+    _use_tmp_config(monkeypatch, tmp_path)
+    config_path().parent.mkdir(parents=True, exist_ok=True)
+    config_path().write_text(
+        json.dumps(
+            {
+                "version": 4,
+                "citation_styles": [
+                    "not-a-dict",
+                    {"id": "", "name": "No ID", "template": "{bibcode}"},
+                    {"id": "valid-1", "name": "Valid 1", "template": "{bibcode}"},
+                    {
+                        "id": "valid-1",
+                        "name": "Different Name",
+                        "template": "{title}",
+                    },
+                    {
+                        "id": "valid-2",
+                        "name": "VALID 1",
+                        "template": "{title}",
+                    },
+                    {
+                        "id": "valid-3",
+                        "name": "Normalized",
+                        "template": "{bibcode}",
+                        "author_format": "invalid_format",
+                        "max_authors": "invalid_int",
+                        "authors_when_truncated": -5,
+                    },
+                    {"id": "valid-4", "name": "No Template", "template": ""},
+                    {
+                        "id": "valid-5",
+                        "name": "Bad Syntax",
+                        "template": "{invalid_field}",
+                    },
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with caplog.at_level(logging.WARNING):
+        loaded = load_config()
+
+    assert len(loaded.citation_styles) == 2
+    assert loaded.citation_styles[0] == CitationStyle(
+        id="valid-1", name="Valid 1", template="{bibcode}"
+    )
+    assert loaded.citation_styles[1] == CitationStyle(
+        id="valid-3",
+        name="Normalized",
+        template="{bibcode}",
+        author_format="surname_initials",
+        max_authors=3,
+        authors_when_truncated=1,
+    )
+    warning_records = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert any(
+        "Duplicate" in r.message or "duplicate" in r.message for r in warning_records
+    )
+    assert any(
+        "Skipping malformed" in r.message or "malformed" in r.message.lower()
+        for r in warning_records
+    )

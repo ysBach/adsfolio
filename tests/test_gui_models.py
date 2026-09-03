@@ -13,8 +13,9 @@ pytest.importorskip("pytestqt")
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QFont, QFontMetrics
 
+from adsapi.citations import CitationStyle
 from adsapi.config import Config
-from adsapi.gui.library import COLUMNS, FileQuery
+from adsapi.gui.library import BASE_COLUMNS, COLUMNS, FileQuery, build_columns
 from adsapi.gui.models import PAGE_SIZE, FileTableModel, LinkDelegate
 from adsapi.pdf.registry import PdfRegistry
 
@@ -156,3 +157,59 @@ def test_link_delegate_switches_to_icon_when_text_does_not_fit() -> None:
 
     assert not delegate.requires_icon("2024A&A...1A...1B", text_width + 20, font)
     assert delegate.requires_icon("2024A&A...1A...1B", 20, font)
+
+
+def test_file_table_model_columns_and_set_columns(qtbot) -> None:
+    model = FileTableModel(_StaticRegistry([]), FileQuery())
+    assert model.columns == BASE_COLUMNS
+    assert model.columnCount() == len(BASE_COLUMNS)
+    assert model.query == FileQuery()
+
+    style = CitationStyle(id="alpha", name="Alpha", template="{year}")
+    new_cols = build_columns([style])
+
+    with qtbot.waitSignal(model.modelReset):
+        model.set_columns(new_cols)
+
+    assert model.columns == new_cols
+    assert model.columnCount() == len(new_cols)
+
+
+def test_generated_citation_column_is_displayed_but_not_sortable(qtbot) -> None:
+    style = CitationStyle(id="alpha", name="Compact", template="{year}: {title}")
+    columns = build_columns([style])
+    record = {
+        "status": "resolved",
+        "bibcode": "2024TEST...1A",
+        "arxiv": "2401.12345",
+        "metadata": {
+            "year": ["2024"],
+            "title": ["A title"],
+            "bibcode": ["2024TEST...1A"],
+        },
+    }
+    registry = _StaticRegistry([record])
+    model = FileTableModel(registry, FileQuery(), columns=columns)
+    citation = next(i for i, item in enumerate(columns) if item.key == "citation:alpha")
+
+    # DisplayRole, ToolTipRole, AccessibleTextRole return complete rendered text
+    assert model.index(0, citation).data(Qt.DisplayRole) == "2024: A title"
+    assert model.index(0, citation).data(Qt.ToolTipRole) == "2024: A title"
+    assert model.index(0, citation).data(Qt.AccessibleTextRole) == "2024: A title"
+    assert model.headerData(citation, Qt.Horizontal, Qt.DisplayRole) == "Compact"
+
+    # Base Bibcode / arXiv roles remain unchanged
+    bibcode_idx = next(i for i, item in enumerate(columns) if item.key == "bibcode")
+    arxiv_idx = next(i for i, item in enumerate(columns) if item.key == "arxiv")
+    assert model.index(0, bibcode_idx).data(Qt.DisplayRole) == "2024TEST...1A"
+    assert (
+        model.index(0, bibcode_idx).data(Qt.ToolTipRole) == "Open in ADS: 2024TEST...1A"
+    )
+    assert model.index(0, bibcode_idx).data(Qt.AccessibleTextRole) == "2024TEST...1A"
+    assert model.index(0, arxiv_idx).data(Qt.DisplayRole) == "2401.12345"
+    assert model.index(0, arxiv_idx).data(Qt.ToolTipRole) == "Open in arXiv: 2401.12345"
+    assert model.index(0, arxiv_idx).data(Qt.AccessibleTextRole) == "2401.12345"
+
+    before = model.query
+    model.sort(citation, Qt.DescendingOrder)
+    assert model.query == before

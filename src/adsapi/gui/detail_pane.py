@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import html
+from collections.abc import Sequence
 from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any
@@ -25,6 +26,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from ..citations import CitationFormatter, CitationStyle, citation_preference_key
 from ..formatting import html_to_text
 from ..pdf.registry import LOCKED_METADATA_FIELDS_KEY
 from .library import ISO8601_TIMESTAMP_FORMAT, format_mtime
@@ -506,6 +508,7 @@ class DetailPane(QWidget):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._record: dict[str, Any] | None = None
+        self._cached_document: dict[str, Any] | None = None
         self._metadata: dict[str, Any] = {}
         self._root = Path()
         self._path = Path()
@@ -526,6 +529,7 @@ class DetailPane(QWidget):
         self._labels: dict[str, QLabel] = {}
         self._row_widgets: dict[str, MetadataRow] = {}
         self._row_labels: dict[str, str] = {}
+        self._citation_styles: tuple[CitationStyle, ...] = ()
         self._rows = MetadataRowsContainer(self)
         self._rows.row_dropped.connect(self._move_dropped_row)
         scroll = QScrollArea(self)
@@ -548,6 +552,22 @@ class DetailPane(QWidget):
         open_button.clicked.connect(self._open)
         reveal_button.clicked.connect(self._reveal)
         self._actions.setEnabled(False)
+
+    def set_citation_styles(self, styles: Sequence[CitationStyle]) -> None:
+        """Configure runtime custom citation styles and rerender the current record."""
+        self._citation_styles = tuple(styles)
+        if self._record is not None:
+            self.set_record(self._record, self._root, self._cached_document)
+
+    def _default_row_order(self) -> list[str]:
+        """Return the default row order with citation rows immediately after bibcode."""
+        citation_keys = [citation_preference_key(s.id) for s in self._citation_styles]
+        order: list[str] = []
+        for key in DEFAULT_ROW_ORDER:
+            order.append(key)
+            if key == "bibcode":
+                order.extend(citation_keys)
+        return order
 
     def set_row_order(self, order: list[str]) -> None:
         """Set persisted row order, retaining unknown future field keys."""
@@ -610,7 +630,7 @@ class DetailPane(QWidget):
         """Return selectable detail rows known for the current record."""
         keys = dict.fromkeys(
             [
-                *DEFAULT_ROW_ORDER,
+                *self._default_row_order(),
                 "upgrade_status",
                 "upgraded_at",
                 "annotations_ported",
@@ -664,7 +684,14 @@ class DetailPane(QWidget):
 
     def row_label(self, key: str) -> str:
         """Return the visible label for one metadata-row key."""
-        return self._row_labels.get(key, FIELD_LABELS.get(key, key))
+        if key in self._row_labels:
+            return self._row_labels[key]
+        if key.startswith("citation:"):
+            style_id = key.removeprefix("citation:")
+            for style in self._citation_styles:
+                if style.id == style_id:
+                    return style.name
+        return FIELD_LABELS.get(key, key)
 
     def set_record(
         self,
@@ -674,6 +701,7 @@ class DetailPane(QWidget):
     ) -> None:
         """Render `record`, or clear the pane when it is `None`."""
         self._record = record
+        self._cached_document = cached_document if record is not None else None
         self._root = Path(root)
         self._path = Path()
         self._metadata = {}
@@ -701,10 +729,9 @@ class DetailPane(QWidget):
         }
         rows = self._build_rows(record, cached_document, locked)
         by_key = {key: row for key, row in rows}
+        default_order = self._default_row_order()
         order = [
-            key
-            for key in (*self._row_order, *DEFAULT_ROW_ORDER, *by_key)
-            if key in by_key
+            key for key in (*self._row_order, *default_order, *by_key) if key in by_key
         ]
         for key in dict.fromkeys(order):
             if key in self._hidden_rows:
@@ -796,6 +823,22 @@ class DetailPane(QWidget):
                             (label, metrics[metric_key], False, False, None),
                         )
                     )
+        formatter = CitationFormatter()
+        render_record = {**record, "metadata": self._metadata}
+        for style in self._citation_styles:
+            rendered = formatter.render(style, render_record)
+            rows.append(
+                (
+                    citation_preference_key(style.id),
+                    (
+                        style.name,
+                        rendered,
+                        False,
+                        False,
+                        None,
+                    ),
+                )
+            )
         bibcode = str(self._metadata.get("bibcode") or record.get("bibcode") or "")
         if bibcode:
             rows.append(

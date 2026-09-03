@@ -95,6 +95,123 @@ then run `adsapi gui` (or `adsapi-gui`). It provides a multi-root, searchable
 and sortable PDF table with metadata, OS-default opening/reveal actions, and
 Identify/Rename dialogs that execute the existing CLI commands as subprocesses.
 
+#### Custom citation styles
+
+Use `Tools -> Custom Citation Styles...` to manage the citation text shown in
+the GUI. The editor supports **Add**, **Duplicate**, **Rename** by editing the
+selected style's **Name** field, **Reorder** with **Move Up**/**Move Down**, and
+**Delete**. Styles remain in the displayed order. **Update Preview** validates the current
+draft and uses the one selected table record when exactly one row is selected;
+otherwise it uses the built-in example. Preview does not save or apply edits.
+**Save** validates every style, applies the list to the running GUI, and saves
+it for the next launch. **Cancel** discards the draft. Invalid templates,
+fields, names, IDs, duplicate names/IDs, and author settings leave the editor
+open and identify the affected style. A control is focused only when one exists;
+IDs have no editor field.
+
+Each style adds a computed, non-sortable table column and a read-only,
+non-lockable detail row after **Bibcode** by default, in style order. Use
+**View -> Appearance...** to reorder or hide these generated items and set
+their optional font, size, and color; **OK** keeps those settings for saving
+and **Cancel** restores the previous appearance. New items are visible by
+default, and style plus appearance settings persist across restart. Click a
+non-empty table cell or detail value to copy its complete text. Empty rendered
+values do not change the clipboard. Rendering uses only local catalog/row
+metadata and does not issue an ADS request. Custom citation text is not a
+filename and does not rename PDFs.
+
+Citation templates use these exact fields:
+
+| Field | Meaning |
+| --- | --- |
+| `{bibcode}` | ADS Bibcode, unchanged. |
+| `{year}` | Publication year. |
+| `{title}` | First title value, with ADS HTML converted to plain text. |
+| `{first_author_surname}` | First author's surname only; `Bach, Yoonsoo P.` becomes `Bach`. |
+| `{first_author_initials}` | First-author surname plus given-name initials; `Bach, Yoonsoo P.` becomes `BachYP`. |
+| `{authors}` | Selected-format author list; above **Max authors**, retain **Authors when truncated** leading authors and append the suffix. |
+| `{authors_without_suffix}` | The same author list without the truncation suffix. |
+| `{journal}` | First bibstem, falling back to `pub` only when bibstem is absent. |
+| `{bibstem}` | First ADS bibstem only; no fallback. |
+| `{pub}` | ADS publication or journal text. |
+| `{volume}` | Publication volume. |
+| `{page}` | First page or article identifier. |
+| `{{` and `}}` | Literal opening and closing braces. |
+
+Missing values render as empty strings; spaces, punctuation, and Unicode are
+preserved. ADS HTML display markup is converted to plain text, and no `.pdf`
+extension is appended. Empty names, templates, or IDs, invalid author settings,
+duplicate names/IDs, and invalid template syntax leave the editor open and
+identify the affected style. A control is focused only when one exists; IDs
+have no editor field. Format specifiers, conversions,
+attribute/item access, unknown fields, and unmatched braces are not permitted.
+The author controls are **Surname + initials** (such
+as `BachYP`), **Surname only** (`Bach`), or **Last, First** (`Bach, Yoonsoo
+P.`), plus **Max authors**, **Authors when truncated**, **Author separator**,
+and **Truncation suffix**. A no-comma author uses its last token as surname and
+preceding tokens as given names.
+
+```text
+{first_author_initials} ({year}) {bibstem}, {volume}, {page}
+→ BachYP (2024) A&A, 123, 456
+```
+
+#### Add identified PDFs to a remote ADS library
+
+The GUI distinguishes a **local PDF library** from a **remote ADS library**.
+A local PDF library is a filesystem root registered with `File -> Add Library
+Root` and backed by adsapi's local catalog. A remote ADS library is a
+destination managed by ADS/SciXplorer and shown separately in the destination
+table. This GUI workflow never renames or moves PDFs and never edits the local
+catalog, local metadata, Rename settings, or watch state.
+
+Open it from `Tools -> Add to ADS Library...` or the table context menu's
+**Add to ADS Library...** entry. **Selected rows** snapshots the selected rows
+currently loaded in the table. If the context-menu row was not selected, that
+row becomes the sole selection first. **All identified files in this local
+library** queries every resolved record in the current local catalog,
+independent of the active search, virtual view, and table pagination.
+
+Only a resolved record with a non-empty ADS Bibcode is eligible. Ineligible
+records are reported but not submitted. Bibcodes are deduplicated in stable
+first-seen order, so duplicate local files produce one remote document at
+most. The dialog reports source files, eligible unique Bibcodes, ineligible
+files, and local duplicate Bibcodes.
+
+The remote destination table shows name, document count, visibility, and
+permission. Only `owner`, `admin`, and `write` permissions are selectable;
+`read` and unknown permissions remain visible but disabled. **Create Library**
+accepts a non-empty name, optional description, and public/private choice. It
+creates and selects an empty remote ADS library; it never implicitly adds the
+pending Bibcodes.
+
+Opening the dialog lists ADS libraries, and selecting a destination fetches
+its documents for duplicate preflight. Those are read-only ADS requests. A
+complete preflight gives an exact **Already present** count and excludes those
+Bibcodes. If preflight fails, the count is **Unknown**, the dialog warns that
+all eligible Bibcodes may be submitted, and the final confirmation repeats
+that fallback. Creating an empty library is a separate user-initiated remote
+creation request. A document-add POST is made only after the final affirmative
+confirmation; opening the dialog, changing scope, selecting a destination, or
+loading remote documents never adds documents.
+
+The confirmation shows the destination and permission, eligible unique count,
+already-present count or `Unknown`, ineligible count, local-duplicate count,
+and number to submit. Confirmed additions use ADS's contract limit of at most
+2,000 Bibcodes per request and run asynchronously. Cancellation takes effect
+before the next batch; an in-flight request may finish. After the first failed
+batch, acknowledged batches remain acknowledged and later batches are
+unattempted. Results distinguish acknowledged, already present, failed,
+status-unknown, unattempted, local duplicate, ineligible, and cancelled
+counts.
+
+A timeout or connection failure after an add request is sent is **status
+unknown**, because ADS may have accepted that batch; it is not treated as a
+definite failure. **Retry Remaining** first reloads the remote destination
+and submits only remaining Bibcodes still absent. If reconciliation fails,
+adsapi warns that a raw retry may resubmit an uncertain batch and requires a
+second explicit confirmation.
+
 Do not run identify or watch against the same library from two machines at once.
 Keep `pdf export` snapshots as backups.
 
