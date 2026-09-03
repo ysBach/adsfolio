@@ -106,7 +106,8 @@ otherwise it uses the built-in example. Preview does not save or apply edits.
 **Save** validates every style, applies the list to the running GUI, and saves
 it for the next launch. **Cancel** discards the draft. Invalid templates,
 fields, names, IDs, duplicate names/IDs, and author settings leave the editor
-open and identify the affected control.
+open and identify the affected style. A control is focused only when one exists;
+IDs have no editor field.
 
 Each style adds a computed, non-sortable table column and a read-only,
 non-lockable detail row after **Bibcode** by default, in style order. Use
@@ -141,7 +142,8 @@ Missing values render as empty strings; spaces, punctuation, and Unicode are
 preserved. ADS HTML display markup is converted to plain text, and no `.pdf`
 extension is appended. Empty names, templates, or IDs, invalid author settings,
 duplicate names/IDs, and invalid template syntax leave the editor open and
-identify the affected style or control. Format specifiers, conversions,
+identify the affected style. A control is focused only when one exists; IDs
+have no editor field. Format specifiers, conversions,
 attribute/item access, unknown fields, and unmatched braces are not permitted.
 The author controls are **Surname + initials** (such
 as `BachYP`), **Surname only** (`Bach`), or **Last, First** (`Bach, Yoonsoo

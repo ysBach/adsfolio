@@ -106,9 +106,10 @@ Citation Styles…**). The editor manages the ordered list of styles:
 4. Select **Save** to validate the current draft and the complete style list.
    A valid save immediately replaces the generated table columns and detail
    rows and persists the styles in the GUI configuration. Invalid syntax,
-   fields, names, IDs, duplicate names/IDs, or author settings show an error,
-   keep the editor open, and focus the affected control. Select **Cancel** to
-   close without applying or emitting the draft changes.
+   fields, names, IDs, duplicate names/IDs, or author settings show an error
+   and keep the editor open. The affected style is identified; a control is
+   focused only when one exists (IDs have no editor field). Select **Cancel**
+   to close without applying or emitting the draft changes.
 
 For each saved style, adsapi creates a computed table column and detail row
 after **Bibcode** by default, in the order shown in the editor. Generated
@@ -153,7 +154,8 @@ access, unknown fields, and unmatched braces are rejected when saving.
 Missing values render as empty strings. Spaces, punctuation, and Unicode are
 preserved. No ``.pdf`` extension is appended. Empty names, templates, and IDs,
 invalid author settings, duplicate names/IDs, and invalid template syntax keep
-the editor open and identify the affected style or control. For example:
+the editor open and identify the affected style. A control is focused only when
+one exists; IDs have no editor field. For example:
 
 ```text
 {first_author_initials} ({year}) {bibstem}, {volume}, {page}
