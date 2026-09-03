@@ -21,6 +21,7 @@ from PySide6.QtGui import (
 )
 from PySide6.QtWidgets import QApplication, QHeaderView, QInputDialog
 
+from adsapi.citations import CitationStyle
 from adsapi.config import Config
 from adsapi.gui.detail_pane import DetailPane
 from adsapi.gui.library import COLUMNS, FileQuery
@@ -803,3 +804,158 @@ def test_main_window_persists_detail_metadata(
     assert selected is not None
     assert selected["relative_path"] == "paper.pdf"
     window.close()
+
+
+def test_citation_rows_generated_immediately_after_bibcode_and_not_editable(
+    application: QApplication,
+) -> None:
+    """Citation rows follow Bibcode by default, are not editable/lockable, and copy text."""
+    pane = DetailPane()
+    pane.set_citation_styles(
+        [
+            CitationStyle(id="a", name="Short", template="{bibcode}"),
+            CitationStyle(id="b", name="Readable", template="{year}: {title}"),
+        ]
+    )
+    record = {
+        "current_path": "paper.pdf",
+        "size_bytes": 1,
+        "mtime_ns": 0,
+        "sha256": "a" * 64,
+        "metadata": {
+            "bibcode": "2024TEST",
+            "year": "2024",
+            "title": "A Test Title",
+        },
+    }
+    pane.set_record(record, Path("/papers"))
+    keys = pane.row_keys()
+    bibcode_idx = keys.index("bibcode")
+    assert keys[bibcode_idx + 1] == "citation:a"
+    assert keys[bibcode_idx + 2] == "citation:b"
+
+    row_a = pane._row_widgets["citation:a"]
+    assert row_a.name.text() == "Short"
+    assert row_a.value._copy_text == "2024TEST"
+    assert not row_a.edit_button.isVisible()
+    assert not row_a.lock_button.isVisible()
+
+    row_b = pane._row_widgets["citation:b"]
+    assert row_b.name.text() == "Readable"
+    assert row_b.value._copy_text == "2024: A Test Title"
+    assert not row_b.edit_button.isVisible()
+    assert not row_b.lock_button.isVisible()
+    pane.close()
+
+
+def test_citation_rows_recomputed_on_record_and_style_change(
+    application: QApplication,
+) -> None:
+    """Citation rows recompute when record or styles change, and support empty value."""
+    pane = DetailPane()
+    pane.set_citation_styles(
+        [CitationStyle(id="c1", name="Cite", template="{bibcode}")]
+    )
+    pane.set_record(
+        {"current_path": "first.pdf", "metadata": {"bibcode": "2020AAA"}},
+        Path("/papers"),
+    )
+    assert pane._row_widgets["citation:c1"].value._copy_text == "2020AAA"
+
+    # Record change
+    pane.set_record(
+        {"current_path": "second.pdf", "metadata": {"bibcode": "2021BBB"}},
+        Path("/papers"),
+    )
+    assert pane._row_widgets["citation:c1"].value._copy_text == "2021BBB"
+
+    # Style change rerenders current record
+    pane.set_citation_styles(
+        [CitationStyle(id="c2", name="NewCite", template="{year}")]
+    )
+    assert "citation:c1" not in pane._row_widgets
+    assert "citation:c2" in pane._row_widgets
+    # year is missing, so empty string rendered
+    assert pane._row_widgets["citation:c2"].value.text() == ""
+    assert pane._row_widgets["citation:c2"].value._copy_text == ""
+
+    pane.close()
+
+
+def test_citation_rows_available_rows_and_hidden_and_custom_order(
+    application: QApplication,
+) -> None:
+    """Citation rows appear in available_rows(), respect hidden rows and custom ordering."""
+    pane = DetailPane()
+    pane.set_citation_styles(
+        [
+            CitationStyle(id="s1", name="Style One", template="{bibcode}"),
+            CitationStyle(id="s2", name="Style Two", template="{year}"),
+        ]
+    )
+    avail = dict(pane.available_rows())
+    assert avail.get("citation:s1") == "Style One"
+    assert avail.get("citation:s2") == "Style Two"
+
+    # Test custom row ordering and hidden rows
+    pane.set_row_order(["citation:s2", "title", "citation:s1"])
+    pane.set_hidden_rows(["citation:s1"])
+    pane.set_record(
+        {
+            "current_path": "paper.pdf",
+            "metadata": {"title": "Sample", "bibcode": "B1", "year": "2024"},
+        },
+        Path("/papers"),
+    )
+
+    keys = pane.row_keys()
+    assert keys[0] == "citation:s2"
+    assert keys[1] == "title"
+    assert "citation:s1" not in keys
+    assert ("citation:s1", "Style One") in pane.available_rows()
+    pane.close()
+
+
+def test_citation_rows_typography_and_no_copy_on_empty(
+    application: QApplication,
+) -> None:
+    """Citation rows support per-row typography and empty copy label does not copy."""
+    from PySide6.QtCore import QPointF
+    from PySide6.QtGui import QColor, QMouseEvent
+
+    pane = DetailPane()
+    pane.set_citation_styles(
+        [CitationStyle(id="style1", name="Style 1", template="{volume}")]
+    )
+    custom_font = QFont("Courier", 14)
+    custom_color = QColor("#ff0000")
+    pane.set_row_styles(
+        {"citation:style1": custom_font}, {"citation:style1": custom_color}
+    )
+
+    pane.set_record(
+        {
+            "current_path": "paper.pdf",
+            "metadata": {"title": "No volume"},
+        },
+        Path("/papers"),
+    )
+
+    row = pane._row_widgets["citation:style1"]
+    assert row.value.font().family() == custom_font.family()
+    assert custom_color.name() in row.value.styleSheet()
+
+    # Empty value: text is empty, clicking shouldn't emit copied
+    copied_signals = []
+    row.copied.connect(copied_signals.append)
+    event = QMouseEvent(
+        QMouseEvent.Type.MouseButtonRelease,
+        QPointF(5, 5),
+        QPointF(5, 5),
+        Qt.MouseButton.LeftButton,
+        Qt.MouseButton.LeftButton,
+        Qt.KeyboardModifier.NoModifier,
+    )
+    row.value.mouseReleaseEvent(event)
+    assert len(copied_signals) == 0
+    pane.close()
