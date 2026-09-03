@@ -11,6 +11,7 @@ pytest.importorskip("PySide6")
 from PySide6.QtCore import QObject, Qt, Signal
 from PySide6.QtWidgets import QApplication, QDialog, QMessageBox
 
+from adsapi.citations import CitationStyle
 from adsapi.gui.config import GuiConfig, RootEntry
 from adsapi.gui.dialogs import IdentifyDialog, RenameDialog, UserProfileDialog
 from adsapi.gui.main_window import MainWindow
@@ -281,6 +282,170 @@ def test_tools_profile_action_opens_with_global_profile(application, monkeypatch
     assert window.profile_action.text() == "My Publication Profile…"
     assert captured["profile"] == profile
     assert captured["parent"] is window
+    window.close()
+
+
+def test_tools_citation_styles_action_opens_with_global_styles_and_selected_record(
+    application, monkeypatch
+):
+    styles = [CitationStyle(id="alpha", name="Compact", template="{bibcode}")]
+    record = {
+        "current_path": "paper.pdf",
+        "metadata": {"bibcode": "2024ApJ...900..100S"},
+    }
+    captured = {}
+
+    class _CitationStylesDialog(QObject):
+        saved = Signal(object)
+
+        def __init__(self, loaded_styles, preview_record=None, parent=None):
+            super().__init__(parent)
+            captured.update(
+                styles=loaded_styles,
+                preview_record=preview_record,
+                parent=parent,
+            )
+
+        def exec(self):
+            return QDialog.Rejected
+
+    monkeypatch.setattr(
+        "adsapi.gui.main_window.load_config",
+        lambda: GuiConfig(citation_styles=styles),
+    )
+    monkeypatch.setattr("adsapi.gui.main_window.save_config", lambda config: None)
+    monkeypatch.setattr(
+        "adsapi.gui.main_window.CitationStylesDialog",
+        _CitationStylesDialog,
+    )
+    window = MainWindow()
+    window.model._rows = [record]
+    window.table.setCurrentIndex(window.model.index(0, 0))
+
+    window.citation_styles_action.trigger()
+
+    assert window.citation_styles_action.text() == "Custom Citation Styles…"
+    assert captured == {
+        "styles": styles,
+        "preview_record": record,
+        "parent": window,
+    }
+    window.close()
+
+
+def test_accepting_citation_styles_replaces_runtime_columns_and_detail_once(
+    application, monkeypatch
+):
+    old_styles = [
+        CitationStyle(id="alpha", name="Old Alpha", template="{bibcode}"),
+        CitationStyle(id="deleted", name="Deleted", template="{year}"),
+    ]
+    new_styles = [
+        CitationStyle(id="alpha", name="Renamed Alpha", template="{year}"),
+        CitationStyle(id="new", name="New Style", template="{title}"),
+    ]
+    config = GuiConfig(
+        citation_styles=old_styles,
+        column_widths={"citation:alpha": 211, "citation:deleted": 212},
+        column_fonts={
+            "citation:alpha": {"family": "Menlo", "point_size": 11},
+            "citation:deleted": {"family": "Menlo", "point_size": 12},
+        },
+        table_column_order=[
+            "title",
+            "citation:deleted",
+            "bibcode",
+            "citation:alpha",
+            "filename",
+        ],
+        hidden_table_columns=["citation:deleted", "citation:alpha"],
+        detail_fonts={
+            "citation:alpha": {"family": "Menlo", "point_size": 13},
+            "citation:deleted": {"family": "Menlo", "point_size": 14},
+        },
+        detail_row_order=[
+            "title",
+            "citation:deleted",
+            "bibcode",
+            "citation:alpha",
+            "filename",
+        ],
+        detail_hidden_rows=["citation:deleted", "citation:alpha"],
+    )
+
+    class _CitationStylesDialog(QObject):
+        saved = Signal(object)
+
+        def __init__(self, *_args, **_kwargs):
+            super().__init__()
+
+        def exec(self):
+            self.saved.emit(tuple(new_styles))
+            return QDialog.Accepted
+
+    monkeypatch.setattr("adsapi.gui.main_window.load_config", lambda: config)
+    monkeypatch.setattr("adsapi.gui.main_window.save_config", lambda config: None)
+    monkeypatch.setattr(
+        "adsapi.gui.main_window.CitationStylesDialog",
+        _CitationStylesDialog,
+    )
+    window = MainWindow()
+    model_calls = []
+    detail_calls = []
+    original_set_columns = window.model.set_columns
+    original_set_citation_styles = window.detail.set_citation_styles
+
+    def set_columns(columns):
+        model_calls.append(tuple(column.key for column in columns))
+        original_set_columns(columns)
+
+    def set_citation_styles(styles):
+        detail_calls.append(tuple(styles))
+        original_set_citation_styles(styles)
+
+    monkeypatch.setattr(window.model, "set_columns", set_columns)
+    monkeypatch.setattr(window.detail, "set_citation_styles", set_citation_styles)
+
+    window.citation_styles_action.trigger()
+
+    assert config.citation_styles == new_styles
+    assert model_calls == [tuple(column.key for column in window.columns)]
+    assert detail_calls == [tuple(new_styles)]
+    header = window.table.header()
+    visual_keys = [
+        window.columns[header.logicalIndex(visual)].key
+        for visual in range(header.count())
+    ]
+    assert visual_keys[visual_keys.index("bibcode") + 1] == "citation:new"
+    assert config.column_widths == {"citation:alpha": 211}
+    assert config.column_fonts == {
+        "citation:alpha": {"family": "Menlo", "point_size": 11}
+    }
+    assert config.hidden_table_columns == ["citation:alpha"]
+    assert config.detail_fonts == {
+        "citation:alpha": {"family": "Menlo", "point_size": 13}
+    }
+    assert config.detail_hidden_rows == ["citation:alpha"]
+    assert config.table_column_order == [
+        "title",
+        "bibcode",
+        "citation:new",
+        "citation:alpha",
+        "filename",
+    ]
+    assert config.detail_row_order == [
+        "title",
+        "bibcode",
+        "citation:new",
+        "citation:alpha",
+        "filename",
+    ]
+    new_column = next(
+        index
+        for index, column in enumerate(window.columns)
+        if column.key == "citation:new"
+    )
+    assert not window.table.isColumnHidden(new_column)
     window.close()
 
 

@@ -15,10 +15,11 @@ from PySide6.QtGui import QStandardItem, QStandardItemModel
 from PySide6.QtTest import QSignalSpy
 from PySide6.QtWidgets import QApplication, QLabel
 
+from adsapi.citations import CitationStyle
 from adsapi.config import Config
 from adsapi.gui.appearance import AppearanceDialog
 from adsapi.gui.config import GuiConfig
-from adsapi.gui.library import COLUMNS
+from adsapi.gui.library import COLUMNS, build_columns
 from adsapi.gui.main_window import MainWindow
 
 
@@ -39,6 +40,7 @@ def test_appearance_dialog_reorders_and_hides_detail_rows(
             detail_row_order=["abstract", "title"],
             detail_hidden_rows=["abstract"],
         ),
+        COLUMNS,
         [("title", "Title"), ("abstract", "Abstract"), ("doi", "DOI")],
     )
 
@@ -74,6 +76,7 @@ def test_appearance_dialog_exposes_file_and_browser_application_settings(
             pdf_viewer_command="pdf-viewer",
             web_browser_command="web-browser",
         ),
+        COLUMNS,
         [("title", "Title")],
     )
 
@@ -87,7 +90,7 @@ def test_appearance_dialog_reorders_via_table_header(
     application: QApplication,
 ) -> None:
     """Dragging a table row header changes the stored column order."""
-    dialog = AppearanceDialog(GuiConfig(), [("title", "Title")])
+    dialog = AppearanceDialog(GuiConfig(), COLUMNS, [("title", "Title")])
 
     original = dialog.table_column_order
     dialog.font_table.verticalHeader().moveSection(0, 2)
@@ -107,6 +110,7 @@ def test_appearance_dialog_places_row_controls_on_their_own_tabs(
     """Row-height controls live beside the widget they resize."""
     dialog = AppearanceDialog(
         GuiConfig(table_row_height=24, detail_row_spacing=18),
+        COLUMNS,
         [("title", "Title")],
     )
 
@@ -132,6 +136,7 @@ def test_appearance_dialog_places_detail_action_visibility_at_top(
     """Details exposes global edit and lock button visibility controls first."""
     dialog = AppearanceDialog(
         GuiConfig(show_edit_buttons=False, show_lock_buttons=False),
+        COLUMNS,
         [("title", "Title")],
     )
     details_tab = dialog.tabs.widget(1)
@@ -154,6 +159,7 @@ def test_appearance_dialog_exposes_detail_label_boldness(
     """Detail label boldness is editable and returned with appearance settings."""
     dialog = AppearanceDialog(
         GuiConfig(detail_label_bold=False),
+        COLUMNS,
         [("title", "Title")],
     )
 
@@ -169,7 +175,7 @@ def test_appearance_dialog_emits_for_detail_row_spacing(
     application: QApplication,
 ) -> None:
     """Changing a row-height control notifies the live-preview owner."""
-    dialog = AppearanceDialog(GuiConfig(), [("title", "Title")])
+    dialog = AppearanceDialog(GuiConfig(), COLUMNS, [("title", "Title")])
     spy = QSignalSpy(dialog.settings_changed)
 
     dialog.detail_row_spacing_spin.setValue(24)
@@ -182,12 +188,65 @@ def test_appearance_dialog_emits_for_visibility(
     application: QApplication,
 ) -> None:
     """Changing a table visibility checkbox notifies the live-preview owner."""
-    dialog = AppearanceDialog(GuiConfig(), [("title", "Title")])
+    dialog = AppearanceDialog(GuiConfig(), COLUMNS, [("title", "Title")])
     spy = QSignalSpy(dialog.settings_changed)
 
     dialog.font_table.item(0, 0).setCheckState(Qt.Unchecked)
 
     assert spy.count() == 1
+    dialog.close()
+
+
+def test_appearance_dialog_uses_runtime_columns_and_returns_generated_preferences(
+    application: QApplication,
+) -> None:
+    """Runtime citation columns and detail rows participate in all appearance settings."""
+    style = CitationStyle(id="alpha", name="Compact", template="{bibcode}")
+    key = "citation:alpha"
+    columns = build_columns([style])
+    dialog = AppearanceDialog(
+        GuiConfig(
+            table_column_order=["title", "bibcode", key],
+            hidden_table_columns=[key],
+            detail_row_order=["bibcode", key, "title"],
+            detail_hidden_rows=[key],
+        ),
+        columns,
+        [("title", "Title"), ("bibcode", "Bibcode"), (key, "Compact")],
+    )
+
+    assert dialog.font_table.rowCount() == len(columns)
+    assert dialog.table_column_order.index(key) == (
+        dialog.table_column_order.index("bibcode") + 1
+    )
+    assert dialog.font_table.item(dialog.table_column_order.index(key), 0).text() == (
+        "Compact"
+    )
+    assert key in dialog.hidden_table_columns
+    assert dialog.detail_row_order[:2] == ["bibcode", key]
+    assert key in dialog.detail_hidden_rows
+
+    _enabled, table_font, table_size, table_color = dialog._rows[key]
+    _detail_enabled, detail_font, detail_size, detail_color = dialog._rows[
+        f"detail:{key}"
+    ]
+    _enabled.setChecked(True)
+    table_size.setValue(14)
+    dialog._set_color_button(table_color, "#ff0000")
+    _detail_enabled.setChecked(True)
+    detail_size.setValue(15)
+    dialog._set_color_button(detail_color, "#00ff00")
+
+    assert dialog.column_fonts[key] == {
+        "family": table_font.currentFont().family(),
+        "point_size": 14,
+        "color": "#ff0000",
+    }
+    assert dialog.detail_fonts[key] == {
+        "family": detail_font.currentFont().family(),
+        "point_size": 15,
+        "color": "#00ff00",
+    }
     dialog.close()
 
 

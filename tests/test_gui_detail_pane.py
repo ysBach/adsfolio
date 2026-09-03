@@ -23,6 +23,7 @@ from PySide6.QtWidgets import QApplication, QHeaderView, QInputDialog
 
 from adsapi.citations import CitationStyle
 from adsapi.config import Config
+from adsapi.gui.config import GuiConfig
 from adsapi.gui.detail_pane import DetailPane
 from adsapi.gui.library import COLUMNS, FileQuery
 from adsapi.gui.main_window import MainWindow
@@ -260,7 +261,7 @@ def test_abstract_superscript_markup_does_not_leak_into_following_text(
         fragment = iterator.fragment()
         fragments.append(
             (
-                fragment.text().replace("​", ""),
+                fragment.text().replace("\u200b", ""),
                 fragment.charFormat().verticalAlignment(),
             )
         )
@@ -584,8 +585,9 @@ def test_table_header_context_menu_restores_order_and_resizes(
     actions["Resize columns to contents"].trigger()
 
     assert [
-        COLUMNS[header.logicalIndex(visual)].key for visual in range(header.count())
-    ] == [column.key for column in COLUMNS]
+        window.columns[header.logicalIndex(visual)].key
+        for visual in range(header.count())
+    ] == [column.key for column in window.columns]
     assert resized == [QHeaderView.ResizeToContents]
     window.close()
 
@@ -666,6 +668,68 @@ def test_filename_click_uses_configured_reveal_action(
     window._table_clicked(window.table.model().index(0, filename_column))
 
     assert revealed == [tmp_path / "paper.pdf"]
+    window.close()
+
+
+def test_generated_table_cell_copies_display_text_and_shows_feedback(
+    application: QApplication,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """A non-empty generated citation cell copies its displayed text."""
+    style = CitationStyle(id="compact", name="Compact", template="{bibcode}")
+    monkeypatch.setattr(
+        "adsapi.gui.main_window.load_config",
+        lambda: GuiConfig(citation_styles=[style]),
+    )
+    monkeypatch.setattr("adsapi.gui.main_window.save_config", lambda config: None)
+    window = MainWindow()
+    window.current_root = tmp_path
+    window.model._rows = [
+        {
+            "current_path": "paper.pdf",
+            "metadata": {"bibcode": "2024ApJ...900..100S"},
+        }
+    ]
+    column = next(
+        index
+        for index, item in enumerate(window.columns)
+        if item.key == "citation:compact"
+    )
+    QApplication.clipboard().setText("old clipboard")
+
+    window._table_clicked(window.model.index(0, column))
+
+    assert QApplication.clipboard().text() == "2024ApJ...900..100S"
+    assert window.status.currentMessage() == "Copied"
+    window.close()
+
+
+def test_empty_generated_table_cell_keeps_clipboard_content(
+    application: QApplication,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """An empty generated citation cell does not replace the clipboard."""
+    style = CitationStyle(id="year", name="Year", template="{year}")
+    monkeypatch.setattr(
+        "adsapi.gui.main_window.load_config",
+        lambda: GuiConfig(citation_styles=[style]),
+    )
+    monkeypatch.setattr("adsapi.gui.main_window.save_config", lambda config: None)
+    window = MainWindow()
+    window.current_root = tmp_path
+    window.model._rows = [{"current_path": "paper.pdf", "metadata": {}}]
+    column = next(
+        index
+        for index, item in enumerate(window.columns)
+        if item.key == "citation:year"
+    )
+    QApplication.clipboard().setText("keep clipboard")
+
+    window._table_clicked(window.model.index(0, column))
+
+    assert QApplication.clipboard().text() == "keep clipboard"
     window.close()
 
 
