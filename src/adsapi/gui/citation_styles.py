@@ -40,8 +40,8 @@ from ..citations import (
 
 __all__ = [
     "BUILTIN_PREVIEW_RECORD",
-    "CitationStylesDialog",
     "TEMPLATE_HELP_TEXT",
+    "CitationStylesDialog",
 ]
 
 TEMPLATE_HELP_TEXT = f"""{CITATION_FIELD_HELP}
@@ -449,16 +449,18 @@ class CitationStylesDialog(QDialog):
         if self._is_updating_ui:
             return
 
-        if self._current_index >= 0 and self._current_index < len(self._styles_list):
-            # Try to store previous draft
-            if not self._store_current_draft():
-                # Block changing selection if current draft is invalid
-                self._is_updating_ui = True
-                try:
-                    self.list_widget.setCurrentRow(self._current_index)
-                finally:
-                    self._is_updating_ui = False
-                return
+        # Try to store previous draft when a current style is selected.
+        if (
+            0 <= self._current_index < len(self._styles_list)
+            and not self._store_current_draft()
+        ):
+            # Block changing selection if current draft is invalid
+            self._is_updating_ui = True
+            try:
+                self.list_widget.setCurrentRow(self._current_index)
+            finally:
+                self._is_updating_ui = False
+            return
 
         self._current_index = row
         self._update_buttons()
