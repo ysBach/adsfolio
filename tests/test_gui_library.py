@@ -1,0 +1,131 @@
+from adsapi.gui.library import (
+    COLUMNS,
+    ISO8601_TIMESTAMP_FORMAT,
+    FileQuery,
+    LibraryView,
+    ads_url,
+    arxiv_url,
+    format_mtime,
+)
+
+
+def test_file_query_maps_views_and_search():
+    assert FileQuery().to_filters() == {}
+    assert FileQuery(view=LibraryView.RESOLVED).to_filters() == {"resolved": True}
+    assert FileQuery(view=LibraryView.UNRESOLVED).to_filters() == {"resolved": False}
+    assert FileQuery(view=LibraryView.ARXIV_ONLY).to_filters() == {"source": "arxiv"}
+    assert FileQuery(view=LibraryView.DUPLICATES).to_filters() == {
+        "duplicates_only": True
+    }
+    assert FileQuery(view=LibraryView.RESOLVED, search=" Bach ").to_filters() == {
+        "resolved": True,
+        "search": " Bach ",
+    }
+
+
+def test_file_query_defaults_to_added_newest_first() -> None:
+    query = FileQuery()
+
+    assert query.order_by == "first_seen_at"
+    assert query.descending
+
+
+def test_columns_render_full_record():
+    record = {
+        "current_path": "subdir/paper.pdf",
+        "size_bytes": 1_468_006,
+        "first_seen_at": "2026-08-29T12:34:56+00:00",
+        "mtime_ns": 1_700_000_000_000_000_000,
+        "year": "2024",
+        "bibcode": "2024A&A...1A...1B",
+        "status": "resolved",
+        "source": "published",
+        "metadata": {
+            "title": ["A title"],
+            "author": ["Bach, Y.", "Doe, J."],
+            "bibstem": ["A&A"],
+            "doi": ["10.48550/arXiv.2606.12345v2"],
+        },
+    }
+    values = {column.key: column.getter(record) for column in COLUMNS}
+    assert values["title"] == "A title"
+    assert values["author"] == "Bach, Y."
+    assert values["year"] == "2024"
+    assert values["pub"] == "A&A"
+    assert values["arxiv"] == "2606.12345v2"
+    assert values["filename"] == "paper.pdf"
+    assert values["size_bytes"].endswith("MB")
+    assert "T" in values["first_seen_at"]
+    assert values["mtime_ns"]
+    assert set(values) == {
+        "title",
+        "author",
+        "year",
+        "pub",
+        "bibcode",
+        "arxiv",
+        "status",
+        "filename",
+        "size_bytes",
+        "first_seen_at",
+        "mtime_ns",
+    }
+
+
+def test_added_column_precedes_modified_and_tolerates_bad_timestamps() -> None:
+    keys = [column.key for column in COLUMNS]
+
+    assert "first_seen_at" in keys
+    assert keys.index("first_seen_at") + 1 == keys.index("mtime_ns")
+    added = COLUMNS[keys.index("first_seen_at")]
+    assert added.header == "Added"
+    assert added.getter({"first_seen_at": None}) == ""
+    assert added.getter({"first_seen_at": "not-a-timestamp"}) == ""
+
+
+def test_columns_tolerate_empty_and_scalar_records():
+    empty = {column.key: column.getter({}) for column in COLUMNS}
+    assert all(isinstance(value, str) for value in empty.values())
+    record = {
+        "current_path": "paper.pdf",
+        "metadata": {
+            "title": "Scalar title",
+            "author": "Scalar author",
+            "bibstem": "AJ",
+        },
+    }
+    values = {column.key: column.getter(record) for column in COLUMNS}
+    assert values["title"] == "Scalar title"
+    assert values["author"] == "Scalar author"
+    assert values["pub"] == "AJ"
+    assert values["filename"] == "paper.pdf"
+
+
+def test_arxiv_column_extracts_legacy_bibcode_identifier():
+    record = {"metadata": {"bibcode": "2024arXiv240112345B"}}
+
+    arxiv_column = next(column for column in COLUMNS if column.key == "arxiv")
+
+    assert arxiv_column.getter(record) == "2401.12345"
+
+
+def test_external_link_urls_use_stable_public_endpoints():
+    assert ads_url("2024A&A...1A...1B") == (
+        "https://adsabs.harvard.edu/abs/2024A%26A...1A...1B"
+    )
+    assert arxiv_url("2606.12345") == "https://arxiv.org/abs/2606.12345"
+
+
+def test_resolution_column_has_a_compact_blank_header():
+    """The resolution marker leaves space for bibliographic columns."""
+    status_column = next(column for column in COLUMNS if column.key == "status")
+
+    assert status_column.header == ""
+    assert status_column.width <= 24
+
+
+def test_format_mtime_supports_iso8601_and_custom_patterns():
+    record = {"mtime_ns": 1_700_000_000_000_000_000}
+
+    assert "T" in format_mtime(record, ISO8601_TIMESTAMP_FORMAT)
+    assert format_mtime(record, "%Y-%m-%d")

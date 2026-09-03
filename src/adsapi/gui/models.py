@@ -1,0 +1,389 @@
+"""Qt models for the paged PDF library table."""
+
+from __future__ import annotations
+
+import sqlite3
+from typing import Any
+
+from PySide6.QtCore import QAbstractTableModel, QModelIndex, QSize, Qt, Signal
+from PySide6.QtGui import QColor, QFont, QFontMetrics, QPalette
+from PySide6.QtWidgets import (
+    QApplication,
+    QStyle,
+    QStyledItemDelegate,
+    QStyleOptionViewItem,
+)
+
+from ..pdf.cli_common import is_resolved_record
+from .library import (
+    COLUMNS,
+    ISO8601_TIMESTAMP_FORMAT,
+    FileQuery,
+    format_first_seen,
+    format_mtime,
+)
+
+PAGE_SIZE = 500
+
+
+class RowHeightDelegate(QStyledItemDelegate):
+    """Apply an optional fixed height to table item geometry."""
+
+    def __init__(self, parent: Any = None) -> None:
+        super().__init__(parent)
+        self._row_height: int | None = None
+
+    def set_row_height(self, height: int | None) -> None:
+        """Set the fixed table-row height and refresh delegate geometry."""
+        self._row_height = height
+        self.sizeHintChanged.emit(QModelIndex())
+
+    def sizeHint(
+        self,
+        option: QStyleOptionViewItem,
+        index: QModelIndex,
+    ) -> QSize:  # noqa: N802
+        """Return the native size or the configured fixed row height."""
+        size = super().sizeHint(option, index)
+        if self._row_height is not None:
+            size.setHeight(self._row_height)
+        return size
+
+
+class FirstAuthorDelegate(RowHeightDelegate):
+    """Draw the first author's surname in bold without changing the model text."""
+
+    @staticmethod
+    def split_author(value: str) -> tuple[str, str]:
+        """Split an ADS-style author name into surname and remaining text."""
+        surname, separator, remainder = value.partition(",")
+        return surname, f"{separator}{remainder}" if separator else ""
+
+    def paint(
+        self,
+        painter: Any,
+        option: QStyleOptionViewItem,
+        index: QModelIndex,
+    ) -> None:
+        """Paint only the surname in bold while retaining native row styling."""
+        styled = QStyleOptionViewItem(option)
+        self.initStyleOption(styled, index)
+        surname, remainder = self.split_author(str(index.data(Qt.DisplayRole) or ""))
+        styled.text = ""
+        style = (
+            styled.widget.style() if styled.widget is not None else QApplication.style()
+        )
+        style.drawControl(QStyle.CE_ItemViewItem, styled, painter, styled.widget)
+        text_rect = style.subElementRect(
+            QStyle.SE_ItemViewItemText, styled, styled.widget
+        )
+        painter.save()
+        painter.setClipRect(text_rect)
+        color_role = (
+            QPalette.HighlightedText
+            if styled.state & QStyle.State_Selected
+            else QPalette.Text
+        )
+        painter.setPen(styled.palette.color(color_role))
+        bold_font = QFont(styled.font)
+        bold_font.setBold(True)
+        painter.setFont(bold_font)
+        painter.drawText(text_rect, Qt.AlignLeft | Qt.AlignVCenter, surname)
+        offset = painter.fontMetrics().horizontalAdvance(surname)
+        painter.setFont(styled.font)
+        painter.drawText(
+            text_rect.adjusted(offset, 0, 0, 0),
+            Qt.AlignLeft | Qt.AlignVCenter,
+            remainder,
+        )
+        painter.restore()
+
+
+class LinkDelegate(RowHeightDelegate):
+    """Render external links as text or compact branded badges."""
+
+    def __init__(self, brand: str, parent: Any = None) -> None:
+        super().__init__(parent)
+        self.brand = brand
+
+    @staticmethod
+    def requires_icon(text: str, available_width: int, font: QFont) -> bool:
+        """Return whether the link text needs compact rendering."""
+        if not text:
+            return False
+        return QFontMetrics(font).horizontalAdvance(text) > max(0, available_width - 12)
+
+    def paint(
+        self,
+        painter: Any,
+        option: QStyleOptionViewItem,
+        index: QModelIndex,
+    ) -> None:
+        """Paint a full link or a compact badge according to cell width."""
+        styled = QStyleOptionViewItem(option)
+        self.initStyleOption(styled, index)
+        text = str(index.data(Qt.DisplayRole) or "")
+        style = (
+            styled.widget.style() if styled.widget is not None else QApplication.style()
+        )
+        if not self.requires_icon(text, styled.rect.width(), styled.font):
+            styled.font.setUnderline(bool(text))
+            style.drawControl(QStyle.CE_ItemViewItem, styled, painter, styled.widget)
+            return
+
+        styled.text = ""
+        style.drawControl(QStyle.CE_ItemViewItem, styled, painter, styled.widget)
+        badge = styled.rect.adjusted(4, 3, -4, -3)
+        if badge.width() <= 0 or badge.height() <= 0:
+            return
+        painter.save()
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(QColor("#4267a8" if self.brand == "ADS" else "#9d2d2d"))
+        painter.drawRoundedRect(badge, 3, 3)
+        text_color = (
+            styled.palette.color(QPalette.HighlightedText)
+            if styled.state & QStyle.State_Selected
+            else QColor("white")
+        )
+        painter.setPen(text_color)
+        badge_font = QFont(styled.font)
+        badge_font.setBold(True)
+        painter.setFont(badge_font)
+        painter.drawText(badge, Qt.AlignCenter, self.brand)
+        painter.restore()
+
+
+class ResolutionDelegate(RowHeightDelegate):
+    """Draw a compact green marker for records resolved through ADS."""
+
+    def paint(
+        self,
+        painter: Any,
+        option: QStyleOptionViewItem,
+        index: QModelIndex,
+    ) -> None:
+        """Preserve native item styling, then draw the resolved-state marker."""
+        styled = QStyleOptionViewItem(option)
+        self.initStyleOption(styled, index)
+        style = (
+            styled.widget.style() if styled.widget is not None else QApplication.style()
+        )
+        style.drawControl(QStyle.CE_ItemViewItem, styled, painter, styled.widget)
+        model = index.model()
+        record = model.record_at(index.row()) if hasattr(model, "record_at") else None
+        if not isinstance(record, dict) or not is_resolved_record(record):
+            return
+        marker_size = min(10, styled.rect.width() - 4, styled.rect.height() - 4)
+        if marker_size <= 0:
+            return
+        marker = styled.rect.center()
+        painter.save()
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(QColor("#2e7d32"))
+        painter.drawEllipse(
+            marker.x() - marker_size // 2,
+            marker.y() - marker_size // 2,
+            marker_size,
+            marker_size,
+        )
+        painter.restore()
+
+
+class FileTableModel(QAbstractTableModel):
+    """Paged, SQL-backed table model over one ``PdfRegistry``."""
+
+    query_failed = Signal(str)
+
+    def __init__(
+        self, registry: Any | None, query: FileQuery, parent: Any = None
+    ) -> None:
+        super().__init__(parent)
+        self._registry = registry
+        self._query = query
+        self._rows: list[dict[str, Any]] = []
+        self._total = 0
+        self._column_fonts: dict[str, QFont] = {}
+        self._column_colors: dict[str, QColor] = {}
+        self._timestamp_format = ISO8601_TIMESTAMP_FORMAT
+        if registry is not None:
+            self._reload()
+
+    @property
+    def total(self) -> int:
+        """Return the total number of rows matching the current query."""
+        return self._total
+
+    def set_registry(self, registry: Any | None) -> None:
+        """Replace the registry and reload the model."""
+        self.beginResetModel()
+        self._registry = registry
+        self._rows = []
+        self._total = 0
+        if registry is not None:
+            self._load_page()
+        self.endResetModel()
+
+    def set_query(self, query: FileQuery) -> None:
+        """Replace the query and reload the model."""
+        self.beginResetModel()
+        self._query = query
+        self._rows = []
+        self._total = 0
+        if self._registry is not None:
+            self._load_page()
+        self.endResetModel()
+
+    def record_at(self, row: int) -> dict[str, Any] | None:
+        """Return the loaded record at `row`, or `None` when unavailable."""
+        if 0 <= row < len(self._rows):
+            return self._rows[row]
+        return None
+
+    def set_column_fonts(
+        self,
+        fonts: dict[str, QFont],
+        colors: dict[str, QColor] | None = None,
+    ) -> None:
+        """Apply optional fixed-width fonts and text colors by column key."""
+        self._column_fonts = fonts
+        self._column_colors = colors or {}
+        self.layoutChanged.emit()
+
+    def set_timestamp_format(self, timestamp_format: str) -> None:
+        """Apply an ISO 8601 or custom ``strftime`` timestamp format."""
+        self._timestamp_format = timestamp_format
+        self.layoutChanged.emit()
+
+    def rowCount(self, parent: QModelIndex = QModelIndex()) -> int:  # noqa: N802
+        """Return the number of rows currently loaded into the model."""
+        return 0 if parent.isValid() else len(self._rows)
+
+    def columnCount(self, parent: QModelIndex = QModelIndex()) -> int:  # noqa: N802
+        """Return the number of visible columns."""
+        return 0 if parent.isValid() else len(COLUMNS)
+
+    def data(self, index: QModelIndex, role: int = Qt.DisplayRole) -> Any:
+        """Return display and presentation data for `index`."""
+        if not index.isValid() or not (0 <= index.row() < len(self._rows)):
+            return None
+        record = self._rows[index.row()]
+        column = COLUMNS[index.column()]
+        if column.key == "status":
+            if role == Qt.DisplayRole:
+                return ""
+            if role in (Qt.ToolTipRole, Qt.AccessibleTextRole):
+                return "Resolved" if is_resolved_record(record) else "Needs attention"
+        if role in (Qt.ToolTipRole, Qt.AccessibleTextRole) and column.key in {
+            "bibcode",
+            "arxiv",
+        }:
+            value = column.getter(record)
+            if role == Qt.AccessibleTextRole:
+                return value
+            destination = "ADS" if column.key == "bibcode" else "arXiv"
+            return f"Open in {destination}: {value}" if value else ""
+        if role == Qt.DisplayRole:
+            if column.key == "first_seen_at":
+                return format_first_seen(record, self._timestamp_format)
+            if column.key == "mtime_ns":
+                return format_mtime(record, self._timestamp_format)
+            return column.getter(record)
+        if role == Qt.ToolTipRole and column.key == "title":
+            metadata = record.get("metadata") or {}
+            title = metadata.get("title") if isinstance(metadata, dict) else None
+            if isinstance(title, list):
+                return "\n".join(str(item) for item in title)
+            return str(title or record.get("title") or "")
+        if role == Qt.ForegroundRole:
+            return self._column_colors.get(
+                column.key,
+                Qt.gray if record.get("status") == "unresolved" else None,
+            )
+        if role == Qt.FontRole:
+            return self._column_fonts.get(column.key)
+        return None
+
+    def headerData(
+        self,
+        section: int,
+        orientation: Qt.Orientation,
+        role: int = Qt.DisplayRole,
+    ) -> Any:
+        """Return column headers."""
+        if role != Qt.DisplayRole or orientation != Qt.Horizontal:
+            return None
+        return COLUMNS[section].header if 0 <= section < len(COLUMNS) else None
+
+    def canFetchMore(self, parent: QModelIndex = QModelIndex()) -> bool:  # noqa: N802
+        """Return whether more matching rows remain in SQLite."""
+        return not parent.isValid() and len(self._rows) < self._total
+
+    def fetchMore(self, parent: QModelIndex = QModelIndex()) -> None:  # noqa: N802
+        """Fetch the next page of rows."""
+        if parent.isValid() or not self.canFetchMore():
+            return
+        rows = self._query_rows(offset=len(self._rows))
+        if rows is None:
+            return
+        if not rows:
+            self._total = len(self._rows)
+            return
+        first = len(self._rows)
+        last = first + len(rows) - 1
+        self.beginInsertRows(QModelIndex(), first, last)
+        self._rows.extend(rows)
+        self.endInsertRows()
+
+    def sort(self, column: int, order: Qt.SortOrder = Qt.AscendingOrder) -> None:
+        """Re-query SQLite using the selected sortable column."""
+        if not 0 <= column < len(COLUMNS):
+            return
+        self.set_query(
+            FileQuery(
+                view=self._query.view,
+                search=self._query.search,
+                order_by=COLUMNS[column].key,
+                descending=order == Qt.DescendingOrder,
+                secondary_order_by=self._query.secondary_order_by,
+                tertiary_order_by=self._query.tertiary_order_by,
+            )
+        )
+
+    def _reload(self) -> None:
+        self._load_page()
+
+    def _load_page(self) -> None:
+        try:
+            total = self._registry.count_files_matching(**self._query.to_filters())
+            rows = self._query_rows(offset=0)
+        except sqlite3.OperationalError as exc:
+            self._report_query_error(exc)
+            return
+        if rows is None:
+            return
+        self._total = total
+        self._rows = rows
+
+    def _query_rows(self, *, offset: int) -> list[dict[str, Any]] | None:
+        if self._registry is None:
+            return []
+        try:
+            return self._registry.query_files(
+                **self._query.to_filters(),
+                order_by=self._query.order_by,
+                descending=self._query.descending,
+                secondary_order_by=self._query.secondary_order_by,
+                tertiary_order_by=self._query.tertiary_order_by,
+                limit=PAGE_SIZE,
+                offset=offset,
+            )
+        except sqlite3.OperationalError as exc:
+            self._report_query_error(exc)
+            return None
+
+    def _report_query_error(self, exc: sqlite3.OperationalError) -> None:
+        """Surface a transient registry lock without propagating through Qt."""
+        if "locked" in str(exc).lower() or "busy" in str(exc).lower():
+            self.query_failed.emit("Library is busy; try again in a moment.")
+            return
+        raise exc

@@ -1,3 +1,4 @@
+**/.DS_Store*
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
@@ -60,6 +61,9 @@ cover/
 local_settings.py
 db.sqlite3
 db.sqlite3-journal
+.adsapi-pdfs.sqlite
+.adsapi-pdfs.json
+.adsapi-pdfs.json.migrated*
 
 # Flask stuff:
 instance/
@@ -205,3 +209,6 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# Local auxiliary files (never commit)
+_local_aux/

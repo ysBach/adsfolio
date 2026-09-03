@@ -1,0 +1,96 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "adsapi"
+version = "0.1.0.dev"
+description = "Comprehensive Python client for NASA ADS / SciXplorer API with CLI tools across Earth, space, and life sciences"
+authors = [
+    {name = "Yoonsoo P. Bach", email = "ysbach93@gmail.com"}
+]
+license = {text = "BSD-3-Clause"}
+readme = "README.md"
+keywords = [
+    "ads",
+    "scixplorer",
+    "astronomy",
+    "astrophysics",
+    "heliophysics",
+    "physics",
+    "life-sciences",
+    "space-biology",
+    "microgravity",
+    "materials-science",
+    "earth-science",
+    "atmospheric-science",
+    "oceanography",
+    "planetary-science",
+    "bibliography",
+    "scientific-literature",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: BSD License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering",
+    "Topic :: Scientific/Engineering :: Astronomy",
+    "Topic :: Scientific/Engineering :: Atmospheric Science",
+    "Topic :: Scientific/Engineering :: Bio-Informatics",
+    "Topic :: Scientific/Engineering :: Chemistry",
+    "Topic :: Scientific/Engineering :: Information Analysis",
+    "Topic :: Scientific/Engineering :: Oceanography",
+    "Topic :: Scientific/Engineering :: Physics",
+]
+requires-python = ">=3.10"
+dependencies = [
+    "requests>=2.28",
+    "click>=8.0",
+    "platformdirs>=3.0",
+    "tqdm>=4.66",
+    "pypdf>=4.0",
+    "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+full = [
+    "pymupdf>=1.24",
+    "watchdog>=3.0",
+    "iso4>=0.0.2",
+]
+gui = ["PySide6>=6.6"]
+
+[dependency-groups]
+dev = [
+    "pytest>=7.0",
+    "pytest-cov>=4.0",
+    "pytest-qt>=4.2",
+]
+
+[project.urls]
+Homepage = "https://github.com/ysBach/adsapi"
+Documentation = "https://github.com/ysBach/adsapi#readme"
+Repository = "https://github.com/ysBach/adsapi"
+Issues = "https://github.com/ysBach/adsapi/issues"
+
+[project.scripts]
+adsapi = "adsapi.cli.commands:main"
+adsapi-gui = "adsapi.gui.app:run"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+target-version = "py310"
+
+[tool.isort]
+profile = "black"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = "test_*.py"
