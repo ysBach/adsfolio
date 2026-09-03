@@ -4,16 +4,16 @@ Base HTTP client for ADS API with rate limiting and caching.
 
 import json
 import re
+from collections.abc import Sequence
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-from typing import Sequence
 from urllib.parse import quote, urljoin
 
 import requests
 
 from .config import ADSError, AuthenticationError, Config, RateLimitError
 
-__all__ = ["BaseClient", "ADSClient"]
+__all__ = ["ADSClient", "BaseClient"]
 
 
 class BaseClient:
@@ -23,7 +23,11 @@ class BaseClient:
     Handles authentication, rate limiting, and error handling.
     """
 
-    def __init__(self, token: str | None = None):
+    def __init__(
+        self,
+        token: str | None = None,
+        timeout: tuple[float, float] = (3.05, 30.0),
+    ):
         """
         Initialize the client.
 
@@ -31,8 +35,11 @@ class BaseClient:
         ----------
         token : str, optional
             ADS API token. If not provided, will be loaded from config.
+        timeout : tuple of float, optional
+            Connection and read timeout in seconds.
         """
         self._token = token
+        self._timeout = timeout
         self._session = requests.Session()
 
     def close(self) -> None:
@@ -117,7 +124,12 @@ class BaseClient:
             JSON response.
         """
         url = f"{Config.API_BASE}{endpoint}"
-        response = self._session.get(url, headers=self.headers, params=params)
+        response = self._session.get(
+            url,
+            headers=self.headers,
+            params=params,
+            timeout=self._timeout,
+        )
         return self._handle_response(response)
 
     def post(self, endpoint: str, data: dict | None = None) -> dict:
@@ -138,7 +150,10 @@ class BaseClient:
         """
         url = f"{Config.API_BASE}{endpoint}"
         response = self._session.post(
-            url, headers=self.headers, data=json.dumps(data) if data else None
+            url,
+            headers=self.headers,
+            data=json.dumps(data) if data else None,
+            timeout=self._timeout,
         )
         return self._handle_response(response)
 
@@ -177,6 +192,7 @@ class BaseClient:
             headers=request_headers,
             params=params,
             data=data,
+            timeout=self._timeout,
         )
         return self._handle_response(response)
 
@@ -184,14 +200,21 @@ class BaseClient:
         """Make a PUT request to the API."""
         url = f"{Config.API_BASE}{endpoint}"
         response = self._session.put(
-            url, headers=self.headers, data=json.dumps(data) if data else None
+            url,
+            headers=self.headers,
+            data=json.dumps(data) if data else None,
+            timeout=self._timeout,
         )
         return self._handle_response(response)
 
     def delete(self, endpoint: str) -> dict:
         """Make a DELETE request to the API."""
         url = f"{Config.API_BASE}{endpoint}"
-        response = self._session.delete(url, headers=self.headers)
+        response = self._session.delete(
+            url,
+            headers=self.headers,
+            timeout=self._timeout,
+        )
         return self._handle_response(response)
 
 
@@ -209,7 +232,11 @@ class ADSClient:
     >>> bibtex = client.export.export(["2020ApJ...900..100S"], format="bibtex")
     """
 
-    def __init__(self, token: str | None = None):
+    def __init__(
+        self,
+        token: str | None = None,
+        timeout: tuple[float, float] = (3.05, 30.0),
+    ):
         """
         Initialize the ADS client.
 
@@ -217,8 +244,10 @@ class ADSClient:
         ----------
         token : str, optional
             ADS API token. If not provided, will be loaded from config.
+        timeout : tuple of float, optional
+            Connection and read timeout in seconds.
         """
-        self._base = BaseClient(token)
+        self._base = BaseClient(token, timeout=timeout)
 
         # Lazy-loaded API modules
         self._search = None
