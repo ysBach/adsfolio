@@ -1,10 +1,12 @@
 from adsapi.gui.library import (
+    BASE_COLUMNS,
     COLUMNS,
     ISO8601_TIMESTAMP_FORMAT,
     FileQuery,
     LibraryView,
     ads_url,
     arxiv_url,
+    build_columns,
     format_mtime,
 )
 
@@ -129,3 +131,52 @@ def test_format_mtime_supports_iso8601_and_custom_patterns():
 
     assert "T" in format_mtime(record, ISO8601_TIMESTAMP_FORMAT)
     assert format_mtime(record, "%Y-%m-%d")
+
+
+def test_base_columns_compatibility_alias():
+    assert COLUMNS == BASE_COLUMNS
+    for col in BASE_COLUMNS:
+        assert col.sortable is True
+
+
+def test_build_columns_defaults_to_base_columns():
+    assert build_columns() == BASE_COLUMNS
+    assert build_columns([]) == BASE_COLUMNS
+
+
+def test_build_columns_inserts_after_bibcode_with_correct_properties():
+    from adsapi.citations import CitationStyle
+
+    style_a = CitationStyle(id="alpha", name="Alpha Style", template="{year}: {title}")
+    style_b = CitationStyle(id="beta", name="Beta Style", template="{bibcode}")
+
+    columns = build_columns([style_a, style_b])
+    keys = [c.key for c in columns]
+
+    bibcode_idx = keys.index("bibcode")
+    assert keys[bibcode_idx + 1] == "citation:alpha"
+    assert keys[bibcode_idx + 2] == "citation:beta"
+    assert keys[bibcode_idx + 3] == "arxiv"
+
+    col_a = columns[bibcode_idx + 1]
+    col_b = columns[bibcode_idx + 2]
+
+    assert col_a.header == "Alpha Style"
+    assert col_a.sortable is False
+    assert col_b.header == "Beta Style"
+    assert col_b.sortable is False
+
+    # Check that base columns remain sortable
+    assert columns[bibcode_idx].sortable is True
+    assert columns[bibcode_idx + 3].sortable is True
+
+    # Test rendering via getter
+    record = {
+        "metadata": {
+            "year": ["2024"],
+            "title": ["Test Title"],
+            "bibcode": ["2024TEST...1A"],
+        }
+    }
+    assert col_a.getter(record) == "2024: Test Title"
+    assert col_b.getter(record) == "2024TEST...1A"

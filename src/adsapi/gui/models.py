@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Sequence
 from typing import Any
 
 from PySide6.QtCore import QAbstractTableModel, QModelIndex, QSize, Qt, Signal
@@ -16,8 +17,9 @@ from PySide6.QtWidgets import (
 
 from ..pdf.cli_common import is_resolved_record
 from .library import (
-    COLUMNS,
+    BASE_COLUMNS,
     ISO8601_TIMESTAMP_FORMAT,
+    Column,
     FileQuery,
     format_first_seen,
     format_mtime,
@@ -195,11 +197,23 @@ class FileTableModel(QAbstractTableModel):
     query_failed = Signal(str)
 
     def __init__(
-        self, registry: Any | None, query: FileQuery, parent: Any = None
+        self,
+        registry: Any | None,
+        query: FileQuery,
+        columns: Sequence[Column] | Any = BASE_COLUMNS,
+        parent: Any = None,
     ) -> None:
+        if (
+            parent is None
+            and columns is not BASE_COLUMNS
+            and not isinstance(columns, (list, tuple))
+        ):
+            parent = columns
+            columns = BASE_COLUMNS
         super().__init__(parent)
         self._registry = registry
         self._query = query
+        self._columns: tuple[Column, ...] = tuple(columns)
         self._rows: list[dict[str, Any]] = []
         self._total = 0
         self._column_fonts: dict[str, QFont] = {}
@@ -212,6 +226,29 @@ class FileTableModel(QAbstractTableModel):
     def total(self) -> int:
         """Return the total number of rows matching the current query."""
         return self._total
+
+    @property
+    def columns(self) -> tuple[Column, ...]:
+        """Return the active table column definitions."""
+        return self._columns
+
+    @property
+    def query(self) -> FileQuery:
+        """Return the active file query."""
+        return self._query
+
+    def set_columns(self, columns: Sequence[Column]) -> None:
+        """Replace the active table columns and reload column layout.
+
+        Parameters
+        ----------
+        columns : Sequence[Column]
+            New sequence of column definitions.
+        """
+        normalized = tuple(columns)
+        self.beginResetModel()
+        self._columns = normalized
+        self.endResetModel()
 
     def set_registry(self, registry: Any | None) -> None:
         """Replace the registry and reload the model."""
@@ -260,14 +297,19 @@ class FileTableModel(QAbstractTableModel):
 
     def columnCount(self, parent: QModelIndex = QModelIndex()) -> int:  # noqa: N802
         """Return the number of visible columns."""
-        return 0 if parent.isValid() else len(COLUMNS)
+        return 0 if parent.isValid() else len(self._columns)
 
     def data(self, index: QModelIndex, role: int = Qt.DisplayRole) -> Any:
         """Return display and presentation data for `index`."""
         if not index.isValid() or not (0 <= index.row() < len(self._rows)):
             return None
+        if not (0 <= index.column() < len(self._columns)):
+            return None
         record = self._rows[index.row()]
-        column = COLUMNS[index.column()]
+        column = self._columns[index.column()]
+        if column.key.startswith("citation:"):
+            if role in (Qt.DisplayRole, Qt.ToolTipRole, Qt.AccessibleTextRole):
+                return column.getter(record)
         if column.key == "status":
             if role == Qt.DisplayRole:
                 return ""
@@ -312,7 +354,9 @@ class FileTableModel(QAbstractTableModel):
         """Return column headers."""
         if role != Qt.DisplayRole or orientation != Qt.Horizontal:
             return None
-        return COLUMNS[section].header if 0 <= section < len(COLUMNS) else None
+        return (
+            self._columns[section].header if 0 <= section < len(self._columns) else None
+        )
 
     def canFetchMore(self, parent: QModelIndex = QModelIndex()) -> bool:  # noqa: N802
         """Return whether more matching rows remain in SQLite."""
@@ -336,13 +380,16 @@ class FileTableModel(QAbstractTableModel):
 
     def sort(self, column: int, order: Qt.SortOrder = Qt.AscendingOrder) -> None:
         """Re-query SQLite using the selected sortable column."""
-        if not 0 <= column < len(COLUMNS):
+        if not 0 <= column < len(self._columns):
+            return
+        target_column = self._columns[column]
+        if not target_column.sortable:
             return
         self.set_query(
             FileQuery(
                 view=self._query.view,
                 search=self._query.search,
-                order_by=COLUMNS[column].key,
+                order_by=target_column.key,
                 descending=order == Qt.DescendingOrder,
                 secondary_order_by=self._query.secondary_order_by,
                 tertiary_order_by=self._query.tertiary_order_by,
