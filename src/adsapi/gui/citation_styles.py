@@ -403,11 +403,7 @@ class CitationStylesDialog(QDialog):
         if not name:
             raise CitationStyleError("Citation style name must be a non-empty string.")
 
-        template = self.template_edit.text().strip()
-        if not template:
-            raise CitationStyleError(
-                "Citation style template must be a non-empty string."
-            )
+        template = self.template_edit.text()
 
         author_format = self.author_format_combo.currentData()
         max_authors = self.max_authors_spin.value()
@@ -488,7 +484,10 @@ class CitationStylesDialog(QDialog):
         source = self._styles_list[self._current_index]
         existing_names = [s.name for s in self._styles_list]
         new_name = _make_unique_copy_name(source.name, existing_names)
+        existing_ids = {s.id for s in self._styles_list}
         new_id = uuid.uuid4().hex
+        while new_id in existing_ids:
+            new_id = uuid.uuid4().hex
 
         copy_style = dataclasses.replace(source, id=new_id, name=new_name)
         insert_index = self._current_index + 1
@@ -567,10 +566,10 @@ class CitationStylesDialog(QDialog):
 
     def _resolve_error_field(self, message: str) -> QWidget | None:
         msg = message.lower()
-        if "name" in msg:
-            return self.name_edit
         if "template" in msg or "field" in msg or "syntax" in msg or "brace" in msg:
             return self.template_edit
+        if msg.startswith(("citation style name", "duplicate citation style name")):
+            return self.name_edit
         if "author_format" in msg:
             return self.author_format_combo
         if (
@@ -590,14 +589,8 @@ class CitationStylesDialog(QDialog):
 
     def _save(self) -> None:
         # First store current draft if any
-        if self._current_index >= 0 and self._current_index < len(self._styles_list):
-            current_id = self._styles_list[self._current_index].id
-            try:
-                updated = self._build_draft_style(current_id)
-            except CitationStyleError as exc:
-                self._report_error(str(exc), field=self._resolve_error_field(str(exc)))
-                return
-            self._styles_list[self._current_index] = updated
+        if not self._store_current_draft():
+            return
 
         # Atomic validation of all styles
         seen_ids: set[str] = set()

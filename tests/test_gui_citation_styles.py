@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import uuid
 from unittest.mock import patch
 
 import pytest
@@ -220,6 +221,23 @@ def test_save_contract_and_signal_emission(application: QApplication) -> None:
     assert emitted[0] == tuple(dialog.styles)
 
 
+def test_save_preserves_leading_and_trailing_template_spaces(
+    application: QApplication,
+    qtbot,
+) -> None:
+    """Saving preserves literal spaces at both ends of a valid template."""
+    style = CitationStyle(id="s1", name="Spaced", template="{year}")
+    dialog = CitationStylesDialog([style])
+    qtbot.addWidget(dialog)
+    template = "  {year}  "
+
+    dialog.template_edit.setText(template)
+    dialog._save()
+
+    assert dialog.result() == QDialog.Accepted
+    assert dialog.styles[0].template == template
+
+
 def test_cancel_rejects_without_emission(application: QApplication) -> None:
     """Cancel rejects dialog and does not emit saved signal."""
     style = CitationStyle(id="s1", name="Old", template="{year}")
@@ -274,6 +292,27 @@ def test_duplicate_style_creates_copy_with_unique_name_and_fresh_id(
         "Copy 2 of My Style",
     )
     assert copy2.id != copy1.id and copy2.id != "s1"
+
+
+def test_duplicate_retries_when_generated_id_collides(
+    application: QApplication,
+    qtbot,
+) -> None:
+    """Duplicate retries UUID generation until the new ID is unused."""
+    collision_id = uuid.UUID(int=1).hex
+    replacement_id = uuid.UUID(int=2).hex
+    style = CitationStyle(id=collision_id, name="My Style", template="{year}")
+    dialog = CitationStylesDialog([style])
+    qtbot.addWidget(dialog)
+
+    with patch(
+        "adsapi.gui.citation_styles.uuid.uuid4",
+        side_effect=[uuid.UUID(int=1), uuid.UUID(int=2)],
+    ) as uuid4:
+        dialog.duplicate_button.click()
+
+    assert uuid4.call_count == 2
+    assert [style.id for style in dialog.styles] == [collision_id, replacement_id]
 
 
 def test_move_up_and_down(application: QApplication) -> None:
@@ -396,6 +435,29 @@ def test_validation_error_on_preview_shows_message_box(
         assert "unknown_field" in str(mock_critical.call_args)
 
 
+@pytest.mark.parametrize("invalid_template", ["{name}", "{name.value}"])
+def test_template_errors_focus_template_editor(
+    application: QApplication,
+    qtbot,
+    invalid_template: str,
+) -> None:
+    """Template errors mentioning name still focus and select the template."""
+    style = CitationStyle(id="s1", name="Solo", template="{year}")
+    dialog = CitationStylesDialog([style])
+    qtbot.addWidget(dialog)
+    dialog.show()
+    application.processEvents()
+    dialog.template_edit.setText(invalid_template)
+
+    with patch.object(QMessageBox, "critical") as mock_critical:
+        dialog._save()
+
+    assert mock_critical.called
+    assert dialog.result() != QDialog.Accepted
+    assert dialog.template_edit.hasFocus()
+    assert dialog.template_edit.selectedText() == invalid_template
+
+
 def test_validation_error_on_save_calls_critical_and_selects_affected_control(
     application: QApplication,
     qtbot,
@@ -448,3 +510,23 @@ def test_validation_error_duplicate_name(
             dialog.name_edit.hasFocus()
             or dialog.name_edit == QApplication.focusWidget()
         )
+
+
+def test_save_updates_list_name_before_later_collection_validation(
+    application: QApplication,
+    qtbot,
+) -> None:
+    """A current rename is visible even when a later style makes save fail."""
+    first = CitationStyle(id="s1", name="First", template="{year}")
+    second = CitationStyle(id="s2", name="Renamed", template="{bibcode}")
+    dialog = CitationStylesDialog([first, second])
+    qtbot.addWidget(dialog)
+    dialog.name_edit.setText("Renamed")
+
+    with patch.object(QMessageBox, "critical") as mock_critical:
+        dialog._save()
+
+    assert mock_critical.called
+    assert dialog.result() != QDialog.Accepted
+    assert dialog.styles[0].name == "Renamed"
+    assert dialog.list_widget.item(0).text() == "Renamed"
