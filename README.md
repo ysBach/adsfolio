@@ -156,6 +156,62 @@ preceding tokens as given names.
 → BachYP (2024) A&A, 123, 456
 ```
 
+#### Add identified PDFs to a remote ADS library
+
+The GUI distinguishes a **local PDF library** from a **remote ADS library**.
+A local PDF library is a filesystem root registered with `File -> Add Library
+Root` and backed by adsapi's local catalog. A remote ADS library is a
+destination managed by ADS/SciXplorer and shown separately in the destination
+table. This GUI workflow never renames or moves PDFs and never edits the local
+catalog, local metadata, Rename settings, or watch state.
+
+Open it from `Tools -> Add to ADS Library...` or the table context menu's
+**Add to ADS Library...** entry. **Selected rows** snapshots the selected rows
+currently loaded in the table. If the context-menu row was not selected, that
+row becomes the sole selection first. **All identified files in this local
+library** queries every resolved record in the current local catalog,
+independent of the active search, virtual view, and table pagination.
+
+Only a resolved record with a non-empty ADS Bibcode is eligible. Ineligible
+records are reported but not submitted. Bibcodes are deduplicated in stable
+first-seen order, so duplicate local files produce one remote document at
+most. The dialog reports source files, eligible unique Bibcodes, ineligible
+files, and local duplicate Bibcodes.
+
+The remote destination table shows name, document count, visibility, and
+permission. Only `owner`, `admin`, and `write` permissions are selectable;
+`read` and unknown permissions remain visible but disabled. **Create Library**
+accepts a non-empty name, optional description, and public/private choice. It
+creates and selects an empty remote ADS library; it never implicitly adds the
+pending Bibcodes.
+
+Opening the dialog lists ADS libraries, and selecting a destination fetches
+its documents for duplicate preflight. Those are read-only ADS requests. A
+complete preflight gives an exact **Already present** count and excludes those
+Bibcodes. If preflight fails, the count is **Unknown**, the dialog warns that
+all eligible Bibcodes may be submitted, and the final confirmation repeats
+that fallback. Creating an empty library is a separate user-initiated remote
+creation request. A document-add POST is made only after the final affirmative
+confirmation; opening the dialog, changing scope, selecting a destination, or
+loading remote documents never adds documents.
+
+The confirmation shows the destination and permission, eligible unique count,
+already-present count or `Unknown`, ineligible count, local-duplicate count,
+and number to submit. Confirmed additions use ADS's contract limit of at most
+2,000 Bibcodes per request and run asynchronously. Cancellation takes effect
+before the next batch; an in-flight request may finish. After the first failed
+batch, acknowledged batches remain acknowledged and later batches are
+unattempted. Results distinguish acknowledged, already present, failed,
+status-unknown, unattempted, local duplicate, ineligible, and cancelled
+counts.
+
+A timeout or connection failure after an add request is sent is **status
+unknown**, because ADS may have accepted that batch; it is not treated as a
+definite failure. **Retry Remaining** first reloads the remote destination
+and submits only remaining Bibcodes still absent. If reconciliation fails,
+adsapi warns that a raw retry may resubmit an uncertain batch and requires a
+second explicit confirmation.
+
 Do not run identify or watch against the same library from two machines at once.
 Keep `pdf export` snapshots as backups.
 
