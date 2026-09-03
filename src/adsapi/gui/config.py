@@ -5,16 +5,18 @@ from __future__ import annotations
 import json
 import logging
 import os
+import unicodedata
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Mapping
 
+from ..citations import CitationStyle, CitationStyleError, initial_citation_styles
 from ..config import Config
 
 logger = logging.getLogger(__name__)
 
 GUI_CONFIG_FILENAME = "gui.json"
-GUI_CONFIG_VERSION = 3
+GUI_CONFIG_VERSION = 4
 DEFAULT_TIMESTAMP_FORMAT = "iso8601"
 DEFAULT_HIDDEN_DETAIL_ROWS = [
     "annotations_failed",
@@ -73,6 +75,9 @@ class GuiConfig:
     detail_row_order: list[str] = field(default_factory=list)
     detail_hidden_rows: list[str] = field(
         default_factory=lambda: list(DEFAULT_HIDDEN_DETAIL_ROWS)
+    )
+    citation_styles: list[CitationStyle] = field(
+        default_factory=lambda: list(initial_citation_styles())
     )
     identify_scopes: dict[str, str] = field(default_factory=dict)
     rename_scopes: dict[str, str] = field(default_factory=dict)
@@ -294,6 +299,43 @@ def _from_mapping(payload: Mapping[str, Any]) -> GuiConfig:
                     normalized_font["color"] = color
                 detail_fonts[key] = normalized_font
 
+    citation_styles: list[CitationStyle] = []
+    if "citation_styles" not in payload:
+        citation_styles = list(initial_citation_styles())
+    else:
+        raw_citation_styles = payload.get("citation_styles")
+        if isinstance(raw_citation_styles, list):
+            seen_ids: set[str] = set()
+            seen_names: set[str] = set()
+            for entry in raw_citation_styles:
+                if not isinstance(entry, Mapping):
+                    logger.warning("Skipping non-mapping citation style: %r", entry)
+                    continue
+                try:
+                    style = CitationStyle.from_mapping(entry)
+                except CitationStyleError as exc:
+                    logger.warning("Skipping malformed citation style: %s", exc)
+                    continue
+
+                if style.id in seen_ids:
+                    logger.warning("Duplicate citation style ID %s; skipping", style.id)
+                    continue
+
+                folded_name = unicodedata.normalize(
+                    "NFC", style.name.strip().casefold()
+                )
+                if folded_name in seen_names:
+                    logger.warning(
+                        "Duplicate citation style name %s; skipping", style.name
+                    )
+                    continue
+
+                seen_ids.add(style.id)
+                seen_names.add(folded_name)
+                citation_styles.append(style)
+        else:
+            citation_styles = list(initial_citation_styles())
+
     identify_scopes: dict[str, str] = {}
     raw_identify_scopes = payload.get("identify_scopes", {})
     if isinstance(raw_identify_scopes, Mapping):
@@ -341,6 +383,7 @@ def _from_mapping(payload: Mapping[str, Any]) -> GuiConfig:
         splitter_sizes=splitter_sizes,
         detail_row_order=detail_row_order,
         detail_hidden_rows=detail_hidden_rows,
+        citation_styles=citation_styles,
         identify_scopes=identify_scopes,
         rename_scopes=rename_scopes,
     )
