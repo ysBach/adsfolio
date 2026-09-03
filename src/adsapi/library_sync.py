@@ -405,6 +405,12 @@ class AdsLibraryService:
         pending = tuple(bibcode for bibcode in bibcodes if bibcode not in present_set)
         if not pending:
             return AddDocumentsResult(already_present=known_present)
+        if cancelled():
+            return AddDocumentsResult(
+                already_present=known_present,
+                unattempted=pending,
+                cancelled=True,
+            )
 
         self._ensure_writable_when_known(library_id)
 

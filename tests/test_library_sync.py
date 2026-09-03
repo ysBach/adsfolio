@@ -272,6 +272,26 @@ def test_cancellation_is_checked_before_next_batch_request() -> None:
     assert result.error is None
 
 
+def test_immediate_cancellation_makes_no_api_requests() -> None:
+    libraries = FakeLibraries([_library("L1", "owner")])
+    service = AdsLibraryService(FakeClient(libraries))
+
+    result = service.add_documents(
+        "L1",
+        [" B2 ", "B1", "B2", " "],
+        cancelled=lambda: True,
+    )
+
+    assert result == AddDocumentsResult(
+        unattempted=("B2", "B1"),
+        cancelled=True,
+    )
+    assert libraries.list_calls == 0
+    assert libraries.document_calls == []
+    assert libraries.create_calls == []
+    assert libraries.add_calls == []
+
+
 def test_non_writable_destination_is_rejected_before_first_post() -> None:
     libraries = FakeLibraries([_library("L1", "read")])
     service = AdsLibraryService(FakeClient(libraries))
