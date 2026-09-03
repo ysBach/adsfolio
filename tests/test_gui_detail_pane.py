@@ -510,6 +510,24 @@ def test_main_window_reports_locked_sidebar_count(
     window.close()
 
 
+def test_main_window_propagates_non_busy_sidebar_sqlite_errors(
+    application: QApplication,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Non-transient SQLite errors remain programming/data failures."""
+    monkeypatch.setattr(Config, "get_config_dir", classmethod(lambda cls: tmp_path))
+
+    class BrokenRegistry:
+        def count_files_matching(self, **_kwargs):
+            raise sqlite3.OperationalError("malformed query")
+
+    window = MainWindow()
+    with pytest.raises(sqlite3.OperationalError, match="malformed query"):
+        window._safe_count(BrokenRegistry())
+    window.close()
+
+
 def test_main_window_does_not_bind_space_to_open(
     application: QApplication,
     monkeypatch: pytest.MonkeyPatch,

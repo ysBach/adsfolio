@@ -11,7 +11,13 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any, Generic, TypeVar
 
-from PySide6.QtCore import QModelIndex, QSignalBlocker, Qt, QTimer
+from PySide6.QtCore import (
+    QItemSelectionModel,
+    QModelIndex,
+    QSignalBlocker,
+    Qt,
+    QTimer,
+)
 from PySide6.QtGui import QAction, QColor, QFont, QKeySequence
 from PySide6.QtWidgets import (
     QApplication,
@@ -45,6 +51,7 @@ from ..pdf.registry import CentralPdfRegistryState, PdfRegistry
 from ..pdf.rename_settings import RenameSettings
 from ..pdf.watch_session import WatchEvent, WatchOutcome, WatchState
 from ..pdf.watcher import WatchIdentifyPolicy
+from .ads_library_dialog import AdsLibraryDialog
 from .appearance import AppearanceDialog
 from .citation_styles import CitationStylesDialog
 from .config import RootEntry, load_config, save_config
@@ -204,6 +211,7 @@ class MainWindow(QMainWindow):
             ),
         )
         self.job: Any | None = None
+        self._ads_library_dialog: AdsLibraryDialog | None = None
         self._close_requested = False
         self._refresh_selection_id: int | None = None
         self._ads_match_candidates: list[dict[str, str]] = []
@@ -258,6 +266,9 @@ class MainWindow(QMainWindow):
         self.table.doubleClicked.connect(self._open_index)
         self.table.clicked.connect(self._table_clicked)
         self.table.selectionModel().currentChanged.connect(self._current_changed)
+        self.table.selectionModel().selectionChanged.connect(
+            lambda *_args: self._sync_ads_library_action()
+        )
         self.table.setContextMenuPolicy(Qt.CustomContextMenu)
         self.table.customContextMenuRequested.connect(self._table_menu)
         self.detail = DetailPane(self)
@@ -355,6 +366,7 @@ class MainWindow(QMainWindow):
         self.refresh_all_citation_metrics_action = QAction(
             "Refresh All Citation Splits…", self
         )
+        self.add_to_ads_library_action = QAction("Add to ADS Library…", self)
         self.watch_current_action = QAction("Watch Current Library", self)
         self.watch_on_start_action = QAction("Autowatch at Start", self)
         self.auto_process_action = QAction("Automatically Identify & Rename", self)
@@ -375,6 +387,7 @@ class MainWindow(QMainWindow):
         self.refresh_all_citation_metrics_action.triggered.connect(
             self._refresh_all_citation_metrics
         )
+        self.add_to_ads_library_action.triggered.connect(self._add_to_ads_library)
         self.watch_current_action.triggered.connect(self._toggle_current_watch)
         self.watch_on_start_action.triggered.connect(
             lambda checked: self._set_current_watch_policy("watch_on_start", checked)
@@ -394,6 +407,7 @@ class MainWindow(QMainWindow):
         tools.addAction(self.refresh_selected_ads_action)
         tools.addAction(self.refresh_all_ads_action)
         tools.addAction(self.refresh_all_citation_metrics_action)
+        tools.addAction(self.add_to_ads_library_action)
         tools.addSeparator()
         tools.addAction(self.watch_current_action)
         tools.addAction(self.watch_on_start_action)
@@ -428,6 +442,7 @@ class MainWindow(QMainWindow):
                 self.clear_search_action,
             ]
         )
+        self._sync_ads_library_action()
 
     def _restore_config(self) -> None:
         if self.config.window_geometry:
@@ -559,6 +574,62 @@ class MainWindow(QMainWindow):
             )
         finally:
             del blockers
+
+    def _sync_ads_library_action(self) -> None:
+        """Enable the ADS library action only for an available current window."""
+        if not hasattr(self, "add_to_ads_library_action"):
+            return
+        self.add_to_ads_library_action.setEnabled(
+            self.current_root is not None
+            and self.job is None
+            and self._ads_library_dialog is None
+        )
+
+    def _selected_records(self) -> tuple[dict[str, Any], ...]:
+        """Return deep-copied selected records in visual table-row order."""
+        rows = sorted(
+            {index.row() for index in self.table.selectionModel().selectedRows()}
+        )
+        return tuple(
+            deepcopy(record)
+            for row in rows
+            if (record := self.model.record_at(row)) is not None
+        )
+
+    def _ads_library_dialog_closed(self, dialog: AdsLibraryDialog) -> None:
+        """Release the window's ADS library dialog after it closes."""
+        if self._ads_library_dialog is dialog:
+            self._ads_library_dialog = None
+            self._sync_ads_library_action()
+
+    def _add_to_ads_library(self) -> None:
+        """Open an ADS library dialog with immutable local record snapshots."""
+        if self.current_root is None or self._ads_library_dialog is not None:
+            self._sync_ads_library_action()
+            return
+        root = self.current_root.expanduser().resolve()
+        registry = self.registries[str(root)]
+        selected_records = self._selected_records()
+        try:
+            all_records = tuple(
+                deepcopy(record) for record in registry.query_files(resolved=True)
+            )
+        except sqlite3.OperationalError as exc:
+            if "locked" not in str(exc).lower() and "busy" not in str(exc).lower():
+                raise
+            self.status.showMessage("Library is busy; try again in a moment.")
+            return
+
+        dialog = AdsLibraryDialog(
+            root,
+            selected_records,
+            all_records,
+            parent=self,
+        )
+        self._ads_library_dialog = dialog
+        dialog.finished.connect(lambda _result: self._ads_library_dialog_closed(dialog))
+        self._sync_ads_library_action()
+        dialog.show()
 
     def _start_root_watch(self, root: Path) -> bool:
         normalized = root.expanduser().resolve()
@@ -1158,6 +1229,14 @@ class MainWindow(QMainWindow):
         record = self.model.record_at(index.row()) if index.isValid() else None
         if record is None or self.current_root is None:
             return
+        selection = self.table.selectionModel()
+        if not selection.isRowSelected(index.row(), QModelIndex()):
+            selection.clearSelection()
+            selection.select(
+                index,
+                QItemSelectionModel.SelectionFlag.Select
+                | QItemSelectionModel.SelectionFlag.Rows,
+            )
         path = self.current_root / str(record.get("current_path") or "")
         menu = QMenu(self)
         menu.addAction("Open", lambda: self._open_pdf_record(record))
@@ -1169,6 +1248,7 @@ class MainWindow(QMainWindow):
             "Copy DOI", lambda: self._copy_text(str(record.get("doi") or ""))
         )
         menu.addAction("Copy Path", lambda: self._copy_text(str(path)))
+        menu.addAction("Add to ADS Library…", self._add_to_ads_library)
         menu.exec(self.table.viewport().mapToGlobal(position))
 
     def _show_header_context_menu(self, position: Any) -> None:
