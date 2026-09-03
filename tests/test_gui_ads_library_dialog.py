@@ -406,7 +406,10 @@ def test_result_summary_counts_only_selected_documents_already_present(
 ) -> None:
     harness = FakeJobHarness()
     harness.queue(AdsLibraryOperation.LOAD_DOCUMENTS, ("REMOTE", "B2", "OTHER"))
-    harness.queue(AdsLibraryOperation.ADD, AddDocumentsResult(acknowledged=("B1",)))
+    harness.queue(
+        AdsLibraryOperation.ADD,
+        AddDocumentsResult(acknowledged=("B1",), already_present=("B2",)),
+    )
     dialog = _dialog(
         harness,
         selected=[_record("B1"), _record("B2", document_id=2)],
@@ -418,6 +421,53 @@ def test_result_summary_counts_only_selected_documents_already_present(
         _select_destination(dialog)
         dialog.add_button.click()
         assert "Already present: 1" in dialog.result_label.text()
+    finally:
+        dialog.close()
+
+
+def test_result_summary_uses_terminal_already_present_after_unknown_preflight(
+    application: QApplication,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    harness = FakeJobHarness()
+    harness.queue(
+        AdsLibraryOperation.LOAD_DOCUMENTS,
+        AdsLibraryFailure(kind="timeout", message="preflight unavailable"),
+    )
+    harness.queue(
+        AdsLibraryOperation.ADD,
+        AddDocumentsResult(
+            acknowledged=("B2",),
+            already_present=("B1",),
+            failed=("B3",),
+            status_unknown=("B4",),
+            unattempted=("B5",),
+            cancelled=True,
+        ),
+    )
+    dialog = _dialog(
+        harness,
+        selected=[_record(f"B{i}", document_id=i) for i in range(1, 6)],
+    )
+    monkeypatch.setattr(
+        QMessageBox, "question", lambda *_args, **_kwargs: QMessageBox.Yes
+    )
+    try:
+        _select_destination(dialog)
+        assert dialog.already_present_label.text() == "Unknown"
+
+        dialog.add_button.click()
+
+        assert dialog.result_label.text().splitlines() == [
+            "Acknowledged: 1",
+            "Already present: 1",
+            "Failed: 1",
+            "Status unknown: 1",
+            "Unattempted: 1",
+            "Local duplicate files: 0",
+            "Ineligible files: 0",
+            "Cancelled: yes",
+        ]
     finally:
         dialog.close()
 

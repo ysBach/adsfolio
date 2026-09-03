@@ -519,12 +519,6 @@ class AdsLibraryDialog(QDialog):
             bibcode for bibcode in selection.bibcodes if bibcode not in present
         )
 
-    def _already_present_count(self) -> int | None:
-        if self._destination_documents is None:
-            return None
-        remote = set(self._destination_documents)
-        return sum(bibcode in remote for bibcode in self._active_selection().bibcodes)
-
     def _confirmation_text(self, to_submit: Sequence[str]) -> str:
         destination = self._destination
         assert destination is not None
@@ -591,15 +585,11 @@ class AdsLibraryDialog(QDialog):
         self._retry_bibcodes = tuple(
             bibcode for bibcode in source_order if bibcode in remainder
         )
-        already_present = self._already_present_count()
-        already_present_text = (
-            str(already_present) if already_present is not None else "Unknown"
-        )
         self.result_label.setText(
             "\n".join(
                 (
                     f"Acknowledged: {len(result.acknowledged)}",
-                    f"Already present: {already_present_text}",
+                    f"Already present: {len(result.already_present)}",
                     f"Failed: {len(result.failed)}",
                     f"Status unknown: {len(result.status_unknown)}",
                     f"Unattempted: {len(result.unattempted)}",
