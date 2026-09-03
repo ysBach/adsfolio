@@ -701,6 +701,7 @@ class DetailPane(QWidget):
     ) -> None:
         """Render `record`, or clear the pane when it is `None`."""
         self._record = record
+        self._cached_document = cached_document if record is not None else None
         self._root = Path(root)
         self._path = Path()
         self._metadata = {}
@@ -823,7 +824,7 @@ class DetailPane(QWidget):
                         )
                     )
         formatter = CitationFormatter()
-        render_record = {"metadata": self._metadata, **record}
+        render_record = {**record, "metadata": self._metadata}
         for style in self._citation_styles:
             rendered = formatter.render(style, render_record)
             rows.append(

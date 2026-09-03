@@ -959,3 +959,37 @@ def test_citation_rows_typography_and_no_copy_on_empty(
     row.value.mouseReleaseEvent(event)
     assert len(copied_signals) == 0
     pane.close()
+
+
+def test_citation_rows_use_cached_document_and_survive_style_change(
+    application: QApplication,
+) -> None:
+    """Cached metadata and metrics feed citation rendering and survive set_citation_styles."""
+    pane = DetailPane()
+    pane.set_citation_styles(
+        [CitationStyle(id="c1", name="Cite", template="{year}: {title}")]
+    )
+    record = {
+        "current_path": "paper.pdf",
+        "metadata": {},  # Empty local metadata
+    }
+    cached_doc = {
+        "year": "2023",
+        "title": "Cached Title",
+        "metrics": {"all_citations": 42},
+    }
+    pane.set_record(record, Path("/papers"), cached_document=cached_doc)
+
+    # 1. Enriched metadata is used in citation rendering
+    assert pane._row_widgets["citation:c1"].value._copy_text == "2023: Cached Title"
+    assert "metric_all_citations" in pane.row_keys()
+    assert pane._row_widgets["metric_all_citations"].value.text() == "42"
+
+    # 2. Update citation styles: cached_document should survive
+    pane.set_citation_styles(
+        [CitationStyle(id="c2", name="NewCite", template="{title} ({year})")]
+    )
+    assert pane._row_widgets["citation:c2"].value._copy_text == "Cached Title (2023)"
+    assert "metric_all_citations" in pane.row_keys()
+    assert pane._row_widgets["metric_all_citations"].value.text() == "42"
+    pane.close()
