@@ -13,7 +13,7 @@ import pytest
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 pytest.importorskip("PySide6")
 
-from PySide6.QtCore import QEvent, QItemSelectionModel
+from PySide6.QtCore import QEvent, QItemSelectionModel, QObject, Signal
 from PySide6.QtWidgets import QApplication, QDialog, QMenu
 
 from adsapi.config import Config
@@ -84,6 +84,16 @@ class CapturingAdsLibraryDialog(QDialog):
         super().show()
 
 
+class FakeCommandJob(QObject):
+    """Expose the signals consumed by `MainWindow._watch_job`."""
+
+    output = Signal(str)
+    failed = Signal(str)
+    finished = Signal(int)
+
+    running = False
+
+
 def _set_current_root(
     window: MainWindow,
     root: Path,
@@ -128,6 +138,54 @@ def test_ads_library_action_requires_a_current_root(window: MainWindow, tmp_path
 
     _set_current_root(window, tmp_path / "library")
 
+    assert window.add_to_ads_library_action.isEnabled()
+
+
+def test_ads_library_action_tracks_root_selection_and_removal(
+    window: MainWindow,
+    tmp_path: Path,
+) -> None:
+    """Selecting and removing the current root refreshes action eligibility."""
+    root = tmp_path / "library"
+    root.mkdir()
+
+    window._register_root(root)
+    window._select_root(root)
+
+    assert window.current_root == root.resolve()
+    assert window.add_to_ads_library_action.isEnabled()
+
+    window._remove_root(root)
+
+    assert window.current_root is None
+    assert not window.add_to_ads_library_action.isEnabled()
+
+
+def test_ads_library_action_tracks_command_job_transitions(
+    window: MainWindow,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Command-job start and terminal signals refresh action eligibility."""
+    _set_current_root(
+        window,
+        tmp_path / "library",
+        FakeRegistry([_record(1)]),
+    )
+    monkeypatch.setattr(window, "refresh", lambda *_args, **_kwargs: None)
+
+    failed_job = FakeCommandJob()
+    window._watch_job(failed_job)
+    assert not window.add_to_ads_library_action.isEnabled()
+
+    failed_job.failed.emit("could not start")
+    assert window.add_to_ads_library_action.isEnabled()
+
+    finished_job = FakeCommandJob()
+    window._watch_job(finished_job)
+    assert not window.add_to_ads_library_action.isEnabled()
+
+    finished_job.finished.emit(0)
     assert window.add_to_ads_library_action.isEnabled()
 
 
@@ -276,6 +334,89 @@ def test_add_to_ads_library_propagates_non_busy_sqlite_errors(
 
     with pytest.raises(sqlite3.OperationalError, match="malformed query"):
         window._add_to_ads_library()
+
+
+def test_direct_add_to_ads_library_requires_eligible_window_state(
+    window: MainWindow,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Direct calls cannot bypass missing-root or active-work guards."""
+    import adsapi.gui.main_window as main_window_module
+
+    CapturingAdsLibraryDialog.instances.clear()
+    monkeypatch.setattr(
+        main_window_module,
+        "AdsLibraryDialog",
+        CapturingAdsLibraryDialog,
+    )
+
+    window._add_to_ads_library()
+
+    registry = FakeRegistry([_record(1)])
+    _set_current_root(window, tmp_path / "library", registry)
+    window.job = FakeCommandJob()
+    window._add_to_ads_library()
+
+    window.job = None
+    active_dialog = QDialog(window)
+    window._ads_library_dialog = active_dialog
+    window._add_to_ads_library()
+
+    assert registry.calls == []
+    assert CapturingAdsLibraryDialog.instances == []
+
+    window._ads_library_dialog = None
+
+
+@pytest.mark.parametrize("blocker", ["command_job", "ads_dialog"])
+def test_table_context_ads_action_uses_window_eligibility(
+    blocker: str,
+    window: MainWindow,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """The context action cannot bypass other active window work."""
+    import adsapi.gui.main_window as main_window_module
+
+    CapturingAdsLibraryDialog.instances.clear()
+    monkeypatch.setattr(
+        main_window_module,
+        "AdsLibraryDialog",
+        CapturingAdsLibraryDialog,
+    )
+    menus: list[QMenu] = []
+
+    class NonBlockingMenu(QMenu):
+        def exec(self, *_args) -> None:
+            menus.append(self)
+
+    monkeypatch.setattr(main_window_module, "QMenu", NonBlockingMenu)
+    registry = FakeRegistry([_record(1)])
+    _set_current_root(window, tmp_path / "library", registry)
+    window.model._rows = [_record(1)]
+    window.show()
+    QApplication.processEvents()
+    if blocker == "command_job":
+        window.job = FakeCommandJob()
+    else:
+        window._ads_library_dialog = QDialog(window)
+
+    position = window.table.visualRect(window.model.index(0, 0)).center()
+    window._table_menu(position)
+    action = next(
+        action
+        for action in menus[-1].actions()
+        if action.text() == "Add to ADS Library…"
+    )
+
+    assert not action.isEnabled()
+    action.trigger()
+    assert registry.calls == []
+    assert CapturingAdsLibraryDialog.instances == []
+
+    window.job = None
+    window._ads_library_dialog = None
 
 
 def test_only_one_ads_library_dialog_is_open_per_window(

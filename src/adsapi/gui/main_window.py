@@ -579,7 +579,11 @@ class MainWindow(QMainWindow):
         """Enable the ADS library action only for an available current window."""
         if not hasattr(self, "add_to_ads_library_action"):
             return
-        self.add_to_ads_library_action.setEnabled(
+        self.add_to_ads_library_action.setEnabled(self._can_add_to_ads_library())
+
+    def _can_add_to_ads_library(self) -> bool:
+        """Return whether this window can open an ADS library dialog."""
+        return (
             self.current_root is not None
             and self.job is None
             and self._ads_library_dialog is None
@@ -604,9 +608,10 @@ class MainWindow(QMainWindow):
 
     def _add_to_ads_library(self) -> None:
         """Open an ADS library dialog with immutable local record snapshots."""
-        if self.current_root is None or self._ads_library_dialog is not None:
+        if not self._can_add_to_ads_library():
             self._sync_ads_library_action()
             return
+        assert self.current_root is not None
         root = self.current_root.expanduser().resolve()
         registry = self.registries[str(root)]
         selected_records = self._selected_records()
@@ -1028,6 +1033,7 @@ class MainWindow(QMainWindow):
             self._populate_views(registry)
         self._update_status()
         self._sync_watch_actions()
+        self._sync_ads_library_action()
 
     def _search_changed(self) -> None:
         self.current_query = FileQuery(
@@ -1248,7 +1254,10 @@ class MainWindow(QMainWindow):
             "Copy DOI", lambda: self._copy_text(str(record.get("doi") or ""))
         )
         menu.addAction("Copy Path", lambda: self._copy_text(str(path)))
-        menu.addAction("Add to ADS Library…", self._add_to_ads_library)
+        add_to_ads_library_action = menu.addAction(
+            "Add to ADS Library…", self._add_to_ads_library
+        )
+        add_to_ads_library_action.setEnabled(self._can_add_to_ads_library())
         menu.exec(self.table.viewport().mapToGlobal(position))
 
     def _show_header_context_menu(self, position: Any) -> None:
@@ -1754,6 +1763,7 @@ class MainWindow(QMainWindow):
             self.views_item.takeChildren()
         self._sync_config_roots()
         self._sync_watch_actions()
+        self._sync_ads_library_action()
 
     def refresh(self, root: Path | None = None) -> None:
         """Reload the current registry and sidebar counts."""
@@ -2145,6 +2155,7 @@ class MainWindow(QMainWindow):
     def _watch_job(self, job: Any) -> None:
         job.setParent(self)
         self.job = job
+        self._sync_ads_library_action()
         self.job_progress.show()
         self.log_dock.show()
         self.identify_action.setEnabled(False)
@@ -2176,6 +2187,7 @@ class MainWindow(QMainWindow):
         self.cancel_job_action.setEnabled(False)
         self.job_progress.hide()
         self.job = None
+        self._sync_ads_library_action()
         self._refresh_selection_id = None
         self._resume_foreground_watch()
         if self._close_requested:
@@ -2196,6 +2208,7 @@ class MainWindow(QMainWindow):
         self.cancel_job_action.setEnabled(False)
         self.job_progress.hide()
         self.job = None
+        self._sync_ads_library_action()
         self._resume_foreground_watch()
         self.refresh()
         if self._refresh_selection_id is not None:
