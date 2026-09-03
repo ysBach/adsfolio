@@ -95,6 +95,65 @@ then run `adsapi gui` (or `adsapi-gui`). It provides a multi-root, searchable
 and sortable PDF table with metadata, OS-default opening/reveal actions, and
 Identify/Rename dialogs that execute the existing CLI commands as subprocesses.
 
+#### Custom citation styles
+
+Use `Tools -> Custom Citation Styles...` to manage the citation text shown in
+the GUI. The editor supports **Add**, **Duplicate**, **Rename** by editing the
+selected style's **Name** field, **Reorder** with **Move Up**/**Move Down**, and
+**Delete**. Styles remain in the displayed order. **Update Preview** validates the current
+draft and uses the one selected table record when exactly one row is selected;
+otherwise it uses the built-in example. Preview does not save or apply edits.
+**Save** validates every style, applies the list to the running GUI, and saves
+it for the next launch. **Cancel** discards the draft. Invalid templates,
+fields, names, IDs, duplicate names/IDs, and author settings leave the editor
+open and identify the affected control.
+
+Each style adds a computed, non-sortable table column and a read-only,
+non-lockable detail row after **Bibcode** by default, in style order. Use
+**View -> Appearance...** to reorder or hide these generated items and set
+their optional font, size, and color; **OK** keeps those settings for saving
+and **Cancel** restores the previous appearance. New items are visible by
+default, and style plus appearance settings persist across restart. Click a
+non-empty table cell or detail value to copy its complete text. Empty rendered
+values do not change the clipboard. Rendering uses only local catalog/row
+metadata and does not issue an ADS request. Custom citation text is not a
+filename and does not rename PDFs.
+
+Citation templates use these exact fields:
+
+| Field | Meaning |
+| --- | --- |
+| `{bibcode}` | ADS Bibcode, unchanged. |
+| `{year}` | Publication year. |
+| `{title}` | First title value, with ADS HTML converted to plain text. |
+| `{first_author_surname}` | First author's surname only; `Bach, Yoonsoo P.` becomes `Bach`. |
+| `{first_author_initials}` | First-author surname plus given-name initials; `Bach, Yoonsoo P.` becomes `BachYP`. |
+| `{authors}` | Selected-format author list; above **Max authors**, retain **Authors when truncated** leading authors and append the suffix. |
+| `{authors_without_suffix}` | The same author list without the truncation suffix. |
+| `{journal}` | First bibstem, falling back to `pub` only when bibstem is absent. |
+| `{bibstem}` | First ADS bibstem only; no fallback. |
+| `{pub}` | ADS publication or journal text. |
+| `{volume}` | Publication volume. |
+| `{page}` | First page or article identifier. |
+| `{{` and `}}` | Literal opening and closing braces. |
+
+Missing values render as empty strings; spaces, punctuation, and Unicode are
+preserved. ADS HTML display markup is converted to plain text, and no `.pdf`
+extension is appended. Empty names, templates, or IDs, invalid author settings,
+duplicate names/IDs, and invalid template syntax leave the editor open and
+identify the affected style or control. Format specifiers, conversions,
+attribute/item access, unknown fields, and unmatched braces are not permitted.
+The author controls are **Surname + initials** (such
+as `BachYP`), **Surname only** (`Bach`), or **Last, First** (`Bach, Yoonsoo
+P.`), plus **Max authors**, **Authors when truncated**, **Author separator**,
+and **Truncation suffix**. A no-comma author uses its last token as surname and
+preceding tokens as given names.
+
+```text
+{first_author_initials} ({year}) {bibstem}, {volume}, {page}
+→ BachYP (2024) A&A, 123, 456
+```
+
 Do not run identify or watch against the same library from two machines at once.
 Keep `pdf export` snapshots as backups.
 

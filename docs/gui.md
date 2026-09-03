@@ -84,6 +84,92 @@ PDFs by their publication year. Saving the profile does not make a network
 request. Use **Tools → Identify → Refresh publication cache** when you want to
 rebuild the cache.
 
+Custom citation styles
+----------------------
+
+Custom citations are edited from the exact menu command
+``Tools -> Custom Citation Styles...`` (displayed by Qt as **Tools → Custom
+Citation Styles…**). The editor manages the ordered list of styles:
+
+1. Select **Add** to create a new style with the next available ``My bibcode N``
+   name, or select a style and choose **Duplicate** to insert a copy with a
+   fresh ID and a unique ``Copy of <name>`` name.
+2. Select a style and use **Rename** by editing its **Name** field, then edit
+   its template and author controls. **Reorder** styles with **Move Up** and
+   **Move Down**; **Delete** removes the selected style, including the valid
+   case where the list becomes empty.
+3. Select **Update Preview** to validate the current draft and render it. When
+   the editor was opened with exactly one selected table record, that record is
+   used; otherwise the preview uses a labeled built-in example. Preview changes
+   only the preview and does not modify the saved style list or the running
+   library view.
+4. Select **Save** to validate the current draft and the complete style list.
+   A valid save immediately replaces the generated table columns and detail
+   rows and persists the styles in the GUI configuration. Invalid syntax,
+   fields, names, IDs, duplicate names/IDs, or author settings show an error,
+   keep the editor open, and focus the affected control. Select **Cancel** to
+   close without applying or emitting the draft changes.
+
+For each saved style, adsapi creates a computed table column and detail row
+after **Bibcode** by default, in the order shown in the editor. Generated
+table columns are display-only and are not sortable. Generated detail rows are
+computed, read-only, and not lockable; they do not become ADS metadata fields.
+Use **View → Appearance…** to reorder or hide generated columns and detail rows
+and to set their optional table/detail font, size, and color. Use **OK** in the
+Appearance dialog to keep those live settings for configuration saving; **Cancel**
+restores the prior appearance. New generated items are visible by default.
+These appearance settings, the style definitions, and their order persist
+across the next application launch.
+
+Click a non-empty generated table cell or detail value to copy its complete
+rendered text. The table status bar or detail tooltip reports **Copied**. An
+empty rendered value is inert and leaves the clipboard unchanged. Missing
+metadata supplies an empty string for its placeholder, while the template's
+literal spaces and punctuation remain; Unicode is preserved. Rendering is
+local-only from the record already available in the catalog or selected row:
+editing, previewing, selecting, and copying a citation do not issue an ADS
+request. Custom citation text is not a filename and does not rename PDFs.
+
+Use Python-style replacement fields from this complete reference. Fields must
+be written exactly as shown; format specifiers, conversions, attribute/item
+access, unknown fields, and unmatched braces are rejected when saving.
+
+| Field | Rendered value |
+| --- | --- |
+| ``{bibcode}`` | ADS Bibcode, unchanged. |
+| ``{year}`` | Publication year. |
+| ``{title}`` | The first title value, with ADS HTML display markup converted to plain text. |
+| ``{first_author_surname}`` | Surname of the first author only. For ``Bach, Yoonsoo P.`` this is ``Bach``. |
+| ``{first_author_initials}`` | First-author surname followed by given-name initials. For ``Bach, Yoonsoo P.`` this is ``BachYP``. |
+| ``{authors}`` | The author list in the selected author format and separator. If the total exceeds **Max authors**, retain **Authors when truncated** leading authors and append the configured truncation suffix. |
+| ``{authors_without_suffix}`` | The same rendered author list, but without the truncation suffix. |
+| ``{journal}`` | The first ADS bibstem, falling back to ``pub`` only when bibstem is absent. |
+| ``{bibstem}`` | The first ADS bibstem only; it has no fallback. |
+| ``{pub}`` | ADS publication or journal text, rendered as plain text when ADS markup is present. |
+| ``{volume}`` | Publication volume. |
+| ``{page}`` | First page or article identifier. |
+| ``{{`` and ``}}`` | Literal opening and closing braces. |
+
+Missing values render as empty strings. Spaces, punctuation, and Unicode are
+preserved. No ``.pdf`` extension is appended. Empty names, templates, and IDs,
+invalid author settings, duplicate names/IDs, and invalid template syntax keep
+the editor open and identify the affected style or control. For example:
+
+```text
+{first_author_initials} ({year}) {bibstem}, {volume}, {page}
+→ BachYP (2024) A&A, 123, 456
+```
+
+The author controls apply only when ``{authors}`` or
+``{authors_without_suffix}`` is used. **Author format** is **Surname + initials**
+(for example ``BachYP``), **Surname only** (``Bach``), or **Last, First**
+(``Bach, Yoonsoo P.``). **Max authors** is the threshold: a list at or below
+that count is not truncated. **Authors when truncated** selects how many
+leading authors remain above the threshold. **Author separator** joins retained
+authors, and **Truncation suffix** is appended only to ``{authors}`` when
+truncation occurs. A no-comma author name uses its last token as the surname
+and preceding tokens as given names.
+
 **Tools → Identify** and **Tools → Rename** use the same CLI commands as the
 terminal application, run as subprocesses.  Output is streamed to the log dock,
 and the registry is reopened after completion so counts and metadata are fresh.
