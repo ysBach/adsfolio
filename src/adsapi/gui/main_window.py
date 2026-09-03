@@ -1322,9 +1322,15 @@ class MainWindow(QMainWindow):
 
     def _edit_citation_styles(self) -> None:
         """Edit global citation styles and apply accepted definitions live."""
+        selected_rows = self.table.selectionModel().selectedRows()
+        preview_record = (
+            self.model.record_at(selected_rows[0].row())
+            if len(selected_rows) == 1
+            else None
+        )
         dialog = CitationStylesDialog(
             self.config.citation_styles,
-            preview_record=self._selected_record(),
+            preview_record=preview_record,
             parent=self,
         )
         dialog.saved.connect(self._apply_citation_styles)
@@ -1334,18 +1340,29 @@ class MainWindow(QMainWindow):
     def _merge_citation_order(
         order: Sequence[str],
         deleted_keys: set[str],
+        citation_keys: Sequence[str],
         added_keys: Sequence[str],
     ) -> list[str]:
-        """Remove deleted keys and place new citation keys after Bibcode."""
-        added = tuple(dict.fromkeys(added_keys))
-        added_set = set(added)
+        """Reorder active citation keys and place new ones after Bibcode."""
+        citations = tuple(dict.fromkeys(citation_keys))
+        citation_set = set(citations)
+        added_set = set(added_keys)
         retained = [
             key for key in order if key not in deleted_keys and key not in added_set
         ]
-        if not added or "bibcode" not in retained:
+        present = {key for key in retained if key in citation_set}
+        citation_slots = [
+            index for index, key in enumerate(retained) if key in citation_set
+        ]
+        existing = [key for key in citations if key in present]
+        for index, key in zip(citation_slots, existing):
+            retained[index] = key
+
+        missing = [key for key in citations if key not in present]
+        if not missing or "bibcode" not in retained:
             return retained
         insertion = retained.index("bibcode") + 1
-        return [*retained[:insertion], *added, *retained[insertion:]]
+        return [*retained[:insertion], *missing, *retained[insertion:]]
 
     def _apply_citation_styles(self, styles: Sequence[CitationStyle]) -> None:
         """Apply accepted citation styles and update all dependent UI state."""
@@ -1355,6 +1372,12 @@ class MainWindow(QMainWindow):
         }
         current_index = self.table.currentIndex()
         selected_row = current_index.row() if current_index.isValid() else None
+        selected_record = (
+            self.model.record_at(selected_row) if selected_row is not None else None
+        )
+        selected_location_id = (
+            selected_record.get("location_id") if selected_record is not None else None
+        )
 
         old_keys = {
             citation_preference_key(style.id) for style in self.config.citation_styles
@@ -1376,11 +1399,13 @@ class MainWindow(QMainWindow):
         self.config.table_column_order = self._merge_citation_order(
             self.config.table_column_order,
             deleted_keys,
+            new_keys,
             added_keys,
         )
         self.config.detail_row_order = self._merge_citation_order(
             self.config.detail_row_order,
             deleted_keys,
+            new_keys,
             added_keys,
         )
         self.config.hidden_table_columns = [
@@ -1394,6 +1419,7 @@ class MainWindow(QMainWindow):
             if key not in deleted_keys and key not in added_key_set
         ]
         self.config.citation_styles = list(normalized_styles)
+        save_config(self.config)
 
         self.columns = build_columns(self.config.citation_styles)
         self.model.set_columns(self.columns)
@@ -1402,8 +1428,25 @@ class MainWindow(QMainWindow):
         self.detail.set_citation_styles(self.config.citation_styles)
         self._rebuild_table_delegates(prior_widths)
         self._apply_table_appearance()
-        if selected_row is not None and selected_row < self.model.rowCount():
-            self._current_changed(self.model.index(selected_row, 0), QModelIndex())
+        if selected_record is not None:
+            restored_row = selected_row
+            if selected_location_id is not None:
+                restored_row = next(
+                    (
+                        row
+                        for row in range(self.model.rowCount())
+                        if (
+                            self.model.record_at(row) is not None
+                            and self.model.record_at(row).get("location_id")
+                            == selected_location_id
+                        )
+                    ),
+                    None,
+                )
+            if restored_row is not None and restored_row < self.model.rowCount():
+                restored_index = self.model.index(restored_row, 0)
+                self.table.setCurrentIndex(restored_index)
+                self._current_changed(restored_index, QModelIndex())
 
     def _apply_appearance_dialog(self, dialog: AppearanceDialog) -> None:
         """Apply the current Appearance dialog values to the running window."""

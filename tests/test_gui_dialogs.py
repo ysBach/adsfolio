@@ -8,7 +8,7 @@ import pytest
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 pytest.importorskip("PySide6")
 
-from PySide6.QtCore import QObject, Qt, Signal
+from PySide6.QtCore import QItemSelectionModel, QObject, Qt, Signal
 from PySide6.QtWidgets import QApplication, QDialog, QMessageBox
 
 from adsapi.citations import CitationStyle
@@ -384,7 +384,11 @@ def test_accepting_citation_styles_replaces_runtime_columns_and_detail_once(
             return QDialog.Accepted
 
     monkeypatch.setattr("adsapi.gui.main_window.load_config", lambda: config)
-    monkeypatch.setattr("adsapi.gui.main_window.save_config", lambda config: None)
+    save_calls = []
+    monkeypatch.setattr(
+        "adsapi.gui.main_window.save_config",
+        lambda saved_config: save_calls.append(saved_config),
+    )
     monkeypatch.setattr(
         "adsapi.gui.main_window.CitationStylesDialog",
         _CitationStylesDialog,
@@ -409,6 +413,8 @@ def test_accepting_citation_styles_replaces_runtime_columns_and_detail_once(
     window.citation_styles_action.trigger()
 
     assert config.citation_styles == new_styles
+    assert save_calls == [config]
+    assert save_calls[0].citation_styles == new_styles
     assert model_calls == [tuple(column.key for column in window.columns)]
     assert detail_calls == [tuple(new_styles)]
     header = window.table.header()
@@ -446,6 +452,152 @@ def test_accepting_citation_styles_replaces_runtime_columns_and_detail_once(
         if column.key == "citation:new"
     )
     assert not window.table.isColumnHidden(new_column)
+    window.close()
+
+
+def test_reordering_citation_styles_reorders_table_and_detail_keys(
+    application, monkeypatch
+):
+    old_styles = [
+        CitationStyle(id="alpha", name="Alpha", template="{bibcode}"),
+        CitationStyle(id="beta", name="Beta", template="{year}"),
+    ]
+    new_styles = [old_styles[1], old_styles[0]]
+    config = GuiConfig(
+        citation_styles=old_styles,
+        table_column_order=[
+            "title",
+            "bibcode",
+            "citation:alpha",
+            "citation:beta",
+            "filename",
+        ],
+        detail_row_order=[
+            "title",
+            "bibcode",
+            "citation:alpha",
+            "citation:beta",
+            "filename",
+        ],
+    )
+
+    class _CitationStylesDialog(QObject):
+        saved = Signal(object)
+
+        def __init__(self, *_args, **_kwargs):
+            super().__init__()
+
+        def exec(self):
+            self.saved.emit(tuple(new_styles))
+            return QDialog.Accepted
+
+    monkeypatch.setattr("adsapi.gui.main_window.load_config", lambda: config)
+    monkeypatch.setattr("adsapi.gui.main_window.save_config", lambda config: None)
+    monkeypatch.setattr(
+        "adsapi.gui.main_window.CitationStylesDialog",
+        _CitationStylesDialog,
+    )
+    window = MainWindow()
+
+    window.citation_styles_action.trigger()
+
+    expected_order = [
+        "title",
+        "bibcode",
+        "citation:beta",
+        "citation:alpha",
+        "filename",
+    ]
+    assert config.table_column_order == expected_order
+    assert config.detail_row_order == expected_order
+    window.close()
+
+
+def test_accepting_citation_styles_restores_selected_table_record(
+    application, monkeypatch
+):
+    old_style = CitationStyle(id="alpha", name="Alpha", template="{bibcode}")
+    new_style = CitationStyle(id="alpha", name="Renamed", template="{year}")
+    config = GuiConfig(citation_styles=[old_style])
+    records = [
+        {"location_id": 1, "current_path": "one.pdf", "metadata": {}},
+        {"location_id": 2, "current_path": "two.pdf", "metadata": {}},
+    ]
+
+    class _CitationStylesDialog(QObject):
+        saved = Signal(object)
+
+        def __init__(self, *_args, **_kwargs):
+            super().__init__()
+
+        def exec(self):
+            self.saved.emit((new_style,))
+            return QDialog.Accepted
+
+    monkeypatch.setattr("adsapi.gui.main_window.load_config", lambda: config)
+    monkeypatch.setattr("adsapi.gui.main_window.save_config", lambda config: None)
+    monkeypatch.setattr(
+        "adsapi.gui.main_window.CitationStylesDialog",
+        _CitationStylesDialog,
+    )
+    window = MainWindow()
+    window.model._rows = records
+    window.table.setCurrentIndex(window.model.index(1, 0))
+    assert window.table.currentIndex().row() == 1
+
+    window.citation_styles_action.trigger()
+
+    assert window.table.currentIndex().isValid()
+    assert window.table.currentIndex().row() == 1
+    assert window._selected_record() is records[1]
+    assert window.detail._record is records[1]
+    window.close()
+
+
+@pytest.mark.parametrize("selection_count", [0, 2])
+def test_citation_styles_preview_uses_builtin_for_non_single_selection(
+    application, monkeypatch, selection_count
+):
+    styles = [CitationStyle(id="alpha", name="Alpha", template="{bibcode}")]
+    config = GuiConfig(citation_styles=styles)
+    captured = {}
+
+    class _CitationStylesDialog(QObject):
+        saved = Signal(object)
+
+        def __init__(self, _styles, preview_record=None, parent=None):
+            super().__init__(parent)
+            captured["preview_record"] = preview_record
+
+        def exec(self):
+            return QDialog.Rejected
+
+    monkeypatch.setattr("adsapi.gui.main_window.load_config", lambda: config)
+    monkeypatch.setattr("adsapi.gui.main_window.save_config", lambda config: None)
+    monkeypatch.setattr(
+        "adsapi.gui.main_window.CitationStylesDialog",
+        _CitationStylesDialog,
+    )
+    window = MainWindow()
+    window.model._rows = [
+        {"current_path": "one.pdf", "metadata": {}},
+        {"current_path": "two.pdf", "metadata": {}},
+    ]
+    if selection_count == 2:
+        window.table.setCurrentIndex(window.model.index(0, 0))
+        window.table.selectionModel().select(
+            window.model.index(1, 0),
+            QItemSelectionModel.SelectionFlag.Select
+            | QItemSelectionModel.SelectionFlag.Rows,
+        )
+        assert len(window.table.selectionModel().selectedRows()) == 2
+    else:
+        window.table.selectionModel().clearSelection()
+        window.table.selectionModel().clearCurrentIndex()
+
+    window.citation_styles_action.trigger()
+
+    assert captured["preview_record"] is None
     window.close()
 
 
