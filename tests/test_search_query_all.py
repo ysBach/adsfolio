@@ -1,6 +1,6 @@
 import unittest
 
-from adsapi.api.search import SearchAPI
+from adsfolio.api.search import SearchAPI
 
 
 class DummyBaseClient:

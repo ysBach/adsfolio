@@ -1,4 +1,4 @@
-from adsapi.gui.library import (
+from adsfolio.gui.library import (
     BASE_COLUMNS,
     COLUMNS,
     ISO8601_TIMESTAMP_FORMAT,
@@ -145,7 +145,7 @@ def test_build_columns_defaults_to_base_columns():
 
 
 def test_build_columns_inserts_after_bibcode_with_correct_properties():
-    from adsapi.citations import CitationStyle
+    from adsfolio.citations import CitationStyle
 
     style_a = CitationStyle(id="alpha", name="Alpha Style", template="{year}: {title}")
     style_b = CitationStyle(id="beta", name="Beta Style", template="{bibcode}")

@@ -9,13 +9,13 @@ import pytest
 from PySide6.QtCore import QObject, Signal
 from PySide6.QtWidgets import QDialog, QMessageBox
 
-from adsapi.config import Config
-from adsapi.gui.config import GuiConfig, RootEntry
-from adsapi.gui.main_window import MainWindow
-from adsapi.pdf.identify_settings import IdentifySettings, IdentifyStrategy
-from adsapi.pdf.registry import CentralPdfRegistryState
-from adsapi.pdf.rename_settings import RenameSettings
-from adsapi.pdf.watch_session import (
+from adsfolio.config import Config
+from adsfolio.gui.config import GuiConfig, RootEntry
+from adsfolio.gui.main_window import MainWindow
+from adsfolio.pdf.identify_settings import IdentifySettings, IdentifyStrategy
+from adsfolio.pdf.registry import CentralPdfRegistryState
+from adsfolio.pdf.rename_settings import RenameSettings
+from adsfolio.pdf.watch_session import (
     ArrivalIdentity,
     FileSnapshot,
     WatchEvent,
@@ -115,7 +115,7 @@ def _redirect_task5_config_dir(
 
 
 def _window_factory(monkeypatch, qtbot, config: GuiConfig):
-    import adsapi.gui.main_window as main_window_module
+    import adsfolio.gui.main_window as main_window_module
 
     controller = FakeWatchController()
     saves = []
@@ -198,7 +198,7 @@ def test_watch_actions_are_per_root_and_persist_immediately(
 
 
 def test_watch_policy_save_failure_restores_old_value(monkeypatch, qtbot, tmp_path):
-    import adsapi.gui.main_window as main_window_module
+    import adsfolio.gui.main_window as main_window_module
 
     root = tmp_path / "library"
     root.mkdir()
@@ -343,7 +343,7 @@ def test_recursive_edit_is_rejected_while_root_is_watched(monkeypatch, qtbot, tm
 def test_effective_watch_settings_resolve_scopes_independently(
     monkeypatch, qtbot, tmp_path
 ):
-    import adsapi.gui.main_window as main_window_module
+    import adsfolio.gui.main_window as main_window_module
 
     root = tmp_path / "library"
     root.mkdir()
@@ -378,7 +378,7 @@ def test_effective_watch_settings_resolve_scopes_independently(
 def test_identify_dialog_rolls_back_domain_settings_when_gui_save_fails(
     monkeypatch, qtbot, tmp_path
 ) -> None:
-    import adsapi.gui.main_window as main_window_module
+    import adsfolio.gui.main_window as main_window_module
 
     root = tmp_path / "library"
     root.mkdir()
@@ -437,7 +437,7 @@ def test_identify_dialog_rejects_invalid_skip_geometry_before_stores(
     qtbot,
     tmp_path,
 ) -> None:
-    import adsapi.gui.main_window as main_window_module
+    import adsfolio.gui.main_window as main_window_module
 
     root = tmp_path / "library"
     root.mkdir()
@@ -482,7 +482,7 @@ def test_identify_dialog_rejects_invalid_skip_geometry_before_stores(
 def test_rename_dialog_rolls_back_domain_settings_when_gui_save_fails(
     monkeypatch, qtbot, tmp_path
 ) -> None:
-    import adsapi.gui.main_window as main_window_module
+    import adsfolio.gui.main_window as main_window_module
 
     root = tmp_path / "library"
     root.mkdir()
@@ -590,7 +590,7 @@ def test_automatic_watch_detection_processes_without_manual_notice(
 def test_watch_detection_inside_skipped_unresolved_directory_is_dismissed(
     monkeypatch, qtbot, tmp_path, auto_process
 ) -> None:
-    import adsapi.gui.main_window as main_window_module
+    import adsfolio.gui.main_window as main_window_module
 
     root = tmp_path / "library"
     root.mkdir()
@@ -630,7 +630,7 @@ def test_invalid_persisted_skip_geometry_does_not_suppress_watch_detection(
     tmp_path,
     auto_process,
 ) -> None:
-    import adsapi.gui.main_window as main_window_module
+    import adsfolio.gui.main_window as main_window_module
 
     root = tmp_path / "library"
     root.mkdir()
@@ -778,7 +778,7 @@ def test_watch_outcomes_coalesce_refresh_and_restore_location_selection(
 def test_identify_dialog_waits_for_pause_ack_and_resumes_after_cancel(
     monkeypatch, qtbot, tmp_path
 ):
-    import adsapi.gui.main_window as main_window_module
+    import adsfolio.gui.main_window as main_window_module
 
     root = tmp_path / "library"
     root.mkdir()
@@ -819,7 +819,7 @@ def test_identify_dialog_waits_for_pause_ack_and_resumes_after_cancel(
 
 
 def test_rename_dialog_cancel_resumes_watched_root(monkeypatch, qtbot, tmp_path):
-    import adsapi.gui.main_window as main_window_module
+    import adsfolio.gui.main_window as main_window_module
 
     root = tmp_path / "library"
     root.mkdir()
@@ -861,7 +861,7 @@ class FakeJob(QObject):
 
 
 def test_watched_identify_job_resumes_after_start_failure(monkeypatch, qtbot, tmp_path):
-    import adsapi.gui.main_window as main_window_module
+    import adsfolio.gui.main_window as main_window_module
 
     root = tmp_path / "library"
     root.mkdir()
@@ -897,7 +897,7 @@ def test_watched_identify_job_resumes_after_start_failure(monkeypatch, qtbot, tm
 
 
 def test_watched_rename_job_resumes_after_completion(monkeypatch, qtbot, tmp_path):
-    import adsapi.gui.main_window as main_window_module
+    import adsfolio.gui.main_window as main_window_module
 
     root = tmp_path / "library"
     root.mkdir()

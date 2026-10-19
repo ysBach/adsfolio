@@ -1,4 +1,4 @@
-"""Sphinx configuration for adsapi documentation."""
+"""Sphinx configuration for adsfolio documentation."""
 
 from pathlib import Path
 import sys
@@ -7,7 +7,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 SRC_ROOT = PROJECT_ROOT / "src"
 sys.path.insert(0, str(SRC_ROOT))
 
-project = "adsapi"
+project = "adsfolio"
 author = "Yoonsoo P. Bach"
 copyright = "2026, Yoonsoo P. Bach"
 
@@ -44,11 +44,11 @@ nitpick_ignore_regex = [
 nitpick_ignore = [
     ("py:class", "User's permission level"),
     ("py:class", "BibEntry"),
-    ("py:obj", "adsapi.bibtex.io.write_bibtex_file"),
-    ("py:obj", "adsapi.bibtex.parser.BibEntry"),
+    ("py:obj", "adsfolio.bibtex.io.write_bibtex_file"),
+    ("py:obj", "adsfolio.bibtex.parser.BibEntry"),
 ]
 
-# adsapi re-exports (e.g. ADSClient) make module-level refs ambiguous.
+# adsfolio re-exports (e.g. ADSClient) make module-level refs ambiguous.
 suppress_warnings = ["ref.python"]
 
 autosummary_generate = True

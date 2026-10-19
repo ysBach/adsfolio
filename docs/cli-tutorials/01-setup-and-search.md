@@ -1,19 +1,19 @@
 # Tutorial 1: Setup and First Search
 
-This tutorial gets you from install to your first useful `adsapi search` commands.
+This tutorial gets you from install to your first useful `adsfolio search` commands.
 
 ## 0) Start with `--help`
 
 Run these first to view the full command interface before executing examples:
 
 ~~~bash
-adsapi --help
-adsapi set --help
-adsapi search --help
-adsapi config --help
-adsapi config set-token --help
-adsapi config show --help
-adsapi rate-limit --help
+adsfolio --help
+adsfolio set --help
+adsfolio search --help
+adsfolio config --help
+adsfolio config set-token --help
+adsfolio config show --help
+adsfolio rate-limit --help
 ~~~
 
 Key search options to understand:
@@ -32,13 +32,13 @@ Key search options to understand:
 Requires Python 3.10 or newer.
 
 ```bash
-pip install adsapi
+pip install adsfolio
 ```
 
 If you also want all optional features (watchdog, annotation porting, ISO4):
 
 ```bash
-pip install adsapi[full]
+pip install adsfolio[full]
 ```
 
 ## 2) Run first-time setup
@@ -48,7 +48,7 @@ Get your ADS token from [SciX settings](https://scixplorer.org/user/settings/tok
 Run interactive setup once (you usually do this only once unless values change):
 
 ```bash
-adsapi set
+adsfolio set
 ```
 
 This stores:
@@ -60,13 +60,13 @@ This stores:
 - optional ADS library IDs for prefetch bootstrap
 - optional expansion to references/citations of those library papers
 
-These fields are used to reduce ADS requests during `adsapi pdf identify` runs.
+These fields are used to reduce ADS requests during `adsfolio pdf identify` runs.
 They do not limit normal search/export behavior.
 
 You can pass values non-interactively:
 
 ```bash
-adsapi set \
+adsfolio set \
   --token <your-token> \
   --orcid 0000-0002-1825-0097 \
   --query-name "Bach, Yoonsoo P." \
@@ -78,14 +78,14 @@ Or use environment variable / token-only config:
 
 ```bash
 export ADS_API_TOKEN=<your-token>
-adsapi config set-token <your-token>
-adsapi config show
+adsfolio config set-token <your-token>
+adsfolio config show
 ```
 
 ## 3) First query
 
 ```bash
-adsapi search "author:Einstein"
+adsfolio search "author:Einstein"
 ```
 
 This prints a compact list with year, bibcode, and title snippet.
@@ -93,7 +93,7 @@ This prints a compact list with year, bibcode, and title snippet.
 ## 4) Control search fields and size
 
 ```bash
-adsapi search "gravitational waves" \
+adsfolio search "gravitational waves" \
   --fields "bibcode,title,author,year,citation_count" \
   --rows 20
 ```
@@ -101,7 +101,7 @@ adsapi search "gravitational waves" \
 ## 5) Sort and filter
 
 ```bash
-adsapi search "black holes" \
+adsfolio search "black holes" \
   --sort "citation_count desc" \
   --fq "database:astronomy" \
   --rows 10
@@ -110,7 +110,7 @@ adsapi search "black holes" \
 ## 6) JSON output for scripting
 
 ```bash
-adsapi search "author:Einstein year:1905" --json
+adsfolio search "author:Einstein year:1905" --json
 ```
 
 ## 7) Override token per command
@@ -118,13 +118,13 @@ adsapi search "author:Einstein year:1905" --json
 If you need to run a command with a different token:
 
 ```bash
-adsapi --token "<other-token>" search "author:Hubble" --rows 5
+adsfolio --token "<other-token>" search "author:Hubble" --rows 5
 ```
 
 ## 8) Check rate limits
 
 ```bash
-adsapi rate-limit
+adsfolio rate-limit
 ```
 
 Shows current limit, remaining requests, and reset time from the last API response.

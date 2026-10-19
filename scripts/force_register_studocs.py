@@ -1,7 +1,7 @@
 import csv
 from pathlib import Path
-from adsapi.pdf.registry import open_registry_state
-from adsapi.pdf.identifier import PdfIdentifier
+from adsfolio.pdf.registry import open_registry_state
+from adsfolio.pdf.identifier import PdfIdentifier
 
 csv_path = Path("/Users/ysbach/Dropbox/Studocs/resolved_ai.csv")
 target_dir = Path("/Users/ysbach/Dropbox/Studocs")

@@ -2,10 +2,10 @@ from pathlib import Path
 
 from click.testing import CliRunner
 
-from adsapi.cli.commands import main
-from adsapi.cv.cli import _query_default, cv_group
-from adsapi.cv.config import CVConfig
-from adsapi.user_profile import UserProfile
+from adsfolio.cli.commands import main
+from adsfolio.cv.cli import _query_default, cv_group
+from adsfolio.cv.config import CVConfig
+from adsfolio.user_profile import UserProfile
 
 
 def _cfg(tmp_path: Path) -> CVConfig:
@@ -57,10 +57,10 @@ def test_main_registers_cv_group() -> None:
 
 def test_generate_dry_run_prints_rendered_output(tmp_path: Path, monkeypatch) -> None:
     cfg = _cfg(tmp_path)
-    monkeypatch.setattr("adsapi.cv.cli.load_config", lambda path: cfg)
-    monkeypatch.setattr("adsapi.cv.cli.ADSClient", lambda token=None: object())
+    monkeypatch.setattr("adsfolio.cv.cli.load_config", lambda path: cfg)
+    monkeypatch.setattr("adsfolio.cv.cli.ADSClient", lambda token=None: object())
     monkeypatch.setattr(
-        "adsapi.cv.cli.generate_cv",
+        "adsfolio.cv.cli.generate_cv",
         lambda client, cfg, **kwargs: "rendered output",
     )
 
@@ -83,15 +83,15 @@ def test_generate_dry_run_prints_rendered_output(tmp_path: Path, monkeypatch) ->
 
 def test_generate_non_dry_run_reports_output_path(tmp_path: Path, monkeypatch) -> None:
     cfg = _cfg(tmp_path)
-    monkeypatch.setattr("adsapi.cv.cli.load_config", lambda path: cfg)
-    monkeypatch.setattr("adsapi.cv.cli.ADSClient", lambda token=None: object())
+    monkeypatch.setattr("adsfolio.cv.cli.load_config", lambda path: cfg)
+    monkeypatch.setattr("adsfolio.cv.cli.ADSClient", lambda token=None: object())
 
     def fake_generate(client, config, **kwargs):  # noqa: ANN001
         output_path = kwargs.get("output_path") or config.output_path
         output_path.write_text("x", encoding="utf-8")
         return "x"
 
-    monkeypatch.setattr("adsapi.cv.cli.generate_cv", fake_generate)
+    monkeypatch.setattr("adsfolio.cv.cli.generate_cv", fake_generate)
 
     runner = CliRunner()
     result = runner.invoke(
@@ -121,7 +121,7 @@ def test_init_creates_yaml_file(tmp_path: Path) -> None:
 def test_init_uses_adsapi_set_orcid_defaults(tmp_path: Path, monkeypatch) -> None:
     output_path = tmp_path / "cv.yaml"
     monkeypatch.setattr(
-        "adsapi.cv.cli.Config.load_user_profile",
+        "adsfolio.cv.cli.Config.load_user_profile",
         lambda: UserProfile(
             orcid="0000-0002-1825-0097",
             author_names=("Bach, Y. P.", "Bach, Yoonsoo"),
@@ -146,7 +146,7 @@ def test_init_uses_adsapi_set_orcid_defaults(tmp_path: Path, monkeypatch) -> Non
 def test_init_no_orcid_disables_orcid_default(tmp_path: Path, monkeypatch) -> None:
     output_path = tmp_path / "cv.yaml"
     monkeypatch.setattr(
-        "adsapi.cv.cli.Config.load_user_profile",
+        "adsfolio.cv.cli.Config.load_user_profile",
         lambda: UserProfile(orcid="0000-0002-1825-0097"),
     )
     runner = CliRunner()

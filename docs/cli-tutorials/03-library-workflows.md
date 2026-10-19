@@ -1,16 +1,16 @@
 # Tutorial 3: Library Workflows
 
-This tutorial covers `adsapi library` commands for listing, reading, and syncing a library BibTeX file.
+This tutorial covers `adsfolio library` commands for listing, reading, and syncing a library BibTeX file.
 
 ## 0) Start with `--help`
 
 Inspect the library command group and subcommands first:
 
 ~~~bash
-adsapi library --help
-adsapi library list --help
-adsapi library get --help
-adsapi library watch --help
+adsfolio library --help
+adsfolio library list --help
+adsfolio library get --help
+adsfolio library watch --help
 ~~~
 
 Key library options to understand:
@@ -29,37 +29,37 @@ Key library options to understand:
 ## 1) List your libraries
 
 ```bash
-adsapi library list
+adsfolio library list
 ```
 
 JSON output:
 
 ```bash
-adsapi library list --rows 50 --json
+adsfolio library list --rows 50 --json
 ```
 
 ## 2) Inspect one library
 
 ```bash
-adsapi library get <library_id>
+adsfolio library get <library_id>
 ```
 
 Return raw bibcodes exactly as stored:
 
 ```bash
-adsapi library get <library_id> --raw
+adsfolio library get <library_id> --raw
 ```
 
 ## 3) Export library as BibTeX
 
 ```bash
-adsapi library get <library_id> --bibtex --output references.bib
+adsfolio library get <library_id> --bibtex --output references.bib
 ```
 
 ## 4) Watch library and auto-refresh BibTeX
 
 ```bash
-adsapi library watch <library_id> \
+adsfolio library watch <library_id> \
   --output references.bib \
   --num-iter 0 \
   --interval 10
@@ -73,7 +73,7 @@ Notes:
 ## 5) Add style and extra BibTeX content during watch
 
 ```bash
-adsapi library watch <library_id> \
+adsfolio library watch <library_id> \
   --output references.bib \
   --journal full \
   --additional local_notes.bib \
@@ -83,7 +83,7 @@ adsapi library watch <library_id> \
 ## 6) Tune status logs
 
 ```bash
-adsapi library watch <library_id> \
+adsfolio library watch <library_id> \
   --info-interval 10 \
   --interval 5 \
   --num-iter 200

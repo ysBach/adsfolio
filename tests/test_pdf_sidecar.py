@@ -2,8 +2,8 @@ import json
 
 import pytest
 
-from adsapi.pdf.identify_settings import IdentifySettings
-from adsapi.pdf.sidecar import SIDECAR_FILENAME, Sidecar, SidecarError
+from adsfolio.pdf.identify_settings import IdentifySettings
+from adsfolio.pdf.sidecar import SIDECAR_FILENAME, Sidecar, SidecarError
 
 
 def test_sidecar_initializes_empty_payload(tmp_path):

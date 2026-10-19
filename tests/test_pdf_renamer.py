@@ -3,8 +3,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from adsapi.pdf.renamer import DEFAULT_SCHEME, PdfRenamer
-from adsapi.pdf.sidecar import SIDECAR_FILENAME, Sidecar
+from adsfolio.pdf.renamer import DEFAULT_SCHEME, PdfRenamer
+from adsfolio.pdf.sidecar import SIDECAR_FILENAME, Sidecar
 
 
 class _ExportStub:

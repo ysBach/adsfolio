@@ -3,9 +3,9 @@ Desktop GUI
 
 Install the optional Qt dependency with::
 
-   pip install 'adsapi[gui]'
+   pip install 'adsfolio[gui]'
 
-Launch the browser with either ``adsapi gui`` or ``adsapi-gui``.  The window has
+Launch the browser with either ``adsfolio gui`` or ``adsfolio-gui``.  The window has
 three panes: registered library roots and virtual views on the left, a paged
 sortable/searchable file table in the middle, and editable metadata for the
 selected file on the right.
@@ -34,7 +34,7 @@ font and point size independently for each table column, configure right-pane
 metadata text, and select ISO 8601 or any Python ``strftime`` timestamp format
 (for example ``%Y-%m-%d``; month is lowercase ``%m``).
 
-Registry entries remain after a PDF is moved or deleted outside adsapi so their
+Registry entries remain after a PDF is moved or deleted outside adsfolio so their
 metadata is not silently discarded. Select **File → Remove Missing Registry
 Records…** to review and remove those stale entries; this never deletes files.
 Use **File → Reconcile File Facts…** to refresh stored file sizes and modified
@@ -111,7 +111,7 @@ Citation Styles…**). The editor manages the ordered list of styles:
    focused only when one exists (IDs have no editor field). Select **Cancel**
    to close without applying or emitting the draft changes.
 
-For each saved style, adsapi creates a computed table column and detail row
+For each saved style, adsfolio creates a computed table column and detail row
 after **Bibcode** by default, in the order shown in the editor. Generated
 table columns are display-only and are not sortable. Generated detail rows are
 computed, read-only, and not lockable; they do not become ADS metadata fields.
@@ -209,7 +209,7 @@ Adding identified PDFs to a remote ADS library
 The GUI distinguishes two different kinds of library:
 
 * A **local PDF library** is a registered filesystem root, added with
-  **File → Add Library Root**, and backed by the local adsapi catalog. Its
+  **File → Add Library Root**, and backed by the local adsfolio catalog. Its
   records, paths, metadata, and workflow state remain local.
 * A **remote ADS library** is an ADS/SciXplorer destination. It is shown in
   this dialog's destination table and is not a filesystem root or a second
@@ -303,7 +303,7 @@ and the result distinguishes:
 
 The operation stops after the first failed or status-unknown batch. A failed
 batch is not silently retried and acknowledged remote additions are not
-undone. Use **Retry Remaining** to reconcile first: adsapi reloads every
+undone. Use **Retry Remaining** to reconcile first: adsfolio reloads every
 remote destination Bibcode and submits only the remainder still absent. If
 that read-only reconciliation fails, the dialog warns that a raw retry may
 resubmit Bibcodes with an uncertain server outcome and requires a second
@@ -340,7 +340,7 @@ uses that root's catalog override, with global settings as the fallback when no
 override exists. A root can therefore use library-specific Rename defaults and
 global Identify defaults, or the reverse.
 
-Do not run a separate ``adsapi pdf watch`` process or ``launchd`` watcher on a
+Do not run a separate ``adsfolio pdf watch`` process or ``launchd`` watcher on a
 root while the GUI watcher is active. Concurrent watchers can issue duplicate
 ADS work and compete to rename or update the same PDF and catalog records.
 

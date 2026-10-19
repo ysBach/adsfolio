@@ -27,9 +27,9 @@
 ### Task 1: Canonical Rename Settings and Persistence
 
 **Files:**
-- Create: `src/adsapi/pdf/rename_settings.py`
-- Modify: `src/adsapi/config.py`
-- Modify: `src/adsapi/pdf/registry.py`
+- Create: `src/adsfolio/pdf/rename_settings.py`
+- Modify: `src/adsfolio/config.py`
+- Modify: `src/adsfolio/pdf/registry.py`
 - Create: `tests/test_pdf_rename_settings.py`
 - Modify: `tests/test_config_setup.py`
 - Modify: `tests/test_pdf_registry.py`
@@ -68,7 +68,7 @@ def test_rename_settings_normalizes_each_malformed_field_independently():
 
 Run: `source ~/.venvs/ysbpy/bin/activate && pytest tests/test_pdf_rename_settings.py -q`
 
-Expected: collection fails with `ModuleNotFoundError: adsapi.pdf.rename_settings`.
+Expected: collection fails with `ModuleNotFoundError: adsfolio.pdf.rename_settings`.
 
 - [ ] **Step 3: Implement the immutable settings model**
 
@@ -145,8 +145,8 @@ Expected: all selected tests pass.
 ### Task 2: GUI Watch Policy and Remembered Rename Dialog
 
 **Files:**
-- Modify: `src/adsapi/gui/config.py`
-- Modify: `src/adsapi/gui/dialogs.py`
+- Modify: `src/adsfolio/gui/config.py`
+- Modify: `src/adsfolio/gui/dialogs.py`
 - Modify: `tests/test_gui_config.py`
 - Modify: `tests/test_gui_dialogs.py`
 
@@ -250,7 +250,7 @@ Expected: all selected tests pass.
 ### Task 3: Qt-Free Watch Session State Machine
 
 **Files:**
-- Create: `src/adsapi/pdf/watch_session.py`
+- Create: `src/adsfolio/pdf/watch_session.py`
 - Create: `tests/test_pdf_watch_session.py`
 
 **Interfaces:**
@@ -371,11 +371,11 @@ Expected: all tests pass without Qt, watchdog, sleeps, or network.
 ### Task 4: Thread-Owned GUI Watch Controller
 
 **Files:**
-- Create: `src/adsapi/gui/watch.py`
+- Create: `src/adsfolio/gui/watch.py`
 - Create: `tests/test_gui_watch_controller.py`
-- Modify: `src/adsapi/client.py`
+- Modify: `src/adsfolio/client.py`
 - Modify: `tests/test_client_pdf.py`
-- Modify: `src/adsapi/pdf/watcher.py`
+- Modify: `src/adsfolio/pdf/watcher.py`
 - Modify: `tests/test_pdf_watcher.py`
 
 **Interfaces:**
@@ -499,8 +499,8 @@ watcher tests remain green.
 ### Task 5: Notice Bar and MainWindow Integration
 
 **Files:**
-- Create: `src/adsapi/gui/notifications.py`
-- Modify: `src/adsapi/gui/main_window.py`
+- Create: `src/adsfolio/gui/notifications.py`
+- Modify: `src/adsfolio/gui/main_window.py`
 - Create: `tests/test_gui_notifications.py`
 - Create: `tests/test_gui_main_window_watch.py`
 - Modify: `tests/test_gui_dialogs.py`
@@ -649,12 +649,12 @@ Expected: all tests pass without native filesystem observers or ADS requests.
 ### Task 6: Added-Date Column and Newest-First Default
 
 **Files:**
-- Modify: `src/adsapi/pdf/catalog.py`
-- Modify: `src/adsapi/pdf/registry.py`
-- Modify: `src/adsapi/gui/library.py`
-- Modify: `src/adsapi/gui/models.py`
-- Modify: `src/adsapi/gui/config.py`
-- Modify: `src/adsapi/gui/main_window.py`
+- Modify: `src/adsfolio/pdf/catalog.py`
+- Modify: `src/adsfolio/pdf/registry.py`
+- Modify: `src/adsfolio/gui/library.py`
+- Modify: `src/adsfolio/gui/models.py`
+- Modify: `src/adsfolio/gui/config.py`
+- Modify: `src/adsfolio/gui/main_window.py`
 - Modify: `tests/test_pdf_catalog.py`
 - Modify: `tests/test_pdf_registry.py`
 - Modify: `tests/test_gui_library.py`
@@ -720,13 +720,13 @@ Expected: all selected tests pass.
 
 - [ ] **Step 1: Run import sorting and formatting on changed Python files**
 
-Run: `source ~/.venvs/ysbpy/bin/activate && isort src/adsapi/client.py src/adsapi/config.py src/adsapi/pdf/rename_settings.py src/adsapi/pdf/registry.py src/adsapi/pdf/watch_session.py src/adsapi/pdf/watcher.py src/adsapi/gui/config.py src/adsapi/gui/dialogs.py src/adsapi/gui/watch.py src/adsapi/gui/notifications.py src/adsapi/gui/main_window.py tests/test_client_pdf.py tests/test_pdf_rename_settings.py tests/test_pdf_watch_session.py tests/test_gui_watch_controller.py tests/test_gui_notifications.py tests/test_gui_main_window_watch.py`
+Run: `source ~/.venvs/ysbpy/bin/activate && isort src/adsfolio/client.py src/adsfolio/config.py src/adsfolio/pdf/rename_settings.py src/adsfolio/pdf/registry.py src/adsfolio/pdf/watch_session.py src/adsfolio/pdf/watcher.py src/adsfolio/gui/config.py src/adsfolio/gui/dialogs.py src/adsfolio/gui/watch.py src/adsfolio/gui/notifications.py src/adsfolio/gui/main_window.py tests/test_client_pdf.py tests/test_pdf_rename_settings.py tests/test_pdf_watch_session.py tests/test_gui_watch_controller.py tests/test_gui_notifications.py tests/test_gui_main_window_watch.py`
 
-Run: `source ~/.venvs/ysbpy/bin/activate && ruff format src/adsapi tests`
+Run: `source ~/.venvs/ysbpy/bin/activate && ruff format src/adsfolio tests`
 
 - [ ] **Step 2: Run static quality checks**
 
-Run: `source ~/.venvs/ysbpy/bin/activate && ruff check src/adsapi tests`
+Run: `source ~/.venvs/ysbpy/bin/activate && ruff check src/adsfolio tests`
 
 If a type checker is configured in `pyproject.toml`, run its configured command;
 otherwise record that no configured type-check target exists.

@@ -1,6 +1,6 @@
 # CLI Tutorials
 
-This tutorial track walks through the `adsapi` CLI from first run to practical workflows.
+This tutorial track walks through the `adsfolio` CLI from first run to practical workflows.
 
 Use this order:
 

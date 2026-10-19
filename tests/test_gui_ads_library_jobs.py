@@ -13,9 +13,9 @@ pytest.importorskip("pytestqt")
 
 from PySide6.QtCore import QThread
 
-from adsapi.api.libraries import Library
-from adsapi.config import ADSError, AuthenticationError, RateLimitError
-from adsapi.library_sync import AddDocumentsResult, LibraryDestination
+from adsfolio.api.libraries import Library
+from adsfolio.config import ADSError, AuthenticationError, RateLimitError
+from adsfolio.library_sync import AddDocumentsResult, LibraryDestination
 
 
 class FakeLibraries:
@@ -106,7 +106,7 @@ class FakeClient:
 
 
 def _run_job(qtbot, request, client_factory):
-    from adsapi.gui.ads_library_jobs import AdsLibraryJob
+    from adsfolio.gui.ads_library_jobs import AdsLibraryJob
 
     job = AdsLibraryJob(request, client_factory=client_factory)
     successes: list[object] = []
@@ -149,7 +149,7 @@ def test_each_operation_uses_worker_owned_client_and_typed_success(
     request_kwargs,
     expected_type,
 ) -> None:
-    from adsapi.gui.ads_library_jobs import AdsLibraryOperation, AdsLibraryRequest
+    from adsfolio.gui.ads_library_jobs import AdsLibraryOperation, AdsLibraryRequest
 
     calls: list[tuple[object, ...]] = []
     clients: list[FakeClient] = []
@@ -176,7 +176,7 @@ def test_each_operation_uses_worker_owned_client_and_typed_success(
 
 
 def test_retry_dispatches_reconciliation_and_adds_only_missing_documents(qtbot) -> None:
-    from adsapi.gui.ads_library_jobs import AdsLibraryOperation, AdsLibraryRequest
+    from adsfolio.gui.ads_library_jobs import AdsLibraryOperation, AdsLibraryRequest
 
     calls: list[tuple[object, ...]] = []
     factory = lambda: FakeClient(calls)
@@ -200,7 +200,7 @@ def test_retry_dispatches_reconciliation_and_adds_only_missing_documents(qtbot) 
 
 
 def test_cancellation_is_observed_before_next_add_request(qtbot) -> None:
-    from adsapi.gui.ads_library_jobs import AdsLibraryOperation, AdsLibraryRequest
+    from adsfolio.gui.ads_library_jobs import AdsLibraryOperation, AdsLibraryRequest
 
     calls: list[tuple[object, ...]] = []
     holder: dict[str, object] = {}
@@ -216,7 +216,7 @@ def test_cancellation_is_observed_before_next_add_request(qtbot) -> None:
         library_id="L1",
         bibcodes=tuple(f"B{i}" for i in range(2_001)),
     )
-    from adsapi.gui.ads_library_jobs import AdsLibraryJob
+    from adsfolio.gui.ads_library_jobs import AdsLibraryJob
 
     job = AdsLibraryJob(request, client_factory=factory)
     holder["job"] = job
@@ -251,7 +251,7 @@ def test_errors_map_to_distinct_failures_and_still_close_client(
     error,
     kind,
 ) -> None:
-    from adsapi.gui.ads_library_jobs import (
+    from adsfolio.gui.ads_library_jobs import (
         AdsLibraryFailure,
         AdsLibraryOperation,
         AdsLibraryRequest,
@@ -277,7 +277,7 @@ def test_errors_map_to_distinct_failures_and_still_close_client(
 
 
 def test_request_and_signal_values_are_immutable_and_request_has_no_gui_state() -> None:
-    from adsapi.gui.ads_library_jobs import (
+    from adsfolio.gui.ads_library_jobs import (
         AdsLibraryFailure,
         AdsLibraryOperation,
         AdsLibraryRequest,
@@ -311,7 +311,7 @@ def test_request_and_signal_values_are_immutable_and_request_has_no_gui_state() 
 
 
 def test_cancel_only_sets_event_and_does_not_terminate_thread(qtbot) -> None:
-    from adsapi.gui.ads_library_jobs import (
+    from adsfolio.gui.ads_library_jobs import (
         AdsLibraryJob,
         AdsLibraryOperation,
         AdsLibraryRequest,

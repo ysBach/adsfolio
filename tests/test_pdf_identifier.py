@@ -3,10 +3,10 @@ import logging
 from types import SimpleNamespace
 from unittest.mock import Mock
 
-from adsapi.api.search import SearchResult
-from adsapi.pdf.identifier import PdfIdentifier
-from adsapi.pdf.identify import cached_ads_record
-from adsapi.pdf.identify_settings import IdentifyStrategy
+from adsfolio.api.search import SearchResult
+from adsfolio.pdf.identifier import PdfIdentifier
+from adsfolio.pdf.identify import cached_ads_record
+from adsfolio.pdf.identify_settings import IdentifyStrategy
 
 
 class _SearchStub:

@@ -4,9 +4,9 @@ from pathlib import Path
 
 import pytest
 
-from adsapi.config import Config
-from adsapi.pdf.catalog import CATALOG_FILENAME, CATALOG_SCHEMA_VERSION, PdfCatalog
-from adsapi.pdf.registry import PdfRegistry
+from adsfolio.config import Config
+from adsfolio.pdf.catalog import CATALOG_FILENAME, CATALOG_SCHEMA_VERSION, PdfCatalog
+from adsfolio.pdf.registry import PdfRegistry
 
 
 def _catalog(monkeypatch, tmp_path: Path) -> PdfCatalog:

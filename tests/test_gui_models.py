@@ -13,11 +13,11 @@ pytest.importorskip("pytestqt")
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QFont, QFontMetrics
 
-from adsapi.citations import CitationStyle
-from adsapi.config import Config
-from adsapi.gui.library import BASE_COLUMNS, COLUMNS, FileQuery, build_columns
-from adsapi.gui.models import PAGE_SIZE, FileTableModel, LinkDelegate
-from adsapi.pdf.registry import PdfRegistry
+from adsfolio.citations import CitationStyle
+from adsfolio.config import Config
+from adsfolio.gui.library import BASE_COLUMNS, COLUMNS, FileQuery, build_columns
+from adsfolio.gui.models import PAGE_SIZE, FileTableModel, LinkDelegate
+from adsfolio.pdf.registry import PdfRegistry
 
 
 @pytest.fixture(autouse=True)

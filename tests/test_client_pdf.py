@@ -3,7 +3,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from adsapi import ADSClient
+from adsfolio import ADSClient
 
 
 class FakeResponse:

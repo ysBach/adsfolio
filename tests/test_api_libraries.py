@@ -2,8 +2,8 @@ from collections.abc import Iterator
 
 import pytest
 
-from adsapi.api.libraries import LibrariesAPI
-from adsapi.config import ADSError
+from adsfolio.api.libraries import LibrariesAPI
+from adsfolio.config import ADSError
 
 
 class FakeBaseClient:

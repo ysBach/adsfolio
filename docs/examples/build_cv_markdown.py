@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-import adsapi
+import adsfolio
 
 
 DEFAULT_QUERY = (
@@ -152,10 +152,10 @@ def format_publication_markdown(
         return "- [missing bibcode] Incomplete ADS record."
 
     title = str(get_first_item(doc, "title") or "(untitled)")
-    title = adsapi.format_title_latex(title).replace("\n", " ").strip()
+    title = adsfolio.format_title_latex(title).replace("\n", " ").strip()
 
     authors = as_str_list(doc.get("author"))
-    author_text = adsapi.format_author_list_cv(
+    author_text = adsfolio.format_author_list_cv(
         authors,
         n_max=5,
         n_min=cfg.n_min_author,
@@ -166,7 +166,7 @@ def format_publication_markdown(
         latex=False,
     )
 
-    journal = adsapi.format_journal(
+    journal = adsfolio.format_journal(
         str(get_first_item(doc, "bibstem") or ""),
         fmt="full",
         latex=False,
@@ -204,7 +204,7 @@ def format_publication_markdown(
 
     status = STATUS_BY_BIBCODE.get(bibcode, "")
     status_text = f" [{status}]" if status else ""
-    ads_url = adsapi.ADSClient.abstract_url(bibcode)
+    ads_url = adsfolio.ADSClient.abstract_url(bibcode)
 
     return (
         f"- [`{bibcode}`]({ads_url}){marker_text}: "
@@ -284,7 +284,7 @@ def write_publications_markdown(
     lines: list[str] = []
     lines.append("# Publications")
     lines.append("")
-    lines.append("Generated from NASA ADS search results via `adsapi`.")
+    lines.append("Generated from NASA ADS search results via `adsfolio`.")
     lines.append("")
     lines.append("## First-authored")
     lines.append(f"Total: {len(first_docs)}")
@@ -466,7 +466,7 @@ def main() -> None:
     args.output_dir.mkdir(parents=True, exist_ok=True)
 
     cfg = RenderConfig(me_target=args.me_target)
-    client = adsapi.ADSClient(token=args.token)
+    client = adsfolio.ADSClient(token=args.token)
     results = client.search.query_all(
         q=args.query,
         fl=DEFAULT_FIELDS,

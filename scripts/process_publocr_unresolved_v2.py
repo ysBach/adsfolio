@@ -2,9 +2,9 @@ import re
 import csv
 import unicodedata
 from pathlib import Path
-from adsapi.pdf.registry import open_registry_state
-from adsapi.pdf.renamer import PdfRenamer
-from adsapi.pdf.identifier import (
+from adsfolio.pdf.registry import open_registry_state
+from adsfolio.pdf.renamer import PdfRenamer
+from adsfolio.pdf.identifier import (
     BIBCODE_PATTERN,
     PdfIdentifier,
     extract_doi_candidates_pdf,

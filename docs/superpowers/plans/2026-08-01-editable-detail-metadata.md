@@ -21,7 +21,7 @@
 ### Task 1: Registry metadata replacement and locked ADS merge
 
 **Files:**
-- Modify: `src/adsapi/pdf/registry.py`
+- Modify: `src/adsfolio/pdf/registry.py`
 - Test: `tests/test_pdf_registry.py`
 
 **Interfaces:**
@@ -37,12 +37,12 @@
 ### Task 2: Single-file ADS refresh command
 
 **Files:**
-- Modify: `src/adsapi/pdf/cli.py`
+- Modify: `src/adsfolio/pdf/cli.py`
 - Test: `tests/test_pdf_metrics_refresh.py`
 
 **Interfaces:**
 - Consumes: `PdfRegistry.replace_file_metadata` and `merge_ads_metadata`
-- Produces: `adsapi pdf refresh-ads DIRECTORY --bibcode BIBCODE --relative-path PATH`
+- Produces: `adsfolio pdf refresh-ads DIRECTORY --bibcode BIBCODE --relative-path PATH`
 
 - [ ] Write a test for the helper that applies an ADS document to one selected record, including a locked field.
 - [ ] Run the targeted test and confirm it fails before the helper exists.
@@ -53,8 +53,8 @@
 ### Task 3: Persisted row order and draggable detail rows
 
 **Files:**
-- Modify: `src/adsapi/gui/config.py`
-- Modify: `src/adsapi/gui/detail_pane.py`
+- Modify: `src/adsfolio/gui/config.py`
+- Modify: `src/adsfolio/gui/detail_pane.py`
 - Test: `tests/test_gui_config.py`
 - Test: `tests/test_gui_detail_pane.py`
 
@@ -72,7 +72,7 @@
 ### Task 4: Main-window editing and manual bibcode refresh
 
 **Files:**
-- Modify: `src/adsapi/gui/main_window.py`
+- Modify: `src/adsfolio/gui/main_window.py`
 - Test: `tests/test_gui_detail_pane.py`
 
 **Interfaces:**

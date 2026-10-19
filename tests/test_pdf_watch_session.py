@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from adsapi.pdf.watch_session import (
+from adsfolio.pdf.watch_session import (
     ArrivalIdentity,
     FileSnapshot,
     WatchEvent,

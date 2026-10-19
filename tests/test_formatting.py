@@ -1,6 +1,6 @@
 import unittest
 
-from adsapi.formatting import html_to_latex, html_to_text
+from adsfolio.formatting import html_to_latex, html_to_text
 
 
 class TestHtmlToLatex(unittest.TestCase):
@@ -50,7 +50,7 @@ class TestHtmlToLatex(unittest.TestCase):
         )
 
         # Verify format_title_latex doesn't double-escape
-        from adsapi.formatting import format_title_latex
+        from adsfolio.formatting import format_title_latex
 
         title = r"SPHEREx Pre-Perihelion Mapping of $\mathrm{H_2O}$, $\mathrm{CO_2}$, and $\mathrm{CO}$"
         self.assertEqual(format_title_latex(title), title)

@@ -1,24 +1,24 @@
 # Tutorial 4: PDF Workflows
 
-This tutorial covers `adsapi pdf` end-to-end: identify, rename, watch, status, upgrade, and library push.
+This tutorial covers `adsfolio pdf` end-to-end: identify, rename, watch, status, upgrade, and library push.
 
 ## 0) Start with `--help`
 
 Review the full PDF command surface before applying file operations:
 
 ~~~bash
-adsapi pdf --help
-adsapi set --help
-adsapi cache --help
-adsapi pdf ocr --help
-adsapi pdf identify --help
-adsapi pdf rename --help
-adsapi pdf watch --help
-adsapi pdf status --help
-adsapi pdf upgrade --help
-adsapi pdf push-library --help
-adsapi pdf export --help
-adsapi pdf obsidian --help
+adsfolio pdf --help
+adsfolio set --help
+adsfolio cache --help
+adsfolio pdf ocr --help
+adsfolio pdf identify --help
+adsfolio pdf rename --help
+adsfolio pdf watch --help
+adsfolio pdf status --help
+adsfolio pdf upgrade --help
+adsfolio pdf push-library --help
+adsfolio pdf export --help
+adsfolio pdf obsidian --help
 ~~~
 
 Key PDF options to understand:
@@ -55,20 +55,20 @@ Key PDF options to understand:
 Install optional features:
 
 ```bash
-pip install adsapi[full]
+pip install adsfolio[full]
 ```
 
-Run `adsapi set` once before first `pdf identify` so the tool can cache your publication list
+Run `adsfolio set` once before first `pdf identify` so the tool can cache your publication list
 (ORCID + optional names + year window), optional library papers, and optionally
 references/citations of that library set. This dramatically reduces per-file ADS queries.
-Run `adsapi set` again only when token/profile values change.
+Run `adsfolio set` again only when token/profile values change.
 
 ## How identify works
 
-`adsapi pdf identify` uses the central user catalog `pdf-library.sqlite` as its
+`adsfolio pdf identify` uses the central user catalog `pdf-library.sqlite` as its
 incremental state. Legacy per-root registry and JSON files are imported without
 being renamed or deleted.
-The user-level publication cache is separate and is managed by `adsapi cache`. On each run it:
+The user-level publication cache is separate and is managed by `adsfolio cache`. On each run it:
 
 1. Compares stored size, modification time, and filesystem identity first.
 2. Computes SHA-256 only for new or changed PDFs, then reuses matching catalog attachments.
@@ -88,16 +88,16 @@ run the command.
 Dry-run:
 
 ```bash
-adsapi pdf ocr ~/Papers --recursive -o ~/Papers/ocr_required
+adsfolio pdf ocr ~/Papers --recursive -o ~/Papers/ocr_required
 ```
 
 Apply move:
 
 ```bash
-adsapi pdf ocr ~/Papers --recursive -o ~/Papers/ocr_required --apply
+adsfolio pdf ocr ~/Papers --recursive -o ~/Papers/ocr_required --apply
 
 # Generate ocrmypdf.sh (uses the same --output directory as OCR input)
-adsapi pdf ocr ~/Papers --recursive -o ~/Papers/ocr_required --make-ocr-sh
+adsfolio pdf ocr ~/Papers --recursive -o ~/Papers/ocr_required --make-ocr-sh
 bash ocrmypdf.sh
 ```
 
@@ -108,7 +108,7 @@ verify OCR outputs carefully. You can manually move selected files out of
 ## 2) Identify PDFs and create registry metadata
 
 ```bash
-adsapi pdf identify ~/Papers --recursive
+adsfolio pdf identify ~/Papers --recursive
 ```
 
 This matches the publication cache, reuses cached fallback ADS documents, and
@@ -117,29 +117,29 @@ writes the central catalog outside the library root.
 Reusable Identify settings include recursive scanning, filename inference,
 unresolved destination, unresolved-directory skipping, and verbosity. Personal
 identity and publication-year bounds are global profile data configured by
-`adsapi set` or **Tools → My Publication Profile…**; they are not library-scoped
+`adsfolio set` or **Tools → My Publication Profile…**; they are not library-scoped
 Identify behavior. The default Identify scope is
 `global`; use `--settings-scope library` for values stored with the current
 library. Explicit options override the selected settings for one run without
 mutating them:
 
 ```bash
-adsapi pdf identify ~/Papers --settings-scope library --no-recursive
-adsapi pdf identify ~/Papers --clear-output-unresolved
+adsfolio pdf identify ~/Papers --settings-scope library --no-recursive
+adsfolio pdf identify ~/Papers --clear-output-unresolved
 ```
 
 Use `--debut-year`, `--end-year`, `--clear-debut-year`, or `--clear-end-year` to
 override the global profile's prefetch window for one run. `--refresh-cache`,
 `--allow-ads`, and `--apply` are never inherited;
 they must be supplied each time. Library exports now include the canonical
-`identify_settings` payload. Older adsapi releases ignore that new payload but
+`identify_settings` payload. Older adsfolio releases ignore that new payload but
 can still read the retained `identify_profile` provenance.
 
 Inspect or back up the state with:
 
 ```bash
-adsapi cache status
-adsapi pdf export ~/Papers -o pdfs-backup.json
+adsfolio cache status
+adsfolio pdf export ~/Papers -o pdfs-backup.json
 ```
 
 If many files remain unmatched after cache/profile matching,
@@ -156,18 +156,18 @@ an LLM prompt template so you can parse metadata with your preferred AI.
 See unresolved routing (dry-run, no moves):
 
 ```bash
-adsapi pdf identify ~/Papers --recursive \
+adsfolio pdf identify ~/Papers --recursive \
   --output-unresolved ~/Papers/unresolved
 ```
 
 Move unresolved files:
 
 ```bash
-adsapi pdf identify ~/Papers --recursive \
+adsfolio pdf identify ~/Papers --recursive \
   --output-unresolved ~/Papers/unresolved --apply
 
 # Optional: print per-file "Moved unresolved" lines
-adsapi pdf identify ~/Papers --recursive \
+adsfolio pdf identify ~/Papers --recursive \
   --output-unresolved ~/Papers/unresolved --apply \
   -v
 ```
@@ -175,7 +175,7 @@ adsapi pdf identify ~/Papers --recursive \
 Skip files already in the unresolved destination on later recursive runs:
 
 ```bash
-adsapi pdf identify ~/Papers --recursive \
+adsfolio pdf identify ~/Papers --recursive \
   --output-unresolved ~/Papers/unresolved \
   --skip-unresolved-directory
 ```
@@ -187,7 +187,7 @@ effective skipped path is `~/Papers/unresolved`. The option defaults off.
 If you already generated AI hints, pass them directly:
 
 ```bash
-adsapi pdf identify ~/Papers --recursive --ai-csv ~/Papers/unresolved_ai.csv
+adsfolio pdf identify ~/Papers --recursive --ai-csv ~/Papers/unresolved_ai.csv
 ```
 
 ## 3) Rename safely: dry-run then apply
@@ -207,7 +207,7 @@ literal braces.
 Dry-run:
 
 ```bash
-adsapi pdf rename ~/Papers \
+adsfolio pdf rename ~/Papers \
   --scheme "{authors}_{bibcode}-{title}" \
   --author-format surname_initials \
   --max-authors 3
@@ -216,7 +216,7 @@ adsapi pdf rename ~/Papers \
 Apply:
 
 ```bash
-adsapi pdf rename ~/Papers \
+adsfolio pdf rename ~/Papers \
   --scheme "{authors}_{bibcode}-{title}" \
   --author-format surname_initials \
   --max-authors 3 \
@@ -244,13 +244,13 @@ Author format options:
 Polling (default):
 
 ```bash
-adsapi pdf watch ~/Papers --recursive --interval 10 --apply
+adsfolio pdf watch ~/Papers --recursive --interval 10 --apply
 ```
 
-Watchdog backend (requires `adsapi[full]`):
+Watchdog backend (requires `adsfolio[full]`):
 
 ```bash
-adsapi pdf watch ~/Papers --recursive --use-watchdog --interval 60 \
+adsfolio pdf watch ~/Papers --recursive --use-watchdog --interval 60 \
   --output-unresolved unresolved --apply
 ```
 
@@ -280,7 +280,7 @@ PDFs.
 
 ### Run continuously on macOS
 
-Create `~/Library/LaunchAgents/org.example.adsapi-pdf-watch.plist`, replacing
+Create `~/Library/LaunchAgents/org.example.adsfolio-pdf-watch.plist`, replacing
 every `/Users/YOU/...` path with an absolute path valid for your account:
 
 ```xml
@@ -289,10 +289,10 @@ every `/Users/YOU/...` path with an absolute path valid for your account:
   "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-  <key>Label</key><string>org.example.adsapi-pdf-watch</string>
+  <key>Label</key><string>org.example.adsfolio-pdf-watch</string>
   <key>ProgramArguments</key>
   <array>
-    <string>/Users/YOU/.venvs/ysbpy/bin/adsapi</string>
+    <string>/Users/YOU/.venvs/ysbpy/bin/adsfolio</string>
     <string>pdf</string><string>watch</string>
     <string>/Users/YOU/Papers</string>
     <string>--recursive</string><string>--use-watchdog</string>
@@ -302,8 +302,8 @@ every `/Users/YOU/...` path with an absolute path valid for your account:
   </array>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
-  <key>StandardOutPath</key><string>/Users/YOU/Library/Logs/adsapi-pdf-watch.log</string>
-  <key>StandardErrorPath</key><string>/Users/YOU/Library/Logs/adsapi-pdf-watch.err</string>
+  <key>StandardOutPath</key><string>/Users/YOU/Library/Logs/adsfolio-pdf-watch.log</string>
+  <key>StandardErrorPath</key><string>/Users/YOU/Library/Logs/adsfolio-pdf-watch.err</string>
 </dict>
 </plist>
 ```
@@ -311,8 +311,8 @@ every `/Users/YOU/...` path with an absolute path valid for your account:
 Load or remove it explicitly:
 
 ```bash
-launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/org.example.adsapi-pdf-watch.plist
-launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/org.example.adsapi-pdf-watch.plist
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/org.example.adsfolio-pdf-watch.plist
+launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/org.example.adsfolio-pdf-watch.plist
 ```
 
 The package does not install or start this agent automatically because the
@@ -322,7 +322,7 @@ user-specific.
 ## 6) Check current state
 
 ```bash
-adsapi pdf status ~/Papers --recursive
+adsfolio pdf status ~/Papers --recursive
 ```
 
 Shows identified catalog locations, unresolved files on disk, and duplicate hash
@@ -335,19 +335,19 @@ the export command for portable backups.
 Dry-run:
 
 ```bash
-adsapi pdf upgrade ~/Papers
+adsfolio pdf upgrade ~/Papers
 ```
 
 Apply:
 
 ```bash
-adsapi pdf upgrade ~/Papers --apply
+adsfolio pdf upgrade ~/Papers --apply
 ```
 
 Overwrite tracked arXiv file with official PDF and keep backups:
 
 ```bash
-adsapi pdf upgrade ~/Papers --apply \
+adsfolio pdf upgrade ~/Papers --apply \
   --overwrite-arxiv-with-official \
   --arxiv-backup-if-overwritten ~/Papers/arxiv-backup
 ```
@@ -355,13 +355,13 @@ adsapi pdf upgrade ~/Papers --apply \
 Force re-check entries already marked as published:
 
 ```bash
-adsapi pdf upgrade ~/Papers --apply --force
+adsfolio pdf upgrade ~/Papers --apply --force
 ```
 
 ## 8) Auto-upgrade while watching
 
 ```bash
-adsapi pdf watch ~/Papers --recursive --apply \
+adsfolio pdf watch ~/Papers --recursive --apply \
   --auto-upgrade --upgrade-interval 24
 ```
 
@@ -370,13 +370,13 @@ adsapi pdf watch ~/Papers --recursive --apply \
 Dry-run:
 
 ```bash
-adsapi pdf push-library ~/Papers <library_id>
+adsfolio pdf push-library ~/Papers <library_id>
 ```
 
 Apply:
 
 ```bash
-adsapi pdf push-library ~/Papers <library_id> --apply
+adsfolio pdf push-library ~/Papers <library_id> --apply
 ```
 
 ## 10) Generate Obsidian-friendly notes
@@ -389,27 +389,27 @@ never copied, moved, or embedded.
 Dry-run (no ADS queries, no files written):
 
 ```bash
-adsapi pdf obsidian ~/Papers
+adsfolio pdf obsidian ~/Papers
 ```
 
 Apply — fetches any missing abstracts from ADS in one batched query, caches them into the
 registry/sidecar, and writes the notes:
 
 ```bash
-adsapi pdf obsidian ~/Papers --apply
+adsfolio pdf obsidian ~/Papers --apply
 ```
 
 Existing notes are left untouched on re-runs (so manual edits in Obsidian are preserved) unless you
 pass `--force`:
 
 ```bash
-adsapi pdf obsidian ~/Papers --apply --force
+adsfolio pdf obsidian ~/Papers --apply --force
 ```
 
 Write notes to a separate folder instead of colocating them with the PDFs:
 
 ```bash
-adsapi pdf obsidian ~/Papers --apply --notes-dir ~/Papers/notes
+adsfolio pdf obsidian ~/Papers --apply --notes-dir ~/Papers/notes
 ```
 
 ## Next

@@ -2,8 +2,8 @@ import logging
 
 import pytest
 
-from adsapi.pdf.rename_settings import RenameSettings
-from adsapi.pdf.renamer import DEFAULT_SCHEME
+from adsfolio.pdf.rename_settings import RenameSettings
+from adsfolio.pdf.renamer import DEFAULT_SCHEME
 
 
 def test_rename_settings_defaults_and_roundtrip():

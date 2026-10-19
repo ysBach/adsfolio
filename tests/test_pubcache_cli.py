@@ -1,20 +1,20 @@
 from click.testing import CliRunner
 
-from adsapi import pubcache
-from adsapi.cli.commands import main
+from adsfolio import pubcache
+from adsfolio.cli.commands import main
 
 
 def test_cache_commands_refresh_status_and_clear(monkeypatch, tmp_path):
     path = tmp_path / "publications.json"
     monkeypatch.setattr(pubcache, "cache_path", lambda: path)
-    monkeypatch.setattr("adsapi.cli.commands.cache_path", lambda: path)
+    monkeypatch.setattr("adsfolio.cli.commands.cache_path", lambda: path)
     monkeypatch.setattr(
-        "adsapi.cli.commands.Config.get_user_setup",
+        "adsfolio.cli.commands.Config.get_user_setup",
         lambda: {"orcid": "0000", "end_year": 2026},
     )
-    monkeypatch.setattr("adsapi.cli.commands._load_existing_token", lambda: "token")
+    monkeypatch.setattr("adsfolio.cli.commands._load_existing_token", lambda: "token")
     monkeypatch.setattr(
-        "adsapi.cli.commands.query_publications",
+        "adsfolio.cli.commands.query_publications",
         lambda client, profile: [{"bibcode": "B1"}],
     )
 

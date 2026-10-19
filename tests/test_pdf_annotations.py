@@ -1,6 +1,6 @@
 from types import SimpleNamespace
 
-from adsapi.pdf.annotations import (
+from adsfolio.pdf.annotations import (
     AnnotationRecord,
     MatchedAnnotation,
     apply_annotations,
@@ -124,7 +124,7 @@ def test_extract_annotations_reads_portable_types_with_context(monkeypatch, tmp_
     )
     doc = _FakeDoc([page])
     monkeypatch.setattr(
-        "adsapi.pdf.annotations._import_fitz",
+        "adsfolio.pdf.annotations._import_fitz",
         lambda: SimpleNamespace(open=lambda _: doc),
     )
 
@@ -165,7 +165,7 @@ def test_match_annotations_prefers_context_anchored_page(monkeypatch, tmp_path):
     )
     target_doc = _FakeDoc([page0, page1])
     monkeypatch.setattr(
-        "adsapi.pdf.annotations._import_fitz",
+        "adsfolio.pdf.annotations._import_fitz",
         lambda: SimpleNamespace(open=lambda _: target_doc),
     )
 
@@ -182,7 +182,7 @@ def test_apply_annotations_writes_output_and_preserves_fields(monkeypatch, tmp_p
     page = _FakePage(number=0, text="dummy")
     doc = _FakeDoc([page])
     monkeypatch.setattr(
-        "adsapi.pdf.annotations._import_fitz",
+        "adsfolio.pdf.annotations._import_fitz",
         lambda: SimpleNamespace(open=lambda _: doc),
     )
 
@@ -235,17 +235,17 @@ def test_port_annotations_reports_unported_records(monkeypatch, tmp_path):
         )
     ]
 
-    monkeypatch.setattr("adsapi.pdf.annotations.extract_annotations", lambda _: records)
+    monkeypatch.setattr("adsfolio.pdf.annotations.extract_annotations", lambda _: records)
     monkeypatch.setattr(
-        "adsapi.pdf.annotations.match_annotations",
+        "adsfolio.pdf.annotations.match_annotations",
         lambda _records, _target: matched,
     )
     monkeypatch.setattr(
-        "adsapi.pdf.annotations.apply_annotations",
+        "adsfolio.pdf.annotations.apply_annotations",
         lambda _matched, target_path, output_path: 1,
     )
     monkeypatch.setattr(
-        "adsapi.pdf.annotations._count_nonportable_annotations",
+        "adsfolio.pdf.annotations._count_nonportable_annotations",
         lambda _: 2,
     )
 

@@ -9,7 +9,7 @@ def test_cli_module_entrypoint_does_not_emit_runpy_warning():
     env = {**os.environ, "PYTHONPATH": str(source_root)}
 
     result = subprocess.run(
-        [sys.executable, "-m", "adsapi.cli.commands", "--help"],
+        [sys.executable, "-m", "adsfolio.cli.commands", "--help"],
         capture_output=True,
         text=True,
         env=env,

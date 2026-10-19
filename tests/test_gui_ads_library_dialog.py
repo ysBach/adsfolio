@@ -16,13 +16,13 @@ pytest.importorskip("pytestqt")
 from PySide6.QtCore import QObject, Qt, Signal
 from PySide6.QtWidgets import QApplication, QDialog, QMessageBox
 
-from adsapi.gui.ads_library_dialog import AdsLibraryDialog, CreateAdsLibraryDialog
-from adsapi.gui.ads_library_jobs import (
+from adsfolio.gui.ads_library_dialog import AdsLibraryDialog, CreateAdsLibraryDialog
+from adsfolio.gui.ads_library_jobs import (
     AdsLibraryFailure,
     AdsLibraryOperation,
     AdsLibraryRequest,
 )
-from adsapi.library_sync import AddDocumentsResult, LibraryDestination
+from adsfolio.library_sync import AddDocumentsResult, LibraryDestination
 
 
 @pytest.fixture(scope="module")

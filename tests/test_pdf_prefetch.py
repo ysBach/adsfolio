@@ -1,7 +1,7 @@
 from pathlib import Path
 from types import SimpleNamespace
 
-from adsapi.pdf.prefetch import (
+from adsfolio.pdf.prefetch import (
     PublicationProfile,
     build_publication_index,
     estimated_query_budget,
@@ -9,12 +9,12 @@ from adsapi.pdf.prefetch import (
     match_pdf_from_prefetch,
     query_publications,
 )
-from adsapi.user_profile import UserProfile
+from adsfolio.user_profile import UserProfile
 
 
 def test_load_profile_from_saved_setup(monkeypatch):
     monkeypatch.setattr(
-        "adsapi.pdf.prefetch.Config.load_user_profile",
+        "adsfolio.pdf.prefetch.Config.load_user_profile",
         lambda: UserProfile(
             orcid="0000-0002-1825-0097",
             author_names=("Bach, Y. P.",),

@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from adsapi.gui.osint import open_path, open_url, reveal_command
+from adsfolio.gui.osint import open_path, open_url, reveal_command
 
 
 def test_reveal_command_macos() -> None:
@@ -35,7 +35,7 @@ def test_open_path_uses_configured_application(tmp_path, monkeypatch) -> None:
     path.write_bytes(b"%PDF")
     calls = []
     monkeypatch.setattr(
-        "adsapi.gui.osint.subprocess.Popen",
+        "adsfolio.gui.osint.subprocess.Popen",
         lambda argv, **kwargs: calls.append((argv, kwargs)),
     )
 
@@ -46,7 +46,7 @@ def test_open_path_uses_configured_application(tmp_path, monkeypatch) -> None:
 def test_open_url_uses_configured_browser(monkeypatch) -> None:
     calls = []
     monkeypatch.setattr(
-        "adsapi.gui.osint.subprocess.Popen",
+        "adsfolio.gui.osint.subprocess.Popen",
         lambda argv, **kwargs: calls.append((argv, kwargs)),
     )
 

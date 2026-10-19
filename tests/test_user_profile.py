@@ -1,6 +1,6 @@
 import pytest
 
-from adsapi.user_profile import UserProfile
+from adsfolio.user_profile import UserProfile
 
 
 def test_user_profile_normalizes_canonical_and_legacy_fields():

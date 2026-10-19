@@ -1,6 +1,6 @@
 # Publications
 
-Generated from NASA ADS search results via `adsapi`.
+Generated from NASA ADS search results via `adsfolio`.
 
 ## First-authored
 Total: 6

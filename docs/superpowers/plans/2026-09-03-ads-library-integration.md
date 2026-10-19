@@ -34,8 +34,8 @@
 ### Task 1: Bounded HTTP requests and complete raw library pagination
 
 **Files:**
-- Modify: `src/adsapi/client.py`
-- Modify: `src/adsapi/api/libraries.py`
+- Modify: `src/adsfolio/client.py`
+- Modify: `src/adsfolio/api/libraries.py`
 - Create: `tests/test_client_http.py`
 - Create: `tests/test_api_libraries.py`
 
@@ -107,9 +107,9 @@ empty or short page. Preserve existing one-page `list_libraries` and
 
 ```bash
 source ~/.venvs/ysbpy/bin/activate
-uv run --active isort src/adsapi/client.py src/adsapi/api/libraries.py tests/test_client_http.py tests/test_api_libraries.py
-uv run --active ruff format src/adsapi/client.py src/adsapi/api/libraries.py tests/test_client_http.py tests/test_api_libraries.py
-uv run --active ruff check src/adsapi/client.py src/adsapi/api/libraries.py tests/test_client_http.py tests/test_api_libraries.py
+uv run --active isort src/adsfolio/client.py src/adsfolio/api/libraries.py tests/test_client_http.py tests/test_api_libraries.py
+uv run --active ruff format src/adsfolio/client.py src/adsfolio/api/libraries.py tests/test_client_http.py tests/test_api_libraries.py
+uv run --active ruff check src/adsfolio/client.py src/adsfolio/api/libraries.py tests/test_client_http.py tests/test_api_libraries.py
 uv run --active pytest -q tests/test_client_http.py tests/test_api_libraries.py tests/test_client_pdf.py tests/test_search_query_all.py
 ```
 
@@ -118,7 +118,7 @@ Expected: all focused client/API tests pass.
 - [ ] **Step 6: Commit HTTP and pagination behavior**
 
 ```bash
-git add src/adsapi/client.py src/adsapi/api/libraries.py tests/test_client_http.py tests/test_api_libraries.py
+git add src/adsfolio/client.py src/adsfolio/api/libraries.py tests/test_client_http.py tests/test_api_libraries.py
 git commit -m "feat: paginate ADS libraries safely"
 ```
 
@@ -127,7 +127,7 @@ git commit -m "feat: paginate ADS libraries safely"
 ### Task 2: Qt-free local selection and ADS synchronization service
 
 **Files:**
-- Create: `src/adsapi/library_sync.py`
+- Create: `src/adsfolio/library_sync.py`
 - Create: `tests/test_library_sync.py`
 
 **Interfaces:**
@@ -183,7 +183,7 @@ source ~/.venvs/ysbpy/bin/activate
 uv run --active pytest -q tests/test_library_sync.py
 ```
 
-Expected: collection fails because `adsapi.library_sync` does not exist.
+Expected: collection fails because `adsfolio.library_sync` does not exist.
 
 - [ ] **Step 4: Implement immutable result types and selection**
 
@@ -252,9 +252,9 @@ tuples in source order.
 
 ```bash
 source ~/.venvs/ysbpy/bin/activate
-uv run --active isort src/adsapi/library_sync.py tests/test_library_sync.py
-uv run --active ruff format src/adsapi/library_sync.py tests/test_library_sync.py
-uv run --active ruff check src/adsapi/library_sync.py tests/test_library_sync.py
+uv run --active isort src/adsfolio/library_sync.py tests/test_library_sync.py
+uv run --active ruff format src/adsfolio/library_sync.py tests/test_library_sync.py
+uv run --active ruff check src/adsfolio/library_sync.py tests/test_library_sync.py
 uv run --active pytest -q tests/test_api_libraries.py tests/test_library_sync.py
 ```
 
@@ -263,7 +263,7 @@ Expected: all tests pass with exact batch boundaries and result categories.
 - [ ] **Step 7: Commit the synchronization service**
 
 ```bash
-git add src/adsapi/library_sync.py tests/test_library_sync.py
+git add src/adsfolio/library_sync.py tests/test_library_sync.py
 git commit -m "feat: add ADS library synchronization service"
 ```
 
@@ -272,7 +272,7 @@ git commit -m "feat: add ADS library synchronization service"
 ### Task 3: Thread-owned ADS library jobs
 
 **Files:**
-- Create: `src/adsapi/gui/ads_library_jobs.py`
+- Create: `src/adsfolio/gui/ads_library_jobs.py`
 - Create: `tests/test_gui_ads_library_jobs.py`
 
 **Interfaces:**
@@ -349,9 +349,9 @@ Delete worker/thread objects with `deleteLater` after completion.
 
 ```bash
 source ~/.venvs/ysbpy/bin/activate
-uv run --active isort src/adsapi/gui/ads_library_jobs.py tests/test_gui_ads_library_jobs.py
-uv run --active ruff format src/adsapi/gui/ads_library_jobs.py tests/test_gui_ads_library_jobs.py
-uv run --active ruff check src/adsapi/gui/ads_library_jobs.py tests/test_gui_ads_library_jobs.py
+uv run --active isort src/adsfolio/gui/ads_library_jobs.py tests/test_gui_ads_library_jobs.py
+uv run --active ruff format src/adsfolio/gui/ads_library_jobs.py tests/test_gui_ads_library_jobs.py
+uv run --active ruff check src/adsfolio/gui/ads_library_jobs.py tests/test_gui_ads_library_jobs.py
 uv run --active pytest -q tests/test_library_sync.py tests/test_gui_ads_library_jobs.py
 ```
 
@@ -360,7 +360,7 @@ Expected: all jobs close their client and thread cleanly.
 - [ ] **Step 6: Commit the worker unit**
 
 ```bash
-git add src/adsapi/gui/ads_library_jobs.py tests/test_gui_ads_library_jobs.py
+git add src/adsfolio/gui/ads_library_jobs.py tests/test_gui_ads_library_jobs.py
 git commit -m "feat: run ADS library work off the UI thread"
 ```
 
@@ -369,7 +369,7 @@ git commit -m "feat: run ADS library work off the UI thread"
 ### Task 4: ADS library destination and confirmation dialog
 
 **Files:**
-- Create: `src/adsapi/gui/ads_library_dialog.py`
+- Create: `src/adsfolio/gui/ads_library_dialog.py`
 - Create: `tests/test_gui_ads_library_dialog.py`
 
 **Interfaces:**
@@ -450,9 +450,9 @@ takes effect before the next batch.
 
 ```bash
 source ~/.venvs/ysbpy/bin/activate
-uv run --active isort src/adsapi/gui/ads_library_dialog.py tests/test_gui_ads_library_dialog.py
-uv run --active ruff format src/adsapi/gui/ads_library_dialog.py tests/test_gui_ads_library_dialog.py
-uv run --active ruff check src/adsapi/gui/ads_library_dialog.py tests/test_gui_ads_library_dialog.py
+uv run --active isort src/adsfolio/gui/ads_library_dialog.py tests/test_gui_ads_library_dialog.py
+uv run --active ruff format src/adsfolio/gui/ads_library_dialog.py tests/test_gui_ads_library_dialog.py
+uv run --active ruff check src/adsfolio/gui/ads_library_dialog.py tests/test_gui_ads_library_dialog.py
 uv run --active pytest -q tests/test_library_sync.py tests/test_gui_ads_library_jobs.py tests/test_gui_ads_library_dialog.py
 ```
 
@@ -461,7 +461,7 @@ Expected: all dialog behavior tests pass without live network access.
 - [ ] **Step 7: Commit the dialog unit**
 
 ```bash
-git add src/adsapi/gui/ads_library_dialog.py tests/test_gui_ads_library_dialog.py
+git add src/adsfolio/gui/ads_library_dialog.py tests/test_gui_ads_library_dialog.py
 git commit -m "feat: add ADS library destination dialog"
 ```
 
@@ -470,7 +470,7 @@ git commit -m "feat: add ADS library destination dialog"
 ### Task 5: Main-window selection and action integration
 
 **Files:**
-- Modify: `src/adsapi/gui/main_window.py`
+- Modify: `src/adsfolio/gui/main_window.py`
 - Modify: `tests/test_gui_detail_pane.py`
 - Create: `tests/test_gui_ads_library_main_window.py`
 
@@ -533,9 +533,9 @@ open per main window.
 
 ```bash
 source ~/.venvs/ysbpy/bin/activate
-uv run --active isort src/adsapi/gui/main_window.py tests/test_gui_ads_library_main_window.py tests/test_gui_detail_pane.py
-uv run --active ruff format src/adsapi/gui/main_window.py tests/test_gui_ads_library_main_window.py tests/test_gui_detail_pane.py
-uv run --active ruff check src/adsapi/gui/main_window.py tests/test_gui_ads_library_main_window.py tests/test_gui_detail_pane.py
+uv run --active isort src/adsfolio/gui/main_window.py tests/test_gui_ads_library_main_window.py tests/test_gui_detail_pane.py
+uv run --active ruff format src/adsfolio/gui/main_window.py tests/test_gui_ads_library_main_window.py tests/test_gui_detail_pane.py
+uv run --active ruff check src/adsfolio/gui/main_window.py tests/test_gui_ads_library_main_window.py tests/test_gui_detail_pane.py
 uv run --active pytest -q tests/test_gui_ads_library_main_window.py tests/test_gui_ads_library_dialog.py tests/test_gui_detail_pane.py tests/test_gui_main_window_watch.py
 ```
 
@@ -544,7 +544,7 @@ Expected: new actions and all existing table/watch behavior pass.
 - [ ] **Step 6: Commit main-window integration**
 
 ```bash
-git add src/adsapi/gui/main_window.py tests/test_gui_ads_library_main_window.py tests/test_gui_detail_pane.py
+git add src/adsfolio/gui/main_window.py tests/test_gui_ads_library_main_window.py tests/test_gui_detail_pane.py
 git commit -m "feat: add papers to ADS libraries from the GUI"
 ```
 
@@ -636,8 +636,8 @@ Use `rg` to confirm citation rendering imports no ADS client and library sync
 imports no PDF move/rename functions:
 
 ```bash
-rg -n "ADSClient|BaseClient|requests" src/adsapi/citations.py
-rg -n "move_tracked_file|PdfRenamer|replace_file_metadata|set_rename_settings" src/adsapi/library_sync.py src/adsapi/gui/ads_library_*.py
+rg -n "ADSClient|BaseClient|requests" src/adsfolio/citations.py
+rg -n "move_tracked_file|PdfRenamer|replace_file_metadata|set_rename_settings" src/adsfolio/library_sync.py src/adsfolio/gui/ads_library_*.py
 ```
 
 Expected: both commands return no matches.

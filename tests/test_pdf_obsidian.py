@@ -1,6 +1,6 @@
-from adsapi.api.search import SearchResult
-from adsapi.pdf.obsidian import NotePlan, ObsidianNoteWriter
-from adsapi.pdf.sidecar import Sidecar
+from adsfolio.api.search import SearchResult
+from adsfolio.pdf.obsidian import NotePlan, ObsidianNoteWriter
+from adsfolio.pdf.sidecar import Sidecar
 
 
 class _SearchStub:

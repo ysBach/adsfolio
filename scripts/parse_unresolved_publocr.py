@@ -1,7 +1,7 @@
 import re
 import csv
 from pathlib import Path
-from adsapi.pdf.identifier import BIBCODE_PATTERN, PdfIdentifier
+from adsfolio.pdf.identifier import BIBCODE_PATTERN, PdfIdentifier
 
 csv_path = Path("/Users/ysbach/Dropbox/Studocs/PublOCR/unresolved/unresolved.csv")
 unresolved_dir = Path("/Users/ysbach/Dropbox/Studocs/PublOCR/unresolved")

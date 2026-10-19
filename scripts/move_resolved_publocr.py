@@ -1,7 +1,7 @@
 from pathlib import Path
-from adsapi.pdf.registry import open_registry_state
-from adsapi.pdf.renamer import PdfRenamer
-from adsapi.pdf.identifier import PdfIdentifier
+from adsfolio.pdf.registry import open_registry_state
+from adsfolio.pdf.renamer import PdfRenamer
+from adsfolio.pdf.identifier import PdfIdentifier
 
 publocr_dir = Path("/Users/ysbach/Dropbox/Studocs/PublOCR")
 unresolved_dir = publocr_dir / "unresolved"

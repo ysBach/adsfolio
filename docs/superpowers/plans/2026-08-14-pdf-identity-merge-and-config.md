@@ -10,7 +10,7 @@
 
 ## Global Constraints
 
-- Configuration precedence is: explicit CLI arguments > library `.adsapi.toml` > global `config.toml` > defaults.
+- Configuration precedence is: explicit CLI arguments > library `.adsfolio.toml` > global `config.toml` > defaults.
 - The ADS token remains a separate mode-`0600` secret file.
 - Default managed directories are `_PDF-obsolete` and `_needs-merge`; both are user-configurable relative paths inside the library root.
 - Identify and Watch exclude both managed directory trees.
@@ -31,13 +31,13 @@
 
 ### New files
 
-- `src/adsapi/settings.py`: versioned TOML documents, typed merge settings, layered effective values, scoped updates, legacy import, and atomic writes.
-- `src/adsapi/pdf/work_identity.py`: arXiv/Bibcode/DOI normalization, authoritative identity keys, and published ADS resolution results.
-- `src/adsapi/pdf/merge_groups.py`: derive same-work groups and canonical-PDF recommendations without mutating files.
-- `src/adsapi/pdf/annotation_merge.py`: enumerate all PDF annotation types, build exact text indexes, produce automatic/manual decisions, apply decisions, fingerprint, and verify staged output.
-- `src/adsapi/pdf/merge_transaction.py`: stage, recovery journal, canonical replacement, obsolete/needs-merge moves, rollback, and reports.
-- `src/adsapi/gui/pdf_region_view.py`: render one PDF page, show annotation/candidate overlays, and convert drag selection into `QPdfSelection` page-space geometry.
-- `src/adsapi/gui/merge_dialogs.py`: merge-group preview and focused dual-pane review queue.
+- `src/adsfolio/settings.py`: versioned TOML documents, typed merge settings, layered effective values, scoped updates, legacy import, and atomic writes.
+- `src/adsfolio/pdf/work_identity.py`: arXiv/Bibcode/DOI normalization, authoritative identity keys, and published ADS resolution results.
+- `src/adsfolio/pdf/merge_groups.py`: derive same-work groups and canonical-PDF recommendations without mutating files.
+- `src/adsfolio/pdf/annotation_merge.py`: enumerate all PDF annotation types, build exact text indexes, produce automatic/manual decisions, apply decisions, fingerprint, and verify staged output.
+- `src/adsfolio/pdf/merge_transaction.py`: stage, recovery journal, canonical replacement, obsolete/needs-merge moves, rollback, and reports.
+- `src/adsfolio/gui/pdf_region_view.py`: render one PDF page, show annotation/candidate overlays, and convert drag selection into `QPdfSelection` page-space geometry.
+- `src/adsfolio/gui/merge_dialogs.py`: merge-group preview and focused dual-pane review queue.
 - `tests/test_settings.py`: TOML precedence, validation, atomic writes, unknown-key preservation, and legacy import.
 - `tests/test_pdf_work_identity.py`: parser, ADS query, canonical resolution, and identity-key tests.
 - `tests/test_pdf_merge_groups.py`: multi-PDF grouping and canonical recommendation tests.
@@ -48,17 +48,17 @@
 ### Modified files
 
 - `pyproject.toml`, `uv.lock`: add TOML writing and ensure the GUI extra installs PyMuPDF.
-- `src/adsapi/config.py`: delegate non-secret setup storage to the TOML service while retaining token behavior.
-- `src/adsapi/gui/config.py`: serialize GUI appearance/applications/state through TOML sections instead of `gui.json`.
-- `src/adsapi/gui/appearance.py`: choose global/library save scope and edit merge directory settings with tooltips.
-- `src/adsapi/gui/dialogs.py`: use effective TOML settings in Identify and expose library/global scope consistently.
-- `src/adsapi/gui/main_window.py`: load effective settings per selected root and add merge actions/dialog integration.
-- `src/adsapi/pdf/cli.py`, `src/adsapi/cli/commands.py`: use effective TOML settings and expose merge dry-run/apply commands.
-- `src/adsapi/pdf/cli_common.py`, `src/adsapi/pdf/identify.py`, `src/adsapi/pdf/watcher.py`: managed-directory exclusion and summary counts.
-- `src/adsapi/pdf/prefetch.py`, `src/adsapi/pdf/identifier.py`, `src/adsapi/pdf/upgrade_utils.py`: preserve ADS identity fields and resolve arXiv IDs correctly.
-- `src/adsapi/pdf/catalog.py`, `src/adsapi/pdf/registry.py`: merge provenance schema and transactional catalog update APIs; remove catalog settings authority after migration.
-- `src/adsapi/pdf/upgrade.py`, `src/adsapi/pdf/cli_upgrade.py`: route the legacy upgrade entry point through the generalized merge planner rather than maintaining a separate annotation policy.
-- `src/adsapi/pdf/annotations.py`: retain public compatibility imports only for substantive adapters; remove fuzzy matching implementation after callers migrate.
+- `src/adsfolio/config.py`: delegate non-secret setup storage to the TOML service while retaining token behavior.
+- `src/adsfolio/gui/config.py`: serialize GUI appearance/applications/state through TOML sections instead of `gui.json`.
+- `src/adsfolio/gui/appearance.py`: choose global/library save scope and edit merge directory settings with tooltips.
+- `src/adsfolio/gui/dialogs.py`: use effective TOML settings in Identify and expose library/global scope consistently.
+- `src/adsfolio/gui/main_window.py`: load effective settings per selected root and add merge actions/dialog integration.
+- `src/adsfolio/pdf/cli.py`, `src/adsfolio/cli/commands.py`: use effective TOML settings and expose merge dry-run/apply commands.
+- `src/adsfolio/pdf/cli_common.py`, `src/adsfolio/pdf/identify.py`, `src/adsfolio/pdf/watcher.py`: managed-directory exclusion and summary counts.
+- `src/adsfolio/pdf/prefetch.py`, `src/adsfolio/pdf/identifier.py`, `src/adsfolio/pdf/upgrade_utils.py`: preserve ADS identity fields and resolve arXiv IDs correctly.
+- `src/adsfolio/pdf/catalog.py`, `src/adsfolio/pdf/registry.py`: merge provenance schema and transactional catalog update APIs; remove catalog settings authority after migration.
+- `src/adsfolio/pdf/upgrade.py`, `src/adsfolio/pdf/cli_upgrade.py`: route the legacy upgrade entry point through the generalized merge planner rather than maintaining a separate annotation policy.
+- `src/adsfolio/pdf/annotations.py`: retain public compatibility imports only for substantive adapters; remove fuzzy matching implementation after callers migrate.
 - Existing tests under `tests/test_config_setup.py`, `tests/test_gui_config.py`, `tests/test_pdf_cli.py`, `tests/test_pdf_identifier.py`, `tests/test_pdf_catalog.py`, `tests/test_pdf_registry.py`, `tests/test_pdf_upgrade.py`, `tests/test_pdf_annotations.py`, and `tests/test_pdf_watcher.py`: replace obsolete JSON/legacy behavior assertions with supported TOML and generalized merge behavior.
 - `docs/cli-tutorials/04-pdf-workflows.md`, `docs/gui.md`, `README.md`: document configuration files, identity promotion, merge semantics, review behavior, and cleanup reminders.
 
@@ -67,14 +67,14 @@
 ### Task 1: Layered TOML Configuration and Legacy Import
 
 **Files:**
-- Create: `src/adsapi/settings.py`
+- Create: `src/adsfolio/settings.py`
 - Create: `tests/test_settings.py`
 - Modify: `pyproject.toml:51-72`
 - Modify: `uv.lock`
-- Modify: `src/adsapi/config.py:42-224`
-- Modify: `src/adsapi/cli/commands.py:200-360`
-- Modify: `src/adsapi/cv/cli.py`
-- Modify: `src/adsapi/pdf/prefetch.py:41-95`
+- Modify: `src/adsfolio/config.py:42-224`
+- Modify: `src/adsfolio/cli/commands.py:200-360`
+- Modify: `src/adsfolio/cv/cli.py`
+- Modify: `src/adsfolio/pdf/prefetch.py:41-95`
 - Modify: `tests/test_config_setup.py`
 - Modify: `tests/test_cli_set.py`
 - Modify: `tests/test_cv_cli.py`
@@ -98,7 +98,7 @@ def test_library_toml_overrides_global_merge_and_identify(tmp_path):
     (config_dir / "config.toml").write_text(
         '[identify]\nrecursive = false\n[merge]\nobsolete_directory = "old"\n'
     )
-    (root / ".adsapi.toml").write_text(
+    (root / ".adsfolio.toml").write_text(
         '[identify]\nrecursive = true\n[merge]\nneeds_merge_directory = "review"\n'
     )
 
@@ -123,7 +123,7 @@ source ~/.venvs/ysbpy/bin/activate
 pytest tests/test_settings.py -q
 ```
 
-Expected: collection fails because `adsapi.settings` does not exist.
+Expected: collection fails because `adsfolio.settings` does not exist.
 
 - [ ] **Step 3: Add TOML dependencies**
 
@@ -149,7 +149,7 @@ Use these public models and signatures:
 
 ```python
 GLOBAL_CONFIG_FILENAME = "config.toml"
-LIBRARY_CONFIG_FILENAME = ".adsapi.toml"
+LIBRARY_CONFIG_FILENAME = ".adsfolio.toml"
 SETTINGS_SCHEMA_VERSION = 1
 
 
@@ -200,7 +200,7 @@ def test_update_preserves_unknown_sections_and_uses_atomic_replace(
     store.global_path().write_text('[future]\nenabled = true\n')
     replacements = []
     monkeypatch.setattr(
-        "adsapi.settings.os.replace",
+        "adsfolio.settings.os.replace",
         lambda source, target: replacements.append((Path(source), Path(target))),
     )
 
@@ -233,7 +233,7 @@ Rules:
 - Import `setup.json` into `[identify]` and `gui.json` into
   `[appearance]`, `[applications]`, and `[state]`.
 - Import each catalog `root:<canonical-path>:identify_settings` or legacy
-  profile into that root's `.adsapi.toml` only when its normalized values differ
+  profile into that root's `.adsfolio.toml` only when its normalized values differ
   from global Identify values.
 - Import legacy sidecar settings without changing the sidecar.
 - Leave every legacy source untouched.
@@ -262,7 +262,7 @@ def save_identify_settings(cls, settings: IdentifySettings) -> Path:
 `save_user_setup()` merges supplied identity/year fields with current
 `IdentifySettings` and writes through `save_identify_settings()`.
 
-Update `adsapi set`, CV defaults, and `prefetch.load_profile()` to read the same
+Update `adsfolio set`, CV defaults, and `prefetch.load_profile()` to read the same
 TOML-backed `Config` methods. Remove compatibility signature inspection once old
 JSON has been imported; keep legacy `retire_year` parsing only inside migration.
 
@@ -271,9 +271,9 @@ JSON has been imported; keep legacy `retire_year` parsing only inside migration.
 ```bash
 source ~/.venvs/ysbpy/bin/activate
 pytest tests/test_settings.py tests/test_config_setup.py tests/test_cli_set.py tests/test_cv_cli.py tests/test_pdf_prefetch.py -q
-isort src/adsapi/settings.py src/adsapi/config.py src/adsapi/cli/commands.py src/adsapi/cv/cli.py src/adsapi/pdf/prefetch.py tests/test_settings.py tests/test_config_setup.py
-ruff format src/adsapi/settings.py src/adsapi/config.py src/adsapi/cli/commands.py src/adsapi/cv/cli.py src/adsapi/pdf/prefetch.py tests/test_settings.py tests/test_config_setup.py
-ruff check src/adsapi/settings.py src/adsapi/config.py src/adsapi/cli/commands.py src/adsapi/cv/cli.py src/adsapi/pdf/prefetch.py tests/test_settings.py tests/test_config_setup.py
+isort src/adsfolio/settings.py src/adsfolio/config.py src/adsfolio/cli/commands.py src/adsfolio/cv/cli.py src/adsfolio/pdf/prefetch.py tests/test_settings.py tests/test_config_setup.py
+ruff format src/adsfolio/settings.py src/adsfolio/config.py src/adsfolio/cli/commands.py src/adsfolio/cv/cli.py src/adsfolio/pdf/prefetch.py tests/test_settings.py tests/test_config_setup.py
+ruff check src/adsfolio/settings.py src/adsfolio/config.py src/adsfolio/cli/commands.py src/adsfolio/cv/cli.py src/adsfolio/pdf/prefetch.py tests/test_settings.py tests/test_config_setup.py
 ```
 
 Expected: all focused tests pass and Ruff reports no errors.
@@ -281,8 +281,8 @@ Expected: all focused tests pass and Ruff reports no errors.
 - [ ] **Step 9: Commit the configuration service**
 
 ```bash
-git add pyproject.toml uv.lock src/adsapi/settings.py src/adsapi/config.py src/adsapi/cli/commands.py src/adsapi/cv/cli.py src/adsapi/pdf/prefetch.py tests/test_settings.py tests/test_config_setup.py tests/test_cli_set.py tests/test_cv_cli.py tests/test_pdf_prefetch.py
-git commit -m "feat: unify adsapi settings in TOML"
+git add pyproject.toml uv.lock src/adsfolio/settings.py src/adsfolio/config.py src/adsfolio/cli/commands.py src/adsfolio/cv/cli.py src/adsfolio/pdf/prefetch.py tests/test_settings.py tests/test_config_setup.py tests/test_cli_set.py tests/test_cv_cli.py tests/test_pdf_prefetch.py
+git commit -m "feat: unify adsfolio settings in TOML"
 ```
 
 ---
@@ -290,14 +290,14 @@ git commit -m "feat: unify adsapi settings in TOML"
 ### Task 2: GUI/CLI Configuration Consumers and Managed Scan Exclusions
 
 **Files:**
-- Modify: `src/adsapi/gui/config.py`
-- Modify: `src/adsapi/gui/appearance.py`
-- Modify: `src/adsapi/gui/dialogs.py`
-- Modify: `src/adsapi/gui/main_window.py`
-- Modify: `src/adsapi/pdf/cli.py`
-- Modify: `src/adsapi/pdf/cli_common.py`
-- Modify: `src/adsapi/pdf/identify.py`
-- Modify: `src/adsapi/pdf/watcher.py`
+- Modify: `src/adsfolio/gui/config.py`
+- Modify: `src/adsfolio/gui/appearance.py`
+- Modify: `src/adsfolio/gui/dialogs.py`
+- Modify: `src/adsfolio/gui/main_window.py`
+- Modify: `src/adsfolio/pdf/cli.py`
+- Modify: `src/adsfolio/pdf/cli_common.py`
+- Modify: `src/adsfolio/pdf/identify.py`
+- Modify: `src/adsfolio/pdf/watcher.py`
 - Modify: `tests/test_gui_config.py`
 - Modify: `tests/test_gui_appearance.py`
 - Modify: `tests/test_gui_dialogs.py`
@@ -387,7 +387,7 @@ Validation errors keep the dialog open and show the exact unsafe value.
 
 When selecting a root, call `load_config(root=root)` and apply appearance and
 applications. Appearance saves write either global `config.toml` or that root's
-`.adsapi.toml`; Identify saves `[identify]` via `SettingsStore.update()` instead
+`.adsfolio.toml`; Identify saves `[identify]` via `SettingsStore.update()` instead
 of catalog metadata. Keep only the selected scope in global `[state]`.
 
 - [ ] **Step 6: Add failing managed-directory scan tests**
@@ -453,15 +453,15 @@ base.
 ```bash
 source ~/.venvs/ysbpy/bin/activate
 pytest tests/test_gui_config.py tests/test_gui_appearance.py tests/test_gui_dialogs.py tests/test_pdf_cli.py tests/test_pdf_watcher.py -q
-isort src/adsapi/gui/config.py src/adsapi/gui/appearance.py src/adsapi/gui/dialogs.py src/adsapi/gui/main_window.py src/adsapi/pdf/cli.py src/adsapi/pdf/cli_common.py src/adsapi/pdf/identify.py src/adsapi/pdf/watcher.py
-ruff format src/adsapi/gui/config.py src/adsapi/gui/appearance.py src/adsapi/gui/dialogs.py src/adsapi/gui/main_window.py src/adsapi/pdf/cli.py src/adsapi/pdf/cli_common.py src/adsapi/pdf/identify.py src/adsapi/pdf/watcher.py
-ruff check src/adsapi/gui/config.py src/adsapi/gui/appearance.py src/adsapi/gui/dialogs.py src/adsapi/gui/main_window.py src/adsapi/pdf/cli.py src/adsapi/pdf/cli_common.py src/adsapi/pdf/identify.py src/adsapi/pdf/watcher.py
+isort src/adsfolio/gui/config.py src/adsfolio/gui/appearance.py src/adsfolio/gui/dialogs.py src/adsfolio/gui/main_window.py src/adsfolio/pdf/cli.py src/adsfolio/pdf/cli_common.py src/adsfolio/pdf/identify.py src/adsfolio/pdf/watcher.py
+ruff format src/adsfolio/gui/config.py src/adsfolio/gui/appearance.py src/adsfolio/gui/dialogs.py src/adsfolio/gui/main_window.py src/adsfolio/pdf/cli.py src/adsfolio/pdf/cli_common.py src/adsfolio/pdf/identify.py src/adsfolio/pdf/watcher.py
+ruff check src/adsfolio/gui/config.py src/adsfolio/gui/appearance.py src/adsfolio/gui/dialogs.py src/adsfolio/gui/main_window.py src/adsfolio/pdf/cli.py src/adsfolio/pdf/cli_common.py src/adsfolio/pdf/identify.py src/adsfolio/pdf/watcher.py
 ```
 
 - [ ] **Step 10: Commit TOML consumers and scan exclusions**
 
 ```bash
-git add src/adsapi/gui src/adsapi/pdf/cli.py src/adsapi/pdf/cli_common.py src/adsapi/pdf/identify.py src/adsapi/pdf/watcher.py tests/test_gui_config.py tests/test_gui_appearance.py tests/test_gui_dialogs.py tests/test_pdf_cli.py tests/test_pdf_watcher.py
+git add src/adsfolio/gui src/adsfolio/pdf/cli.py src/adsfolio/pdf/cli_common.py src/adsfolio/pdf/identify.py src/adsfolio/pdf/watcher.py tests/test_gui_config.py tests/test_gui_appearance.py tests/test_gui_dialogs.py tests/test_pdf_cli.py tests/test_pdf_watcher.py
 git commit -m "feat: apply scoped TOML settings"
 ```
 
@@ -470,12 +470,12 @@ git commit -m "feat: apply scoped TOML settings"
 ### Task 3: Shared Work Identity and ADS Published Resolution
 
 **Files:**
-- Create: `src/adsapi/pdf/work_identity.py`
+- Create: `src/adsfolio/pdf/work_identity.py`
 - Create: `tests/test_pdf_work_identity.py`
-- Modify: `src/adsapi/pdf/identifier.py`
-- Modify: `src/adsapi/pdf/prefetch.py`
-- Modify: `src/adsapi/pdf/upgrade_utils.py`
-- Modify: `src/adsapi/pdf/cli.py`
+- Modify: `src/adsfolio/pdf/identifier.py`
+- Modify: `src/adsfolio/pdf/prefetch.py`
+- Modify: `src/adsfolio/pdf/upgrade_utils.py`
+- Modify: `src/adsfolio/pdf/cli.py`
 - Modify: `tests/test_pdf_identifier.py`
 - Modify: `tests/test_pdf_prefetch.py`
 - Modify: `tests/test_pdf_upgrade.py`
@@ -630,15 +630,15 @@ Delete `_find_non_arxiv_doc()` first-result behavior and its tests.
 ```bash
 source ~/.venvs/ysbpy/bin/activate
 pytest tests/test_pdf_work_identity.py tests/test_pdf_identifier.py tests/test_pdf_prefetch.py tests/test_pdf_upgrade.py tests/test_pdf_cli.py -q
-isort src/adsapi/pdf/work_identity.py src/adsapi/pdf/identifier.py src/adsapi/pdf/prefetch.py src/adsapi/pdf/upgrade_utils.py tests/test_pdf_work_identity.py
-ruff format src/adsapi/pdf/work_identity.py src/adsapi/pdf/identifier.py src/adsapi/pdf/prefetch.py src/adsapi/pdf/upgrade_utils.py tests/test_pdf_work_identity.py
-ruff check src/adsapi/pdf/work_identity.py src/adsapi/pdf/identifier.py src/adsapi/pdf/prefetch.py src/adsapi/pdf/upgrade_utils.py tests/test_pdf_work_identity.py
+isort src/adsfolio/pdf/work_identity.py src/adsfolio/pdf/identifier.py src/adsfolio/pdf/prefetch.py src/adsfolio/pdf/upgrade_utils.py tests/test_pdf_work_identity.py
+ruff format src/adsfolio/pdf/work_identity.py src/adsfolio/pdf/identifier.py src/adsfolio/pdf/prefetch.py src/adsfolio/pdf/upgrade_utils.py tests/test_pdf_work_identity.py
+ruff check src/adsfolio/pdf/work_identity.py src/adsfolio/pdf/identifier.py src/adsfolio/pdf/prefetch.py src/adsfolio/pdf/upgrade_utils.py tests/test_pdf_work_identity.py
 ```
 
 - [ ] **Step 9: Commit shared identity resolution**
 
 ```bash
-git add src/adsapi/pdf/work_identity.py src/adsapi/pdf/identifier.py src/adsapi/pdf/prefetch.py src/adsapi/pdf/upgrade_utils.py src/adsapi/pdf/cli.py tests/test_pdf_work_identity.py tests/test_pdf_identifier.py tests/test_pdf_prefetch.py tests/test_pdf_upgrade.py tests/test_pdf_cli.py
+git add src/adsfolio/pdf/work_identity.py src/adsfolio/pdf/identifier.py src/adsfolio/pdf/prefetch.py src/adsfolio/pdf/upgrade_utils.py src/adsfolio/pdf/cli.py tests/test_pdf_work_identity.py tests/test_pdf_identifier.py tests/test_pdf_prefetch.py tests/test_pdf_upgrade.py tests/test_pdf_cli.py
 git commit -m "feat: resolve arXiv identities through ADS"
 ```
 
@@ -647,10 +647,10 @@ git commit -m "feat: resolve arXiv identities through ADS"
 ### Task 4: Authoritative Merge Groups and Catalog Provenance
 
 **Files:**
-- Create: `src/adsapi/pdf/merge_groups.py`
+- Create: `src/adsfolio/pdf/merge_groups.py`
 - Create: `tests/test_pdf_merge_groups.py`
-- Modify: `src/adsapi/pdf/catalog.py`
-- Modify: `src/adsapi/pdf/registry.py`
+- Modify: `src/adsfolio/pdf/catalog.py`
+- Modify: `src/adsfolio/pdf/registry.py`
 - Modify: `tests/test_pdf_catalog.py`
 - Modify: `tests/test_pdf_registry.py`
 
@@ -783,15 +783,15 @@ catalog meta read access only to import legacy values; new saves never write
 ```bash
 source ~/.venvs/ysbpy/bin/activate
 pytest tests/test_pdf_merge_groups.py tests/test_pdf_catalog.py tests/test_pdf_registry.py -q
-isort src/adsapi/pdf/merge_groups.py src/adsapi/pdf/catalog.py src/adsapi/pdf/registry.py tests/test_pdf_merge_groups.py
-ruff format src/adsapi/pdf/merge_groups.py src/adsapi/pdf/catalog.py src/adsapi/pdf/registry.py tests/test_pdf_merge_groups.py
-ruff check src/adsapi/pdf/merge_groups.py src/adsapi/pdf/catalog.py src/adsapi/pdf/registry.py tests/test_pdf_merge_groups.py
+isort src/adsfolio/pdf/merge_groups.py src/adsfolio/pdf/catalog.py src/adsfolio/pdf/registry.py tests/test_pdf_merge_groups.py
+ruff format src/adsfolio/pdf/merge_groups.py src/adsfolio/pdf/catalog.py src/adsfolio/pdf/registry.py tests/test_pdf_merge_groups.py
+ruff check src/adsfolio/pdf/merge_groups.py src/adsfolio/pdf/catalog.py src/adsfolio/pdf/registry.py tests/test_pdf_merge_groups.py
 ```
 
 - [ ] **Step 7: Commit grouping and provenance**
 
 ```bash
-git add src/adsapi/pdf/merge_groups.py src/adsapi/pdf/catalog.py src/adsapi/pdf/registry.py tests/test_pdf_merge_groups.py tests/test_pdf_catalog.py tests/test_pdf_registry.py
+git add src/adsfolio/pdf/merge_groups.py src/adsfolio/pdf/catalog.py src/adsfolio/pdf/registry.py tests/test_pdf_merge_groups.py tests/test_pdf_catalog.py tests/test_pdf_registry.py
 git commit -m "feat: model same-work PDF merge groups"
 ```
 
@@ -800,9 +800,9 @@ git commit -m "feat: model same-work PDF merge groups"
 ### Task 5: Strict Annotation Enumeration and Exact Mapping
 
 **Files:**
-- Create: `src/adsapi/pdf/annotation_merge.py`
+- Create: `src/adsfolio/pdf/annotation_merge.py`
 - Create: `tests/test_pdf_annotation_merge.py`
-- Modify: `src/adsapi/pdf/annotations.py`
+- Modify: `src/adsfolio/pdf/annotations.py`
 - Modify: `tests/test_pdf_annotations.py`
 
 **Interfaces:**
@@ -977,15 +977,15 @@ leave two matching policies.
 ```bash
 source ~/.venvs/ysbpy/bin/activate
 pytest tests/test_pdf_annotation_merge.py tests/test_pdf_annotations.py -q
-isort src/adsapi/pdf/annotation_merge.py src/adsapi/pdf/annotations.py tests/test_pdf_annotation_merge.py tests/test_pdf_annotations.py
-ruff format src/adsapi/pdf/annotation_merge.py src/adsapi/pdf/annotations.py tests/test_pdf_annotation_merge.py tests/test_pdf_annotations.py
-ruff check src/adsapi/pdf/annotation_merge.py src/adsapi/pdf/annotations.py tests/test_pdf_annotation_merge.py tests/test_pdf_annotations.py
+isort src/adsfolio/pdf/annotation_merge.py src/adsfolio/pdf/annotations.py tests/test_pdf_annotation_merge.py tests/test_pdf_annotations.py
+ruff format src/adsfolio/pdf/annotation_merge.py src/adsfolio/pdf/annotations.py tests/test_pdf_annotation_merge.py tests/test_pdf_annotations.py
+ruff check src/adsfolio/pdf/annotation_merge.py src/adsfolio/pdf/annotations.py tests/test_pdf_annotation_merge.py tests/test_pdf_annotations.py
 ```
 
 - [ ] **Step 9: Commit strict annotation planning**
 
 ```bash
-git add src/adsapi/pdf/annotation_merge.py src/adsapi/pdf/annotations.py tests/test_pdf_annotation_merge.py tests/test_pdf_annotations.py
+git add src/adsfolio/pdf/annotation_merge.py src/adsfolio/pdf/annotations.py tests/test_pdf_annotation_merge.py tests/test_pdf_annotations.py
 git commit -m "feat: plan exact PDF annotation transfers"
 ```
 
@@ -994,7 +994,7 @@ git commit -m "feat: plan exact PDF annotation transfers"
 ### Task 6: Annotation Application and Reopened Verification
 
 **Files:**
-- Modify: `src/adsapi/pdf/annotation_merge.py`
+- Modify: `src/adsfolio/pdf/annotation_merge.py`
 - Modify: `tests/test_pdf_annotation_merge.py`
 
 **Interfaces:**
@@ -1120,10 +1120,10 @@ mismatched makes `ok=False`.
 ```bash
 source ~/.venvs/ysbpy/bin/activate
 pytest tests/test_pdf_annotation_merge.py -q
-isort src/adsapi/pdf/annotation_merge.py tests/test_pdf_annotation_merge.py
-ruff format src/adsapi/pdf/annotation_merge.py tests/test_pdf_annotation_merge.py
-ruff check src/adsapi/pdf/annotation_merge.py tests/test_pdf_annotation_merge.py
-git add src/adsapi/pdf/annotation_merge.py tests/test_pdf_annotation_merge.py
+isort src/adsfolio/pdf/annotation_merge.py tests/test_pdf_annotation_merge.py
+ruff format src/adsfolio/pdf/annotation_merge.py tests/test_pdf_annotation_merge.py
+ruff check src/adsfolio/pdf/annotation_merge.py tests/test_pdf_annotation_merge.py
+git add src/adsfolio/pdf/annotation_merge.py tests/test_pdf_annotation_merge.py
 git commit -m "feat: apply and verify PDF annotations"
 ```
 
@@ -1132,19 +1132,19 @@ git commit -m "feat: apply and verify PDF annotations"
 ### Task 7: Recovery-Journaled Merge Transaction and CLI
 
 **Files:**
-- Create: `src/adsapi/pdf/merge_transaction.py`
+- Create: `src/adsfolio/pdf/merge_transaction.py`
 - Create: `tests/test_pdf_merge_transaction.py`
-- Modify: `src/adsapi/pdf/catalog.py`
-- Modify: `src/adsapi/pdf/registry.py`
-- Modify: `src/adsapi/pdf/upgrade.py`
-- Modify: `src/adsapi/pdf/cli_upgrade.py`
-- Modify: `src/adsapi/pdf/cli.py`
+- Modify: `src/adsfolio/pdf/catalog.py`
+- Modify: `src/adsfolio/pdf/registry.py`
+- Modify: `src/adsfolio/pdf/upgrade.py`
+- Modify: `src/adsfolio/pdf/cli_upgrade.py`
+- Modify: `src/adsfolio/pdf/cli.py`
 - Modify: `tests/test_pdf_upgrade.py`
 - Modify: `tests/test_pdf_cli.py`
 
 **Interfaces:**
 - Consumes: Merge groups from Task 4, annotation decisions/verifier from Task 6, `MergeSettings` from Task 1.
-- Produces: `PdfMergePlan`, `PdfMergeTransaction.stage()`, `.commit()`, `.move_to_needs_merge()`, and CLI `adsapi pdf merge`.
+- Produces: `PdfMergePlan`, `PdfMergeTransaction.stage()`, `.commit()`, `.move_to_needs_merge()`, and CLI `adsfolio pdf merge`.
 - Consumed by Task 8/9 GUI integration.
 
 - [ ] **Step 1: Add failing success transaction test**
@@ -1226,7 +1226,7 @@ filename policy and a stable digest fallback.
 
 - [ ] **Step 4: Implement staging and recovery journal**
 
-`stage()` creates `TemporaryDirectory(prefix=".adsapi-merge-", dir=root)`, copies
+`stage()` creates `TemporaryDirectory(prefix=".adsfolio-merge-", dir=root)`, copies
 the canonical PDF, applies decisions, and calls `verify_staged_pdf()`. Failed
 verification deletes the temporary directory and leaves active files unchanged.
 
@@ -1258,7 +1258,7 @@ Commit sequence:
 On any failure, reverse completed source moves, replace the canonical backup,
 restore catalog state if catalog commit was not atomic, and verify every restored
 digest. If recovery fails, stop all further moves and write
-`adsapi-merge-recovery-<group>-<timestamp>.json` at the library root.
+`adsfolio-merge-recovery-<group>-<timestamp>.json` at the library root.
 
 - [ ] **Step 6: Add and implement explicit needs-merge deferral**
 
@@ -1272,7 +1272,7 @@ journal/rollback mechanism. Do not replace or merge the canonical PDF. Put
 
 - [ ] **Step 7: Add generalized merge CLI**
 
-Register `adsapi pdf merge DIRECTORY` with:
+Register `adsfolio pdf merge DIRECTORY` with:
 
 - `--group <group-key>`;
 - `--canonical <relative-path>`;
@@ -1282,12 +1282,12 @@ Register `adsapi pdf merge DIRECTORY` with:
 
 Dry-run prints all members, recommendation, annotation counts, automatic count,
 manual-review count, and destinations. If manual review is required, `--apply`
-exits nonzero with `Manual annotation review required; use adsapi-gui.` It never
+exits nonzero with `Manual annotation review required; use adsfolio-gui.` It never
 guesses or waives.
 
 - [ ] **Step 8: Route legacy Upgrade through merge planning**
 
-Keep `adsapi pdf upgrade` as a deprecated command for one release. It resolves and
+Keep `adsfolio pdf upgrade` as a deprecated command for one release. It resolves and
 downloads the published PDF, registers it, creates a merge group, and prints the
 equivalent merge dry-run. Remove separate overwrite/backup annotation behavior;
 accepted breaking change messaging directs users to `pdf merge`.
@@ -1297,15 +1297,15 @@ accepted breaking change messaging directs users to `pdf merge`.
 ```bash
 source ~/.venvs/ysbpy/bin/activate
 pytest tests/test_pdf_merge_transaction.py tests/test_pdf_upgrade.py tests/test_pdf_cli.py tests/test_pdf_catalog.py tests/test_pdf_registry.py -q
-isort src/adsapi/pdf/merge_transaction.py src/adsapi/pdf/upgrade.py src/adsapi/pdf/cli_upgrade.py src/adsapi/pdf/cli.py tests/test_pdf_merge_transaction.py
-ruff format src/adsapi/pdf/merge_transaction.py src/adsapi/pdf/upgrade.py src/adsapi/pdf/cli_upgrade.py src/adsapi/pdf/cli.py tests/test_pdf_merge_transaction.py
-ruff check src/adsapi/pdf/merge_transaction.py src/adsapi/pdf/upgrade.py src/adsapi/pdf/cli_upgrade.py src/adsapi/pdf/cli.py tests/test_pdf_merge_transaction.py
+isort src/adsfolio/pdf/merge_transaction.py src/adsfolio/pdf/upgrade.py src/adsfolio/pdf/cli_upgrade.py src/adsfolio/pdf/cli.py tests/test_pdf_merge_transaction.py
+ruff format src/adsfolio/pdf/merge_transaction.py src/adsfolio/pdf/upgrade.py src/adsfolio/pdf/cli_upgrade.py src/adsfolio/pdf/cli.py tests/test_pdf_merge_transaction.py
+ruff check src/adsfolio/pdf/merge_transaction.py src/adsfolio/pdf/upgrade.py src/adsfolio/pdf/cli_upgrade.py src/adsfolio/pdf/cli.py tests/test_pdf_merge_transaction.py
 ```
 
 - [ ] **Step 10: Commit transaction and CLI**
 
 ```bash
-git add src/adsapi/pdf/merge_transaction.py src/adsapi/pdf/catalog.py src/adsapi/pdf/registry.py src/adsapi/pdf/upgrade.py src/adsapi/pdf/cli_upgrade.py src/adsapi/pdf/cli.py tests/test_pdf_merge_transaction.py tests/test_pdf_upgrade.py tests/test_pdf_cli.py tests/test_pdf_catalog.py tests/test_pdf_registry.py
+git add src/adsfolio/pdf/merge_transaction.py src/adsfolio/pdf/catalog.py src/adsfolio/pdf/registry.py src/adsfolio/pdf/upgrade.py src/adsfolio/pdf/cli_upgrade.py src/adsfolio/pdf/cli.py tests/test_pdf_merge_transaction.py tests/test_pdf_upgrade.py tests/test_pdf_cli.py tests/test_pdf_catalog.py tests/test_pdf_registry.py
 git commit -m "feat: transact multi-PDF annotation merges"
 ```
 
@@ -1314,10 +1314,10 @@ git commit -m "feat: transact multi-PDF annotation merges"
 ### Task 8: Focused Dual-Pane Manual Review UI
 
 **Files:**
-- Create: `src/adsapi/gui/pdf_region_view.py`
-- Create: `src/adsapi/gui/merge_dialogs.py`
+- Create: `src/adsfolio/gui/pdf_region_view.py`
+- Create: `src/adsfolio/gui/merge_dialogs.py`
 - Create: `tests/test_gui_merge_dialogs.py`
-- Modify: `src/adsapi/gui/main_window.py`
+- Modify: `src/adsfolio/gui/main_window.py`
 - Modify: `tests/test_gui_detail_pane.py`
 
 **Interfaces:**
@@ -1455,15 +1455,15 @@ needs-merge...**. The latter requires another explicit confirmation.
 ```bash
 source ~/.venvs/ysbpy/bin/activate
 QT_QPA_PLATFORM=offscreen pytest tests/test_gui_merge_dialogs.py tests/test_gui_detail_pane.py tests/test_gui_dialogs.py tests/test_gui_appearance.py -q
-isort src/adsapi/gui/pdf_region_view.py src/adsapi/gui/merge_dialogs.py src/adsapi/gui/main_window.py tests/test_gui_merge_dialogs.py
-ruff format src/adsapi/gui/pdf_region_view.py src/adsapi/gui/merge_dialogs.py src/adsapi/gui/main_window.py tests/test_gui_merge_dialogs.py
-ruff check src/adsapi/gui/pdf_region_view.py src/adsapi/gui/merge_dialogs.py src/adsapi/gui/main_window.py tests/test_gui_merge_dialogs.py
+isort src/adsfolio/gui/pdf_region_view.py src/adsfolio/gui/merge_dialogs.py src/adsfolio/gui/main_window.py tests/test_gui_merge_dialogs.py
+ruff format src/adsfolio/gui/pdf_region_view.py src/adsfolio/gui/merge_dialogs.py src/adsfolio/gui/main_window.py tests/test_gui_merge_dialogs.py
+ruff check src/adsfolio/gui/pdf_region_view.py src/adsfolio/gui/merge_dialogs.py src/adsfolio/gui/main_window.py tests/test_gui_merge_dialogs.py
 ```
 
 - [ ] **Step 8: Commit focused review UI**
 
 ```bash
-git add src/adsapi/gui/pdf_region_view.py src/adsapi/gui/merge_dialogs.py src/adsapi/gui/main_window.py tests/test_gui_merge_dialogs.py tests/test_gui_detail_pane.py
+git add src/adsfolio/gui/pdf_region_view.py src/adsfolio/gui/merge_dialogs.py src/adsfolio/gui/main_window.py tests/test_gui_merge_dialogs.py tests/test_gui_detail_pane.py
 git commit -m "feat: add focused PDF annotation review"
 ```
 
@@ -1472,9 +1472,9 @@ git commit -m "feat: add focused PDF annotation review"
 ### Task 9: Identify Reconciliation, Documentation, and End-to-End Verification
 
 **Files:**
-- Modify: `src/adsapi/pdf/identify.py`
-- Modify: `src/adsapi/pdf/catalog.py`
-- Modify: `src/adsapi/gui/main_window.py`
+- Modify: `src/adsfolio/pdf/identify.py`
+- Modify: `src/adsfolio/pdf/catalog.py`
+- Modify: `src/adsfolio/gui/main_window.py`
 - Modify: `tests/test_pdf_cli.py`
 - Modify: `tests/test_pdf_catalog.py`
 - Modify: `tests/test_gui_merge_dialogs.py`
@@ -1533,7 +1533,7 @@ After each Identify batch:
 Print:
 
 ```text
-Merge candidates: 1 same-work group containing 2 PDFs. Use Tools -> Merge PDFs or `adsapi pdf merge`.
+Merge candidates: 1 same-work group containing 2 PDFs. Use Tools -> Merge PDFs or `adsfolio pdf merge`.
 ```
 
 - [ ] **Step 3: Add a real end-to-end different-layout PDF fixture**
@@ -1560,7 +1560,7 @@ The test must:
 
 Update docs with:
 
-- global `config.toml`, library `.adsapi.toml`, precedence, and example sections;
+- global `config.toml`, library `.adsfolio.toml`, precedence, and example sections;
 - manual one-time deletion commands for legacy `gui.json`, `setup.json`, and
   migrated sidecars after checking TOML;
 - arXiv ID to published Bibcode promotion;

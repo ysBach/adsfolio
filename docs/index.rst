@@ -1,4 +1,4 @@
-adsapi documentation
+adsfolio documentation
 ====================
 
 Python client and CLI for NASA ADS / SciXplorer scientific literature workflows.

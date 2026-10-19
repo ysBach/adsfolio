@@ -45,7 +45,7 @@ The only non-secret configuration authorities are:
 
 - global: `~/Library/Application Support/ads/config.toml` on macOS, resolved via
   `platformdirs` on other systems;
-- library: `<library root>/.adsapi.toml`.
+- library: `<library root>/.adsfolio.toml`.
 
 The library file stores only overrides. The ADS API token remains in the current
 mode-`0600` token file because it is a secret, not normal configuration. The
@@ -54,7 +54,7 @@ central SQLite catalog may cache effective values but is never authoritative.
 Precedence is:
 
 1. explicit CLI arguments;
-2. `.adsapi.toml` library overrides;
+2. `.adsfolio.toml` library overrides;
 3. global `config.toml`;
 4. application defaults.
 
@@ -107,10 +107,10 @@ known setting so newer configuration is not destroyed by an older client.
 
 ### Legacy migration
 
-When `config.toml` does not yet exist, adsapi imports the existing `gui.json` and
+When `config.toml` does not yet exist, adsfolio imports the existing `gui.json` and
 `setup.json`. For each registered library, it imports root-specific Identify
 settings from catalog metadata and legacy `.adsapi-pdfs.json` settings into
-`.adsapi.toml` only when they differ from the global effective value.
+`.adsfolio.toml` only when they differ from the global effective value.
 
 Migration is deterministic and idempotent. Legacy files are left untouched so a
 failed migration cannot destroy recoverable state. Removing those one-time traces
@@ -209,15 +209,15 @@ transaction.
 
 After staged verification succeeds, final replacement, obsolete moves, and the
 catalog update execute as one recovery-journaled commit. If that commit fails,
-adsapi first restores the original canonical file and source paths. Only after
+adsfolio first restores the original canonical file and source paths. Only after
 successful restoration may the user move the group to `needs_merge_directory`.
-If restoration itself fails, adsapi does not perform additional moves; it writes
+If restoration itself fails, adsfolio does not perform additional moves; it writes
 an emergency report at the library root listing every actual path and digest.
 
 Every failed merge writes a `merge-report.json` in a dedicated report area or,
 after an accepted group move, in the needs-merge group directory. It records the
 stage, exception category, original and actual paths, digests, and recovery
-instructions. If a needs-merge group move cannot be completed, adsapi rolls back
+instructions. If a needs-merge group move cannot be completed, adsfolio rolls back
 completed moves; if rollback itself fails, it reports every actual path
 explicitly and does not claim atomicity.
 

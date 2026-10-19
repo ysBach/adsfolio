@@ -15,12 +15,12 @@ from PySide6.QtGui import QStandardItem, QStandardItemModel
 from PySide6.QtTest import QSignalSpy
 from PySide6.QtWidgets import QApplication, QLabel
 
-from adsapi.citations import CitationStyle
-from adsapi.config import Config
-from adsapi.gui.appearance import AppearanceDialog
-from adsapi.gui.config import GuiConfig
-from adsapi.gui.library import COLUMNS, build_columns
-from adsapi.gui.main_window import MainWindow
+from adsfolio.citations import CitationStyle
+from adsfolio.config import Config
+from adsfolio.gui.appearance import AppearanceDialog
+from adsfolio.gui.config import GuiConfig
+from adsfolio.gui.library import COLUMNS, build_columns
+from adsfolio.gui.main_window import MainWindow
 
 
 @pytest.fixture(scope="module")

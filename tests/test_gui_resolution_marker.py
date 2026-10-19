@@ -8,10 +8,10 @@ pytest.importorskip("PySide6")
 
 from PySide6.QtCore import Qt
 
-from adsapi.config import Config
-from adsapi.gui.library import COLUMNS, FileQuery
-from adsapi.gui.models import FileTableModel
-from adsapi.pdf.registry import PdfRegistry
+from adsfolio.config import Config
+from adsfolio.gui.library import COLUMNS, FileQuery
+from adsfolio.gui.models import FileTableModel
+from adsfolio.pdf.registry import PdfRegistry
 
 
 @pytest.fixture(autouse=True)

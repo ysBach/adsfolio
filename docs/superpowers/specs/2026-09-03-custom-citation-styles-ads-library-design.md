@@ -2,7 +2,7 @@
 
 ## Goal
 
-Add two independent capabilities to the adsapi desktop application:
+Add two independent capabilities to the adsfolio desktop application:
 
 1. Users define an ordered global collection of plain-text citation styles.
    Each style appears as a copyable table column and a copyable detail-pane row.

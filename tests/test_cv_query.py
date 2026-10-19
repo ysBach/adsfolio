@@ -1,8 +1,8 @@
 from dataclasses import replace
 from pathlib import Path
 
-from adsapi.cv.config import CVConfig
-from adsapi.cv.query import classify_publications, fetch_publications
+from adsfolio.cv.config import CVConfig
+from adsfolio.cv.query import classify_publications, fetch_publications
 
 
 def _cfg() -> CVConfig:
@@ -70,7 +70,7 @@ def test_apply_author_format_overrides_uses_ads_custom() -> None:
     class StubClient:
         export = StubExport()
 
-    from adsapi.cv.query import apply_author_format_overrides
+    from adsfolio.cv.query import apply_author_format_overrides
 
     overridden = apply_author_format_overrides(docs, StubClient(), cfg)
     assert overridden[0]["_adsapi_author_text"] == "Doe, J.; Smith, A."

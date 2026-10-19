@@ -1,6 +1,6 @@
 import json
 
-from adsapi import pubcache
+from adsfolio import pubcache
 
 
 def test_publication_cache_round_trip(monkeypatch, tmp_path):

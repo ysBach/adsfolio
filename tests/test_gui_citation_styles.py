@@ -13,11 +13,11 @@ pytest.importorskip("PySide6")
 
 from PySide6.QtWidgets import QApplication, QDialog, QMessageBox
 
-from adsapi.citations import (
+from adsfolio.citations import (
     CitationStyle,
     initial_citation_styles,
 )
-from adsapi.gui.citation_styles import (
+from adsfolio.gui.citation_styles import (
     TEMPLATE_HELP_TEXT,
     CitationStylesDialog,
 )
@@ -306,7 +306,7 @@ def test_duplicate_retries_when_generated_id_collides(
     qtbot.addWidget(dialog)
 
     with patch(
-        "adsapi.gui.citation_styles.uuid.uuid4",
+        "adsfolio.gui.citation_styles.uuid.uuid4",
         side_effect=[uuid.UUID(int=1), uuid.UUID(int=2)],
     ) as uuid4:
         dialog.duplicate_button.click()

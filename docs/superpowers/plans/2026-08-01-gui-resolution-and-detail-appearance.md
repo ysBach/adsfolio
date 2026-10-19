@@ -23,10 +23,10 @@
 ### Task 1: Resolution marker and resolution-first ordering
 
 **Files:**
-- Modify: `src/adsapi/pdf/registry.py:35-55`
-- Modify: `src/adsapi/gui/library.py:145-157`
-- Modify: `src/adsapi/gui/models.py:1-180`
-- Modify: `src/adsapi/gui/main_window.py:70-110`
+- Modify: `src/adsfolio/pdf/registry.py:35-55`
+- Modify: `src/adsfolio/gui/library.py:145-157`
+- Modify: `src/adsfolio/gui/models.py:1-180`
+- Modify: `src/adsfolio/gui/main_window.py:70-110`
 - Test: `tests/test_pdf_registry.py`
 - Test: `tests/test_gui_library.py`
 - Test: `tests/test_gui_models.py`
@@ -108,21 +108,21 @@
 
 - [ ] **Step 7: Format, lint, and commit the task**
 
-  Run: `uv run isort src/adsapi/gui/library.py src/adsapi/gui/models.py src/adsapi/gui/main_window.py src/adsapi/pdf/registry.py tests/test_pdf_registry.py tests/test_gui_library.py tests/test_gui_models.py`
+  Run: `uv run isort src/adsfolio/gui/library.py src/adsfolio/gui/models.py src/adsfolio/gui/main_window.py src/adsfolio/pdf/registry.py tests/test_pdf_registry.py tests/test_gui_library.py tests/test_gui_models.py`
 
-  Run: `uv run ruff format src/adsapi/gui/library.py src/adsapi/gui/models.py src/adsapi/gui/main_window.py src/adsapi/pdf/registry.py tests/test_pdf_registry.py tests/test_gui_library.py tests/test_gui_models.py && uv run ruff check src/adsapi/gui/library.py src/adsapi/gui/models.py src/adsapi/gui/main_window.py src/adsapi/pdf/registry.py tests/test_pdf_registry.py tests/test_gui_library.py tests/test_gui_models.py`
+  Run: `uv run ruff format src/adsfolio/gui/library.py src/adsfolio/gui/models.py src/adsfolio/gui/main_window.py src/adsfolio/pdf/registry.py tests/test_pdf_registry.py tests/test_gui_library.py tests/test_gui_models.py && uv run ruff check src/adsfolio/gui/library.py src/adsfolio/gui/models.py src/adsfolio/gui/main_window.py src/adsfolio/pdf/registry.py tests/test_pdf_registry.py tests/test_gui_library.py tests/test_gui_models.py`
 
   ```bash
-  git add src/adsapi/pdf/registry.py src/adsapi/gui/library.py src/adsapi/gui/models.py src/adsapi/gui/main_window.py tests/test_pdf_registry.py tests/test_gui_library.py tests/test_gui_models.py
+  git add src/adsfolio/pdf/registry.py src/adsfolio/gui/library.py src/adsfolio/gui/models.py src/adsfolio/gui/main_window.py tests/test_pdf_registry.py tests/test_gui_library.py tests/test_gui_models.py
   git commit -m "feat: compact GUI resolution status"
   ```
 
 ### Task 2: Remove Source from the GUI safely
 
 **Files:**
-- Modify: `src/adsapi/gui/library.py:145-157`
-- Modify: `src/adsapi/gui/detail_pane.py:32-93, 545-575`
-- Modify: `src/adsapi/gui/config.py:120-197`
+- Modify: `src/adsfolio/gui/library.py:145-157`
+- Modify: `src/adsfolio/gui/detail_pane.py:32-93, 545-575`
+- Modify: `src/adsfolio/gui/config.py:120-197`
 - Modify: `docs/gui.md:20-42`
 - Test: `tests/test_gui_library.py`
 - Test: `tests/test_gui_detail_pane.py`
@@ -183,22 +183,22 @@
 
 - [ ] **Step 6: Format, lint, and commit the task**
 
-  Run: `uv run isort src/adsapi/gui/library.py src/adsapi/gui/detail_pane.py src/adsapi/gui/config.py tests/test_gui_library.py tests/test_gui_detail_pane.py tests/test_gui_config.py`
+  Run: `uv run isort src/adsfolio/gui/library.py src/adsfolio/gui/detail_pane.py src/adsfolio/gui/config.py tests/test_gui_library.py tests/test_gui_detail_pane.py tests/test_gui_config.py`
 
-  Run: `uv run ruff format src/adsapi/gui/library.py src/adsapi/gui/detail_pane.py src/adsapi/gui/config.py tests/test_gui_library.py tests/test_gui_detail_pane.py tests/test_gui_config.py && uv run ruff check src/adsapi/gui/library.py src/adsapi/gui/detail_pane.py src/adsapi/gui/config.py tests/test_gui_library.py tests/test_gui_detail_pane.py tests/test_gui_config.py`
+  Run: `uv run ruff format src/adsfolio/gui/library.py src/adsfolio/gui/detail_pane.py src/adsfolio/gui/config.py tests/test_gui_library.py tests/test_gui_detail_pane.py tests/test_gui_config.py && uv run ruff check src/adsfolio/gui/library.py src/adsfolio/gui/detail_pane.py src/adsfolio/gui/config.py tests/test_gui_library.py tests/test_gui_detail_pane.py tests/test_gui_config.py`
 
   ```bash
-  git add src/adsapi/gui/library.py src/adsapi/gui/detail_pane.py src/adsapi/gui/config.py docs/gui.md tests/test_gui_library.py tests/test_gui_detail_pane.py tests/test_gui_config.py
+  git add src/adsfolio/gui/library.py src/adsfolio/gui/detail_pane.py src/adsfolio/gui/config.py docs/gui.md tests/test_gui_library.py tests/test_gui_detail_pane.py tests/test_gui_config.py
   git commit -m "feat: remove source from GUI"
   ```
 
 ### Task 3: Consolidate table and detail appearance controls
 
 **Files:**
-- Modify: `src/adsapi/gui/appearance.py:34-260`
-- Modify: `src/adsapi/gui/main_window.py:20-25, 205-220, 480-525`
-- Modify: `src/adsapi/gui/config.py:35-55, 120-197`
-- Modify: `src/adsapi/gui/detail_pane.py:395-455`
+- Modify: `src/adsfolio/gui/appearance.py:34-260`
+- Modify: `src/adsfolio/gui/main_window.py:20-25, 205-220, 480-525`
+- Modify: `src/adsfolio/gui/config.py:35-55, 120-197`
+- Modify: `src/adsfolio/gui/detail_pane.py:395-455`
 - Test: `tests/test_gui_config.py`
 - Test: `tests/test_gui_detail_pane.py`
 - Create: `tests/test_gui_appearance.py`
@@ -274,19 +274,19 @@
 
 - [ ] **Step 7: Format, lint, and commit the task**
 
-  Run: `uv run isort src/adsapi/gui/appearance.py src/adsapi/gui/main_window.py src/adsapi/gui/config.py src/adsapi/gui/detail_pane.py tests/test_gui_appearance.py tests/test_gui_config.py tests/test_gui_detail_pane.py`
+  Run: `uv run isort src/adsfolio/gui/appearance.py src/adsfolio/gui/main_window.py src/adsfolio/gui/config.py src/adsfolio/gui/detail_pane.py tests/test_gui_appearance.py tests/test_gui_config.py tests/test_gui_detail_pane.py`
 
-  Run: `uv run ruff format src/adsapi/gui/appearance.py src/adsapi/gui/main_window.py src/adsapi/gui/config.py src/adsapi/gui/detail_pane.py tests/test_gui_appearance.py tests/test_gui_config.py tests/test_gui_detail_pane.py && uv run ruff check src/adsapi/gui/appearance.py src/adsapi/gui/main_window.py src/adsapi/gui/config.py src/adsapi/gui/detail_pane.py tests/test_gui_appearance.py tests/test_gui_config.py tests/test_gui_detail_pane.py`
+  Run: `uv run ruff format src/adsfolio/gui/appearance.py src/adsfolio/gui/main_window.py src/adsfolio/gui/config.py src/adsfolio/gui/detail_pane.py tests/test_gui_appearance.py tests/test_gui_config.py tests/test_gui_detail_pane.py && uv run ruff check src/adsfolio/gui/appearance.py src/adsfolio/gui/main_window.py src/adsfolio/gui/config.py src/adsfolio/gui/detail_pane.py tests/test_gui_appearance.py tests/test_gui_config.py tests/test_gui_detail_pane.py`
 
   ```bash
-  git add src/adsapi/gui/appearance.py src/adsapi/gui/main_window.py src/adsapi/gui/config.py src/adsapi/gui/detail_pane.py tests/test_gui_appearance.py tests/test_gui_config.py tests/test_gui_detail_pane.py
+  git add src/adsfolio/gui/appearance.py src/adsfolio/gui/main_window.py src/adsfolio/gui/config.py src/adsfolio/gui/detail_pane.py tests/test_gui_appearance.py tests/test_gui_config.py tests/test_gui_detail_pane.py
   git commit -m "feat: consolidate GUI appearance settings"
   ```
 
 ### Task 4: Expand and collapse long abstracts inline
 
 **Files:**
-- Modify: `src/adsapi/gui/detail_pane.py:220-355`
+- Modify: `src/adsfolio/gui/detail_pane.py:220-355`
 - Test: `tests/test_gui_detail_pane.py`
 
 **Interfaces:**
@@ -344,12 +344,12 @@
 
 - [ ] **Step 5: Format, lint, and commit the task**
 
-  Run: `uv run isort src/adsapi/gui/detail_pane.py tests/test_gui_detail_pane.py`
+  Run: `uv run isort src/adsfolio/gui/detail_pane.py tests/test_gui_detail_pane.py`
 
-  Run: `uv run ruff format src/adsapi/gui/detail_pane.py tests/test_gui_detail_pane.py && uv run ruff check src/adsapi/gui/detail_pane.py tests/test_gui_detail_pane.py`
+  Run: `uv run ruff format src/adsfolio/gui/detail_pane.py tests/test_gui_detail_pane.py && uv run ruff check src/adsfolio/gui/detail_pane.py tests/test_gui_detail_pane.py`
 
   ```bash
-  git add src/adsapi/gui/detail_pane.py tests/test_gui_detail_pane.py
+  git add src/adsfolio/gui/detail_pane.py tests/test_gui_detail_pane.py
   git commit -m "feat: disclose complete abstract text"
   ```
 
@@ -389,7 +389,7 @@
 
 - [ ] **Step 4: Manually smoke-test the GUI**
 
-  Run: `QT_QPA_PLATFORM=offscreen uv run adsapi gui`
+  Run: `QT_QPA_PLATFORM=offscreen uv run adsfolio gui`
 
   Verify: the window opens; the table has a narrow blank marker header; View
   contains `Appearance…` only; the Details tab reorders/hides rows; a long

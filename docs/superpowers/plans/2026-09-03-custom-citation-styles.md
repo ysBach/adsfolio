@@ -28,11 +28,11 @@
 ### Task 1: Plain-text citation domain
 
 **Files:**
-- Create: `src/adsapi/citations.py`
+- Create: `src/adsfolio/citations.py`
 - Create: `tests/test_citations.py`
 
 **Interfaces:**
-- Consumes: `adsapi.formatting.html_to_text(text: str) -> str`.
+- Consumes: `adsfolio.formatting.html_to_text(text: str) -> str`.
 - Produces: `CitationStyle`, `CitationFormatter`, `CitationStyleError`, `CITATION_FIELD_HELP`, `DEFAULT_CITATION_STYLE_ID`, `initial_citation_styles()`, `citation_preference_key(style_id)`, `new_citation_style(existing_names, existing_ids)`, and `validate_citation_styles(styles)`.
 
 - [ ] **Step 1: Write failing rendering and validation tests**
@@ -90,7 +90,7 @@ source ~/.venvs/ysbpy/bin/activate
 uv run --active pytest -q tests/test_citations.py
 ```
 
-Expected: collection fails because `adsapi.citations` does not exist.
+Expected: collection fails because `adsfolio.citations` does not exist.
 
 - [ ] **Step 3: Implement the immutable model and renderer**
 
@@ -161,9 +161,9 @@ but enforces per-style validity plus unique trimmed/case-folded names and IDs.
 
 ```bash
 source ~/.venvs/ysbpy/bin/activate
-uv run --active isort src/adsapi/citations.py tests/test_citations.py
-uv run --active ruff format src/adsapi/citations.py tests/test_citations.py
-uv run --active ruff check src/adsapi/citations.py tests/test_citations.py
+uv run --active isort src/adsfolio/citations.py tests/test_citations.py
+uv run --active ruff format src/adsfolio/citations.py tests/test_citations.py
+uv run --active ruff check src/adsfolio/citations.py tests/test_citations.py
 uv run --active pytest -q tests/test_citations.py
 ```
 
@@ -172,7 +172,7 @@ Expected: all citation-domain tests pass and quality checks report no errors.
 - [ ] **Step 5: Commit the domain unit**
 
 ```bash
-git add src/adsapi/citations.py tests/test_citations.py
+git add src/adsfolio/citations.py tests/test_citations.py
 git commit -m "feat: add plain-text citation styles"
 ```
 
@@ -181,7 +181,7 @@ git commit -m "feat: add plain-text citation styles"
 ### Task 2: Citation-style persistence and migration
 
 **Files:**
-- Modify: `src/adsapi/gui/config.py`
+- Modify: `src/adsfolio/gui/config.py`
 - Modify: `tests/test_gui_config.py`
 
 **Interfaces:**
@@ -240,9 +240,9 @@ frozen dataclasses, so keep atomic save behavior unchanged.
 
 ```bash
 source ~/.venvs/ysbpy/bin/activate
-uv run --active isort src/adsapi/gui/config.py tests/test_gui_config.py
-uv run --active ruff format src/adsapi/gui/config.py tests/test_gui_config.py
-uv run --active ruff check src/adsapi/gui/config.py tests/test_gui_config.py
+uv run --active isort src/adsfolio/gui/config.py tests/test_gui_config.py
+uv run --active ruff format src/adsfolio/gui/config.py tests/test_gui_config.py
+uv run --active ruff check src/adsfolio/gui/config.py tests/test_gui_config.py
 uv run --active pytest -q tests/test_citations.py tests/test_gui_config.py
 ```
 
@@ -251,7 +251,7 @@ Expected: all tests pass, including version-2/3 safe-default tests.
 - [ ] **Step 5: Commit persistence**
 
 ```bash
-git add src/adsapi/gui/config.py tests/test_gui_config.py
+git add src/adsfolio/gui/config.py tests/test_gui_config.py
 git commit -m "feat: persist global citation styles"
 ```
 
@@ -260,8 +260,8 @@ git commit -m "feat: persist global citation styles"
 ### Task 3: Runtime table columns
 
 **Files:**
-- Modify: `src/adsapi/gui/library.py`
-- Modify: `src/adsapi/gui/models.py`
+- Modify: `src/adsfolio/gui/library.py`
+- Modify: `src/adsfolio/gui/models.py`
 - Modify: `tests/test_gui_library.py`
 - Modify: `tests/test_gui_models.py`
 
@@ -329,9 +329,9 @@ cells return their complete display text for tooltip and accessibility roles.
 
 ```bash
 source ~/.venvs/ysbpy/bin/activate
-uv run --active isort src/adsapi/gui/library.py src/adsapi/gui/models.py tests/test_gui_library.py tests/test_gui_models.py
-uv run --active ruff format src/adsapi/gui/library.py src/adsapi/gui/models.py tests/test_gui_library.py tests/test_gui_models.py
-uv run --active ruff check src/adsapi/gui/library.py src/adsapi/gui/models.py tests/test_gui_library.py tests/test_gui_models.py
+uv run --active isort src/adsfolio/gui/library.py src/adsfolio/gui/models.py tests/test_gui_library.py tests/test_gui_models.py
+uv run --active ruff format src/adsfolio/gui/library.py src/adsfolio/gui/models.py tests/test_gui_library.py tests/test_gui_models.py
+uv run --active ruff check src/adsfolio/gui/library.py src/adsfolio/gui/models.py tests/test_gui_library.py tests/test_gui_models.py
 uv run --active pytest -q tests/test_citations.py tests/test_gui_library.py tests/test_gui_models.py
 ```
 
@@ -340,7 +340,7 @@ Expected: all focused tests pass.
 - [ ] **Step 5: Commit runtime columns**
 
 ```bash
-git add src/adsapi/gui/library.py src/adsapi/gui/models.py tests/test_gui_library.py tests/test_gui_models.py
+git add src/adsfolio/gui/library.py src/adsfolio/gui/models.py tests/test_gui_library.py tests/test_gui_models.py
 git commit -m "feat: add runtime citation columns"
 ```
 
@@ -349,7 +349,7 @@ git commit -m "feat: add runtime citation columns"
 ### Task 4: Runtime citation rows in the detail pane
 
 **Files:**
-- Modify: `src/adsapi/gui/detail_pane.py`
+- Modify: `src/adsfolio/gui/detail_pane.py`
 - Modify: `tests/test_gui_detail_pane.py`
 
 **Interfaces:**
@@ -401,9 +401,9 @@ value leaves the `CopyableLabel` inert under its existing `self.text()` guard.
 
 ```bash
 source ~/.venvs/ysbpy/bin/activate
-uv run --active isort src/adsapi/gui/detail_pane.py tests/test_gui_detail_pane.py
-uv run --active ruff format src/adsapi/gui/detail_pane.py tests/test_gui_detail_pane.py
-uv run --active ruff check src/adsapi/gui/detail_pane.py tests/test_gui_detail_pane.py
+uv run --active isort src/adsfolio/gui/detail_pane.py tests/test_gui_detail_pane.py
+uv run --active ruff format src/adsfolio/gui/detail_pane.py tests/test_gui_detail_pane.py
+uv run --active ruff check src/adsfolio/gui/detail_pane.py tests/test_gui_detail_pane.py
 uv run --active pytest -q tests/test_citations.py tests/test_gui_detail_pane.py
 ```
 
@@ -412,7 +412,7 @@ Expected: all focused tests pass, including existing copy/edit/lock behavior.
 - [ ] **Step 5: Commit detail rows**
 
 ```bash
-git add src/adsapi/gui/detail_pane.py tests/test_gui_detail_pane.py
+git add src/adsfolio/gui/detail_pane.py tests/test_gui_detail_pane.py
 git commit -m "feat: show citation styles in details"
 ```
 
@@ -421,7 +421,7 @@ git commit -m "feat: show citation styles in details"
 ### Task 5: Citation-style editor
 
 **Files:**
-- Create: `src/adsapi/gui/citation_styles.py`
+- Create: `src/adsfolio/gui/citation_styles.py`
 - Create: `tests/test_gui_citation_styles.py`
 
 **Interfaces:**
@@ -484,9 +484,9 @@ Template help button and accessible description.
 
 ```bash
 source ~/.venvs/ysbpy/bin/activate
-uv run --active isort src/adsapi/gui/citation_styles.py tests/test_gui_citation_styles.py
-uv run --active ruff format src/adsapi/gui/citation_styles.py tests/test_gui_citation_styles.py
-uv run --active ruff check src/adsapi/gui/citation_styles.py tests/test_gui_citation_styles.py
+uv run --active isort src/adsfolio/gui/citation_styles.py tests/test_gui_citation_styles.py
+uv run --active ruff format src/adsfolio/gui/citation_styles.py tests/test_gui_citation_styles.py
+uv run --active ruff check src/adsfolio/gui/citation_styles.py tests/test_gui_citation_styles.py
 uv run --active pytest -q tests/test_citations.py tests/test_gui_citation_styles.py
 ```
 
@@ -495,7 +495,7 @@ Expected: all tests pass in offscreen Qt mode.
 - [ ] **Step 5: Commit the editor**
 
 ```bash
-git add src/adsapi/gui/citation_styles.py tests/test_gui_citation_styles.py
+git add src/adsfolio/gui/citation_styles.py tests/test_gui_citation_styles.py
 git commit -m "feat: add citation style editor"
 ```
 
@@ -504,8 +504,8 @@ git commit -m "feat: add citation style editor"
 ### Task 6: Main-window and Appearance integration
 
 **Files:**
-- Modify: `src/adsapi/gui/main_window.py`
-- Modify: `src/adsapi/gui/appearance.py`
+- Modify: `src/adsfolio/gui/main_window.py`
+- Modify: `src/adsfolio/gui/appearance.py`
 - Modify: `tests/test_gui_detail_pane.py`
 - Modify: `tests/test_gui_appearance.py`
 - Modify: `tests/test_gui_dialogs.py`
@@ -575,9 +575,9 @@ nothing for empty text.
 
 ```bash
 source ~/.venvs/ysbpy/bin/activate
-uv run --active isort src/adsapi/gui/main_window.py src/adsapi/gui/appearance.py tests/test_gui_appearance.py tests/test_gui_detail_pane.py tests/test_gui_dialogs.py
-uv run --active ruff format src/adsapi/gui/main_window.py src/adsapi/gui/appearance.py tests/test_gui_appearance.py tests/test_gui_detail_pane.py tests/test_gui_dialogs.py
-uv run --active ruff check src/adsapi/gui/main_window.py src/adsapi/gui/appearance.py tests/test_gui_appearance.py tests/test_gui_detail_pane.py tests/test_gui_dialogs.py
+uv run --active isort src/adsfolio/gui/main_window.py src/adsfolio/gui/appearance.py tests/test_gui_appearance.py tests/test_gui_detail_pane.py tests/test_gui_dialogs.py
+uv run --active ruff format src/adsfolio/gui/main_window.py src/adsfolio/gui/appearance.py tests/test_gui_appearance.py tests/test_gui_detail_pane.py tests/test_gui_dialogs.py
+uv run --active ruff check src/adsfolio/gui/main_window.py src/adsfolio/gui/appearance.py tests/test_gui_appearance.py tests/test_gui_detail_pane.py tests/test_gui_dialogs.py
 uv run --active pytest -q tests/test_gui_config.py tests/test_gui_library.py tests/test_gui_models.py tests/test_gui_citation_styles.py tests/test_gui_appearance.py tests/test_gui_detail_pane.py tests/test_gui_dialogs.py
 ```
 
@@ -586,7 +586,7 @@ Expected: all citation and existing GUI interaction tests pass.
 - [ ] **Step 6: Commit integration**
 
 ```bash
-git add src/adsapi/gui/main_window.py src/adsapi/gui/appearance.py tests/test_gui_appearance.py tests/test_gui_detail_pane.py tests/test_gui_dialogs.py
+git add src/adsfolio/gui/main_window.py src/adsfolio/gui/appearance.py tests/test_gui_appearance.py tests/test_gui_detail_pane.py tests/test_gui_dialogs.py
 git commit -m "feat: integrate copyable citation styles"
 ```
 
@@ -634,7 +634,7 @@ whitespace errors.
 
 ```bash
 source ~/.venvs/ysbpy/bin/activate
-uv run --active adsapi-gui
+uv run --active adsfolio-gui
 ```
 
 Verify one bounded flow: open the style editor, create a second style, preview,

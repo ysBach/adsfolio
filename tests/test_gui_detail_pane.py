@@ -21,14 +21,14 @@ from PySide6.QtGui import (
 )
 from PySide6.QtWidgets import QApplication, QHeaderView, QInputDialog
 
-from adsapi.citations import CitationStyle
-from adsapi.config import Config
-from adsapi.gui.config import GuiConfig
-from adsapi.gui.detail_pane import DetailPane
-from adsapi.gui.library import COLUMNS, FileQuery
-from adsapi.gui.main_window import MainWindow
-from adsapi.gui.models import FileTableModel, FirstAuthorDelegate, LinkDelegate
-from adsapi.pdf.registry import FileReconciliation, PdfRegistry
+from adsfolio.citations import CitationStyle
+from adsfolio.config import Config
+from adsfolio.gui.config import GuiConfig
+from adsfolio.gui.detail_pane import DetailPane
+from adsfolio.gui.library import COLUMNS, FileQuery
+from adsfolio.gui.main_window import MainWindow
+from adsfolio.gui.models import FileTableModel, FirstAuthorDelegate, LinkDelegate
+from adsfolio.pdf.registry import FileReconciliation, PdfRegistry
 
 
 @pytest.fixture(scope="module")
@@ -370,7 +370,7 @@ def test_detail_links_use_configured_browser(
     )
     opened: list[tuple[str, str | None]] = []
     monkeypatch.setattr(
-        "adsapi.gui.detail_pane.open_url",
+        "adsfolio.gui.detail_pane.open_url",
         lambda url, application=None: opened.append((url, application)) or True,
     )
 
@@ -631,7 +631,7 @@ def test_main_table_links_open_ads_and_arxiv(
     window.table.setModel(QStandardItemModel(1, len(COLUMNS)))
     opened: list[tuple[str, str | None]] = []
     monkeypatch.setattr(
-        "adsapi.gui.main_window.open_url",
+        "adsfolio.gui.main_window.open_url",
         lambda url, application=None: opened.append((url, application)) or True,
     )
 
@@ -676,7 +676,7 @@ def test_filename_click_uses_configured_reveal_action(
     window.table.setModel(QStandardItemModel(1, len(COLUMNS)))
     revealed: list[Path] = []
     monkeypatch.setattr(
-        "adsapi.gui.main_window.reveal_in_file_manager",
+        "adsfolio.gui.main_window.reveal_in_file_manager",
         lambda path: revealed.append(path) or True,
     )
 
@@ -697,10 +697,10 @@ def test_generated_table_cell_copies_display_text_and_shows_feedback(
     """A non-empty generated citation cell copies its displayed text."""
     style = CitationStyle(id="compact", name="Compact", template="{bibcode}")
     monkeypatch.setattr(
-        "adsapi.gui.main_window.load_config",
+        "adsfolio.gui.main_window.load_config",
         lambda: GuiConfig(citation_styles=[style]),
     )
-    monkeypatch.setattr("adsapi.gui.main_window.save_config", lambda config: None)
+    monkeypatch.setattr("adsfolio.gui.main_window.save_config", lambda config: None)
     window = MainWindow()
     window.current_root = tmp_path
     window.model._rows = [
@@ -731,10 +731,10 @@ def test_empty_generated_table_cell_keeps_clipboard_content(
     """An empty generated citation cell does not replace the clipboard."""
     style = CitationStyle(id="year", name="Year", template="{year}")
     monkeypatch.setattr(
-        "adsapi.gui.main_window.load_config",
+        "adsfolio.gui.main_window.load_config",
         lambda: GuiConfig(citation_styles=[style]),
     )
-    monkeypatch.setattr("adsapi.gui.main_window.save_config", lambda config: None)
+    monkeypatch.setattr("adsfolio.gui.main_window.save_config", lambda config: None)
     window = MainWindow()
     window.current_root = tmp_path
     window.model._rows = [{"current_path": "paper.pdf", "metadata": {}}]

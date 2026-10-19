@@ -1,9 +1,9 @@
 import json
 import logging
 
-from adsapi.citations import CitationStyle, initial_citation_styles
-from adsapi.config import Config
-from adsapi.gui.config import (
+from adsfolio.citations import CitationStyle, initial_citation_styles
+from adsfolio.config import Config
+from adsfolio.gui.config import (
     GUI_CONFIG_VERSION,
     GuiConfig,
     RootEntry,
@@ -84,7 +84,7 @@ def test_config_preserves_explicit_valid_legacy_sort(monkeypatch, tmp_path) -> N
 def test_main_window_invalid_sort_falls_back_to_added_newest_first(
     monkeypatch, qtbot, tmp_path
 ) -> None:
-    import adsapi.gui.main_window as main_window_module
+    import adsfolio.gui.main_window as main_window_module
 
     _use_tmp_config(monkeypatch, tmp_path)
     monkeypatch.setattr(

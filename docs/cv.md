@@ -1,6 +1,6 @@
-# CV Feature Reference (`adsapi cv`)
+# CV Feature Reference (`adsfolio cv`)
 
-`adsapi cv` generates publication-list fragments for CV workflows from ADS query results.
+`adsfolio cv` generates publication-list fragments for CV workflows from ADS query results.
 
 The command is config-driven via YAML (`cv.yaml`) and supports:
 
@@ -13,25 +13,25 @@ The command is config-driven via YAML (`cv.yaml`) and supports:
 ## Command surface
 
 ```bash
-adsapi cv init
-adsapi cv generate --config cv.yaml
-adsapi cv show-styles
+adsfolio cv init
+adsfolio cv generate --config cv.yaml
+adsfolio cv show-styles
 ```
 
 Common generation overrides:
 
 ```bash
-adsapi cv generate --config cv.yaml --dry-run
-adsapi cv generate --config cv.yaml --format markdown --style detailed
-adsapi cv generate --config cv.yaml --author-format 'ads_custom:%3.2l'
-adsapi cv generate --config cv.yaml --output out/publications.tex
+adsfolio cv generate --config cv.yaml --dry-run
+adsfolio cv generate --config cv.yaml --format markdown --style detailed
+adsfolio cv generate --config cv.yaml --author-format 'ads_custom:%3.2l'
+adsfolio cv generate --config cv.yaml --output out/publications.tex
 ```
 
 ORCID behavior:
 
-- `adsapi cv init` reads defaults from your `adsapi set` profile.
+- `adsfolio cv init` reads defaults from your `adsfolio set` profile.
 - If profile ORCID exists, `cv init` enables ORCID matching by default.
-- Use `adsapi cv init --no-orcid` to disable that default at config creation.
+- Use `adsfolio cv init --no-orcid` to disable that default at config creation.
 
 ## Config schema
 
@@ -115,7 +115,7 @@ status:
 
 ## ADS query build behavior
 
-At runtime, `adsapi cv` constructs query as:
+At runtime, `adsfolio cv` constructs query as:
 
 1. include `orcid_pub:"<orcid>"` when `author.use_orcid` is true
 2. include `year:[start TO end]` when `debut_year`/`retire_year` are set
@@ -139,7 +139,7 @@ Fetched ADS docs are split into:
 
 ### Author formatting modes
 
-`adsapi cv` supports two author formatting modes:
+`adsfolio cv` supports two author formatting modes:
 
 - `cv_default`:
   uses local `format_author_list_cv()` with `n_max_authors`, `n_min_authors`, `n_me`, `me_target`, and `me_fmt`.
@@ -154,7 +154,7 @@ Important details from the SciX custom-format reference:
 - Syntax is `printf`-like with `%` conversion specifiers.
 - Author truncation can use `%[n.m]l` (example: `%3.2l`).
 - Useful author directives include `%l`, `%A`, `%G`, `%m`, `%M`.
-- In `adsapi cv`, this custom output replaces only the author segment of each rendered entry.
+- In `adsfolio cv`, this custom output replaces only the author segment of each rendered entry.
 
 ### Journal handling
 

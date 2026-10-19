@@ -3,16 +3,16 @@ from pathlib import Path
 
 import pytest
 
-from adsapi.config import Config
-from adsapi.pdf.catalog import CATALOG_FILENAME, CATALOG_SCHEMA_VERSION
-from adsapi.pdf.identify_settings import IdentifySettings
-from adsapi.pdf.registry import (
+from adsfolio.config import Config
+from adsfolio.pdf.catalog import CATALOG_FILENAME, CATALOG_SCHEMA_VERSION
+from adsfolio.pdf.identify_settings import IdentifySettings
+from adsfolio.pdf.registry import (
     PdfRegistry,
     merge_ads_metadata,
     migrate_sidecar,
     open_registry_state,
 )
-from adsapi.pdf.rename_settings import RenameSettings
+from adsfolio.pdf.rename_settings import RenameSettings
 
 
 @pytest.fixture(autouse=True)

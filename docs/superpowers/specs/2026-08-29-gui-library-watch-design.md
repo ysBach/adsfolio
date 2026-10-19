@@ -2,7 +2,7 @@
 
 ## Goal
 
-Extend the ADSAPI desktop application so each configured PDF library can be
+Extend the ADSFOLIO desktop application so each configured PDF library can be
 watched on demand. A watch session baselines the PDFs already present and
 reports only files added afterward. Depending on the selected policy, the GUI
 either offers a one-click **Identify & Rename** action or automatically
@@ -281,7 +281,7 @@ Before launching a foreground Identify or Rename subprocess for a watched root,
 collecting/coalescing filesystem events but closes or idles its write
 transaction until the subprocess exits, then resumes. This prevents the two
 application-owned writers from racing. Documentation states that running an
-independent `adsapi pdf watch`/`launchd` watcher on the same root concurrently is
+independent `adsfolio pdf watch`/`launchd` watcher on the same root concurrently is
 unsupported because the GUI cannot coordinate that external writer.
 
 ## Error handling and safety
@@ -327,7 +327,7 @@ they never activate a watcher on the user's real PDF directories.
 ## Deliberate exclusions
 
 This feature is an in-application watcher, not a system daemon or macOS
-notification-center integration. It works only while ADSAPI is running. It does
+notification-center integration. It works only while ADSFOLIO is running. It does
 not bulk-process a library on startup, remember one-run Identify permissions,
 overwrite destination files, or automatically install/enable background
 services. Existing PDFs remain available to the explicit manual Identify and
@@ -337,7 +337,7 @@ Rename commands.
 
 The main library table adds an **Added** column immediately before
 **Modified**. **Added** is the catalog location's `file_locations.first_seen_at`
-value: the time ADSAPI first registered that PDF location. It is not filesystem
+value: the time ADSFOLIO first registered that PDF location. It is not filesystem
 birth time, attachment creation time, or the most recent rescan time. Moves and
 renames of the same tracked location retain the original value.
 

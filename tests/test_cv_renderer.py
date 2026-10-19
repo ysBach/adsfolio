@@ -1,7 +1,7 @@
 from pathlib import Path
 
-from adsapi.cv.config import CVConfig, MarkerConfig
-from adsapi.cv.render_factory import create_renderer, style_examples
+from adsfolio.cv.config import CVConfig, MarkerConfig
+from adsfolio.cv.render_factory import create_renderer, style_examples
 
 
 def _cfg(output_format: str, style: str) -> CVConfig:
@@ -58,7 +58,7 @@ def _doc(bibcode: str, first_author: str) -> dict:
 
 def test_latex_renderer_compact_contains_sections(monkeypatch) -> None:
     monkeypatch.setattr(
-        "adsapi.cv.renderer.format_journal",
+        "adsfolio.cv.renderer.format_journal",
         lambda journal, fmt, latex: "The Astrophysical Journal",
     )
     cfg = _cfg("latex", "compact")
@@ -78,7 +78,7 @@ def test_latex_renderer_compact_contains_sections(monkeypatch) -> None:
 
 def test_markdown_renderer_includes_status_and_journal_legend(monkeypatch) -> None:
     monkeypatch.setattr(
-        "adsapi.cv.renderer.format_journal",
+        "adsfolio.cv.renderer.format_journal",
         lambda journal, fmt, latex: "The Astrophysical Journal",
     )
     cfg = _cfg("markdown", "detailed")
@@ -102,7 +102,7 @@ def test_style_examples_cover_all_styles() -> None:
 
 def test_renderer_prefers_ads_custom_author_override(monkeypatch) -> None:
     monkeypatch.setattr(
-        "adsapi.cv.renderer.format_journal",
+        "adsfolio.cv.renderer.format_journal",
         lambda journal, fmt, latex: "The Astrophysical Journal",
     )
     cfg = _cfg("latex", "compact")

@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from adsapi.cv.config import build_query, load_config
+from adsfolio.cv.config import build_query, load_config
 
 
 def test_load_config_reads_nested_fields(tmp_path: Path) -> None:

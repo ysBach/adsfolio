@@ -5,8 +5,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from adsapi.config import Config
-from adsapi.pdf.cli import (
+from adsfolio.config import Config
+from adsfolio.pdf.cli import (
     _ads_match_candidates,
     _citation_metrics_payload,
     _clear_invalid_bibcode,
@@ -14,7 +14,7 @@ from adsapi.pdf.cli import (
     _refresh_bibcode_metadata,
     _refresh_file_metadata,
 )
-from adsapi.pdf.registry import PdfRegistry
+from adsfolio.pdf.registry import PdfRegistry
 
 
 @pytest.fixture(autouse=True)

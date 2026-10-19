@@ -1,13 +1,13 @@
 # Tutorial 2: Export and BibTeX
 
-This tutorial covers `adsapi export` output formats and BibTeX workflows.
+This tutorial covers `adsfolio export` output formats and BibTeX workflows.
 
 ## 0) Start with `--help`
 
 Check complete export options before running the examples:
 
 ~~~bash
-adsapi export --help
+adsfolio export --help
 ~~~
 
 Key export options to understand:
@@ -23,7 +23,7 @@ Key export options to understand:
 ## 1) Export a single bibcode
 
 ```bash
-adsapi export 2024A&A...684A..80B
+adsfolio export 2024A&A...684A..80B
 ```
 
 Default format is `bibtex`.
@@ -31,13 +31,13 @@ Default format is `bibtex`.
 ## 2) Export multiple bibcodes
 
 ```bash
-adsapi export 2024A&A...684A..80B 2021A&A...654A.113B
+adsfolio export 2024A&A...684A..80B 2021A&A...654A.113B
 ```
 
 ## 3) Save to file
 
 ```bash
-adsapi export 2024A&A...684A..80B 2021A&A...654A.113B \
+adsfolio export 2024A&A...684A..80B 2021A&A...654A.113B \
   --format bibtex \
   --output references.bib
 ```
@@ -45,7 +45,7 @@ adsapi export 2024A&A...684A..80B 2021A&A...654A.113B \
 ## 4) Choose format and sort
 
 ```bash
-adsapi export 2024A&A...684A..80B \
+adsfolio export 2024A&A...684A..80B \
   --format aastex \
   --sort "first_author asc"
 ```
@@ -53,7 +53,7 @@ adsapi export 2024A&A...684A..80B \
 ## 5) Custom export template
 
 ```bash
-adsapi export 2024A&A...684A..80B \
+adsfolio export 2024A&A...684A..80B \
   --format custom \
   --custom "%R %T"
 ```
@@ -62,24 +62,24 @@ adsapi export 2024A&A...684A..80B \
 
 ```bash
 # ADS macro style (default, e.g. \apj)
-adsapi export 2024A&A...684A..80B --journal ads
+adsfolio export 2024A&A...684A..80B --journal ads
 
 # Full journal name
-adsapi export 2024A&A...684A..80B --journal full
+adsfolio export 2024A&A...684A..80B --journal full
 
-# ISO4 abbreviation (requires iso4 from adsapi[full])
-adsapi export 2024A&A...684A..80B --journal iso4
+# ISO4 abbreviation (requires iso4 from adsfolio[full])
+adsfolio export 2024A&A...684A..80B --journal iso4
 ```
 
 ## 7) Typical flow from search to export
 
-1. Run `adsapi search` to find bibcodes.
+1. Run `adsfolio search` to find bibcodes.
 2. Copy selected bibcodes.
 3. Export them into a `.bib` file.
 
 ```bash
-adsapi search "author:Einstein" --rows 5
-adsapi export <bibcode1> <bibcode2> --output refs.bib
+adsfolio search "author:Einstein" --rows 5
+adsfolio export <bibcode1> <bibcode2> --output refs.bib
 ```
 
 ## Next

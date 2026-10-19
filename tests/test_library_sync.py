@@ -3,9 +3,9 @@ from collections.abc import Iterable, Iterator
 import pytest
 import requests
 
-from adsapi.api.libraries import Library
-from adsapi.config import ADSError
-from adsapi.library_sync import (
+from adsfolio.api.libraries import Library
+from adsfolio.config import ADSError
+from adsfolio.library_sync import (
     AddDocumentsResult,
     AdsLibraryService,
     BibcodeSelection,

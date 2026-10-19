@@ -11,14 +11,14 @@ pytest.importorskip("PySide6")
 from PySide6.QtCore import QItemSelectionModel, QObject, Qt, Signal
 from PySide6.QtWidgets import QApplication, QDialog, QMessageBox
 
-from adsapi.citations import CitationStyle
-from adsapi.gui.config import GuiConfig, RootEntry
-from adsapi.gui.dialogs import IdentifyDialog, RenameDialog, UserProfileDialog
-from adsapi.gui.main_window import MainWindow
-from adsapi.pdf.identify_settings import IdentifySettings, IdentifyStrategy
-from adsapi.pdf.registry import CentralPdfRegistryState
-from adsapi.pdf.rename_settings import RenameSettings
-from adsapi.user_profile import UserProfile
+from adsfolio.citations import CitationStyle
+from adsfolio.gui.config import GuiConfig, RootEntry
+from adsfolio.gui.dialogs import IdentifyDialog, RenameDialog, UserProfileDialog
+from adsfolio.gui.main_window import MainWindow
+from adsfolio.pdf.identify_settings import IdentifySettings, IdentifyStrategy
+from adsfolio.pdf.registry import CentralPdfRegistryState
+from adsfolio.pdf.rename_settings import RenameSettings
+from adsfolio.user_profile import UserProfile
 
 
 @pytest.fixture(scope="module")
@@ -268,13 +268,13 @@ def test_tools_profile_action_opens_with_global_profile(application, monkeypatch
         def exec(self):
             return QDialog.Rejected
 
-    monkeypatch.setattr("adsapi.gui.main_window.load_config", GuiConfig)
-    monkeypatch.setattr("adsapi.gui.main_window.save_config", lambda config: None)
+    monkeypatch.setattr("adsfolio.gui.main_window.load_config", GuiConfig)
+    monkeypatch.setattr("adsfolio.gui.main_window.save_config", lambda config: None)
     monkeypatch.setattr(
-        "adsapi.gui.main_window.Config.load_user_profile",
+        "adsfolio.gui.main_window.Config.load_user_profile",
         lambda: profile,
     )
-    monkeypatch.setattr("adsapi.gui.main_window.UserProfileDialog", _ProfileDialog)
+    monkeypatch.setattr("adsfolio.gui.main_window.UserProfileDialog", _ProfileDialog)
     window = MainWindow()
 
     window.profile_action.trigger()
@@ -310,12 +310,12 @@ def test_tools_citation_styles_action_opens_with_global_styles_and_selected_reco
             return QDialog.Rejected
 
     monkeypatch.setattr(
-        "adsapi.gui.main_window.load_config",
+        "adsfolio.gui.main_window.load_config",
         lambda: GuiConfig(citation_styles=styles),
     )
-    monkeypatch.setattr("adsapi.gui.main_window.save_config", lambda config: None)
+    monkeypatch.setattr("adsfolio.gui.main_window.save_config", lambda config: None)
     monkeypatch.setattr(
-        "adsapi.gui.main_window.CitationStylesDialog",
+        "adsfolio.gui.main_window.CitationStylesDialog",
         _CitationStylesDialog,
     )
     window = MainWindow()
@@ -383,14 +383,14 @@ def test_accepting_citation_styles_replaces_runtime_columns_and_detail_once(
             self.saved.emit(tuple(new_styles))
             return QDialog.Accepted
 
-    monkeypatch.setattr("adsapi.gui.main_window.load_config", lambda: config)
+    monkeypatch.setattr("adsfolio.gui.main_window.load_config", lambda: config)
     save_calls = []
     monkeypatch.setattr(
-        "adsapi.gui.main_window.save_config",
+        "adsfolio.gui.main_window.save_config",
         lambda saved_config: save_calls.append(saved_config),
     )
     monkeypatch.setattr(
-        "adsapi.gui.main_window.CitationStylesDialog",
+        "adsfolio.gui.main_window.CitationStylesDialog",
         _CitationStylesDialog,
     )
     window = MainWindow()
@@ -491,10 +491,10 @@ def test_reordering_citation_styles_reorders_table_and_detail_keys(
             self.saved.emit(tuple(new_styles))
             return QDialog.Accepted
 
-    monkeypatch.setattr("adsapi.gui.main_window.load_config", lambda: config)
-    monkeypatch.setattr("adsapi.gui.main_window.save_config", lambda config: None)
+    monkeypatch.setattr("adsfolio.gui.main_window.load_config", lambda: config)
+    monkeypatch.setattr("adsfolio.gui.main_window.save_config", lambda config: None)
     monkeypatch.setattr(
-        "adsapi.gui.main_window.CitationStylesDialog",
+        "adsfolio.gui.main_window.CitationStylesDialog",
         _CitationStylesDialog,
     )
     window = MainWindow()
@@ -534,10 +534,10 @@ def test_accepting_citation_styles_restores_selected_table_record(
             self.saved.emit((new_style,))
             return QDialog.Accepted
 
-    monkeypatch.setattr("adsapi.gui.main_window.load_config", lambda: config)
-    monkeypatch.setattr("adsapi.gui.main_window.save_config", lambda config: None)
+    monkeypatch.setattr("adsfolio.gui.main_window.load_config", lambda: config)
+    monkeypatch.setattr("adsfolio.gui.main_window.save_config", lambda config: None)
     monkeypatch.setattr(
-        "adsapi.gui.main_window.CitationStylesDialog",
+        "adsfolio.gui.main_window.CitationStylesDialog",
         _CitationStylesDialog,
     )
     window = MainWindow()
@@ -572,10 +572,10 @@ def test_citation_styles_preview_uses_builtin_for_non_single_selection(
         def exec(self):
             return QDialog.Rejected
 
-    monkeypatch.setattr("adsapi.gui.main_window.load_config", lambda: config)
-    monkeypatch.setattr("adsapi.gui.main_window.save_config", lambda config: None)
+    monkeypatch.setattr("adsfolio.gui.main_window.load_config", lambda: config)
+    monkeypatch.setattr("adsfolio.gui.main_window.save_config", lambda config: None)
     monkeypatch.setattr(
-        "adsapi.gui.main_window.CitationStylesDialog",
+        "adsfolio.gui.main_window.CitationStylesDialog",
         _CitationStylesDialog,
     )
     window = MainWindow()
@@ -704,7 +704,7 @@ def test_rename_dialog_apply_saves_settings_before_starting_job(
     dialog.job_started.connect(lambda job: events.append(("emit", job)))
 
     monkeypatch.setattr(
-        "adsapi.gui.dialogs.CommandJob.start",
+        "adsfolio.gui.dialogs.CommandJob.start",
         lambda self: events.append(("start", self)),
     )
 
@@ -733,7 +733,7 @@ def test_rename_dialog_apply_save_failure_does_not_start_job_or_close(
     dialog.table.setRowCount(1)
     dialog.job_started.connect(lambda job: events.append(("emit", job)))
     monkeypatch.setattr(
-        "adsapi.gui.dialogs.CommandJob.start",
+        "adsfolio.gui.dialogs.CommandJob.start",
         lambda self: events.append(("start", self)),
     )
     monkeypatch.setattr(
@@ -763,11 +763,11 @@ def test_rename_dialog_preview_never_saves(application, monkeypatch):
         save_settings=lambda scope, settings: calls.append((scope, settings)),
     )
     monkeypatch.setattr(
-        "adsapi.gui.dialogs.open_registry_state",
+        "adsfolio.gui.dialogs.open_registry_state",
         lambda path: type("FakeState", (), {"close": lambda self: None})(),
     )
     monkeypatch.setattr(
-        "adsapi.gui.dialogs.PdfRenamer.batch_rename",
+        "adsfolio.gui.dialogs.PdfRenamer.batch_rename",
         lambda *args, **kwargs: observed.update(kwargs) or [("old.pdf", "new.pdf")],
     )
 
@@ -837,7 +837,7 @@ def test_rename_dialog_saves_and_forwards_author_join_settings(application):
 def test_main_window_passes_independent_rename_scope_settings(
     application, monkeypatch, tmp_path
 ):
-    import adsapi.gui.main_window as main_window_module
+    import adsfolio.gui.main_window as main_window_module
 
     root = tmp_path / "library"
     root.mkdir()

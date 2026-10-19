@@ -2,7 +2,7 @@
 
 from pathlib import Path
 
-from adsapi.gui.notifications import Notice, NoticeAction, NoticeBar
+from adsfolio.gui.notifications import Notice, NoticeAction, NoticeBar
 
 
 def test_notice_bar_shows_one_item_and_pending_count(qtbot):

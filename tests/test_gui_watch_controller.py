@@ -11,9 +11,9 @@ pytest.importorskip("PySide6")
 
 from PySide6.QtCore import QObject, QThread, QTimer, Signal
 
-from adsapi.pdf.identify_settings import IdentifySettings
-from adsapi.pdf.rename_settings import RenameSettings
-from adsapi.pdf.watch_session import ArrivalIdentity, WatchEvent, WatchState
+from adsfolio.pdf.identify_settings import IdentifySettings
+from adsfolio.pdf.rename_settings import RenameSettings
+from adsfolio.pdf.watch_session import ArrivalIdentity, WatchEvent, WatchState
 
 
 class FakeWorker(QObject):
@@ -85,7 +85,7 @@ def _event(root: Path, session_id: str) -> WatchEvent:
 
 
 def test_controller_manages_roots_independently(qtbot, tmp_path):
-    from adsapi.gui.watch import LibraryWatchController
+    from adsfolio.gui.watch import LibraryWatchController
 
     workers = {}
     controller = LibraryWatchController(
@@ -105,7 +105,7 @@ def test_controller_manages_roots_independently(qtbot, tmp_path):
 
 
 def test_start_root_waits_until_worker_reports_ready(qtbot, tmp_path):
-    from adsapi.gui.watch import LibraryWatchController
+    from adsfolio.gui.watch import LibraryWatchController
 
     class DelayedWorker(FakeWorker):
         def start(self) -> None:
@@ -128,7 +128,7 @@ def test_start_root_waits_until_worker_reports_ready(qtbot, tmp_path):
 
 
 def test_obsolete_session_event_is_discarded(qtbot, tmp_path):
-    from adsapi.gui.watch import LibraryWatchController
+    from adsfolio.gui.watch import LibraryWatchController
 
     workers = []
     received = []
@@ -159,7 +159,7 @@ def test_obsolete_session_event_is_discarded(qtbot, tmp_path):
 
 
 def test_controller_rejects_unavailable_worker_start(qtbot, tmp_path):
-    from adsapi.gui.watch import LibraryWatchController, WatchFailure
+    from adsfolio.gui.watch import LibraryWatchController, WatchFailure
 
     class UnavailableWorker(FakeWorker):
         def start(self) -> None:
@@ -188,7 +188,7 @@ def test_controller_rejects_unavailable_worker_start(qtbot, tmp_path):
 
 
 def test_stop_root_forwards_worker_acknowledgement(qtbot, tmp_path):
-    from adsapi.gui.watch import LibraryWatchController
+    from adsfolio.gui.watch import LibraryWatchController
 
     stopped = []
     controller = LibraryWatchController(
@@ -204,7 +204,7 @@ def test_stop_root_forwards_worker_acknowledgement(qtbot, tmp_path):
 
 
 def test_controller_forwards_commands_only_for_current_session(qtbot, tmp_path):
-    from adsapi.gui.watch import LibraryWatchController
+    from adsfolio.gui.watch import LibraryWatchController
 
     workers = {}
     controller = LibraryWatchController(
@@ -240,7 +240,7 @@ def test_controller_forwards_commands_only_for_current_session(qtbot, tmp_path):
 
 
 def test_worker_drains_intake_before_finishing_baseline(monkeypatch, tmp_path):
-    import adsapi.gui.watch as watch_module
+    import adsfolio.gui.watch as watch_module
 
     root = tmp_path / "library"
     source = root / "new.pdf"
@@ -286,7 +286,7 @@ def test_worker_drains_intake_before_finishing_baseline(monkeypatch, tmp_path):
 
 
 def test_worker_pause_closes_and_resume_reopens_registry(monkeypatch, tmp_path):
-    import adsapi.gui.watch as watch_module
+    import adsfolio.gui.watch as watch_module
 
     original = MagicMock()
     reopened = MagicMock()
@@ -309,7 +309,7 @@ def test_worker_pause_closes_and_resume_reopens_registry(monkeypatch, tmp_path):
 def test_worker_stop_between_resumed_processes_discards_second(
     monkeypatch, qtbot, tmp_path
 ) -> None:
-    import adsapi.gui.watch as watch_module
+    import adsfolio.gui.watch as watch_module
 
     root = tmp_path / "library"
     first = _event(root, "session-1")
@@ -351,7 +351,7 @@ def test_worker_stop_between_resumed_processes_discards_second(
 
 
 def test_worker_cleanup_uses_public_ads_client_close(tmp_path):
-    import adsapi.gui.watch as watch_module
+    import adsfolio.gui.watch as watch_module
 
     client = MagicMock()
     worker = watch_module._LibraryWatchWorker(tmp_path, "session-1")
@@ -364,7 +364,7 @@ def test_worker_cleanup_uses_public_ads_client_close(tmp_path):
 
 
 def test_worker_rejects_replaced_identity_before_processing(tmp_path):
-    import adsapi.gui.watch as watch_module
+    import adsfolio.gui.watch as watch_module
 
     root = tmp_path / "library"
     source = root / "new.pdf"
@@ -396,7 +396,7 @@ def test_worker_rejects_replaced_identity_before_processing(tmp_path):
 def test_worker_classifies_move_within_root_as_modified(monkeypatch, tmp_path):
     import watchdog.observers
 
-    import adsapi.gui.watch as watch_module
+    import adsfolio.gui.watch as watch_module
 
     root = tmp_path / "library"
     root.mkdir()

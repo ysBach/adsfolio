@@ -1,6 +1,6 @@
 import pytest
 
-from adsapi.citations import (
+from adsfolio.citations import (
     ALLOWED_CITATION_FIELDS,
     CITATION_FIELD_HELP,
     DEFAULT_CITATION_STYLE_ID,

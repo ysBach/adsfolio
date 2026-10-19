@@ -26,9 +26,9 @@
 **Files:**
 - Modify: `pyproject.toml`
 - Modify: `uv.lock`
-- Modify: `src/adsapi/pdf/renamer.py`
-- Modify: `src/adsapi/pdf/identifier.py`
-- Modify: `src/adsapi/pdf/cli.py`
+- Modify: `src/adsfolio/pdf/renamer.py`
+- Modify: `src/adsfolio/pdf/identifier.py`
+- Modify: `src/adsfolio/pdf/cli.py`
 - Test: `tests/test_pdf_renamer.py`
 - Test: `tests/test_pdf_identifier.py`
 
@@ -47,10 +47,10 @@
 ### Task 2: Transactional tracked moves and single-file rename
 
 **Files:**
-- Create: `src/adsapi/pdf/tracked_move.py`
-- Modify: `src/adsapi/pdf/identify.py`
-- Modify: `src/adsapi/pdf/renamer.py`
-- Modify: `src/adsapi/pdf/watcher.py`
+- Create: `src/adsfolio/pdf/tracked_move.py`
+- Modify: `src/adsfolio/pdf/identify.py`
+- Modify: `src/adsfolio/pdf/renamer.py`
+- Modify: `src/adsfolio/pdf/watcher.py`
 - Test: `tests/test_pdf_renamer.py`
 - Test: `tests/test_pdf_watcher.py`
 - Test: `tests/test_pdf_cli.py`
@@ -70,9 +70,9 @@
 ### Task 3: Readiness and hybrid watchdog reconciliation
 
 **Files:**
-- Modify: `src/adsapi/pdf/identifier.py`
-- Modify: `src/adsapi/pdf/watcher.py`
-- Modify: `src/adsapi/pdf/cli.py`
+- Modify: `src/adsfolio/pdf/identifier.py`
+- Modify: `src/adsfolio/pdf/watcher.py`
+- Modify: `src/adsfolio/pdf/cli.py`
 - Test: `tests/test_pdf_identifier.py`
 - Test: `tests/test_pdf_watcher.py`
 - Test: `tests/test_pdf_cli.py`
@@ -94,7 +94,7 @@
 ### Task 4: CLI safety and macOS operation documentation
 
 **Files:**
-- Modify: `src/adsapi/pdf/cli.py`
+- Modify: `src/adsfolio/pdf/cli.py`
 - Modify: `README.md`
 - Modify: `docs/cli-tutorials/04-pdf-workflows.md`
 - Test: `tests/test_pdf_cli.py`
@@ -118,7 +118,7 @@
 - Consumes: all prior task outputs.
 - Produces: verified implementation and review findings resolved or explicitly reported.
 
-- [ ] Run `source ~/.venvs/ysbpy/bin/activate && isort src/adsapi/pdf tests`.
+- [ ] Run `source ~/.venvs/ysbpy/bin/activate && isort src/adsfolio/pdf tests`.
 - [ ] Run `source ~/.venvs/ysbpy/bin/activate && ruff format . && ruff check .`.
 - [ ] Run targeted PDF tests.
 - [ ] Run the complete pytest suite.

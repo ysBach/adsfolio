@@ -2,7 +2,7 @@
 
 This guide shows how to:
 
-1. query ADS with `adsapi`,
+1. query ADS with `adsfolio`,
 2. split first-authored vs co-authored papers,
 3. optionally merge a talks CSV (Google Sheets export),
 4. generate clean Markdown outputs for CV/publication documents.
@@ -75,4 +75,4 @@ pandoc cv_example_output/publications.md -o cv_example_output/publications.tex
 2. Or replace `format_publication_markdown(...)` / `format_talk_markdown(...)`
    with TeX emitters (your existing workflow already maps cleanly to this structure).
 
-`adsapi` already provides helpers that are LaTeX-friendly (for example `format_title_latex`, `format_author_list_cv`, `format_journal`).
+`adsfolio` already provides helpers that are LaTeX-friendly (for example `format_title_latex`, `format_author_list_cv`, `format_journal`).

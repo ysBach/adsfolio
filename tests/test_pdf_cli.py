@@ -6,26 +6,26 @@ from types import SimpleNamespace
 import pytest
 from click.testing import CliRunner
 
-from adsapi.cli.commands import main
-from adsapi.config import Config, RateLimitError
-from adsapi.pdf.catalog import CATALOG_FILENAME
-from adsapi.pdf.cli import (
+from adsfolio.cli.commands import main
+from adsfolio.config import Config, RateLimitError
+from adsfolio.pdf.catalog import CATALOG_FILENAME
+from adsfolio.pdf.cli import (
     _estimate_ads_queries_for_targets,
     pdf,
 )
-from adsapi.pdf.cli_common import handle_unresolved
-from adsapi.pdf.identifier import PdfIdentifier
-from adsapi.pdf.identify import build_cached_candidate_lookup
-from adsapi.pdf.identify_settings import (
+from adsfolio.pdf.cli_common import handle_unresolved
+from adsfolio.pdf.identifier import PdfIdentifier
+from adsfolio.pdf.identify import build_cached_candidate_lookup
+from adsfolio.pdf.identify_settings import (
     RECOMMENDED_IDENTIFY_STRATEGIES,
     IdentifySettings,
     IdentifyStrategy,
 )
-from adsapi.pdf.prefetch import PublicationProfile
-from adsapi.pdf.registry import PdfRegistry, PdfRegistryState, open_registry_state
-from adsapi.pdf.upgrade import UpgradeResult
-from adsapi.pdf.watcher import PdfWatcher
-from adsapi.user_profile import UserProfile
+from adsfolio.pdf.prefetch import PublicationProfile
+from adsfolio.pdf.registry import PdfRegistry, PdfRegistryState, open_registry_state
+from adsfolio.pdf.upgrade import UpgradeResult
+from adsfolio.pdf.watcher import PdfWatcher
+from adsfolio.user_profile import UserProfile
 
 
 @pytest.fixture(autouse=True)
@@ -37,7 +37,7 @@ def _use_test_catalog(monkeypatch, tmp_path):
         classmethod(lambda cls: tmp_path / "config"),
     )
     monkeypatch.setattr(
-        "adsapi.pubcache.cache_path",
+        "adsfolio.pubcache.cache_path",
         lambda: tmp_path / "config" / "publications.json",
     )
 
@@ -86,9 +86,9 @@ def test_main_registers_pdf_group():
 def test_refresh_ads_progress_is_bounded(tmp_path, monkeypatch):
     bibcodes = [f"B{index:03d}" for index in range(101)]
 
-    monkeypatch.setattr("adsapi.pdf.cli._get_client", lambda ctx: object())
+    monkeypatch.setattr("adsfolio.pdf.cli._get_client", lambda ctx: object())
     monkeypatch.setattr(
-        "adsapi.pdf.cli.PdfIdentifier.query_docs_for_bibcodes",
+        "adsfolio.pdf.cli.PdfIdentifier.query_docs_for_bibcodes",
         lambda self, requested, **kwargs: {
             bibcode: {"bibcode": bibcode} for bibcode in requested
         },
@@ -119,7 +119,7 @@ def test_identify_command_delegates_to_identify_workflow(tmp_path, monkeypatch):
             options=options,
         )
 
-    monkeypatch.setattr("adsapi.pdf.cli.run_identify", fake_run_identify)
+    monkeypatch.setattr("adsfolio.pdf.cli.run_identify", fake_run_identify)
 
     result = CliRunner().invoke(
         pdf,
@@ -167,7 +167,7 @@ def test_identify_command_inherits_library_settings_and_allows_clears(
         verbose=True,
     )
     monkeypatch.setattr(
-        "adsapi.pdf.cli.load_library_identify_settings",
+        "adsfolio.pdf.cli.load_library_identify_settings",
         lambda directory: saved,
     )
     monkeypatch.setattr(
@@ -179,7 +179,7 @@ def test_identify_command_inherits_library_settings_and_allows_clears(
         ),
     )
     monkeypatch.setattr(
-        "adsapi.pdf.cli.run_identify",
+        "adsfolio.pdf.cli.run_identify",
         lambda client, directory, *, helpers, **options: captured.update(options),
     )
 
@@ -219,7 +219,7 @@ def test_identify_command_quiet_overrides_reusable_verbose(tmp_path, monkeypatch
         classmethod(lambda cls: IdentifySettings(verbose=True)),
     )
     monkeypatch.setattr(
-        "adsapi.pdf.cli.run_identify",
+        "adsfolio.pdf.cli.run_identify",
         lambda client, directory, *, helpers, **options: captured.update(options),
     )
 
@@ -264,11 +264,11 @@ def test_identify_creates_registry_record(tmp_path, monkeypatch):
     pdf_path.write_bytes(b"%PDF")
 
     monkeypatch.setattr(
-        "adsapi.pdf.identify.PdfIdentifier.compute_sha256",
+        "adsfolio.pdf.identify.PdfIdentifier.compute_sha256",
         lambda self, path: f"sha-{path.name}",
     )
     monkeypatch.setattr(
-        "adsapi.pdf.identify.PdfIdentifier.resolve_many",
+        "adsfolio.pdf.identify.PdfIdentifier.resolve_many",
         lambda self, paths, journal_map=None, **kwargs: {
             Path(path): _metadata(
                 sha256=f"sha-{Path(path).name}",
@@ -278,7 +278,7 @@ def test_identify_creates_registry_record(tmp_path, monkeypatch):
         },
     )
     monkeypatch.setattr(
-        "adsapi.pdf.cli._estimate_ads_queries_for_targets",
+        "adsfolio.pdf.cli._estimate_ads_queries_for_targets",
         lambda identifier, pdf_paths, strategies=None: _estimate_ads_ready(pdf_paths),
     )
 
@@ -300,11 +300,11 @@ def test_identify_unresolved_move_is_dry_run_without_apply(tmp_path, monkeypatch
     output_dir = tmp_path / "unresolved-bin"
 
     monkeypatch.setattr(
-        "adsapi.pdf.identify.PdfIdentifier.compute_sha256",
+        "adsfolio.pdf.identify.PdfIdentifier.compute_sha256",
         lambda self, path: "sha-unresolved",
     )
     monkeypatch.setattr(
-        "adsapi.pdf.identify.PdfIdentifier.resolve_many",
+        "adsfolio.pdf.identify.PdfIdentifier.resolve_many",
         lambda self, paths, journal_map=None, **kwargs: {
             Path(path): None for path in paths
         },
@@ -330,11 +330,11 @@ def test_identify_persists_unresolved_pdf_before_enrichment(tmp_path, monkeypatc
     pdf_path.write_bytes(b"%PDF")
 
     monkeypatch.setattr(
-        "adsapi.pdf.identify.PdfIdentifier.compute_sha256",
+        "adsfolio.pdf.identify.PdfIdentifier.compute_sha256",
         lambda self, path: "sha-unresolved",
     )
     monkeypatch.setattr(
-        "adsapi.pdf.identify.PdfIdentifier.resolve_many",
+        "adsfolio.pdf.identify.PdfIdentifier.resolve_many",
         lambda self, paths, journal_map=None, **kwargs: {
             Path(path): None for path in paths
         },
@@ -371,11 +371,11 @@ def test_identify_verbose_unresolved_move_shows_per_file_logs(tmp_path, monkeypa
     output_dir = tmp_path / "unresolved-bin"
 
     monkeypatch.setattr(
-        "adsapi.pdf.identify.PdfIdentifier.compute_sha256",
+        "adsfolio.pdf.identify.PdfIdentifier.compute_sha256",
         lambda self, path: "sha-unresolved",
     )
     monkeypatch.setattr(
-        "adsapi.pdf.identify.PdfIdentifier.resolve_many",
+        "adsfolio.pdf.identify.PdfIdentifier.resolve_many",
         lambda self, paths, journal_map=None, **kwargs: {
             Path(path): None for path in paths
         },
@@ -401,11 +401,11 @@ def test_identify_writes_unresolved_csv_and_ai_prompt(tmp_path, monkeypatch):
     pdf_path.write_bytes(b"%PDF")
 
     monkeypatch.setattr(
-        "adsapi.pdf.identify.PdfIdentifier.compute_sha256",
+        "adsfolio.pdf.identify.PdfIdentifier.compute_sha256",
         lambda self, path: "sha-unresolved",
     )
     monkeypatch.setattr(
-        "adsapi.pdf.identify.PdfIdentifier.resolve_many",
+        "adsfolio.pdf.identify.PdfIdentifier.resolve_many",
         lambda self, paths, journal_map=None, **kwargs: {
             Path(path): None for path in paths
         },
@@ -436,7 +436,7 @@ def test_identify_passes_cached_lookup_to_ordered_resolver(tmp_path, monkeypatch
     observed = {}
 
     monkeypatch.setattr(
-        "adsapi.pdf.identify.PdfIdentifier.compute_sha256",
+        "adsfolio.pdf.identify.PdfIdentifier.compute_sha256",
         lambda self, path: f"sha-{path.name}",
     )
 
@@ -451,7 +451,7 @@ def test_identify_passes_cached_lookup_to_ordered_resolver(tmp_path, monkeypatch
         }
 
     monkeypatch.setattr(
-        "adsapi.pdf.identify.PdfIdentifier.resolve_many", fake_resolve_many
+        "adsfolio.pdf.identify.PdfIdentifier.resolve_many", fake_resolve_many
     )
 
     result = CliRunner().invoke(pdf, ["identify", str(tmp_path)])
@@ -468,13 +468,13 @@ def test_identify_prompts_before_ads_queries(tmp_path, monkeypatch):
         (tmp_path / f"paper_{idx:03d}.pdf").write_bytes(b"%PDF")
 
     monkeypatch.setattr(
-        "adsapi.pdf.identify.PdfIdentifier.compute_sha256",
+        "adsfolio.pdf.identify.PdfIdentifier.compute_sha256",
         lambda self, path: f"sha-{path.name}",
     )
     observed = []
-    monkeypatch.setattr("adsapi.pdf.cli._should_prompt_ads_permission", lambda: True)
+    monkeypatch.setattr("adsfolio.pdf.cli._should_prompt_ads_permission", lambda: True)
     monkeypatch.setattr(
-        "adsapi.pdf.cli._estimate_ads_queries_for_targets",
+        "adsfolio.pdf.cli._estimate_ads_queries_for_targets",
         lambda identifier, pdf_paths, strategies=None: _estimate_ads_ready(pdf_paths),
     )
 
@@ -483,7 +483,7 @@ def test_identify_prompts_before_ads_queries(tmp_path, monkeypatch):
         return {Path(path): None for path in paths}
 
     monkeypatch.setattr(
-        "adsapi.pdf.identify.PdfIdentifier.resolve_many", fake_resolve_many
+        "adsfolio.pdf.identify.PdfIdentifier.resolve_many", fake_resolve_many
     )
 
     result = CliRunner().invoke(pdf, ["identify", str(tmp_path)], input="n\n\n")
@@ -505,13 +505,13 @@ def test_identify_auto_skips_ads_prompt_when_estimate_is_too_high(
         (tmp_path / f"paper_{idx:03d}.pdf").write_bytes(b"%PDF")
 
     monkeypatch.setattr(
-        "adsapi.pdf.identify.PdfIdentifier.compute_sha256",
+        "adsfolio.pdf.identify.PdfIdentifier.compute_sha256",
         lambda self, path: f"sha-{path.name}",
     )
     observed = []
-    monkeypatch.setattr("adsapi.pdf.cli._should_prompt_ads_permission", lambda: True)
+    monkeypatch.setattr("adsfolio.pdf.cli._should_prompt_ads_permission", lambda: True)
     monkeypatch.setattr(
-        "adsapi.pdf.cli._estimate_ads_queries_for_targets",
+        "adsfolio.pdf.cli._estimate_ads_queries_for_targets",
         lambda identifier, pdf_paths, strategies=None: {
             "pending_files": len(pdf_paths),
             "estimated_ads_queries": 1004,
@@ -523,7 +523,7 @@ def test_identify_auto_skips_ads_prompt_when_estimate_is_too_high(
         return {Path(path): None for path in paths}
 
     monkeypatch.setattr(
-        "adsapi.pdf.identify.PdfIdentifier.resolve_many", fake_resolve_many
+        "adsfolio.pdf.identify.PdfIdentifier.resolve_many", fake_resolve_many
     )
 
     result = CliRunner().invoke(pdf, ["identify", str(tmp_path)], input="y\n")
@@ -543,12 +543,12 @@ def test_identify_high_risk_estimate_skips_ads_queries(tmp_path, monkeypatch):
         (tmp_path / f"paper_{idx:03d}.pdf").write_bytes(b"%PDF")
 
     monkeypatch.setattr(
-        "adsapi.pdf.identify.PdfIdentifier.compute_sha256",
+        "adsfolio.pdf.identify.PdfIdentifier.compute_sha256",
         lambda self, path: f"sha-{path.name}",
     )
-    monkeypatch.setattr("adsapi.pdf.cli._should_prompt_ads_permission", lambda: True)
+    monkeypatch.setattr("adsfolio.pdf.cli._should_prompt_ads_permission", lambda: True)
     monkeypatch.setattr(
-        "adsapi.pdf.cli._estimate_ads_queries_for_targets",
+        "adsfolio.pdf.cli._estimate_ads_queries_for_targets",
         lambda identifier, pdf_paths, strategies=None: {
             "pending_files": len(pdf_paths),
             "estimated_ads_queries": 1004,
@@ -561,7 +561,7 @@ def test_identify_high_risk_estimate_skips_ads_queries(tmp_path, monkeypatch):
         return {Path(path): None for path in paths}
 
     monkeypatch.setattr(
-        "adsapi.pdf.identify.PdfIdentifier.resolve_many", fake_resolve_many
+        "adsfolio.pdf.identify.PdfIdentifier.resolve_many", fake_resolve_many
     )
 
     result = CliRunner().invoke(pdf, ["identify", str(tmp_path)], input="\n")
@@ -578,12 +578,12 @@ def test_identify_syncs_profile_to_registry_when_no_files_resolved(
     pdf_path.write_bytes(b"%PDF")
 
     monkeypatch.setattr(
-        "adsapi.pdf.identify.PdfIdentifier.compute_sha256",
+        "adsfolio.pdf.identify.PdfIdentifier.compute_sha256",
         lambda self, path: f"sha-{path.name}",
     )
-    monkeypatch.setattr("adsapi.pdf.cli._should_prompt_ads_permission", lambda: False)
+    monkeypatch.setattr("adsfolio.pdf.cli._should_prompt_ads_permission", lambda: False)
     monkeypatch.setattr(
-        "adsapi.config.Config.load_user_profile",
+        "adsfolio.config.Config.load_user_profile",
         lambda: UserProfile(
             orcid="0000-0002-1825-0097",
             author_names=("Bach, Y. P.",),
@@ -661,7 +661,7 @@ def test_identify_verbose_parser_disables_parser_suppression(tmp_path, monkeypat
         def resolve_many(self, paths, journal_map=None, **kwargs):
             return {Path(path): None for path in paths}
 
-    monkeypatch.setattr("adsapi.pdf.identify.PdfIdentifier", StubIdentifier)
+    monkeypatch.setattr("adsfolio.pdf.identify.PdfIdentifier", StubIdentifier)
 
     runner = CliRunner()
     result = runner.invoke(pdf, ["identify", str(tmp_path), "--verbose-parser"])
@@ -689,7 +689,7 @@ def test_identify_recursive_uses_registry_matches(tmp_path, monkeypatch):
     state.save()
 
     monkeypatch.setattr(
-        "adsapi.pdf.identify.PdfIdentifier.compute_sha256",
+        "adsfolio.pdf.identify.PdfIdentifier.compute_sha256",
         lambda self, path: "sha-known" if Path(path).name == "known.pdf" else "sha-new",
     )
 
@@ -707,10 +707,10 @@ def test_identify_recursive_uses_registry_matches(tmp_path, monkeypatch):
         }
 
     monkeypatch.setattr(
-        "adsapi.pdf.identify.PdfIdentifier.resolve_many", fake_resolve_many
+        "adsfolio.pdf.identify.PdfIdentifier.resolve_many", fake_resolve_many
     )
     monkeypatch.setattr(
-        "adsapi.pdf.cli._estimate_ads_queries_for_targets",
+        "adsfolio.pdf.cli._estimate_ads_queries_for_targets",
         lambda identifier, pdf_paths, strategies=None: _estimate_ads_ready(pdf_paths),
     )
 
@@ -750,13 +750,13 @@ def test_identify_recursive_persists_filename_updates_in_registry(
     state.save()
 
     monkeypatch.setattr(
-        "adsapi.pdf.identify.PdfIdentifier.compute_sha256",
+        "adsfolio.pdf.identify.PdfIdentifier.compute_sha256",
         lambda self, path: "sha-known",
     )
 
     resolve_calls = []
     monkeypatch.setattr(
-        "adsapi.pdf.identify.PdfIdentifier.resolve_many",
+        "adsfolio.pdf.identify.PdfIdentifier.resolve_many",
         lambda self, paths, journal_map=None, **kwargs: (
             resolve_calls.append(list(paths)) or {}
         ),
@@ -802,7 +802,7 @@ def test_identify_prefers_exact_catalog_path_for_duplicate_sha(tmp_path, monkeyp
     state.save()
 
     monkeypatch.setattr(
-        "adsapi.pdf.identify.PdfIdentifier.compute_sha256",
+        "adsfolio.pdf.identify.PdfIdentifier.compute_sha256",
         lambda self, path: "sha-shared",
     )
 
@@ -841,7 +841,7 @@ def test_identify_registers_new_duplicate_path_without_moving_existing_path(
     state.save()
 
     monkeypatch.setattr(
-        "adsapi.pdf.identify.PdfIdentifier.compute_sha256",
+        "adsfolio.pdf.identify.PdfIdentifier.compute_sha256",
         lambda self, path: "sha-shared",
     )
 
@@ -872,7 +872,7 @@ def test_identify_reactivates_returned_catalog_path(tmp_path, monkeypatch):
     state.save()
 
     monkeypatch.setattr(
-        "adsapi.pdf.identify.PdfIdentifier.compute_sha256",
+        "adsfolio.pdf.identify.PdfIdentifier.compute_sha256",
         lambda self, path: "sha-current",
     )
 
@@ -917,7 +917,7 @@ def test_identify_rehashes_replacement_at_missing_catalog_path(tmp_path, monkeyp
         return "sha-new"
 
     monkeypatch.setattr(
-        "adsapi.pdf.identify.PdfIdentifier.compute_sha256",
+        "adsfolio.pdf.identify.PdfIdentifier.compute_sha256",
         fake_compute_sha,
     )
 
@@ -940,17 +940,17 @@ def test_identify_rate_limit_is_reported_as_operation_failure(tmp_path, monkeypa
     pdf_path.write_bytes(b"%PDF")
 
     monkeypatch.setattr(
-        "adsapi.pdf.identify.PdfIdentifier.compute_sha256",
+        "adsfolio.pdf.identify.PdfIdentifier.compute_sha256",
         lambda self, path: f"sha-{path.name}",
     )
     monkeypatch.setattr(
-        "adsapi.pdf.identify.PdfIdentifier.resolve_many",
+        "adsfolio.pdf.identify.PdfIdentifier.resolve_many",
         lambda self, paths, journal_map=None, **kwargs: (_ for _ in ()).throw(
             RateLimitError("Rate limit exceeded. Try again later.")
         ),
     )
     monkeypatch.setattr(
-        "adsapi.pdf.cli._estimate_ads_queries_for_targets",
+        "adsfolio.pdf.cli._estimate_ads_queries_for_targets",
         lambda identifier, pdf_paths, strategies=None: _estimate_ads_ready(pdf_paths),
     )
 
@@ -962,14 +962,14 @@ def test_identify_rate_limit_is_reported_as_operation_failure(tmp_path, monkeypa
 
 
 def test_identify_cache_refresh_rate_limit_is_operation_failure(tmp_path, monkeypatch):
-    monkeypatch.setattr("adsapi.pdf.cli._get_client", lambda ctx: object())
+    monkeypatch.setattr("adsfolio.pdf.cli._get_client", lambda ctx: object())
     monkeypatch.setattr(
         Config,
         "load_user_profile",
         classmethod(lambda cls: UserProfile(orcid="0000-0000-0000-0000")),
     )
     monkeypatch.setattr(
-        "adsapi.pdf.identify.query_publications",
+        "adsfolio.pdf.identify.query_publications",
         lambda client, profile: (_ for _ in ()).throw(
             RateLimitError("Rate limit exceeded during refresh.")
         ),
@@ -986,7 +986,7 @@ def test_identify_repeated_strategy_options_preserve_order(tmp_path, monkeypatch
         (tmp_path / f"paper_{idx:03d}.pdf").write_bytes(b"%PDF")
 
     monkeypatch.setattr(
-        "adsapi.pdf.identify.PdfIdentifier.compute_sha256",
+        "adsfolio.pdf.identify.PdfIdentifier.compute_sha256",
         lambda self, path: f"sha-{path.name}",
     )
     observed = {}
@@ -997,7 +997,7 @@ def test_identify_repeated_strategy_options_preserve_order(tmp_path, monkeypatch
         return {Path(path): None for path in paths}
 
     monkeypatch.setattr(
-        "adsapi.pdf.identify.PdfIdentifier.resolve_many", fake_resolve_many
+        "adsfolio.pdf.identify.PdfIdentifier.resolve_many", fake_resolve_many
     )
 
     result = CliRunner().invoke(
@@ -1057,7 +1057,7 @@ def test_rename_passes_character_and_author_join_policies_to_renamer(
         observed["author_truncation_suffix"] = author_truncation_suffix
         return []
 
-    monkeypatch.setattr("adsapi.pdf.cli.PdfRenamer.batch_rename", fake_batch_rename)
+    monkeypatch.setattr("adsfolio.pdf.cli.PdfRenamer.batch_rename", fake_batch_rename)
 
     runner = CliRunner()
     result = runner.invoke(
@@ -1148,7 +1148,7 @@ def test_rename_dry_run_then_apply(tmp_path):
 
 
 def test_obsidian_dry_run_then_apply(tmp_path, monkeypatch):
-    from adsapi.api.search import SearchResult
+    from adsfolio.api.search import SearchResult
 
     pdf_path = tmp_path / "paper.pdf"
     pdf_path.write_bytes(b"%PDF")
@@ -1172,7 +1172,7 @@ def test_obsidian_dry_run_then_apply(tmp_path, monkeypatch):
     class _ClientStub:
         search = _SearchStub()
 
-    monkeypatch.setattr("adsapi.pdf.cli._get_client", lambda ctx: _ClientStub())
+    monkeypatch.setattr("adsfolio.pdf.cli._get_client", lambda ctx: _ClientStub())
 
     runner = CliRunner()
     dry = runner.invoke(pdf, ["obsidian", str(tmp_path)])
@@ -1216,7 +1216,7 @@ def test_push_library_apply_calls_add_documents(tmp_path, monkeypatch):
             self.libraries = StubLibraries()
             StubClient.instances.append(self)
 
-    monkeypatch.setattr("adsapi.pdf.cli_common.ADSClient", StubClient)
+    monkeypatch.setattr("adsfolio.pdf.cli_common.ADSClient", StubClient)
 
     runner = CliRunner()
     result = runner.invoke(
@@ -1302,10 +1302,10 @@ def test_identify_non_interactive_disables_network_but_checks_cache(
     pdf_path.write_bytes(b"%PDF")
 
     monkeypatch.setattr(
-        "adsapi.pdf.identify.PdfIdentifier.compute_sha256",
+        "adsfolio.pdf.identify.PdfIdentifier.compute_sha256",
         lambda self, path: f"sha-{path.name}",
     )
-    monkeypatch.setattr("adsapi.pdf.cli._should_prompt_ads_permission", lambda: False)
+    monkeypatch.setattr("adsfolio.pdf.cli._should_prompt_ads_permission", lambda: False)
     observed = []
 
     def fake_resolve_many(self, paths, journal_map=None, **kwargs):
@@ -1313,7 +1313,7 @@ def test_identify_non_interactive_disables_network_but_checks_cache(
         return {Path(path): None for path in paths}
 
     monkeypatch.setattr(
-        "adsapi.pdf.identify.PdfIdentifier.resolve_many", fake_resolve_many
+        "adsfolio.pdf.identify.PdfIdentifier.resolve_many", fake_resolve_many
     )
 
     result = CliRunner().invoke(pdf, ["identify", str(tmp_path)])
@@ -1333,11 +1333,11 @@ def test_identify_default_quiet_unresolved_moves_suppresses_per_file_logs(
     output_dir = tmp_path / "unresolved-bin"
 
     monkeypatch.setattr(
-        "adsapi.pdf.identify.PdfIdentifier.compute_sha256",
+        "adsfolio.pdf.identify.PdfIdentifier.compute_sha256",
         lambda self, path: "sha-unresolved",
     )
     monkeypatch.setattr(
-        "adsapi.pdf.identify.PdfIdentifier.resolve_many",
+        "adsfolio.pdf.identify.PdfIdentifier.resolve_many",
         lambda self, paths, journal_map=None, **kwargs: {
             Path(path): None for path in paths
         },
@@ -1364,11 +1364,11 @@ def test_identify_verbose_unresolved_moves_prints_per_file_logs(tmp_path, monkey
     output_dir = tmp_path / "unresolved-bin"
 
     monkeypatch.setattr(
-        "adsapi.pdf.identify.PdfIdentifier.compute_sha256",
+        "adsfolio.pdf.identify.PdfIdentifier.compute_sha256",
         lambda self, path: "sha-unresolved",
     )
     monkeypatch.setattr(
-        "adsapi.pdf.identify.PdfIdentifier.resolve_many",
+        "adsfolio.pdf.identify.PdfIdentifier.resolve_many",
         lambda self, paths, journal_map=None, **kwargs: {
             Path(path): None for path in paths
         },
@@ -1398,11 +1398,11 @@ def test_pdf_ocr_routes_non_ocr_files(tmp_path, monkeypatch):
     non_ocr_dir = tmp_path / "non_ocred"
 
     monkeypatch.setattr(
-        "adsapi.pdf.identify.PdfIdentifier.compute_sha256",
+        "adsfolio.pdf.identify.PdfIdentifier.compute_sha256",
         lambda self, path: f"sha-{Path(path).name}",
     )
     monkeypatch.setattr(
-        "adsapi.pdf.cli._parallel_extract_first_page_previews",
+        "adsfolio.pdf.cli._parallel_extract_first_page_previews",
         lambda paths, suppress_parser_warnings, desc, unit, max_chars=1200: {
             Path(path): ""
             if Path(path).name == "scan.pdf"
@@ -1441,7 +1441,7 @@ def test_pdf_ocr_make_ocr_sh_writes_script_with_output_dir(tmp_path, monkeypatch
     monkeypatch.chdir(tmp_path)
 
     monkeypatch.setattr(
-        "adsapi.pdf.cli._parallel_extract_first_page_previews",
+        "adsfolio.pdf.cli._parallel_extract_first_page_previews",
         lambda paths, suppress_parser_warnings, desc, unit, max_chars=1200: {
             Path(path): "" for path in paths
         },
@@ -1474,17 +1474,17 @@ def test_identify_can_import_ai_csv_resolutions(tmp_path, monkeypatch):
     ai_csv.write_text("relative_path,ads_bibcode\nunresolved.pdf,2024ApJ...900..100S\n")
 
     monkeypatch.setattr(
-        "adsapi.pdf.cli.PdfIdentifier.compute_sha256",
+        "adsfolio.pdf.cli.PdfIdentifier.compute_sha256",
         lambda self, path: "sha-unresolved",
     )
     monkeypatch.setattr(
-        "adsapi.pdf.identify.PdfIdentifier.resolve_many",
+        "adsfolio.pdf.identify.PdfIdentifier.resolve_many",
         lambda self, paths, journal_map=None, **kwargs: {
             Path(path): None for path in paths
         },
     )
     monkeypatch.setattr(
-        "adsapi.pdf.cli._estimate_ads_queries_for_targets",
+        "adsfolio.pdf.cli._estimate_ads_queries_for_targets",
         lambda identifier, pdf_paths, strategies=None: {
             "pending_files": len(pdf_paths),
             "metadata_doi_files": 0,
@@ -1496,9 +1496,9 @@ def test_identify_can_import_ai_csv_resolutions(tmp_path, monkeypatch):
             "estimated_ads_queries": 0,
         },
     )
-    monkeypatch.setattr("adsapi.pdf.cli._should_prompt_ads_permission", lambda: True)
+    monkeypatch.setattr("adsfolio.pdf.cli._should_prompt_ads_permission", lambda: True)
     monkeypatch.setattr(
-        "adsapi.pdf.cli._resolve_from_ai_csv",
+        "adsfolio.pdf.cli._resolve_from_ai_csv",
         lambda identifier, directory, unresolved_paths, ai_csv_path: {
             unresolved_paths[0]: _metadata(
                 bibcode="2024ApJ...900..100S",
@@ -1542,11 +1542,11 @@ def test_identify_retries_registry_records_marked_unresolved(tmp_path, monkeypat
     sidecar.save()
 
     monkeypatch.setattr(
-        "adsapi.pdf.identify.PdfIdentifier.compute_sha256",
+        "adsfolio.pdf.identify.PdfIdentifier.compute_sha256",
         lambda self, path: "sha-retry",
     )
     monkeypatch.setattr(
-        "adsapi.pdf.identify.PdfIdentifier.resolve_many",
+        "adsfolio.pdf.identify.PdfIdentifier.resolve_many",
         lambda self, paths, **kwargs: {
             Path(path): _metadata(
                 bibcode="2024ApJ...900..100S",
@@ -1586,11 +1586,11 @@ def test_identify_can_skip_default_unresolved_directory_before_hashing(
         return f"sha-{Path(path).name}"
 
     monkeypatch.setattr(
-        "adsapi.pdf.identify.PdfIdentifier.compute_sha256",
+        "adsfolio.pdf.identify.PdfIdentifier.compute_sha256",
         fake_compute_sha,
     )
     monkeypatch.setattr(
-        "adsapi.pdf.identify.PdfIdentifier.resolve_many",
+        "adsfolio.pdf.identify.PdfIdentifier.resolve_many",
         lambda self, paths, journal_map=None, **kwargs: {
             Path(path): _metadata(
                 sha256=f"sha-{Path(path).name}",
@@ -1600,7 +1600,7 @@ def test_identify_can_skip_default_unresolved_directory_before_hashing(
         },
     )
     monkeypatch.setattr(
-        "adsapi.pdf.cli._estimate_ads_queries_for_targets",
+        "adsfolio.pdf.cli._estimate_ads_queries_for_targets",
         lambda identifier, pdf_paths, strategies=None: _estimate_ads_ready(pdf_paths),
     )
 
@@ -1673,7 +1673,7 @@ def test_rename_allow_ads_identifies_pending_pdfs(tmp_path, monkeypatch):
             client=client, directory=directory, helpers=helpers, options=options
         )
 
-    monkeypatch.setattr("adsapi.pdf.cli.run_identify", fake_run_identify)
+    monkeypatch.setattr("adsfolio.pdf.cli.run_identify", fake_run_identify)
 
     runner = CliRunner()
     result = runner.invoke(pdf, ["rename", str(tmp_path), "--allow-ads"])
@@ -1706,7 +1706,7 @@ def test_rename_allow_ads_routes_unresolved_relative_to_directory(
     def fake_run_identify(client, directory, *, helpers, **options):
         captured.update(directory=directory, options=options)
 
-    monkeypatch.setattr("adsapi.pdf.cli.run_identify", fake_run_identify)
+    monkeypatch.setattr("adsfolio.pdf.cli.run_identify", fake_run_identify)
 
     runner = CliRunner()
     result = runner.invoke(
@@ -1733,7 +1733,7 @@ def test_identify_passes_saved_strategy_policy_to_resolver(tmp_path, monkeypatch
     saved = IdentifySettings(strategies=(IdentifyStrategy.FIRST_PAGE_BIBCODE,))
     monkeypatch.setattr(Config, "load_identify_settings", lambda: saved)
     monkeypatch.setattr(
-        "adsapi.pdf.identify.PdfIdentifier.compute_sha256",
+        "adsfolio.pdf.identify.PdfIdentifier.compute_sha256",
         lambda self, path: "sha-mystery",
     )
     observed = {}
@@ -1743,7 +1743,7 @@ def test_identify_passes_saved_strategy_policy_to_resolver(tmp_path, monkeypatch
         return {Path(path): None for path in paths}
 
     monkeypatch.setattr(
-        "adsapi.pdf.identify.PdfIdentifier.resolve_many", fake_resolve_many
+        "adsfolio.pdf.identify.PdfIdentifier.resolve_many", fake_resolve_many
     )
 
     result = CliRunner().invoke(pdf, ["identify", str(tmp_path), "--allow-ads"])
@@ -2000,7 +2000,7 @@ def test_upgrade_command_reports_results(tmp_path, monkeypatch):
     sidecar.save()
 
     monkeypatch.setattr(
-        "adsapi.pdf.cli_upgrade.PdfUpgrader.batch_upgrade",
+        "adsfolio.pdf.cli_upgrade.PdfUpgrader.batch_upgrade",
         lambda self, **kwargs: [
             UpgradeResult(
                 original_filename="paper.pdf",
@@ -2028,7 +2028,7 @@ def test_upgrade_command_uses_registry_without_creating_sidecar(tmp_path, monkey
         return []
 
     monkeypatch.setattr(
-        "adsapi.pdf.cli_upgrade.PdfUpgrader.batch_upgrade", batch_upgrade
+        "adsfolio.pdf.cli_upgrade.PdfUpgrader.batch_upgrade", batch_upgrade
     )
 
     runner = CliRunner()

@@ -1,23 +1,23 @@
 # Tutorial 6: CV Workflows
 
-This tutorial covers `adsapi cv`: initialize a config, generate publication lists, and select output styles.
+This tutorial covers `adsfolio cv`: initialize a config, generate publication lists, and select output styles.
 
 ## 0) Start with `--help`
 
 ~~~bash
-adsapi cv --help
-adsapi cv init --help
-adsapi cv generate --help
-adsapi cv show-styles --help
+adsfolio cv --help
+adsfolio cv init --help
+adsfolio cv generate --help
+adsfolio cv show-styles --help
 ~~~
 
 Core commands:
 
 | Command | Purpose |
 | --- | --- |
-| `adsapi cv init` | Create a starter `cv.yaml` config interactively |
-| `adsapi cv generate` | Query ADS and render output from `cv.yaml` |
-| `adsapi cv show-styles` | Print compact examples for supported styles |
+| `adsfolio cv init` | Create a starter `cv.yaml` config interactively |
+| `adsfolio cv generate` | Query ADS and render output from `cv.yaml` |
+| `adsfolio cv show-styles` | Print compact examples for supported styles |
 
 Key `init` options:
 
@@ -25,7 +25,7 @@ Key `init` options:
 | --- | --- |
 | `--output FILE` | Path for starter config (default: `cv.yaml`) |
 | `--force` | Overwrite output file if it already exists |
-| `--no-orcid` | Do not auto-use ORCID from `adsapi set` profile |
+| `--no-orcid` | Do not auto-use ORCID from `adsfolio set` profile |
 
 Key `generate` options:
 
@@ -43,20 +43,20 @@ Key `generate` options:
 Run interactive setup:
 
 ~~~bash
-adsapi cv init
+adsfolio cv init
 ~~~
 
-`cv init` uses your saved `adsapi set` profile as defaults:
+`cv init` uses your saved `adsfolio set` profile as defaults:
 
 - ORCID (`orcid`) and ORCID usage (`use_orcid`)
 - optional publication window (`debut_year` / `retire_year`)
 - saved query names for default query/prefix hints
 
-If an ORCID exists in your `adsapi set` profile, `cv init` enables ORCID matching by default.
+If an ORCID exists in your `adsfolio set` profile, `cv init` enables ORCID matching by default.
 To disable this behavior:
 
 ~~~bash
-adsapi cv init --no-orcid
+adsfolio cv init --no-orcid
 ~~~
 
 `cv init` writes `cv.yaml` with:
@@ -70,13 +70,13 @@ adsapi cv init --no-orcid
 Write to a different path:
 
 ~~~bash
-adsapi cv init --output configs/my-cv.yaml
+adsfolio cv init --output configs/my-cv.yaml
 ~~~
 
 Overwrite an existing config:
 
 ~~~bash
-adsapi cv init --force
+adsfolio cv init --force
 ~~~
 
 ## 2) Minimal `cv.yaml` example
@@ -144,7 +144,7 @@ Notes:
 - `output.latex.list_env` supports `itemize` or `enumerate`.
 - `format.style` supports `compact`, `detailed`, and `bibcode-first`.
 - `format.author_format` supports `cv_default` and `ads_custom:<format>`.
-- If a publication has `NOT REFEREED` and is not arXiv, `adsapi cv` marks it as non-peer-reviewed.
+- If a publication has `NOT REFEREED` and is not arXiv, `adsfolio cv` marks it as non-peer-reviewed.
 - `me_fmt` uses Python `.format()`: keep doubled braces for literal LaTeX braces.
 
 ## 3) Generate output
@@ -152,31 +152,31 @@ Notes:
 From config defaults:
 
 ~~~bash
-adsapi cv generate --config cv.yaml
+adsfolio cv generate --config cv.yaml
 ~~~
 
 Dry-run to inspect without writing:
 
 ~~~bash
-adsapi cv generate --config cv.yaml --dry-run
+adsfolio cv generate --config cv.yaml --dry-run
 ~~~
 
 Override output path:
 
 ~~~bash
-adsapi cv generate --config cv.yaml --output out/publications.tex
+adsfolio cv generate --config cv.yaml --output out/publications.tex
 ~~~
 
 Switch renderer at runtime:
 
 ~~~bash
-adsapi cv generate --config cv.yaml --format markdown --style detailed --output out/publications.md
+adsfolio cv generate --config cv.yaml --format markdown --style detailed --output out/publications.md
 ~~~
 
 Override author format at runtime:
 
 ~~~bash
-adsapi cv generate --config cv.yaml --author-format 'ads_custom:%3.2l'
+adsfolio cv generate --config cv.yaml --author-format 'ads_custom:%3.2l'
 ~~~
 
 ## 4) ADS Custom Author Format
@@ -215,7 +215,7 @@ format:
 
 Important:
 
-- In `adsapi cv`, `ads_custom` output replaces only the author string field.
+- In `adsfolio cv`, `ads_custom` output replaces only the author string field.
 - Use author-focused directives for best results. Full-reference formats (with title/journal/year directives) will be inserted as the author segment.
 
 ## 5) Compare styles
@@ -223,7 +223,7 @@ Important:
 Preview style signatures:
 
 ~~~bash
-adsapi cv show-styles
+adsfolio cv show-styles
 ~~~
 
 Style intent:
@@ -234,7 +234,7 @@ Style intent:
 
 ## 6) Output behavior
 
-`adsapi cv generate`:
+`adsfolio cv generate`:
 
 - runs a single ADS query using your configured `author.query` plus `exclude_bibstems`
 - classifies documents into first-authored vs co-authored groups

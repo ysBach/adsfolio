@@ -4,8 +4,8 @@ from unittest.mock import Mock
 import pytest
 import requests
 
-from adsapi.client import ADSClient, BaseClient
-from adsapi.config import Config
+from adsfolio.client import ADSClient, BaseClient
+from adsfolio.config import Config
 
 TIMEOUT = (3.05, 30.0)
 HEADERS = {
@@ -127,7 +127,7 @@ def test_base_client_propagates_requests_timeout_unchanged(monkeypatch) -> None:
 def test_ads_client_passes_configured_timeout_to_base_client(monkeypatch) -> None:
     base_client = Mock()
     base_client_factory = Mock(return_value=base_client)
-    monkeypatch.setattr("adsapi.client.BaseClient", base_client_factory)
+    monkeypatch.setattr("adsfolio.client.BaseClient", base_client_factory)
 
     ADSClient(token="token", timeout=TIMEOUT)
 

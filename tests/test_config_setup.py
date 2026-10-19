@@ -2,10 +2,10 @@ import json
 import os
 from pathlib import Path
 
-from adsapi.config import Config
-from adsapi.pdf.identify_settings import IdentifySettings
-from adsapi.pdf.rename_settings import RenameSettings
-from adsapi.user_profile import UserProfile
+from adsfolio.config import Config
+from adsfolio.pdf.identify_settings import IdentifySettings
+from adsfolio.pdf.rename_settings import RenameSettings
+from adsfolio.user_profile import UserProfile
 
 
 def _use_tmp_config(monkeypatch, tmp_path):
@@ -190,7 +190,7 @@ def test_save_user_setup_replaces_atomically(monkeypatch, tmp_path):
         replace_calls.append((Path(source), Path(destination)))
         original_replace(source, destination)
 
-    monkeypatch.setattr("adsapi.config.os.replace", tracking_replace)
+    monkeypatch.setattr("adsfolio.config.os.replace", tracking_replace)
 
     Config.save_user_setup(orcid="0000")
 

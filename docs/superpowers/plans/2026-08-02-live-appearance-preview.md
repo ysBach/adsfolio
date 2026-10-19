@@ -22,7 +22,7 @@
 ### Task 1: Emit live changes from `AppearanceDialog`
 
 **Files:**
-- Modify: `src/adsapi/gui/appearance.py:8-180,246-488`
+- Modify: `src/adsfolio/gui/appearance.py:8-180,246-488`
 - Test: `tests/test_gui_appearance.py`
 
 **Interfaces:**
@@ -111,7 +111,7 @@
 ### Task 2: Apply live settings and restore on Cancel
 
 **Files:**
-- Modify: `src/adsapi/gui/main_window.py:3-15,545-565,610-647`
+- Modify: `src/adsfolio/gui/main_window.py:3-15,545-565,610-647`
 - Test: `tests/test_gui_appearance.py`
 
 **Interfaces:**
@@ -267,8 +267,8 @@
   Run:
 
   ```bash
-  uv run isort src/adsapi/gui/appearance.py src/adsapi/gui/main_window.py tests/test_gui_appearance.py
-  uv run ruff format src/adsapi/gui/appearance.py src/adsapi/gui/main_window.py tests/test_gui_appearance.py
+  uv run isort src/adsfolio/gui/appearance.py src/adsfolio/gui/main_window.py tests/test_gui_appearance.py
+  uv run ruff format src/adsfolio/gui/appearance.py src/adsfolio/gui/main_window.py tests/test_gui_appearance.py
   ```
 
 - [ ] **Step 3: Run linting and the complete test suite**
@@ -276,7 +276,7 @@
   Run:
 
   ```bash
-  uv run ruff check src/adsapi/gui/appearance.py src/adsapi/gui/main_window.py tests/test_gui_appearance.py
+  uv run ruff check src/adsfolio/gui/appearance.py src/adsfolio/gui/main_window.py tests/test_gui_appearance.py
   QT_QPA_PLATFORM=offscreen uv run pytest tests/test_gui_appearance.py tests/test_gui_config.py -q
   uv run pytest
   ```
@@ -288,6 +288,6 @@
   Run `git diff --check` and inspect only the intended files. Then commit:
 
   ```bash
-  git add src/adsapi/gui/appearance.py src/adsapi/gui/main_window.py tests/test_gui_appearance.py docs/gui.md docs/superpowers/plans/2026-08-02-live-appearance-preview.md
+  git add src/adsfolio/gui/appearance.py src/adsfolio/gui/main_window.py tests/test_gui_appearance.py docs/gui.md docs/superpowers/plans/2026-08-02-live-appearance-preview.md
   git commit -m "feat: preview appearance changes in main window"
   ```

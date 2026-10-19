@@ -2,7 +2,7 @@
 
 ## Scope
 
-Repair the existing `adsapi pdf watch` workflow so a newly arrived PDF is
+Repair the existing `adsfolio pdf watch` workflow so a newly arrived PDF is
 identified, renamed, and catalogued without re-identifying unchanged PDFs.
 The same work also fixes the observed Unicode filename loss, first-page title
 selection, and catalog divergence after file moves.
@@ -137,7 +137,7 @@ thread.
 ## macOS `launchd`
 
 Documentation provides a user-specific `LaunchAgent` plist that runs the
-installed `adsapi pdf watch` executable with explicit absolute paths,
+installed `adsfolio pdf watch` executable with explicit absolute paths,
 `--use-watchdog`, `--apply`, and a reconciliation interval. Standard output
 and error paths are explicit. Installation uses `launchctl bootstrap`; removal
 uses `launchctl bootout`.

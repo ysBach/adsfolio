@@ -2,7 +2,7 @@ from pathlib import Path
 
 from click.testing import CliRunner
 
-from adsapi.cli.commands import main
+from adsfolio.cli.commands import main
 
 
 def test_set_command_interactive_saves_token_and_profile(monkeypatch, tmp_path):
@@ -28,17 +28,17 @@ def test_set_command_interactive_saves_token_and_profile(monkeypatch, tmp_path):
         }
         return tmp_path / "setup.json"
 
-    monkeypatch.setattr("adsapi.cli.commands.Config.save_token", fake_save_token)
+    monkeypatch.setattr("adsfolio.cli.commands.Config.save_token", fake_save_token)
     monkeypatch.setattr(
-        "adsapi.cli.commands.Config.save_user_setup",
+        "adsfolio.cli.commands.Config.save_user_setup",
         fake_save_user_setup,
     )
     monkeypatch.setattr(
-        "adsapi.cli.commands._refresh_publication_cache",
+        "adsfolio.cli.commands._refresh_publication_cache",
         lambda profile, token: tmp_path / "publications.json",
     )
-    monkeypatch.setattr("adsapi.cli.commands.Config.get_user_setup", lambda: {})
-    monkeypatch.setattr("adsapi.cli.commands._load_existing_token", lambda: "")
+    monkeypatch.setattr("adsfolio.cli.commands.Config.get_user_setup", lambda: {})
+    monkeypatch.setattr("adsfolio.cli.commands._load_existing_token", lambda: "")
 
     runner = CliRunner()
     result = runner.invoke(
@@ -93,17 +93,17 @@ def test_set_command_can_reuse_existing_token_and_profile(monkeypatch, tmp_path)
         }
         return tmp_path / "setup.json"
 
-    monkeypatch.setattr("adsapi.cli.commands.Config.save_token", fake_save_token)
+    monkeypatch.setattr("adsfolio.cli.commands.Config.save_token", fake_save_token)
     monkeypatch.setattr(
-        "adsapi.cli.commands.Config.save_user_setup",
+        "adsfolio.cli.commands.Config.save_user_setup",
         fake_save_user_setup,
     )
     monkeypatch.setattr(
-        "adsapi.cli.commands._refresh_publication_cache",
+        "adsfolio.cli.commands._refresh_publication_cache",
         lambda profile, token: tmp_path / "publications.json",
     )
     monkeypatch.setattr(
-        "adsapi.cli.commands.Config.get_user_setup",
+        "adsfolio.cli.commands.Config.get_user_setup",
         lambda: {
             "orcid": "0000-0002-1825-0097",
             "query_names": ["Bach, Y. P."],
@@ -113,7 +113,7 @@ def test_set_command_can_reuse_existing_token_and_profile(monkeypatch, tmp_path)
         },
     )
     monkeypatch.setattr(
-        "adsapi.cli.commands._load_existing_token",
+        "adsfolio.cli.commands._load_existing_token",
         lambda: "tok-existing-abcdef",
     )
 
@@ -143,11 +143,11 @@ def test_set_command_immediately_builds_and_reports_publication_cache(
     calls = {}
 
     monkeypatch.setattr(
-        "adsapi.cli.commands.Config.save_token",
+        "adsfolio.cli.commands.Config.save_token",
         lambda token: tmp_path / "token",
     )
     monkeypatch.setattr(
-        "adsapi.cli.commands.Config.save_user_setup",
+        "adsfolio.cli.commands.Config.save_user_setup",
         lambda **kwargs: tmp_path / "setup.json",
     )
 
@@ -156,7 +156,7 @@ def test_set_command_immediately_builds_and_reports_publication_cache(
         calls["token"] = token
         return cache
 
-    monkeypatch.setattr("adsapi.cli.commands._refresh_publication_cache", fake_refresh)
+    monkeypatch.setattr("adsfolio.cli.commands._refresh_publication_cache", fake_refresh)
 
     result = CliRunner().invoke(
         main,
@@ -181,24 +181,24 @@ def test_set_command_immediately_builds_and_reports_publication_cache(
     assert calls["token"] == "tok-123"
     assert calls["profile"].orcid == "0000-0002-1825-0097"
     assert f"Publication cache: {cache}" in result.output
-    assert "adsapi cache clear" in result.output
+    assert "adsfolio cache clear" in result.output
 
 
 def test_set_command_keeps_saved_setup_when_cache_refresh_fails(monkeypatch, tmp_path):
     saved: dict[str, str] = {}
 
     monkeypatch.setattr(
-        "adsapi.cli.commands.Config.save_token",
+        "adsfolio.cli.commands.Config.save_token",
         lambda token: saved.setdefault("token", token) and tmp_path / "token",
     )
     monkeypatch.setattr(
-        "adsapi.cli.commands.Config.save_user_setup",
+        "adsfolio.cli.commands.Config.save_user_setup",
         lambda **kwargs: (
             saved.setdefault("orcid", kwargs["orcid"]) and tmp_path / "setup.json"
         ),
     )
     monkeypatch.setattr(
-        "adsapi.cli.commands._refresh_publication_cache",
+        "adsfolio.cli.commands._refresh_publication_cache",
         lambda profile, token: (_ for _ in ()).throw(OSError("cache is read-only")),
     )
 

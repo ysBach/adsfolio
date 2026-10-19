@@ -1,6 +1,6 @@
 import pytest
 
-from adsapi.pdf.identify_settings import (
+from adsfolio.pdf.identify_settings import (
     RECOMMENDED_IDENTIFY_STRATEGIES,
     IdentifySettings,
     IdentifyStrategy,

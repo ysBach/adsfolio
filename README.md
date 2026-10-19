@@ -1,4 +1,4 @@
-# adsapi
+# adsfolio
 
 Comprehensive Python client for NASA ADS / SciXplorer API with CLI tools.
 
@@ -18,10 +18,10 @@ Comprehensive Python client for NASA ADS / SciXplorer API with CLI tools.
 Requires Python 3.10 or newer.
 
 ```bash
-pip install adsapi
+pip install adsfolio
 
 # Install all optional features (watcher, annotation porting, ISO4 abbreviation)
-pip install adsapi[full]
+pip install adsfolio[full]
 ```
 
 ## Quick Start
@@ -36,22 +36,22 @@ pip install adsapi[full]
 
 ```bash
 # Search for papers
-adsapi search "author:Einstein" --fl bibcode,title --rows 5
+adsfolio search "author:Einstein" --fl bibcode,title --rows 5
 
 # Export to BibTeX
-adsapi export 2020ApJ...900..100S -f bibtex
+adsfolio export 2020ApJ...900..100S -f bibtex
 
 # List your libraries
-adsapi library list
+adsfolio library list
 
 # Get library contents as BibTeX
-adsapi library get <library_id> --bibtex
+adsfolio library get <library_id> --bibtex
 ```
 
 ### Python API
 
 ```python
-from adsapi import ADSClient
+from adsfolio import ADSClient
 
 client = ADSClient()
 
@@ -69,8 +69,8 @@ libs = client.libraries.list_libraries()
 
 Recommended order:
 
-1. Run `adsapi set` once (token + identify profile and publication-cache build).
-2. Inspect or refresh the cache with `adsapi cache status` / `adsapi cache refresh`.
+1. Run `adsfolio set` once (token + identify profile and publication-cache build).
+2. Inspect or refresh the cache with `adsfolio cache status` / `adsfolio cache refresh`.
 3. Optional: run `pdf ocr` to route likely non-OCR PDFs for OCR first.
 4. Run `pdf identify` (cache-first matching + batched ADS fallback).
 5. `rename` previews filename changes (dry-run by default), then applies. Use
@@ -82,16 +82,16 @@ Recommended order:
 PDF state lives in one central `pdf-library.sqlite` catalog under the user
 configuration directory, so adding roots does not create databases inside
 synced folders. The user-level publication cache is the platform-specific
-`platformdirs` cache path returned by `adsapi cache status`. Use `adsapi cache
-clear` to remove the publication cache and `adsapi pdf export DIR -o
+`platformdirs` cache path returned by `adsfolio cache status`. Use `adsfolio cache
+clear` to remove the publication cache and `adsfolio pdf export DIR -o
 snapshot.json` for a readable registry backup. Legacy `.adsapi-pdfs.sqlite`
 and `.adsapi-pdfs.json` files are imported read-only and remain available as
 source backups.
 
 ### Desktop GUI
 
-Install the optional PySide6 desktop browser with `pip install 'adsapi[gui]'`,
-then run `adsapi gui` (or `adsapi-gui`). It provides a multi-root, searchable
+Install the optional PySide6 desktop browser with `pip install 'adsfolio[gui]'`,
+then run `adsfolio gui` (or `adsfolio-gui`). It provides a multi-root, searchable
 and sortable PDF table with metadata, OS-default opening/reveal actions, and
 Identify/Rename dialogs that execute the existing CLI commands as subprocesses.
 
@@ -160,7 +160,7 @@ preceding tokens as given names.
 
 The GUI distinguishes a **local PDF library** from a **remote ADS library**.
 A local PDF library is a filesystem root registered with `File -> Add Library
-Root` and backed by adsapi's local catalog. A remote ADS library is a
+Root` and backed by adsfolio's local catalog. A remote ADS library is a
 destination managed by ADS/SciXplorer and shown separately in the destination
 table. This GUI workflow never renames or moves PDFs and never edits the local
 catalog, local metadata, Rename settings, or watch state.
@@ -209,7 +209,7 @@ A timeout or connection failure after an add request is sent is **status
 unknown**, because ADS may have accepted that batch; it is not treated as a
 definite failure. **Retry Remaining** first reloads the remote destination
 and submits only remaining Bibcodes still absent. If reconciliation fails,
-adsapi warns that a raw retry may resubmit an uncertain batch and requires a
+adsfolio warns that a raw retry may resubmit an uncertain batch and requires a
 second explicit confirmation.
 
 Do not run identify or watch against the same library from two machines at once.
@@ -219,7 +219,7 @@ Keep `pdf export` snapshots as backups.
 
 ```bash
 # Do this once unless your token/profile changes
-adsapi set
+adsfolio set
 ```
 
 ### 1) Optional OCR precheck
@@ -228,13 +228,13 @@ Use this only if you have scanned/non-OCR PDFs.
 
 ```bash
 # Dry-run by default
-adsapi pdf ocr ~/Papers --recursive -o ~/Papers/ocr_required
+adsfolio pdf ocr ~/Papers --recursive -o ~/Papers/ocr_required
 
 # Move likely non-OCR files
-adsapi pdf ocr ~/Papers --recursive -o ~/Papers/ocr_required --apply
+adsfolio pdf ocr ~/Papers --recursive -o ~/Papers/ocr_required --apply
 
 # Also generate a runnable OCR batch script in current directory
-adsapi pdf ocr ~/Papers --recursive -o ~/Papers/ocr_required --make-ocr-sh
+adsfolio pdf ocr ~/Papers --recursive -o ~/Papers/ocr_required --make-ocr-sh
 # then run:
 bash ocrmypdf.sh
 ```
@@ -248,17 +248,17 @@ uses the same `-o/--output` directory you provided as OCR input.
 
 ```bash
 # Scan and resolve metadata (queries ADS/SciXplorer in DOI batches)
-adsapi pdf identify ~/Papers --recursive
+adsfolio pdf identify ~/Papers --recursive
 
 # Optional unresolved routing (dry-run; use --apply to move)
-adsapi pdf identify ~/Papers --recursive \
+adsfolio pdf identify ~/Papers --recursive \
   --output-unresolved ~/Papers/unresolved
 ```
 
 Identify summary:
 
 1. Central-catalog match using stored filesystem facts and SHA-256 only when needed.
-2. Publication-cache match first (`adsapi set` ORCID/query names/library IDs).
+2. Publication-cache match first (`adsfolio set` ORCID/query names/library IDs).
 3. For remaining PDFs, extract DOI/bibcode candidates from filename, PDF metadata, and first-page contents.
 4. Run ADS DOI/bibcode batches, then title fallback queries for any remaining candidates.
 5. Interactive ADS permission gate with estimated query volume.
@@ -272,20 +272,20 @@ Identify summary:
 For non-interactive usage, pass AI output directly:
 
 ```bash
-adsapi pdf identify ~/Papers --recursive --ai-csv ~/Papers/unresolved_ai.csv
+adsfolio pdf identify ~/Papers --recursive --ai-csv ~/Papers/unresolved_ai.csv
 ```
 
 ### 3) Rename: dry-run first, then apply
 
 ```bash
 # Preview rename plan from registry metadata
-adsapi pdf rename ~/Papers \
+adsfolio pdf rename ~/Papers \
   --scheme "{authors}_{bibcode}-{title}" \
   --author-format surname_initials \
   --max-authors 3
 
 # Execute rename plan
-adsapi pdf rename ~/Papers \
+adsfolio pdf rename ~/Papers \
   --scheme "{authors}_{bibcode}-{title}" \
   --author-format surname_initials \
   --max-authors 3 \
@@ -299,7 +299,7 @@ To route any unresolved PDFs at the same time, add `--output-unresolved`; a
 relative value is interpreted below the PDF directory:
 
 ```bash
-adsapi pdf rename ~/Papers --allow-ads --output-unresolved unresolved --apply
+adsfolio pdf rename ~/Papers --allow-ads --output-unresolved unresolved --apply
 ```
 
 When `~/Papers/unresolved` exists, `rename --apply` also moves resolved records
@@ -310,10 +310,10 @@ successful ADS metadata remain in `unresolved`.
 
 ```bash
 # Polling backend (default), applies renames/moves
-adsapi pdf watch ~/Papers --recursive --interval 10 --apply
+adsfolio pdf watch ~/Papers --recursive --interval 10 --apply
 
-# Watchdog backend (requires adsapi[full])
-adsapi pdf watch ~/Papers --recursive --use-watchdog --interval 60 \
+# Watchdog backend (requires adsfolio[full])
+adsfolio pdf watch ~/Papers --recursive --use-watchdog --interval 60 \
   --output-unresolved unresolved --apply
 ```
 
@@ -331,7 +331,7 @@ at most two authors, joins them with `+`, and appends another `+` only when
 additional authors were omitted:
 
 ```bash
-adsapi pdf rename ~/Papers --max-authors 2 \
+adsfolio pdf rename ~/Papers --max-authors 2 \
   --authors-when-truncated 1 \
   --author-separator "+" --author-truncation-suffix "+" --apply
 ```
@@ -348,13 +348,13 @@ PDFs.
 
 ```bash
 # Dry-run upgrade check
-adsapi pdf upgrade ~/Papers
+adsfolio pdf upgrade ~/Papers
 
 # Execute upgrades
-adsapi pdf upgrade ~/Papers --apply
+adsfolio pdf upgrade ~/Papers --apply
 
 # Optional overwrite mode with backup
-adsapi pdf upgrade ~/Papers --apply \
+adsfolio pdf upgrade ~/Papers --apply \
   --overwrite-arxiv-with-official \
   --arxiv-backup-if-overwritten ~/Papers/arxiv-backup
 ```
@@ -362,7 +362,7 @@ adsapi pdf upgrade ~/Papers --apply \
 You can also do automatic upgrade checks while watching:
 
 ```bash
-adsapi pdf watch ~/Papers --recursive --apply \
+adsfolio pdf watch ~/Papers --recursive --apply \
   --auto-upgrade --upgrade-interval 24
 ```
 
@@ -374,26 +374,26 @@ link back to the PDF with an absolute `file://` link — PDFs are never copied o
 
 ```bash
 # Dry-run: no ADS queries, no files written
-adsapi pdf obsidian ~/Papers
+adsfolio pdf obsidian ~/Papers
 
 # Fetch/cache missing abstracts from ADS and write notes
-adsapi pdf obsidian ~/Papers --apply
+adsfolio pdf obsidian ~/Papers --apply
 
 # Overwrite existing notes (default leaves them untouched)
-adsapi pdf obsidian ~/Papers --apply --force
+adsfolio pdf obsidian ~/Papers --apply --force
 ```
 
 ### 8) Quick status and library sync
 
 ```bash
 # Show identified/unresolved/duplicate summary
-adsapi pdf status ~/Papers --recursive
+adsfolio pdf status ~/Papers --recursive
 
 # Preview push to ADS library
-adsapi pdf push-library ~/Papers <library_id>
+adsfolio pdf push-library ~/Papers <library_id>
 
 # Execute push
-adsapi pdf push-library ~/Papers <library_id> --apply
+adsfolio pdf push-library ~/Papers <library_id> --apply
 ```
 
 ## Example Workflow Docs

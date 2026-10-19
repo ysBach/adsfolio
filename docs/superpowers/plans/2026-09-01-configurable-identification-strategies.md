@@ -26,8 +26,8 @@
 ### Task 1: Canonical strategy catalog and settings migration
 
 **Files:**
-- Modify: `src/adsapi/pdf/identify_settings.py`
-- Modify: `src/adsapi/config.py`
+- Modify: `src/adsfolio/pdf/identify_settings.py`
+- Modify: `src/adsfolio/config.py`
 - Test: `tests/test_pdf_identify_settings.py`
 - Test: `tests/test_config_setup.py`
 - Test: `tests/test_pdf_sidecar.py`
@@ -109,8 +109,8 @@ cannot create an empty, duplicate, or unknown policy. Remove
 - [x] **Step 4: Run focused tests and formatting**
 
 ```bash
-uv run --active isort src/adsapi/pdf/identify_settings.py tests/test_pdf_identify_settings.py
-uv run --active ruff format src/adsapi/pdf/identify_settings.py tests/test_pdf_identify_settings.py
+uv run --active isort src/adsfolio/pdf/identify_settings.py tests/test_pdf_identify_settings.py
+uv run --active ruff format src/adsfolio/pdf/identify_settings.py tests/test_pdf_identify_settings.py
 source ~/.venvs/ysbpy/bin/activate
 pytest tests/test_pdf_identify_settings.py tests/test_config_setup.py tests/test_pdf_sidecar.py -q
 ```
@@ -122,7 +122,7 @@ Expected: all focused tests pass.
 ### Task 2: Ordered, batched resolver engine
 
 **Files:**
-- Modify: `src/adsapi/pdf/identifier.py`
+- Modify: `src/adsfolio/pdf/identifier.py`
 - Test: `tests/test_pdf_identifier.py`
 
 **Interfaces:**
@@ -292,8 +292,8 @@ and the old hard-coded resolution loops after callers are migrated.
 - [x] **Step 5: Run resolver tests and quality tools**
 
 ```bash
-uv run --active isort src/adsapi/pdf/identifier.py tests/test_pdf_identifier.py
-uv run --active ruff format src/adsapi/pdf/identifier.py tests/test_pdf_identifier.py
+uv run --active isort src/adsfolio/pdf/identifier.py tests/test_pdf_identifier.py
+uv run --active ruff format src/adsfolio/pdf/identifier.py tests/test_pdf_identifier.py
 source ~/.venvs/ysbpy/bin/activate
 pytest tests/test_pdf_identifier.py -q
 ```
@@ -305,8 +305,8 @@ Expected: all resolver tests pass.
 ### Task 3: Integrate cache, query estimation, and Identify workflow
 
 **Files:**
-- Modify: `src/adsapi/pdf/identify.py`
-- Modify: `src/adsapi/pdf/cli.py`
+- Modify: `src/adsfolio/pdf/identify.py`
+- Modify: `src/adsfolio/pdf/cli.py`
 - Test: `tests/test_pdf_cli.py`
 
 **Interfaces:**
@@ -327,7 +327,7 @@ def test_identify_command_passes_saved_strategy_order(tmp_path, monkeypatch):
     )
     monkeypatch.setattr(Config, "load_identify_settings", lambda: settings)
     monkeypatch.setattr(
-        "adsapi.pdf.cli.run_identify",
+        "adsfolio.pdf.cli.run_identify",
         lambda client, directory, *, helpers, **options: captured.update(options),
     )
     result = CliRunner().invoke(pdf, ["identify", str(tmp_path), "--allow-ads"])
@@ -387,8 +387,8 @@ match.
 - [x] **Step 5: Run workflow tests and quality tools**
 
 ```bash
-uv run --active isort src/adsapi/pdf/identify.py src/adsapi/pdf/cli.py tests/test_pdf_cli.py
-uv run --active ruff format src/adsapi/pdf/identify.py src/adsapi/pdf/cli.py tests/test_pdf_cli.py
+uv run --active isort src/adsfolio/pdf/identify.py src/adsfolio/pdf/cli.py tests/test_pdf_cli.py
+uv run --active ruff format src/adsfolio/pdf/identify.py src/adsfolio/pdf/cli.py tests/test_pdf_cli.py
 source ~/.venvs/ysbpy/bin/activate
 pytest tests/test_pdf_cli.py -q
 ```
@@ -398,8 +398,8 @@ pytest tests/test_pdf_cli.py -q
 ### Task 4: CLI, Rename, and watch policy parity
 
 **Files:**
-- Modify: `src/adsapi/pdf/cli.py`
-- Modify: `src/adsapi/pdf/watcher.py`
+- Modify: `src/adsfolio/pdf/cli.py`
+- Modify: `src/adsfolio/pdf/watcher.py`
 - Test: `tests/test_pdf_cli.py`
 - Test: `tests/test_pdf_watcher.py`
 - Test: `tests/test_pdf_watch_session.py`
@@ -470,8 +470,8 @@ unresolved record. Do not add startup scans to watch.
 - [x] **Step 5: Run focused tests and quality tools**
 
 ```bash
-uv run --active isort src/adsapi/pdf/cli.py src/adsapi/pdf/watcher.py tests/test_pdf_cli.py tests/test_pdf_watcher.py
-uv run --active ruff format src/adsapi/pdf/cli.py src/adsapi/pdf/watcher.py tests/test_pdf_cli.py tests/test_pdf_watcher.py
+uv run --active isort src/adsfolio/pdf/cli.py src/adsfolio/pdf/watcher.py tests/test_pdf_cli.py tests/test_pdf_watcher.py
+uv run --active ruff format src/adsfolio/pdf/cli.py src/adsfolio/pdf/watcher.py tests/test_pdf_cli.py tests/test_pdf_watcher.py
 source ~/.venvs/ysbpy/bin/activate
 pytest tests/test_pdf_cli.py tests/test_pdf_watcher.py tests/test_pdf_watch_session.py -q
 ```
@@ -481,8 +481,8 @@ pytest tests/test_pdf_cli.py tests/test_pdf_watcher.py tests/test_pdf_watch_sess
 ### Task 5: Ordered strategy editor and explicit dialog actions
 
 **Files:**
-- Modify: `src/adsapi/gui/dialogs.py`
-- Modify: `src/adsapi/gui/main_window.py`
+- Modify: `src/adsfolio/gui/dialogs.py`
+- Modify: `src/adsfolio/gui/main_window.py`
 - Test: `tests/test_gui_dialogs.py`
 - Test: `tests/test_gui_main_window_watch.py`
 
@@ -573,8 +573,8 @@ only reusable controls and never reset one-run choices.
 - [x] **Step 5: Run GUI tests and quality tools**
 
 ```bash
-uv run --active isort src/adsapi/gui/dialogs.py src/adsapi/gui/main_window.py tests/test_gui_dialogs.py
-uv run --active ruff format src/adsapi/gui/dialogs.py src/adsapi/gui/main_window.py tests/test_gui_dialogs.py
+uv run --active isort src/adsfolio/gui/dialogs.py src/adsfolio/gui/main_window.py tests/test_gui_dialogs.py
+uv run --active ruff format src/adsfolio/gui/dialogs.py src/adsfolio/gui/main_window.py tests/test_gui_dialogs.py
 source ~/.venvs/ysbpy/bin/activate
 pytest tests/test_gui_dialogs.py tests/test_gui_main_window_watch.py -q
 ```
@@ -626,9 +626,9 @@ documents may retain the old term as historical context.
 - [x] **Step 4: Run changed-file formatting and lint**
 
 ```bash
-uv run --active isort src/adsapi/pdf/identify_settings.py src/adsapi/pdf/identifier.py src/adsapi/pdf/identify.py src/adsapi/pdf/cli.py src/adsapi/pdf/watcher.py src/adsapi/gui/dialogs.py src/adsapi/gui/main_window.py tests/test_pdf_identify_settings.py tests/test_pdf_identifier.py tests/test_pdf_cli.py tests/test_pdf_watcher.py tests/test_gui_dialogs.py
-uv run --active ruff format src/adsapi/pdf/identify_settings.py src/adsapi/pdf/identifier.py src/adsapi/pdf/identify.py src/adsapi/pdf/cli.py src/adsapi/pdf/watcher.py src/adsapi/gui/dialogs.py src/adsapi/gui/main_window.py tests/test_pdf_identify_settings.py tests/test_pdf_identifier.py tests/test_pdf_cli.py tests/test_pdf_watcher.py tests/test_gui_dialogs.py
-uv run --active ruff check src/adsapi/pdf/identify_settings.py src/adsapi/pdf/identifier.py src/adsapi/pdf/identify.py src/adsapi/pdf/cli.py src/adsapi/pdf/watcher.py src/adsapi/gui/dialogs.py src/adsapi/gui/main_window.py tests/test_pdf_identify_settings.py tests/test_pdf_identifier.py tests/test_pdf_cli.py tests/test_pdf_watcher.py tests/test_gui_dialogs.py
+uv run --active isort src/adsfolio/pdf/identify_settings.py src/adsfolio/pdf/identifier.py src/adsfolio/pdf/identify.py src/adsfolio/pdf/cli.py src/adsfolio/pdf/watcher.py src/adsfolio/gui/dialogs.py src/adsfolio/gui/main_window.py tests/test_pdf_identify_settings.py tests/test_pdf_identifier.py tests/test_pdf_cli.py tests/test_pdf_watcher.py tests/test_gui_dialogs.py
+uv run --active ruff format src/adsfolio/pdf/identify_settings.py src/adsfolio/pdf/identifier.py src/adsfolio/pdf/identify.py src/adsfolio/pdf/cli.py src/adsfolio/pdf/watcher.py src/adsfolio/gui/dialogs.py src/adsfolio/gui/main_window.py tests/test_pdf_identify_settings.py tests/test_pdf_identifier.py tests/test_pdf_cli.py tests/test_pdf_watcher.py tests/test_gui_dialogs.py
+uv run --active ruff check src/adsfolio/pdf/identify_settings.py src/adsfolio/pdf/identifier.py src/adsfolio/pdf/identify.py src/adsfolio/pdf/cli.py src/adsfolio/pdf/watcher.py src/adsfolio/gui/dialogs.py src/adsfolio/gui/main_window.py tests/test_pdf_identify_settings.py tests/test_pdf_identifier.py tests/test_pdf_cli.py tests/test_pdf_watcher.py tests/test_gui_dialogs.py
 ```
 
 Expected: all changed files pass.

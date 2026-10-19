@@ -2,15 +2,15 @@ from pathlib import Path
 
 import pytest
 
-from adsapi.config import AuthenticationError, Config
-from adsapi.pdf.identify_settings import IdentifySettings, IdentifyStrategy
-from adsapi.pdf.registry import open_registry_state
-from adsapi.pdf.rename_settings import RenameSettings
-from adsapi.pdf.renamer import PdfRenamer
-from adsapi.pdf.sidecar import Sidecar
-from adsapi.pdf.tracked_move import move_tracked_file
-from adsapi.pdf.watch_session import ArrivalIdentity, WatchEvent, WatchState
-from adsapi.pdf.watcher import PdfNotReadyError, PdfWatcher, WatchIdentifyPolicy
+from adsfolio.config import AuthenticationError, Config
+from adsfolio.pdf.identify_settings import IdentifySettings, IdentifyStrategy
+from adsfolio.pdf.registry import open_registry_state
+from adsfolio.pdf.rename_settings import RenameSettings
+from adsfolio.pdf.renamer import PdfRenamer
+from adsfolio.pdf.sidecar import Sidecar
+from adsfolio.pdf.tracked_move import move_tracked_file
+from adsfolio.pdf.watch_session import ArrivalIdentity, WatchEvent, WatchState
+from adsfolio.pdf.watcher import PdfNotReadyError, PdfWatcher, WatchIdentifyPolicy
 
 
 class _Identifier:

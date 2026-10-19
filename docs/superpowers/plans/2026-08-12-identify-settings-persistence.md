@@ -19,16 +19,16 @@
 
 ## File Structure
 
-- Create `src/adsapi/pdf/identify_settings.py`: canonical model, normalization, mapping serialization, and override resolution.
-- Modify `src/adsapi/config.py`: atomic global settings read/write using the canonical mapping.
-- Modify `src/adsapi/pdf/sidecar.py`: legacy-profile migration plus canonical sidecar settings access.
-- Modify `src/adsapi/pdf/catalog.py`: import canonical and legacy settings into root metadata.
-- Modify `src/adsapi/pdf/registry.py`: root-specific canonical settings access and sidecar-compatible export.
-- Modify `src/adsapi/pdf/cli.py`: settings scope and explicit one-run override resolution.
-- Modify `src/adsapi/pdf/identify.py`: consume the already-resolved publication profile instead of independently reloading conflicting global values.
-- Modify `src/adsapi/gui/config.py`: normalized root-to-scope presentation preference.
-- Modify `src/adsapi/gui/dialogs.py`: scope selector, blank years, complete help text, validation, and save-before-accept behavior.
-- Modify `src/adsapi/gui/main_window.py`: load/save the selected settings scope and provide persistence callbacks.
+- Create `src/adsfolio/pdf/identify_settings.py`: canonical model, normalization, mapping serialization, and override resolution.
+- Modify `src/adsfolio/config.py`: atomic global settings read/write using the canonical mapping.
+- Modify `src/adsfolio/pdf/sidecar.py`: legacy-profile migration plus canonical sidecar settings access.
+- Modify `src/adsfolio/pdf/catalog.py`: import canonical and legacy settings into root metadata.
+- Modify `src/adsfolio/pdf/registry.py`: root-specific canonical settings access and sidecar-compatible export.
+- Modify `src/adsfolio/pdf/cli.py`: settings scope and explicit one-run override resolution.
+- Modify `src/adsfolio/pdf/identify.py`: consume the already-resolved publication profile instead of independently reloading conflicting global values.
+- Modify `src/adsfolio/gui/config.py`: normalized root-to-scope presentation preference.
+- Modify `src/adsfolio/gui/dialogs.py`: scope selector, blank years, complete help text, validation, and save-before-accept behavior.
+- Modify `src/adsfolio/gui/main_window.py`: load/save the selected settings scope and provide persistence callbacks.
 - Create `tests/test_pdf_identify_settings.py` and `tests/test_gui_dialogs.py`; extend focused config, sidecar, registry, and CLI tests.
 - Modify `docs/gui.md` and `docs/cli-tutorials/04-pdf-workflows.md`: user-visible persistence and CLI override behavior.
 
@@ -37,7 +37,7 @@
 ### Task 1: Canonical Identify settings model
 
 **Files:**
-- Create: `src/adsapi/pdf/identify_settings.py`
+- Create: `src/adsfolio/pdf/identify_settings.py`
 - Create: `tests/test_pdf_identify_settings.py`
 
 **Interfaces:**
@@ -45,7 +45,7 @@
 - Produces: `IdentifySettings.to_mapping() -> dict[str, object]`
 - Produces: `IdentifySettings.with_overrides(...) -> IdentifySettings`
 - Produces: `IdentifySettings.publication_profile() -> PublicationProfile`
-- Consumes: existing `PublicationProfile` from `adsapi.pdf.prefetch`
+- Consumes: existing `PublicationProfile` from `adsfolio.pdf.prefetch`
 
 - [ ] **Step 1: Write failing normalization and migration tests**
 
@@ -80,7 +80,7 @@ def test_identify_settings_rejects_reversed_year_window():
 
 Run: `uv run pytest tests/test_pdf_identify_settings.py -q`
 
-Expected: collection fails because `adsapi.pdf.identify_settings` does not exist.
+Expected: collection fails because `adsfolio.pdf.identify_settings` does not exist.
 
 - [ ] **Step 3: Implement the immutable model and field normalizers**
 
@@ -121,7 +121,7 @@ Expected: all model tests pass without warnings from valid fixtures.
 - [ ] **Step 5: Commit the domain slice**
 
 ```bash
-git add src/adsapi/pdf/identify_settings.py tests/test_pdf_identify_settings.py
+git add src/adsfolio/pdf/identify_settings.py tests/test_pdf_identify_settings.py
 git commit -m "feat: add canonical identify settings"
 ```
 
@@ -130,10 +130,10 @@ git commit -m "feat: add canonical identify settings"
 ### Task 2: Global and per-library persistence
 
 **Files:**
-- Modify: `src/adsapi/config.py`
-- Modify: `src/adsapi/pdf/sidecar.py`
-- Modify: `src/adsapi/pdf/catalog.py`
-- Modify: `src/adsapi/pdf/registry.py`
+- Modify: `src/adsfolio/config.py`
+- Modify: `src/adsfolio/pdf/sidecar.py`
+- Modify: `src/adsfolio/pdf/catalog.py`
+- Modify: `src/adsfolio/pdf/registry.py`
 - Modify: `tests/test_config_setup.py`
 - Modify: `tests/test_pdf_sidecar.py`
 - Modify: `tests/test_pdf_registry.py`
@@ -210,7 +210,7 @@ Expected: all pass; existing setup calls retain reusable global options.
 - [ ] **Step 5: Commit the persistence slice**
 
 ```bash
-git add src/adsapi/config.py src/adsapi/pdf/sidecar.py src/adsapi/pdf/catalog.py src/adsapi/pdf/registry.py tests/test_config_setup.py tests/test_pdf_sidecar.py tests/test_pdf_registry.py
+git add src/adsfolio/config.py src/adsfolio/pdf/sidecar.py src/adsfolio/pdf/catalog.py src/adsfolio/pdf/registry.py tests/test_config_setup.py tests/test_pdf_sidecar.py tests/test_pdf_registry.py
 git commit -m "feat: persist identify settings by scope"
 ```
 
@@ -219,8 +219,8 @@ git commit -m "feat: persist identify settings by scope"
 ### Task 3: Shared CLI resolution and explicit overrides
 
 **Files:**
-- Modify: `src/adsapi/pdf/cli.py`
-- Modify: `src/adsapi/pdf/identify.py`
+- Modify: `src/adsfolio/pdf/cli.py`
+- Modify: `src/adsfolio/pdf/identify.py`
 - Modify: `tests/test_pdf_cli.py`
 
 **Interfaces:**
@@ -246,7 +246,7 @@ def test_identify_cli_inherits_library_settings_and_applies_negative_overrides(
         verbose=True,
     )
     monkeypatch.setattr(
-        "adsapi.pdf.cli.load_library_identify_settings", lambda directory: saved
+        "adsfolio.pdf.cli.load_library_identify_settings", lambda directory: saved
     )
     captured = _capture_run_identify(monkeypatch)
     result = CliRunner().invoke(
@@ -304,7 +304,7 @@ Expected: all tests pass with updated assertions for the intentional CLI change.
 - [ ] **Step 5: Commit the CLI slice**
 
 ```bash
-git add src/adsapi/pdf/cli.py src/adsapi/pdf/identify.py tests/test_pdf_cli.py
+git add src/adsfolio/pdf/cli.py src/adsfolio/pdf/identify.py tests/test_pdf_cli.py
 git commit -m "feat: resolve persisted identify settings in cli"
 ```
 
@@ -313,9 +313,9 @@ git commit -m "feat: resolve persisted identify settings in cli"
 ### Task 4: GUI scope, blank years, help text, and save-before-run
 
 **Files:**
-- Modify: `src/adsapi/gui/config.py`
-- Modify: `src/adsapi/gui/dialogs.py`
-- Modify: `src/adsapi/gui/main_window.py`
+- Modify: `src/adsfolio/gui/config.py`
+- Modify: `src/adsfolio/gui/dialogs.py`
+- Modify: `src/adsfolio/gui/main_window.py`
 - Modify: `tests/test_gui_config.py`
 - Create: `tests/test_gui_dialogs.py`
 
@@ -402,7 +402,7 @@ Expected: all pass and no Qt warnings are emitted.
 - [ ] **Step 5: Commit the GUI slice**
 
 ```bash
-git add src/adsapi/gui/config.py src/adsapi/gui/dialogs.py src/adsapi/gui/main_window.py tests/test_gui_config.py tests/test_gui_dialogs.py
+git add src/adsfolio/gui/config.py src/adsfolio/gui/dialogs.py src/adsfolio/gui/main_window.py tests/test_gui_config.py tests/test_gui_dialogs.py
 git commit -m "feat: persist identify dialog settings"
 ```
 
@@ -425,11 +425,11 @@ library metadata, blank years mean no bound, and `Refresh cache`, `Allow ADS
 fallback`, and `Apply unresolved moves` must be chosen per run. Include one CLI
 example using `--settings-scope library --no-recursive` and one using
 `--clear-output-unresolved`. Document the sidecar schema bump and that older
-adsapi releases do not read the new `identify_settings` payload.
+adsfolio releases do not read the new `identify_settings` payload.
 
 - [ ] **Step 2: Run import sorting and Ruff formatting**
 
-Run: `uv run isort src/adsapi/pdf/identify_settings.py src/adsapi/config.py src/adsapi/pdf/sidecar.py src/adsapi/pdf/registry.py src/adsapi/pdf/cli.py src/adsapi/pdf/identify.py src/adsapi/gui/config.py src/adsapi/gui/dialogs.py src/adsapi/gui/main_window.py tests/test_pdf_identify_settings.py tests/test_config_setup.py tests/test_pdf_sidecar.py tests/test_pdf_registry.py tests/test_pdf_cli.py tests/test_gui_config.py tests/test_gui_dialogs.py`
+Run: `uv run isort src/adsfolio/pdf/identify_settings.py src/adsfolio/config.py src/adsfolio/pdf/sidecar.py src/adsfolio/pdf/registry.py src/adsfolio/pdf/cli.py src/adsfolio/pdf/identify.py src/adsfolio/gui/config.py src/adsfolio/gui/dialogs.py src/adsfolio/gui/main_window.py tests/test_pdf_identify_settings.py tests/test_config_setup.py tests/test_pdf_sidecar.py tests/test_pdf_registry.py tests/test_pdf_cli.py tests/test_gui_config.py tests/test_gui_dialogs.py`
 
 Run: `uv run ruff format . && uv run ruff check .`
 

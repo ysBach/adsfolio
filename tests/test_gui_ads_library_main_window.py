@@ -16,9 +16,9 @@ pytest.importorskip("PySide6")
 from PySide6.QtCore import QEvent, QItemSelectionModel, QObject, Signal
 from PySide6.QtWidgets import QApplication, QDialog, QMenu
 
-from adsapi.config import Config
-from adsapi.gui.library import FileQuery, LibraryView
-from adsapi.gui.main_window import MainWindow
+from adsfolio.config import Config
+from adsfolio.gui.library import FileQuery, LibraryView
+from adsfolio.gui.main_window import MainWindow
 
 
 @pytest.fixture(scope="module")
@@ -200,7 +200,7 @@ def test_table_context_selection_preserves_selected_rows_and_selects_new_row(
     window.show()
     QApplication.processEvents()
     menus: list[QMenu] = []
-    import adsapi.gui.main_window as main_window_module
+    import adsfolio.gui.main_window as main_window_module
 
     class NonBlockingMenu(QMenu):
         def exec(self, *_args) -> None:
@@ -234,7 +234,7 @@ def test_add_to_ads_library_passes_visual_selected_and_complete_resolved_snapsho
     tmp_path: Path,
 ) -> None:
     """Dialog inputs ignore table paging/search and cannot alias live records."""
-    import adsapi.gui.main_window as main_window_module
+    import adsfolio.gui.main_window as main_window_module
 
     CapturingAdsLibraryDialog.instances.clear()
     monkeypatch.setattr(
@@ -285,7 +285,7 @@ def test_add_to_ads_library_reports_busy_registry_without_opening_dialog(
     tmp_path: Path,
 ) -> None:
     """A transient SQLite lock becomes a busy status message."""
-    import adsapi.gui.main_window as main_window_module
+    import adsfolio.gui.main_window as main_window_module
 
     opened: list[object] = []
     monkeypatch.setattr(
@@ -315,7 +315,7 @@ def test_add_to_ads_library_propagates_non_busy_sqlite_errors(
     tmp_path: Path,
 ) -> None:
     """Only transient busy/locked errors are converted into GUI state."""
-    import adsapi.gui.main_window as main_window_module
+    import adsfolio.gui.main_window as main_window_module
 
     monkeypatch.setattr(
         main_window_module,
@@ -342,7 +342,7 @@ def test_direct_add_to_ads_library_requires_eligible_window_state(
     tmp_path: Path,
 ) -> None:
     """Direct calls cannot bypass missing-root or active-work guards."""
-    import adsapi.gui.main_window as main_window_module
+    import adsfolio.gui.main_window as main_window_module
 
     CapturingAdsLibraryDialog.instances.clear()
     monkeypatch.setattr(
@@ -377,7 +377,7 @@ def test_table_context_ads_action_uses_window_eligibility(
     tmp_path: Path,
 ) -> None:
     """The context action cannot bypass other active window work."""
-    import adsapi.gui.main_window as main_window_module
+    import adsfolio.gui.main_window as main_window_module
 
     CapturingAdsLibraryDialog.instances.clear()
     monkeypatch.setattr(
@@ -425,7 +425,7 @@ def test_only_one_ads_library_dialog_is_open_per_window(
     tmp_path: Path,
 ) -> None:
     """Repeated launches reuse the existing window-owned dialog."""
-    import adsapi.gui.main_window as main_window_module
+    import adsfolio.gui.main_window as main_window_module
 
     CapturingAdsLibraryDialog.instances.clear()
     monkeypatch.setattr(
@@ -454,7 +454,7 @@ def test_ads_library_dialog_parent_teardown_does_not_touch_deleted_action(
     tmp_path: Path,
 ) -> None:
     """Destroying the parent does not update already-destroyed child UI."""
-    import adsapi.gui.main_window as main_window_module
+    import adsfolio.gui.main_window as main_window_module
 
     CapturingAdsLibraryDialog.instances.clear()
     monkeypatch.setattr(

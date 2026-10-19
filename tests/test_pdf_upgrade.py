@@ -1,8 +1,8 @@
 from types import SimpleNamespace
 
-from adsapi.api.search import SearchResult
-from adsapi.pdf.sidecar import Sidecar
-from adsapi.pdf.upgrade import (
+from adsfolio.api.search import SearchResult
+from adsfolio.pdf.sidecar import Sidecar
+from adsfolio.pdf.upgrade import (
     PdfUpgrader,
     check_published_version,
     detect_arxiv_entries,
@@ -123,7 +123,7 @@ def test_upgrade_pdf_apply_overwrite_with_backup_and_unported_file(
     upgrader = PdfUpgrader(client)
 
     monkeypatch.setattr(
-        "adsapi.pdf.upgrade.port_annotations",
+        "adsfolio.pdf.upgrade.port_annotations",
         lambda source_path, target_path, output_path: SimpleNamespace(
             total_portable=2,
             ported=1,
