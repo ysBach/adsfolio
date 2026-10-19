@@ -428,6 +428,44 @@ existing files intact. Saving uses an atomic replacement after any native
 overwrite confirmation. This action does not change ADS library membership,
 local PDFs, or the local catalog.
 
+## Merging annotations from another edition
+
+Use **Tools → Merge Annotations…** when the same paper exists as a preprint,
+a published version, or a duplicate and the annotations are spread across
+files. Choose the canonical **target** PDF first and the **source** PDF
+second. ADSfolio shows the source (left) and target (right) pages side by side
+and lists every annotation in the source, including links and popups.
+
+For each annotation:
+
+- Highlight, underline, strike-out, and squiggly marks: drag across the target
+  words. If the source words occur exactly once in the target as the same run
+  of words (same case, punctuation, and hyphenation), ADSfolio outlines that
+  spot and enables **Accept exact-text suggestion**. Nothing is placed until
+  you accept it, and there is no approximate text matching.
+- Notes, rectangles, circles, lines, and ink: click the target position of the
+  annotation's top-left corner. The shape is moved, never resized or rotated,
+  so the target page must have the same rotation as the source page.
+- Any other type (free text, stamps, links, form fields, and so on) cannot be
+  copied without approximation. Each one must be waived individually with
+  **Waive (do not copy)…**. Popup windows are not copied because their parent
+  annotation carries the content.
+
+Colour, opacity, comments, author, subject, flags, border, and the icon of a
+note are copied with each annotation. **Save merged copy…** writes a new file
+and refuses to overwrite an existing one. Before writing, ADSfolio re-reads the
+copy and checks every transferred annotation and every annotation already in
+the target; if any check fails, nothing is saved. The original PDFs and the
+catalog are not changed, and the copy is not added to the catalog
+automatically.
+
+If any annotation is neither placed nor waived, the dialog says so and the
+result is a partial merge, not a full consolidation. Merging the same source
+again into a copy it was merged into skips annotations that are already
+present (recorded by a private key in each copied annotation). That key is lost
+if another program rewrites the annotation. The feature needs PyMuPDF
+(`pip install "adsfolio[full]"`; the desktop app includes it).
+
 ## Watching library roots
 
 Each registered root has three independent controls in the **Tools** menu and

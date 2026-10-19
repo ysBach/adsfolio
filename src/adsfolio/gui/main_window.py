@@ -47,6 +47,7 @@ from PySide6.QtWidgets import (
 
 from ..citations import CitationStyle, citation_preference_key
 from ..config import Config
+from ..pdf.annotation_merge import AnnotationMergeError, MissingDependencyError
 from ..pdf.identify_settings import IdentifySettings
 from ..pdf.registry import CentralPdfRegistryState, LibraryRefresh, PdfRegistry
 from ..pdf.rename_settings import RenameSettings
@@ -379,6 +380,8 @@ class MainWindow(QMainWindow):
         file_menu = self.menuBar().addMenu("File")
         self.add_action = QAction("Add Library Root…", self)
         self.local_references_action = QAction("Local References…", self)
+        self.merge_annotations_action = QAction("Merge Annotations…", self)
+        self.merge_annotations_action.triggered.connect(self._merge_annotations)
         self.local_references_action.triggered.connect(self._open_local_references)
         self.remove_action = QAction("Remove Root", self)
         self.refresh_action = QAction("Refresh", self)
@@ -470,6 +473,7 @@ class MainWindow(QMainWindow):
         tools.addAction(self.profile_action)
         tools.addAction(self.citation_styles_action)
         tools.addSeparator()
+        tools.addAction(self.merge_annotations_action)
         tools.addAction(self.identify_action)
         tools.addAction(self.rename_action)
         tools.addAction(self.cancel_job_action)
@@ -1272,6 +1276,31 @@ class MainWindow(QMainWindow):
             if column_key == "filename":
                 return
         self._open_pdf_record(record)
+
+    def _merge_annotations(self) -> None:
+        """Choose a canonical target and a source PDF, then open the merge dialog."""
+        start = str(self.current_root) if self.current_root else ""
+        target, _ = QFileDialog.getOpenFileName(
+            self, "Choose the canonical (target) PDF", start, "PDF (*.pdf)"
+        )
+        if not target:
+            return
+        source, _ = QFileDialog.getOpenFileName(
+            self,
+            "Choose the PDF whose annotations to copy (source)",
+            str(Path(target).parent),
+            "PDF (*.pdf)",
+        )
+        if not source:
+            return
+        try:
+            from .annotation_merge import AnnotationMergeDialog
+
+            dialog = AnnotationMergeDialog(Path(target), Path(source), self)
+        except (MissingDependencyError, AnnotationMergeError, RuntimeError) as exc:
+            QMessageBox.warning(self, "Cannot merge annotations", str(exc))
+            return
+        dialog.exec()
 
     def _columns_for_table_model(self) -> tuple[Column, ...] | None:
         """Return column definitions matching the model installed on the table."""

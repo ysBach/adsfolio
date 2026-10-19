@@ -88,6 +88,7 @@ PDF catalog and processing
    adsfolio.pdf.prefetch
    adsfolio.pdf.obsidian
    adsfolio.pdf.annotations
+   adsfolio.pdf.annotation_merge
    adsfolio.pdf.upgrade
    adsfolio.pdf.upgrade_utils
 
@@ -103,6 +104,7 @@ standalone bundle setup.
 
    adsfolio.gui
    adsfolio.gui.app
+   adsfolio.gui.annotation_merge
    adsfolio.gui.config
    adsfolio.gui.library
    adsfolio.gui.models
