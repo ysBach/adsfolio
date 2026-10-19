@@ -23,12 +23,17 @@ def test_cask_uses_platform_specific_checksums() -> None:
         "a" * 64
         + "  adsfolio-macos-arm64.zip\n"
         + "b" * 64
-        + "  adsfolio-macos-x86_64.zip\n",
+        + "  adsfolio-macos-x86_64.zip\n"
+        + "c" * 64
+        + "  adsfolio-macos-arm64.dmg\n"
+        + "d" * 64
+        + "  adsfolio-macos-x86_64.dmg\n",
     )
     assert 'sha256 arm: "' + "a" * 64 + '"' in rendered
     assert 'intel: "' + "b" * 64 + '"' in rendered
     assert "/owner/adsfolio/releases/download/v#{version}/" in rendered
     assert 'version "1.2.3"' in rendered
+    assert "adsfolio-macos-#{arch}.zip" in rendered
 
 
 @pytest.mark.parametrize(
@@ -64,6 +69,7 @@ def test_repository_preview_does_not_create_remote(repository_checkout: Path) ->
         cwd=repository_checkout,
         capture_output=True,
         text=True,
+        check=False,
     )
     assert result.returncode == 0, result.stderr
     assert "Preview only" in result.stderr
@@ -100,6 +106,7 @@ def test_repository_preview_accepts_completed_setup(
         cwd=repository_checkout,
         capture_output=True,
         text=True,
+        check=False,
     )
     assert result.returncode == 0, result.stderr
     assert "gh repo view ysBach/adsfolio" in result.stderr
@@ -126,6 +133,7 @@ def test_repository_preview_rejects_conflicting_remotes(
         cwd=repository_checkout,
         capture_output=True,
         text=True,
+        check=False,
     )
     assert result.returncode == 1
     assert "inspect them before changing remotes" in result.stderr

@@ -26,26 +26,26 @@ def render_cask(version: str, repository: str, checksums: str) -> str:
         sums[filename] = digest.lower()
     arm = sums["adsfolio-macos-arm64.zip"]
     intel = sums["adsfolio-macos-x86_64.zip"]
-    return """cask "adsfolio" do
+    return f"""cask "adsfolio" do
   arch arm: "arm64", intel: "x86_64"
 
-  version "%s"
-  sha256 arm: "%s",
-         intel: "%s"
+  version "{version}"
+  sha256 arm: "{arm}",
+         intel: "{intel}"
 
-  url "https://github.com/%s/releases/download/v#{version}/adsfolio-macos-#{arch}.zip"
+  url "https://github.com/{repository}/releases/download/v#{{version}}/adsfolio-macos-#{{arch}}.zip"
   name "ADSfolio"
   desc "Research PDF library with ADS, DOI metadata, and local references"
-  homepage "https://github.com/%s"
+  homepage "https://github.com/{repository}"
 
-  depends_on macos: ">= :sequoia"
+  depends_on macos: :sequoia
 
   app "ADSfolio.app"
-  binary "#{appdir}/ADSfolio.app/Contents/MacOS/adsfolio-cli", target: "adsfolio"
+  binary "#{{appdir}}/ADSfolio.app/Contents/MacOS/adsfolio-cli", target: "adsfolio"
 
   uninstall quit: "io.github.ysbach.adsfolio"
 end
-""" % (version, arm, intel, repository, repository)
+"""
 
 
 def main() -> None:

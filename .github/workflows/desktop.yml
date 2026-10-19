@@ -9,6 +9,7 @@ on:
       - "src/**"
       - "tests/**"
       - "packaging/**"
+      - "scripts/homebrew_cask.py"
       - "pyproject.toml"
       - "uv.lock"
       - ".github/workflows/desktop.yml"
@@ -123,6 +124,11 @@ jobs:
       - name: Archive macOS app with symbolic links
         if: runner.os == 'macOS'
         run: ditto -c -k --sequesterRsrc --keepParent dist/ADSfolio.app dist/adsfolio-${{ matrix.platform }}.zip
+      - name: Build and verify macOS drag-to-install disk image
+        if: runner.os == 'macOS'
+        run: >-
+          uv run --no-sync python packaging/build_macos_dmg.py
+          dist/ADSfolio.app dist/adsfolio-${{ matrix.platform }}.dmg
       - name: Archive Windows app
         if: runner.os == 'Windows'
         shell: pwsh
@@ -134,7 +140,7 @@ jobs:
         run: |
           cd dist
           uv run --no-sync python -c "
-          import hashlib, glob
+          import hashlib
           from pathlib import Path
 
           def sha256_file(p: Path) -> str:
@@ -144,7 +150,11 @@ jobs:
                       h.update(chunk)
               return h.hexdigest()
 
-          archives = glob.glob('adsfolio-${{ matrix.platform }}.*')
+          archives = [
+              Path('adsfolio-${{ matrix.platform }}' + suffix)
+              for suffix in ('.zip', '.dmg', '.tar.gz')
+              if Path('adsfolio-${{ matrix.platform }}' + suffix).is_file()
+          ]
           lines = []
           for a in sorted(archives):
               digest = sha256_file(Path(a))
@@ -158,6 +168,7 @@ jobs:
           name: adsfolio-${{ matrix.platform }}
           path: |
             dist/adsfolio-${{ matrix.platform }}.zip
+            dist/adsfolio-${{ matrix.platform }}.dmg
             dist/adsfolio-${{ matrix.platform }}.tar.gz
             dist/adsfolio-${{ matrix.platform }}.sha256
           if-no-files-found: error
