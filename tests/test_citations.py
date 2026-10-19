@@ -344,6 +344,49 @@ def test_from_mapping_normalizes_malformed_optional_controls() -> None:
     assert style.author_separator == ", "
     assert style.author_truncation_suffix == " et al."
 
+    bool_limits_style = CitationStyle.from_mapping(
+        {
+            "id": "style-bool",
+            "name": "Bool Limits",
+            "template": "{bibcode}",
+            "author_format": ["not-a-string"],
+            "max_authors": True,
+            "authors_when_truncated": False,
+        }
+    )
+    assert bool_limits_style.author_format == "surname_initials"
+    assert bool_limits_style.max_authors == 3
+    assert bool_limits_style.authors_when_truncated == 1
+
+
+def test_constructor_rejects_boolean_limits_and_non_string_fields() -> None:
+    with pytest.raises(CitationStyleError, match="(?i)author_format"):
+        CitationStyle(id="s1", name="Name", template="{bibcode}", author_format=[])  # type: ignore[arg-type]
+    with pytest.raises(CitationStyleError, match="(?i)integers"):
+        CitationStyle(id="s1", name="Name", template="{bibcode}", max_authors=True)
+    with pytest.raises(CitationStyleError, match="(?i)integers"):
+        CitationStyle(
+            id="s1",
+            name="Name",
+            template="{bibcode}",
+            max_authors=3,
+            authors_when_truncated=True,
+        )
+    with pytest.raises(CitationStyleError, match="(?i)separator"):
+        CitationStyle(
+            id="s1",
+            name="Name",
+            template="{bibcode}",
+            author_separator=None,  # type: ignore[arg-type]
+        )
+    with pytest.raises(CitationStyleError, match="(?i)truncation suffix"):
+        CitationStyle(
+            id="s1",
+            name="Name",
+            template="{bibcode}",
+            author_truncation_suffix=123,  # type: ignore[arg-type]
+        )
+
 
 def test_initial_citation_styles() -> None:
     styles = initial_citation_styles()
@@ -420,3 +463,24 @@ def test_allowed_citation_fields_and_help() -> None:
     )
     for field in ALLOWED_CITATION_FIELDS:
         assert f"{{{field}}}" in CITATION_FIELD_HELP
+
+
+@pytest.mark.parametrize("inf_val", [float("inf"), float("-inf")])
+@pytest.mark.parametrize("field_name", ["max_authors", "authors_when_truncated"])
+def test_from_mapping_falls_back_on_infinite_counts(
+    inf_val: float, field_name: str
+) -> None:
+    payload = {"id": "s1", "name": "Name", "template": "{bibcode}", field_name: inf_val}
+    style = CitationStyle.from_mapping(payload)
+    if field_name == "max_authors":
+        assert style.max_authors == 3
+    else:
+        assert style.authors_when_truncated == 1
+
+
+@pytest.mark.parametrize("inf_val", [float("inf"), float("-inf")])
+@pytest.mark.parametrize("field_name", ["max_authors", "authors_when_truncated"])
+def test_constructor_rejects_infinite_counts(inf_val: float, field_name: str) -> None:
+    kwargs = {"id": "s1", "name": "Name", "template": "{bibcode}", field_name: inf_val}
+    with pytest.raises(CitationStyleError, match="(?i)integers"):
+        CitationStyle(**kwargs)  # type: ignore[arg-type]

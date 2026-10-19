@@ -165,13 +165,19 @@ class CitationStyle:
                 "Citation style template must be a non-empty string."
             )
 
-        if self.author_format not in ALLOWED_AUTHOR_FORMATS:
+        if (
+            not isinstance(self.author_format, str)
+            or self.author_format not in ALLOWED_AUTHOR_FORMATS
+        ):
             raise CitationStyleError(
                 f"Invalid author_format '{self.author_format}'. Must be one of {sorted(ALLOWED_AUTHOR_FORMATS)}."
             )
 
-        if not isinstance(self.max_authors, int) or not isinstance(
-            self.authors_when_truncated, int
+        if (
+            isinstance(self.max_authors, bool)
+            or not isinstance(self.max_authors, int)
+            or isinstance(self.authors_when_truncated, bool)
+            or not isinstance(self.authors_when_truncated, int)
         ):
             raise CitationStyleError("Author limits must be integers.")
 
@@ -180,6 +186,11 @@ class CitationStyle:
                 f"Author limits must satisfy 1 <= authors_when_truncated ({self.authors_when_truncated}) "
                 f"<= max_authors ({self.max_authors}) <= 99."
             )
+
+        if not isinstance(self.author_separator, str):
+            raise CitationStyleError("Author separator must be a string.")
+        if not isinstance(self.author_truncation_suffix, str):
+            raise CitationStyleError("Author truncation suffix must be a string.")
 
         _validate_template_syntax(self.template)
 
@@ -207,20 +218,29 @@ class CitationStyle:
         template_val = str(raw_template).strip() if raw_template is not None else ""
 
         author_format = payload.get("author_format")
-        if author_format not in ALLOWED_AUTHOR_FORMATS:
+        if (
+            not isinstance(author_format, str)
+            or author_format not in ALLOWED_AUTHOR_FORMATS
+        ):
             author_format = "surname_initials"
 
         raw_max = payload.get("max_authors")
-        try:
-            max_authors = int(raw_max) if raw_max is not None else 3
-        except (ValueError, TypeError):
+        if isinstance(raw_max, bool):
             max_authors = 3
+        else:
+            try:
+                max_authors = int(raw_max) if raw_max is not None else 3
+            except (ValueError, TypeError, OverflowError):
+                max_authors = 3
 
         raw_trunc = payload.get("authors_when_truncated")
-        try:
-            authors_when_truncated = int(raw_trunc) if raw_trunc is not None else 1
-        except (ValueError, TypeError):
+        if isinstance(raw_trunc, bool):
             authors_when_truncated = 1
+        else:
+            try:
+                authors_when_truncated = int(raw_trunc) if raw_trunc is not None else 1
+            except (ValueError, TypeError, OverflowError):
+                authors_when_truncated = 1
 
         if not (1 <= authors_when_truncated <= max_authors <= 99):
             max_authors = 3

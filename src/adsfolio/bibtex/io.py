@@ -1,7 +1,6 @@
 """
 File I/O utilities for bibcode and BibTeX files.
 
-Migrated from ads2bibtex with improvements.
 """
 
 import re
@@ -46,7 +45,7 @@ def read_bibcodes_file(
     if not path.exists():
         return []
 
-    text = path.read_text()
+    text = path.read_text(encoding="utf-8")
     text += "\n"  # Ensure trailing newline
 
     # Remove comments (# or % to end of line)
@@ -87,7 +86,7 @@ def read_bibtex_file(file_path: str | Path) -> tuple[str, list[str]]:
     if not path.exists():
         return "", []
 
-    content = path.read_text()
+    content = path.read_text(encoding="utf-8")
 
     # Extract citation keys from @type{key, entries
     keys = re.findall(r"@\w+\{([^,]+),", content)
@@ -115,5 +114,5 @@ def write_bibtex_file(
     path = Path(file_path)
     path.parent.mkdir(parents=True, exist_ok=True)
 
-    mode = "a" if append else "w"
-    path.write_text(content) if not append else path.open(mode).write(content)
+    with path.open("a" if append else "w", encoding="utf-8") as stream:
+        stream.write(content)

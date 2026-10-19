@@ -8,7 +8,9 @@ Provides access to:
 """
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, ClassVar
+
+from ..config import ADSError
 
 if TYPE_CHECKING:
     from ..client import BaseClient
@@ -74,7 +76,7 @@ class SearchAPI:
     """
 
     # Available fields for fl parameter (non-exhaustive)
-    FIELDS = [
+    FIELDS: ClassVar[list[str]] = [
         "abstract",
         "ack",
         "aff",
@@ -293,16 +295,25 @@ class SearchAPI:
                 sort=sort,
                 fq=fq,
             )
-            if start == 0:
+            if start == 0 or page.num_found >= 0:
                 num_found = page.num_found
 
+            target = (
+                min(num_found, max_records) if max_records is not None else num_found
+            )
+
             if not page.docs:
+                if start < target:
+                    raise ADSError(
+                        f"ADS search returned an empty page at offset {start} "
+                        f"before reaching {target} expected records."
+                    )
                 break
 
             docs.extend(page.docs)
             start += len(page.docs)
 
-            if start >= page.num_found:
+            if start >= target:
                 break
 
         return SearchResult(

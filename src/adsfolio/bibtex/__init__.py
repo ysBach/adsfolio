@@ -11,12 +11,12 @@ from .parser import extract_cite_keys, make_rawfile, parse_bibtex_entries
 
 __all__ = [
     "JOURNAL_MACRO",
-    "expand_macros",
-    "iso4_abbreviate",
     "change_journal_name",
+    "expand_macros",
     "extract_cite_keys",
-    "parse_bibtex_entries",
+    "iso4_abbreviate",
     "make_rawfile",
+    "parse_bibtex_entries",
     "read_bibcodes_file",
     "read_bibtex_file",
 ]

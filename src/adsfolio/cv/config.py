@@ -151,7 +151,9 @@ def _load_yaml(path: Path) -> dict[str, Any]:
     try:
         import yaml
     except ModuleNotFoundError as exc:
-        raise RuntimeError("PyYAML is required for adsfolio cv config loading.") from exc
+        raise RuntimeError(
+            "PyYAML is required for adsfolio cv config loading."
+        ) from exc
 
     try:
         raw = yaml.safe_load(path.read_text(encoding="utf-8"))

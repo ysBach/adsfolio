@@ -10,7 +10,7 @@ except ImportError:
 
 from .config import Config
 
-__all__ = ["format_journal", "JOURNAL_MACRO"]
+__all__ = ["JOURNAL_MACRO", "format_journal"]
 
 JOURNAL_ABBREV_URL = "https://adsabs.harvard.edu/abs_doc/journals1.html"
 CACHE_FILENAME = "journal_abbrevs.json"

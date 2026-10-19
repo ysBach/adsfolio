@@ -1,6 +1,7 @@
 import unittest
 
 from adsfolio.api.search import SearchAPI
+from adsfolio.config import ADSError
 
 
 class DummyBaseClient:
@@ -104,6 +105,70 @@ class TestQueryAll(unittest.TestCase):
         self.assertEqual(call["params"]["rows"], 2)
         self.assertEqual(call["data"], "bibcode\nB1\nB2")
         self.assertEqual(call["headers"]["Content-Type"], "text/plain")
+
+    def test_query_all_raises_when_later_page_is_unexpectedly_empty(self):
+        responses = [
+            {
+                "response": {
+                    "numFound": 3,
+                    "start": 0,
+                    "docs": [{"bibcode": "B0"}],
+                },
+                "responseHeader": {"QTime": 1},
+            },
+            {
+                "response": {
+                    "numFound": 3,
+                    "start": 1,
+                    "docs": [],
+                },
+                "responseHeader": {"QTime": 1},
+            },
+        ]
+
+        class TruncatedClient:
+            def get(self, endpoint, params=None):
+                del endpoint, params
+                return responses.pop(0)
+
+        api = SearchAPI(TruncatedClient())
+        with self.assertRaises(ADSError):
+            api.query_all(q="author:Einstein", page_size=1)
+
+    def test_query_all_allows_zero_matches_and_updated_num_found(self):
+        empty_api = SearchAPI(DummyBaseClient([]))
+        empty_result = empty_api.query_all(q="author:Nobody")
+        self.assertEqual(empty_result.num_found, 0)
+        self.assertEqual(empty_result.docs, [])
+
+        responses = [
+            {
+                "response": {
+                    "numFound": 3,
+                    "start": 0,
+                    "docs": [{"bibcode": "B0"}],
+                },
+                "responseHeader": {"QTime": 1},
+            },
+            {
+                "response": {
+                    "numFound": 1,
+                    "start": 1,
+                    "docs": [],
+                },
+                "responseHeader": {"QTime": 1},
+            },
+        ]
+
+        class ShrinkingClient:
+            def get(self, endpoint, params=None):
+                del endpoint, params
+                return responses.pop(0)
+
+        shrinking_api = SearchAPI(ShrinkingClient())
+        shrinking_result = shrinking_api.query_all(q="author:Einstein", page_size=1)
+        self.assertEqual(shrinking_result.num_found, 1)
+        self.assertEqual([d["bibcode"] for d in shrinking_result.docs], ["B0"])
 
 
 if __name__ == "__main__":

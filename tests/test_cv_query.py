@@ -40,7 +40,7 @@ def test_fetch_publications_uses_query_all() -> None:
     called: dict[str, object] = {}
 
     class StubSearch:
-        def query_all(self, q, fl, sort):  # noqa: ANN001
+        def query_all(self, q, fl, sort):
             called["q"] = q
             called["fl"] = fl
             called["sort"] = sort
@@ -62,7 +62,7 @@ def test_apply_author_format_overrides_uses_ads_custom() -> None:
     docs = [{"bibcode": "2024ApJ...900..100S", "author": ["Doe, Jane"]}]
 
     class StubExport:
-        def custom(self, bibcodes, format_string):  # noqa: ANN001
+        def custom(self, bibcodes, format_string):
             assert bibcodes == ["2024ApJ...900..100S"]
             assert format_string == "%l"
             return "Doe, J.; Smith, A."
@@ -73,7 +73,7 @@ def test_apply_author_format_overrides_uses_ads_custom() -> None:
     from adsfolio.cv.query import apply_author_format_overrides
 
     overridden = apply_author_format_overrides(docs, StubClient(), cfg)
-    assert overridden[0]["_adsapi_author_text"] == "Doe, J.; Smith, A."
+    assert overridden[0]["_adsfolio_author_text"] == "Doe, J.; Smith, A."
 
 
 def test_classify_publications_splits_first_vs_co_author() -> None:

@@ -141,7 +141,7 @@ def _bibstem_for_legend(doc: dict[str, Any], bibcode: str) -> str:
 def _author_text(
     doc: dict[str, Any], cfg: CVConfig, *, latex: bool
 ) -> tuple[list[str], str]:
-    override = str(doc.get("_adsapi_author_text", "")).strip()
+    override = str(doc.get("_adsfolio_author_text", "")).strip()
     if override:
         return _as_str_list(doc.get("author")), override
 
@@ -260,7 +260,6 @@ class LatexRenderer:
     def _render_detailed(self, row: PublicationRow) -> str:
         marker = row.marker_label
         marker_text = f"{marker} " if marker else ""
-        doi_text = ""
         ref = _latex_ref_base(row)
         first_line = (
             rf"\item {marker_text}{row.authors} ({row.year}) "
@@ -271,7 +270,7 @@ class LatexRenderer:
         )
         if row.status:
             second_line += rf" [{row.status}]"
-        return f"{first_line}\n{second_line}{doi_text}"
+        return f"{first_line}\n{second_line}"
 
     def _render_compact(self, row: PublicationRow) -> str:
         status = rf"~[{row.status}]" if row.status else ""

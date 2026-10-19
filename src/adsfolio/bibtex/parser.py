@@ -1,14 +1,23 @@
 """
 BibTeX parsing utilities.
 
-Migrated from ads2bibtex with improvements.
 """
 
 import re
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
-__all__ = ["extract_cite_keys", "parse_bibtex_entries", "make_rawfile"]
+import pyparsing as pp
+from bibtexparser.bibdatabase import (
+    BibDatabase,
+    BibDataString,
+    BibDataStringExpression,
+)
+from bibtexparser.bparser import BibTexParser
+from pyparsing import ParseBaseException
+
+__all__ = ["extract_cite_keys", "make_rawfile", "parse_bibtex_entries"]
 
 
 @dataclass
@@ -44,7 +53,7 @@ def extract_cite_keys(tex_file: str | Path) -> list[str]:
     if not path.exists():
         return []
 
-    contents = path.read_text()
+    contents = path.read_text(encoding="utf-8")
 
     # Match \cite{...}, \citep{...}, \citet{...} but ignore commented lines
     # Also handles multiple keys in single cite command
@@ -64,6 +73,111 @@ def extract_cite_keys(tex_file: str | Path) -> list[str]:
     return keys
 
 
+def _resolve_bib_value(
+    value: Any,
+    database: BibDatabase,
+    seen: frozenset[str] = frozenset(),
+) -> str:
+    """Resolve a parsed BibTeX value to text, preserving undefined macro names."""
+    if isinstance(value, BibDataString):
+        if value.name in seen or value.name not in database.strings:
+            return str(value.name)
+        return _resolve_bib_value(
+            database.strings[value.name],
+            database,
+            seen | {value.name},
+        )
+    if isinstance(value, BibDataStringExpression):
+        return "".join(_resolve_bib_value(part, database, seen) for part in value.expr)
+    return str(value)
+
+
+def _split_bibtex_authors(value: str) -> list[str]:
+    """Split a BibTeX author field on top-level ``and`` tokens."""
+    names: list[str] = []
+    depth = 0
+    start = 0
+    for match in re.finditer(r"[{}]|\band\b", value, flags=re.IGNORECASE):
+        token = match.group()
+        if token == "{":
+            depth += 1
+        elif token == "}":
+            depth = max(0, depth - 1)
+        elif (
+            depth == 0
+            and match.start() > 0
+            and match.end() < len(value)
+            and value[match.start() - 1 : match.start()].isspace()
+            and value[match.end() : match.end() + 1].isspace()
+        ):
+            candidate = value[start : match.start()].strip()
+            if candidate:
+                names.append(candidate)
+            start = match.end()
+    tail = value[start:].strip()
+    if tail:
+        names.append(tail)
+    return names
+
+
+def _is_single_brace_group(text: str) -> bool:
+    """Return whether `text` is enclosed by one balanced outer brace pair."""
+    if len(text) < 2 or text[0] != "{" or text[-1] != "}":
+        return False
+    depth = 0
+    for index, char in enumerate(text):
+        if char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0 and index < len(text) - 1:
+                return False
+    return depth == 0
+
+
+def _strip_outer_braces(text: str) -> str:
+    """Peel balanced outer brace pairs from `text`."""
+    cleaned = text.strip()
+    while _is_single_brace_group(cleaned):
+        cleaned = cleaned[1:-1].strip()
+    return cleaned
+
+
+def _extract_author_surname(author: str) -> str:
+    """Extract the surname or corporate name from one BibTeX author token."""
+    token = author.strip()
+    if not token:
+        return ""
+    depth = 0
+    for index, char in enumerate(token):
+        if char == "{":
+            depth += 1
+        elif char == "}":
+            depth = max(0, depth - 1)
+        elif char == "," and depth == 0:
+            return _strip_outer_braces(token[:index])
+
+    if _is_single_brace_group(token):
+        return _strip_outer_braces(token)
+
+    parts: list[str] = []
+    depth = 0
+    start = 0
+    for index, char in enumerate(token):
+        if char == "{":
+            depth += 1
+        elif char == "}":
+            depth = max(0, depth - 1)
+        elif char.isspace() and depth == 0:
+            if index > start:
+                parts.append(token[start:index])
+            start = index + 1
+    if start < len(token):
+        parts.append(token[start:])
+    last = parts[-1] if parts else token
+    return _strip_outer_braces(last)
+
+
 def parse_bibtex_entries(bibtex_text: str) -> list[BibEntry]:
     """
     Parse BibTeX text into structured entries.
@@ -78,41 +192,62 @@ def parse_bibtex_entries(bibtex_text: str) -> list[BibEntry]:
     list[BibEntry]
         Parsed BibTeX entries.
     """
-    entries = []
+    if not bibtex_text or not bibtex_text.strip():
+        return []
 
-    # Split into individual entries
-    entry_pattern = re.compile(r"@(\w+)\{([^,]+),\s*(.*?)\n\}", re.DOTALL)
+    parser = BibTexParser(
+        ignore_nonstandard_types=False,
+        common_strings=True,
+        interpolate_strings=False,
+    )
+    raw_slices: list[str] = []
+    located_entry = pp.Located(parser._expr.entry)
 
-    for match in entry_pattern.finditer(bibtex_text):
-        entry_type = match.group(1).lower()
-        bibcode = match.group(2).strip()
-        body = match.group(3)
+    def _capture_raw(source: str, _loc: int, tokens: pp.ParseResults) -> None:
+        if len(parser.bib_database.entries) > len(raw_slices):
+            raw_slices.append(source[tokens.locn_start : tokens.locn_end])
 
-        # Extract fields
-        def get_field(name: str) -> str | None:
-            pattern = rf"{name}\s*=\s*\{{(.+?)\}}"
-            field_match = re.search(pattern, body, re.IGNORECASE)
-            return field_match.group(1) if field_match else None
+    located_entry.add_parse_action(_capture_raw)
+    parser._expr.main_expression = pp.ZeroOrMore(
+        parser._expr.string_def
+        | parser._expr.preamble_decl
+        | parser._expr.explicit_comment
+        | located_entry
+        | parser._expr.implicit_comment
+    )
+    parser._expr.main_expression.parse_with_tabs()
+    try:
+        database = parser.parse(bibtex_text)
+    except ParseBaseException:
+        return []
 
-        # Parse authors
-        author_str = get_field("author") or ""
-        authors = []
-        if author_str:
-            # Extract last names from {LastName} pattern
-            authors = re.findall(r"\{([^{}]+)\}", author_str)
-
-        entry = BibEntry(
-            bibcode=bibcode,
-            entry_type=entry_type,
-            authors=authors,
-            title=get_field("title") or "",
-            year=get_field("year") or "",
-            journal=get_field("journal"),
-            volume=get_field("volume"),
-            pages=get_field("pages"),
-            raw=match.group(0),
+    entries: list[BibEntry] = []
+    for index, record in enumerate(database.entries):
+        fields = {
+            key: _resolve_bib_value(value, database)
+            for key, value in record.items()
+            if key not in {"ID", "ENTRYTYPE"}
+        }
+        author_text = fields.get("author", "")
+        authors = [
+            surname
+            for token in _split_bibtex_authors(author_text)
+            if (surname := _extract_author_surname(token))
+        ]
+        raw_text = raw_slices[index] if index < len(raw_slices) else ""
+        entries.append(
+            BibEntry(
+                bibcode=str(record.get("ID", "")).strip(),
+                entry_type=str(record.get("ENTRYTYPE", "")).lower(),
+                authors=authors,
+                title=fields.get("title", ""),
+                year=fields.get("year", ""),
+                journal=fields.get("journal"),
+                volume=fields.get("volume"),
+                pages=fields.get("pages"),
+                raw=raw_text,
+            )
         )
-        entries.append(entry)
 
     return entries
 
@@ -121,45 +256,32 @@ def make_rawfile(bibtex_text: str, output_file: str | Path) -> None:
     """
     Create a summary file from BibTeX.
 
-    Generates a file with one line per entry:
-    bibcode  # author_summary || title
+    Write one line per entry whose key is a 19-character bibcode::
+
+        bibcode  # author_summary || title
+
+    Entries are read with `parse_bibtex_entries`, so single-line entries,
+    nested braces, and quoted or multiline fields are supported. The author
+    summary is the sole surname, surnames joined by ``+``, or the first
+    surname plus ``+N`` when there are more than three authors.
 
     Parameters
     ----------
     bibtex_text : str
         BibTeX content.
     output_file : str or Path
-        Output file path.
+        Output file path, written as UTF-8.
     """
     lines = []
+    for entry in parse_bibtex_entries(bibtex_text):
+        if len(entry.bibcode) != 19:
+            continue
+        surnames = entry.authors
+        if len(surnames) > 3:
+            author_summary = f"{surnames[0]}+{len(surnames) - 1}"
+        else:
+            author_summary = "+".join(surnames)
+        title = " ".join(_strip_outer_braces(entry.title).split())
+        lines.append(f"{entry.bibcode}  # {author_summary} || {title}")
 
-    for line in bibtex_text.split("\n"):
-        line = line.strip()
-
-        # Start collecting entry info
-        if line.startswith("@"):
-            match = re.match(r"@\w+\{([^,]+),", line)
-            if match:
-                current_bib = match.group(1)
-                current_auth = ""
-                current_title = ""
-
-        elif line.startswith("author ="):
-            auth_line = line.split(" = {")[1].rstrip(",").rstrip("}")
-            # Extract last names
-            lasts = re.findall(r"\{([^{}]+)\}", auth_line)
-            if len(lasts) > 3:
-                current_auth = f"{lasts[0]}+{len(lasts) - 1}"
-            elif len(lasts) > 1:
-                current_auth = "+".join(lasts)
-            elif lasts:
-                current_auth = lasts[0]
-
-        elif line.startswith("title ="):
-            current_title = line.split("{")[1].rstrip("},").rstrip("}")
-
-        elif line == "}":
-            if len(current_bib) == 19:
-                lines.append(f"{current_bib}  # {current_auth} || {current_title}")
-
-    Path(output_file).write_text("\n".join(lines))
+    Path(output_file).write_text("\n".join(lines), encoding="utf-8")

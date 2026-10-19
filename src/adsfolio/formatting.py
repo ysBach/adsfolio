@@ -48,13 +48,30 @@ def html_to_text(text: str) -> str:
     return "".join(parser.parts)
 
 
-def _escape_latex(s: str) -> str:
-    """Escape special characters for LaTeX."""
+_MATH_ESCAPES = {
+    "\\": r"\mbox{\textbackslash{}}",
+    "^": r"\mbox{\textasciicircum{}}",
+    "~": r"\mbox{\textasciitilde{}}",
+}
+
+
+def _escape_latex(s: str, *, in_math: bool = False) -> str:
+    r"""Escape special characters for LaTeX.
+
+    Parameters
+    ----------
+    s
+        Text to escape.
+    in_math
+        The text is inside a math group such as ``$_{...}$``. The text-mode
+        commands for backslash, ``^`` and ``~`` do not work there, so these
+        characters are typeset as text with ``\mbox``.
+    """
     if not s:
         return ""
 
     repl = {
-        "\\": r"\\textbackslash{}",
+        "\\": r"\textbackslash{}",
         "&": r"\&",
         "%": r"\%",
         "$": r"\$",
@@ -63,12 +80,11 @@ def _escape_latex(s: str) -> str:
         "{": r"\{",
         "}": r"\}",
         "^": r"\^{}",
-        "~": r"\\textasciitilde{}",
+        "~": r"\textasciitilde{}",
     }
-    out = []
-    for ch in s:
-        out.append(repl.get(ch, ch))
-    return "".join(out)
+    if in_math:
+        repl |= _MATH_ESCAPES
+    return "".join(repl.get(ch, ch) for ch in s)
 
 
 def format_title_latex(title: str) -> str:
@@ -86,7 +102,7 @@ def format_author_list_cv(
     n_min=3,
     n_me=10,
     me_target=None,
-    me_fmt=r"\\textbf{}",
+    me_fmt=r"\textbf{{{}}}",
     use_and=r"\&",
     authorsep="; ",
     oxford_comma=True,
@@ -103,52 +119,49 @@ def format_author_list_cv(
         Author names in the form "Last, First [Middle ...]".
         Example: "Smith, John Quentin"
 
-    n_max : int, default=0
+    n_max : int, default=10
         Maximum number of authors to display.
 
         - If 0, all authors are shown.
         - If > 0 and the list exceeds this length, truncation may occur
           depending on n_min and n_me.
 
-    n_min : int, default=0
+    n_min : int, default=3
         Minimum number of authors to show when truncation is applied.
         Used together with n_max to control how many leading authors
         are preserved before replacing the remainder with "et al.".
 
-    n_me : int or None, default=None
-        Index (1-based) of the target author ("me") in the original list.
-        If provided, the function ensures that the target author is included
-        in the displayed portion whenever truncation is applied, even if this
-        requires extending beyond n_min.
+    n_me : int, default=10
+        Upper position limit (1-based) up to which matching target authors
+        are retained when truncation occurs.
 
     me_target : str, list, or None, default=None
         Short-form identifier(s) for the target author(s), typically "Last, F.".
         Can be a single string or a list of strings.
         If provided and matched, these authors are emphasized.
 
-    me_fmt : str, default="\\textbf{}"
-        LaTeX formatting string to apply to target authors. It wll be used
-        as ``me_fmt.format(author)``. Thus, it should contain maximum one
-        placeholder for the author name (``r"\\textbf{}"``,
-        ``r"\\textit{}"`` for one placeholder and ``"this is me"`` for no
-        placeholder).
-        Set to `None` to disable highlighting.
+    me_fmt : str, default=r"\textbf{{{}}}"
+        Formatting template to apply to target authors using
+        ``me_fmt.format(author)``. For LaTeX output with literal braces,
+        escape them as ``{{`` and ``}}``, with ``{}`` as the author name
+        placeholder (e.g. ``r"\textbf{{{}}}"`` or ``r"\textit{{{}}}"``).
+        Plain format strings such as ``"<b>{}</b>"`` or constant text such
+        as ``"this is me"`` are also accepted. Set to `None` to disable
+        highlighting.
 
-    latex : bool, default=False
-        If True, output is formatted for LaTeX:
-
-        - Target author matches are wrapped in `me_fmt`
-        - "and" is used before the final author
-        - An Oxford comma is applied
-
-        If False, a plain-text representation is returned.
+    latex : bool, default=True
+        If True, escape author names and targets for LaTeX using
+        ``html_to_latex()``. If False, names are kept as plain strings.
+        Target author highlighting (`me_fmt`) and author joining (`use_and`,
+        `authorsep`) apply in both modes.
 
     authorsep : str, default="; "
         Separator between authors.
 
     use_and : str or None, default="\&"
-        String to use before the final author.
-        If None, no "and" is used.
+        If None, the conjunction is omitted. All other values currently behave
+        the same: the literal word "and" is used (2 authors: "A and B";
+        more: "A; B, and C", or "A; B and C" without Oxford comma).
 
     oxford_comma : bool, default=True
         If True, an Oxford comma is applied (", and" before the final author).
@@ -188,7 +201,7 @@ def format_author_list_cv(
 
     Output::
 
-        \\textbf{Kim, J. T.}, Doe, J., Smith, J. Q., Longlastname, A. B., and Lee, C.
+        \textbf{Kim, J. T.}; Doe, J.; Smith, J. Q.; Longlastname, A. B., and Lee, C.
 
     Truncated list with multiple targets (self and student)::
 
@@ -203,7 +216,7 @@ def format_author_list_cv(
 
     Output::
 
-        \\textbf{Kim, J. T.}, \\textbf{Doe, J.} et al.
+        \textbf{Kim, J. T.}; \textbf{Doe, J.}; et al.
     """
 
     def _format_single(entry: str) -> str:
@@ -244,18 +257,11 @@ def format_author_list_cv(
     truncated = False
     cutoff = None
 
-    # Identify the LAST matching author within the allowable range (n_me)
-    # matching indices 0-based, n_me is 1-based count (or is it?)
-    # Docstring says "n_me : int ... Index (1-based) ... ensures that the target author is included"
-    # So if n_me=5, we allow up to index 4.
-
+    # Retain target author matches up to 1-based position n_me (0-based index < n_me).
     valid_matches = [idx for idx in me_indices if idx < n_me]
     last_valid_match = max(valid_matches) if valid_matches else -1
 
-    # Logic: if we have a valid match ("me") and the list is long enough to trigger
-    # potential aggressive truncation (longer than n_me, assuming n_me is our separate threshold for importance),
-    # we override the standard cut.
-    # Note: Using valid_matches logic similar to previous code's (0 <= me_index < n_me)
+    # Extend truncation cutoff to include the last target match when total authors exceed n_me.
 
     if valid_matches and total > n_me:
         cutoff = max(n_min, last_valid_match + 1)
@@ -299,13 +305,33 @@ def format_author_list_cv(
         return authorsep.join(window[:-1]) + " and " + window[-1]
 
 
-def html_to_latex(text: str) -> str:
-    """
-    Convert an HTML-like string to LaTeX.
+_ENTITIES = {"&amp;": "&", "&lt;": "<", "&gt;": ">"}
+_ENTITY_PATTERN = re.compile("|".join(_ENTITIES))
+_MATH_TAGS = frozenset({"sub", "sup"})
+_TAG = r"<(?P<close>/?)(?P<tag>sub|sup|i|b|em|strong)\b[^>]*>"
+_TAG_PATTERN = re.compile(_TAG, re.IGNORECASE)
+_TAG_OR_MATH_PATTERN = re.compile(
+    rf"(?P<math>\$.*?\$)|{_TAG}", re.IGNORECASE | re.DOTALL
+)
 
-    Handles common tags: <sub>, <sup>, <i>, <b>, <em>, <strong>.
-    Also handles HTML entities &amp;, &lt;, &gt; by converting them
-    to characters and then escaping for LaTeX.
+
+def _decode_entities(text: str) -> str:
+    """Decode &amp;, &lt; and &gt; in one pass, so &amp;lt; becomes &lt;."""
+    return _ENTITY_PATTERN.sub(lambda match: _ENTITIES[match.group()], text)
+
+
+def html_to_latex(text: str) -> str:
+    """Convert an HTML-like string to LaTeX.
+
+    Handles the tags `<sub>`, `<sup>`, `<i>`, `<em>`, `<b>` and `<strong>`,
+    which may be nested in any order. The entities `&amp;`, `&lt;` and `&gt;` are
+    decoded once and the text is escaped for LaTeX. Existing `$...$` math is
+    copied unchanged, also inside `<i>` or `<b>`. Inside `<sub>` or `<sup>` the text is
+    always escaped, and a nested `<sub>` or `<sup>` continues the same math
+    group (`_{...}` or `^{...}`) without a second pair of dollar signs.
+
+    Other tags, stray closing tags, and tags that are never closed stay as
+    literal text.
 
     Parameters
     ----------
@@ -320,79 +346,51 @@ def html_to_latex(text: str) -> str:
     if not text:
         return ""
 
-    # Regex to split by tags OR LaTeX math blocks.
-    # We capture the tag name to identify it, and use backreference for the closing tag.
-    # Group structure: (full_match (html_tag_name) (math_block) )
-    # But re.split with capturing groups returns all groups.
-    # Group 1: full match
-    # Group 3: named group 'tag'
-    # Group 4: named group 'math'
-    pattern = (
-        r"(<(?P<tag>sub|sup|i|b|em|strong)\b[^>]*>.*?</(?P=tag)>|(?P<math>\$.*?\$))"
-    )
+    # Each open tag is (name, raw text, converted parts); the first entry is the root.
+    stack: list[tuple[str | None, str, list[str]]] = [(None, "", [])]
 
-    chunks = re.split(pattern, text, flags=re.IGNORECASE | re.DOTALL)
+    def in_math() -> bool:
+        return any(name in _MATH_TAGS for name, _, _ in stack)
 
-    # re.split returns:
-    # [plain0, full_match1, tag_name1, math_block1, plain1, ...]
-    # So we iterate in steps of 4.
+    def flatten_top() -> None:
+        _, raw, parts = stack.pop()
+        stack[-1][2].append(_escape_latex(raw, in_math=in_math()))
+        stack[-1][2].extend(parts)
 
-    out = []
-    i = 0
-    n = len(chunks)
-
-    while i < n:
-        # 1. Plain text part
-        plain = chunks[i]
-        if plain:
-            # Decode common entities first
-            plain = (
-                plain.replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">")
-            )
-            out.append(_escape_latex(plain))
-
-        i += 1
-        if i >= n:
+    position = 0
+    while True:
+        in_math_tag = any(name in _MATH_TAGS for name, _, _ in stack)
+        pattern = _TAG_PATTERN if in_math_tag else _TAG_OR_MATH_PATTERN
+        match = pattern.search(text, position)
+        end = len(text) if match is None else match.start()
+        chunk = _decode_entities(text[position:end])
+        stack[-1][2].append(_escape_latex(chunk, in_math=in_math_tag))
+        if match is None:
             break
-
-        # 2. Match (HTML Tag or Math Block)
-        full_match = chunks[i]
-        tag_name = chunks[i + 1]  # The named group 'tag'
-        math_block = chunks[i + 2]  # The named group 'math'
-
-        if math_block:
-            # Preserve existing LaTeX math blocks as-is
-            out.append(math_block)
-        elif tag_name:
-            # Extract content from HTML tag
-            # <TAG ...>content</TAG>
-            # We find the indices of the first > and last < to extract content.
-            start = full_match.find(">") + 1
-            end = full_match.rfind("<")
-
-            content = ""
-            if start > 0 and end > start:
-                content = full_match[start:end]
-
-            content = (
-                content.replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">")
-            )
-            escaped_content = _escape_latex(content)
-
-            t = tag_name.lower()
-            if t == "sub":
-                out.append(f"$_{{{escaped_content}}}$")
-            elif t == "sup":
-                out.append(f"$^{{{escaped_content}}}$")
-            elif t in ("i", "em"):
-                out.append(f"\\textit{{{escaped_content}}}")
-            elif t in ("b", "strong"):
-                out.append(f"\\textbf{{{escaped_content}}}")
+        position = match.end()
+        if pattern is _TAG_OR_MATH_PATTERN and match["math"]:
+            stack[-1][2].append(match["math"])
+            continue
+        name = match["tag"].lower()
+        if not match["close"]:
+            stack.append((name, match.group(), []))
+        elif any(open_name == name for open_name, _, _ in stack):
+            while stack[-1][0] != name:
+                flatten_top()
+            _, _, parts = stack.pop()
+            content = "".join(parts)
+            if name in _MATH_TAGS:
+                group = ("_" if name == "sub" else "^") + "{" + content + "}"
+                nested = stack[-1][0] in _MATH_TAGS
+                wrapped = group if nested else "$" + group + "$"
+            elif name in ("i", "em"):
+                wrapped = "\\textit{" + content + "}"
             else:
-                # Fallback
-                out.append(_escape_latex(full_match))
+                wrapped = "\\textbf{" + content + "}"
+            stack[-1][2].append(wrapped)
+        else:
+            stack[-1][2].append(_escape_latex(match.group(), in_math=in_math_tag))
 
-        # Skip the full_match, tag_name, and math_block groups
-        i += 3
-
-    return "".join(out)
+    while len(stack) > 1:
+        flatten_top()
+    return "".join(stack[0][2])

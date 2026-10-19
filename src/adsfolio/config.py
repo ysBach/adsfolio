@@ -1,5 +1,5 @@
 """
-Configuration and token management for ADS API.
+Configuration and token management for NASA ADS.
 
 Token is searched in order:
 1. Environment variable ADS_API_TOKEN
@@ -12,45 +12,53 @@ from __future__ import annotations
 
 import json
 import os
+import sys
+from collections.abc import Mapping
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Mapping
+from typing import TYPE_CHECKING, Any, ClassVar
 
 import platformdirs
+
+from .data_migration import copy_data_directory
 
 if TYPE_CHECKING:
     from .pdf.identify_settings import IdentifySettings
     from .pdf.rename_settings import RenameSettings
     from .user_profile import UserProfile
 
-__all__ = ["Config", "ADSError", "RateLimitError", "AuthenticationError"]
+__all__ = [
+    "ADSError",
+    "AuthenticationError",
+    "Config",
+    "RateLimitError",
+    "RequestTooLongError",
+]
 
 
 class ADSError(Exception):
-    """Base exception for ADS API errors."""
-
-    pass
+    """Base exception for NASA ADS errors."""
 
 
 class RateLimitError(ADSError):
     """Raised when rate limit is exceeded."""
 
-    pass
-
 
 class AuthenticationError(ADSError):
     """Raised when authentication fails."""
 
-    pass
+
+class RequestTooLongError(ADSError):
+    """Indicate that ADS rejected an oversized request URL."""
 
 
 class Config:
-    """Configuration management for ADS API."""
+    """Configuration management for NASA ADS."""
 
     API_BASE = "https://api.adsabs.harvard.edu/v1"
     ENV_VAR = "ADS_API_TOKEN"
     SETUP_FILENAME = "setup.json"
     SETUP_SCHEMA_VERSION = 2
-    _PROFILE_FLAT_KEYS = {
+    _PROFILE_FLAT_KEYS: ClassVar[set[str]] = {
         "orcid",
         "query_names",
         "author_names",
@@ -62,14 +70,14 @@ class Config:
         "library_ids",
         "ads_library_ids",
     }
-    _IDENTIFY_FLAT_KEYS = {
+    _IDENTIFY_FLAT_KEYS: ClassVar[set[str]] = {
         "recursive",
         "strategies",
         "output_unresolved",
         "skip_unresolved_directory",
         "verbose",
     }
-    _RENAME_FLAT_KEYS = {
+    _RENAME_FLAT_KEYS: ClassVar[set[str]] = {
         "template",
         "author_format",
         "max_authors",
@@ -80,7 +88,14 @@ class Config:
     }
 
     # Default fields to return in searches
-    DEFAULT_FIELDS = ["bibcode", "title", "author", "year", "pub", "citation_count"]
+    DEFAULT_FIELDS: ClassVar[list[str]] = [
+        "bibcode",
+        "title",
+        "author",
+        "year",
+        "pub",
+        "citation_count",
+    ]
 
     # Rate limit tracking (updated from response headers)
     _rate_limit = None
@@ -90,7 +105,10 @@ class Config:
     @classmethod
     def get_config_dir(cls) -> Path:
         """Get platform-appropriate config directory."""
-        return Path(platformdirs.user_config_dir("ads", appauthor=False))
+        destination = Path(platformdirs.user_config_dir("adsfolio", appauthor=False))
+        source = Path(platformdirs.user_config_dir("ads", appauthor=False))
+        copy_data_directory(source, destination)
+        return destination
 
     @classmethod
     def get_token_paths(cls) -> list[Path]:
@@ -104,15 +122,21 @@ class Config:
         ]
 
     @classmethod
-    def get_token(cls) -> str:
+    def get_token(cls, *, prompt: bool = True) -> str:
         """
-        Get ADS API token from various sources.
+        Get NASA ADS token from various sources.
 
         Order of precedence:
         1. Environment variable ADS_API_TOKEN
         2. Config file (~/.config/ads/token or ~/.ads/token)
         3. Local .ads-token file
         4. Interactive prompt (saves to config)
+
+        Parameters
+        ----------
+        prompt : `bool`, optional
+            Allow prompting when standard input is an interactive terminal.
+            Set to `False` for GUI token lookup.
 
         Returns
         -------
@@ -126,7 +150,7 @@ class Config:
         """
         # Check environment variable first
         token = os.environ.get(cls.ENV_VAR)
-        if token:
+        if token and token.strip():
             return token.strip()
 
         # Check file locations
@@ -136,7 +160,11 @@ class Config:
                 if token:
                     return token
 
-        # Interactive prompt
+        if not prompt or sys.stdin is None or not sys.stdin.isatty():
+            raise AuthenticationError(
+                "No NASA ADS token found. In the desktop app, use "
+                "Tools → NASA ADS Token…; in a terminal, run adsfolio set."
+            )
         return cls._prompt_for_token()
 
     @classmethod
@@ -212,7 +240,7 @@ class Config:
         )
 
     @classmethod
-    def load_user_profile(cls) -> "UserProfile":
+    def load_user_profile(cls) -> UserProfile:
         """Load the normalized global publication profile."""
         from .user_profile import UserProfile
 
@@ -224,7 +252,7 @@ class Config:
         return UserProfile.from_mapping(nested, fallback=legacy_profile)
 
     @classmethod
-    def save_user_profile(cls, profile: "UserProfile") -> Path:
+    def save_user_profile(cls, profile: UserProfile) -> Path:
         """Atomically persist the global publication profile."""
         return cls._save_setup_sections(
             profile=profile,
@@ -233,7 +261,7 @@ class Config:
         )
 
     @classmethod
-    def load_identify_settings(cls) -> "IdentifySettings":
+    def load_identify_settings(cls) -> IdentifySettings:
         """Load normalized global Identify behavior."""
         from .pdf.identify_settings import IdentifySettings
 
@@ -245,7 +273,7 @@ class Config:
         return IdentifySettings.from_mapping(nested, fallback=legacy_settings)
 
     @classmethod
-    def save_identify_settings(cls, settings: "IdentifySettings") -> Path:
+    def save_identify_settings(cls, settings: IdentifySettings) -> Path:
         """Atomically persist global Identify behavior without changing identity."""
         return cls._save_setup_sections(
             profile=cls.load_user_profile(),
@@ -254,7 +282,7 @@ class Config:
         )
 
     @classmethod
-    def load_rename_settings(cls) -> "RenameSettings":
+    def load_rename_settings(cls) -> RenameSettings:
         """Load normalized global Rename behavior."""
         from .pdf.rename_settings import RenameSettings
 
@@ -266,7 +294,7 @@ class Config:
         return RenameSettings.from_mapping(nested, fallback=legacy_settings)
 
     @classmethod
-    def save_rename_settings(cls, settings: "RenameSettings") -> Path:
+    def save_rename_settings(cls, settings: RenameSettings) -> Path:
         """Atomically persist global Rename behavior without changing identity."""
         return cls._save_setup_sections(
             profile=cls.load_user_profile(),
@@ -278,9 +306,9 @@ class Config:
     def _save_setup_sections(
         cls,
         *,
-        profile: "UserProfile",
-        identify: "IdentifySettings",
-        rename: "RenameSettings",
+        profile: UserProfile,
+        identify: IdentifySettings,
+        rename: RenameSettings,
     ) -> Path:
         """Write canonical setup sections while preserving unknown keys."""
         payload = cls._load_setup_mapping()
@@ -368,7 +396,7 @@ class Config:
     def _prompt_for_token(cls) -> str:
         """Prompt user for token and save it."""
         print("\n" + "=" * 60)
-        print("ADS API Token Required")
+        print("NASA ADS Token Required")
         print("=" * 60)
         print("Get your token at: https://scixplorer.org/user/settings/token")
         print()

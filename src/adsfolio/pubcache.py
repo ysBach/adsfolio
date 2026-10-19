@@ -6,12 +6,15 @@ import json
 import logging
 import os
 import tempfile
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any
 
 import platformdirs
+
+from .data_migration import copy_data_directory
 
 LOGGER = logging.getLogger(__name__)
 CACHE_FILENAME = "publications.json"
@@ -38,7 +41,9 @@ class CachedPublications:
 
 def cache_path() -> Path:
     """Return the user-level publication cache path."""
-    return Path(platformdirs.user_cache_dir("ads")) / CACHE_FILENAME
+    destination = Path(platformdirs.user_cache_dir("adsfolio"))
+    copy_data_directory(Path(platformdirs.user_cache_dir("ads")), destination)
+    return destination / CACHE_FILENAME
 
 
 def _profile_payload(profile: Mapping[str, Any] | Any) -> dict[str, Any]:

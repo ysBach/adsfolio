@@ -18,7 +18,7 @@ def style_header_label(style: str, section: str) -> str:
     return rf"\item[\textbf{{{section}}}]"
 
 
-def marker_summary_latex(cfg: CVConfig, state: "RenderState") -> str:
+def marker_summary_latex(cfg: CVConfig, state: RenderState) -> str:
     """Build one-line LaTeX marker summary text."""
     fragments: list[str] = []
     for name, marker in cfg.markers.items():
@@ -35,7 +35,7 @@ def marker_summary_latex(cfg: CVConfig, state: "RenderState") -> str:
     return " ".join(fragments).strip()
 
 
-def marker_legend_markdown(cfg: CVConfig, state: "RenderState") -> list[str]:
+def marker_legend_markdown(cfg: CVConfig, state: RenderState) -> list[str]:
     """Build Markdown marker legend lines."""
     lines: list[str] = []
     for name, marker in cfg.markers.items():
@@ -50,7 +50,7 @@ def marker_legend_markdown(cfg: CVConfig, state: "RenderState") -> list[str]:
     return lines
 
 
-def journal_legend_lines(state: "RenderState", *, latex: bool) -> list[str]:
+def journal_legend_lines(state: RenderState, *, latex: bool) -> list[str]:
     """Build journal legend lines in LaTeX or Markdown format."""
     entries = sorted(state.bibstem_to_journal.items())
     if not entries:

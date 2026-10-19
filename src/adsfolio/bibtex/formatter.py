@@ -1,7 +1,6 @@
 """
 Journal name formatting utilities.
 
-Migrated from ads2bibtex with improvements for integration.
 """
 
 import re
@@ -9,7 +8,7 @@ from typing import Literal
 
 from ..journal_utils import JOURNAL_MACRO, format_journal
 
-__all__ = ["JOURNAL_MACRO", "expand_macros", "iso4_abbreviate", "change_journal_name"]
+__all__ = ["JOURNAL_MACRO", "change_journal_name", "expand_macros", "iso4_abbreviate"]
 
 
 def expand_macros(bibtex_text: str) -> str:

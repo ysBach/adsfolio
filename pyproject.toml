@@ -1,15 +1,16 @@
 [build-system]
-requires = ["setuptools>=61.0", "wheel"]
+requires = ["setuptools>=77.0.3", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "adsfolio"
-version = "0.1.0.dev"
-description = "Comprehensive Python client for NASA ADS / SciXplorer API with CLI tools across Earth, space, and life sciences"
+dynamic = ["version"]
+description = "Research PDF management with ADS, Crossref, DataCite, and local references"
 authors = [
-    {name = "Yoonsoo P. Bach", email = "ysbach93@gmail.com"}
+    {name = "Yoonsoo P. Bach", email = "ysbach20766@gmail.com"}
 ]
-license = {text = "BSD-3-Clause"}
+license = "BSD-3-Clause"
+license-files = ["LICENSE"]
 readme = "README.md"
 keywords = [
     "ads",
@@ -32,7 +33,6 @@ keywords = [
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Science/Research",
-    "License :: OSI Approved :: BSD License",
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.10",
@@ -55,6 +55,8 @@ dependencies = [
     "tqdm>=4.66",
     "pypdf>=4.0",
     "pyyaml>=6.0",
+    "bibtexparser>=1.4.3,<2",
+    "pyparsing>=3.0",
 ]
 
 [project.optional-dependencies]
@@ -70,6 +72,15 @@ dev = [
     "pytest>=7.0",
     "pytest-cov>=4.0",
     "pytest-qt>=4.2",
+    "isort>=5.13",
+    "ruff>=0.6",
+]
+desktop = ["pyinstaller>=6.16,<7"]
+docs = [
+    "sphinx>=7.4",
+    "myst-parser>=2.0",
+    "sphinx-click>=6.0",
+    "sphinx-rtd-theme>=2.0",
 ]
 
 [project.urls]
@@ -80,10 +91,16 @@ Issues = "https://github.com/ysBach/adsfolio/issues"
 
 [project.scripts]
 adsfolio = "adsfolio.cli.commands:main"
-adsfolio-gui = "adsfolio.gui.app:run"
+adsfolio-gui = "adsfolio.cli.commands:gui_command"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+"adsfolio.gui" = ["assets/*"]
+
+[tool.setuptools.dynamic]
+version = {attr = "adsfolio.__version__"}
 
 [tool.ruff]
 target-version = "py310"

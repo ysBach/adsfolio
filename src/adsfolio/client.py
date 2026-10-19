@@ -1,9 +1,12 @@
 """
-Base HTTP client for ADS API with rate limiting and caching.
+Base HTTP client for NASA ADS with rate limiting and caching.
 """
 
 import json
+import logging
 import re
+import tempfile
+import threading
 from collections.abc import Sequence
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
@@ -11,14 +14,22 @@ from urllib.parse import quote, urljoin
 
 import requests
 
-from .config import ADSError, AuthenticationError, Config, RateLimitError
+from .config import (
+    ADSError,
+    AuthenticationError,
+    Config,
+    RateLimitError,
+    RequestTooLongError,
+)
 
 __all__ = ["ADSClient", "BaseClient"]
+
+logger = logging.getLogger(__name__)
 
 
 class BaseClient:
     """
-    Low-level HTTP client for ADS API.
+    Low-level HTTP client for NASA ADS.
 
     Handles authentication, rate limiting, and error handling.
     """
@@ -34,17 +45,19 @@ class BaseClient:
         Parameters
         ----------
         token : str, optional
-            ADS API token. If not provided, will be loaded from config.
+            NASA ADS token. If not provided, will be loaded from config.
         timeout : tuple of float, optional
             Connection and read timeout in seconds.
         """
         self._token = token
         self._timeout = timeout
         self._session = requests.Session()
+        self._lock = threading.RLock()
 
     def close(self) -> None:
         """Close the underlying HTTP session."""
-        self._session.close()
+        with self._lock:
+            self._session.close()
 
     @property
     def token(self) -> str:
@@ -93,6 +106,14 @@ class BaseClient:
         if response.status_code == 429:
             raise RateLimitError("Rate limit exceeded. Try again later.")
 
+        if response.status_code == 414 or (
+            response.status_code == 400
+            and "request line is too large" in response.text.casefold()
+        ):
+            raise RequestTooLongError(
+                "ADS rejected the request because its URL is too long."
+            )
+
         if not response.ok:
             try:
                 error_data = response.json()
@@ -124,12 +145,13 @@ class BaseClient:
             JSON response.
         """
         url = f"{Config.API_BASE}{endpoint}"
-        response = self._session.get(
-            url,
-            headers=self.headers,
-            params=params,
-            timeout=self._timeout,
-        )
+        with self._lock:
+            response = self._session.get(
+                url,
+                headers=self.headers,
+                params=params,
+                timeout=self._timeout,
+            )
         return self._handle_response(response)
 
     def post(self, endpoint: str, data: dict | None = None) -> dict:
@@ -149,12 +171,13 @@ class BaseClient:
             JSON response.
         """
         url = f"{Config.API_BASE}{endpoint}"
-        response = self._session.post(
-            url,
-            headers=self.headers,
-            data=json.dumps(data) if data else None,
-            timeout=self._timeout,
-        )
+        with self._lock:
+            response = self._session.post(
+                url,
+                headers=self.headers,
+                data=json.dumps(data) if data else None,
+                timeout=self._timeout,
+            )
         return self._handle_response(response)
 
     def post_raw(
@@ -187,40 +210,43 @@ class BaseClient:
         request_headers = dict(self.headers)
         if headers:
             request_headers.update(headers)
-        response = self._session.post(
-            url,
-            headers=request_headers,
-            params=params,
-            data=data,
-            timeout=self._timeout,
-        )
+        with self._lock:
+            response = self._session.post(
+                url,
+                headers=request_headers,
+                params=params,
+                data=data,
+                timeout=self._timeout,
+            )
         return self._handle_response(response)
 
     def put(self, endpoint: str, data: dict | None = None) -> dict:
         """Make a PUT request to the API."""
         url = f"{Config.API_BASE}{endpoint}"
-        response = self._session.put(
-            url,
-            headers=self.headers,
-            data=json.dumps(data) if data else None,
-            timeout=self._timeout,
-        )
+        with self._lock:
+            response = self._session.put(
+                url,
+                headers=self.headers,
+                data=json.dumps(data) if data else None,
+                timeout=self._timeout,
+            )
         return self._handle_response(response)
 
     def delete(self, endpoint: str) -> dict:
         """Make a DELETE request to the API."""
         url = f"{Config.API_BASE}{endpoint}"
-        response = self._session.delete(
-            url,
-            headers=self.headers,
-            timeout=self._timeout,
-        )
+        with self._lock:
+            response = self._session.delete(
+                url,
+                headers=self.headers,
+                timeout=self._timeout,
+            )
         return self._handle_response(response)
 
 
 class ADSClient:
     """
-    High-level ADS API client.
+    High-level NASA ADS client.
 
     Provides access to all API modules (Search, Export, Libraries, etc.)
     through a unified interface.
@@ -243,7 +269,7 @@ class ADSClient:
         Parameters
         ----------
         token : str, optional
-            ADS API token. If not provided, will be loaded from config.
+            NASA ADS token. If not provided, will be loaded from config.
         timeout : tuple of float, optional
             Connection and read timeout in seconds.
         """
@@ -362,41 +388,58 @@ class ADSClient:
         response: requests.Response,
         output_path: Path,
         chunk_size: int = 65536,
-    ) -> Path:
-        """Save streamed response content to disk."""
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        with output_path.open("wb") as f:
-            for chunk in response.iter_content(chunk_size=chunk_size):
-                if chunk:
-                    f.write(chunk)
-        return output_path
-
-    @staticmethod
-    def _save_if_pdf_payload(
-        response: requests.Response,
-        output_path: Path,
+        validate_pdf: bool = False,
     ) -> Path | None:
         """
-        Save response and validate PDF magic bytes.
+        Save streamed response content to disk atomically.
 
-        This handles servers that return PDF bytes with non-standard
-        Content-Type headers.
+        Parameters
+        ----------
+        response : requests.Response
+            Streaming response containing download data.
+        output_path : pathlib.Path
+            Target file path.
+        chunk_size : int, optional
+            Read chunk size in bytes.
+        validate_pdf : bool, optional
+            When True, requires %PDF- magic bytes before replacing target file.
+
+        Returns
+        -------
+        pathlib.Path or None
+            Output path on success, or None if validation fails.
         """
-        saved_path = ADSClient._save_stream_to_file(response, output_path)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        temp_path: Path | None = None
         try:
-            with saved_path.open("rb") as f:
-                is_pdf = b"%PDF-" in f.read(1024)
-        except OSError:
-            return None
+            with tempfile.NamedTemporaryFile(
+                dir=output_path.parent,
+                prefix=f".{output_path.name}.",
+                suffix=".tmp",
+                delete=False,
+            ) as temp_file:
+                temp_path = Path(temp_file.name)
+                for chunk in response.iter_content(chunk_size=chunk_size):
+                    if chunk:
+                        temp_file.write(chunk)
+                temp_file.flush()
 
-        if is_pdf:
-            return saved_path
+            if validate_pdf:
+                try:
+                    with temp_path.open("rb") as f:
+                        if b"%PDF-" not in f.read(1024):
+                            return None
+                except OSError:
+                    return None
 
-        try:
-            saved_path.unlink()
-        except OSError:
-            pass
-        return None
+            temp_path.replace(output_path)
+            return output_path
+        finally:
+            if temp_path is not None and temp_path.exists():
+                try:
+                    temp_path.unlink()
+                except OSError:
+                    pass
 
     @staticmethod
     def _print_webpage_to_pdf(
@@ -452,9 +495,25 @@ class ADSClient:
                 )
                 page = context.new_page()
                 if html_content is not None:
-                    # Inject pre-fetched HTML; no server round-trip → no bot-detection.
-                    # networkidle lets CSS/images finish loading via base_url.
-                    page.set_content(html_content, base_url=url, timeout=timeout_ms)
+                    # Resolve relative resource URLs against the source page.
+                    if re.search(r"<base\b", html_content, re.IGNORECASE):
+                        content_to_set = html_content
+                    else:
+                        import html as html_lib
+
+                        escaped_url = html_lib.escape(url, quote=True)
+                        base_tag = f'<base href="{escaped_url}">'
+                        if re.search(r"<head\b[^>]*>", html_content, re.IGNORECASE):
+                            content_to_set = re.sub(
+                                r"<head\b[^>]*>",
+                                lambda m: f"{m.group(0)}{base_tag}",
+                                html_content,
+                                count=1,
+                                flags=re.IGNORECASE,
+                            )
+                        else:
+                            content_to_set = f"{base_tag}{html_content}"
+                    page.set_content(content_to_set, timeout=timeout_ms)
                     page.wait_for_load_state("networkidle", timeout=timeout_ms)
                 else:
                     page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
@@ -529,53 +588,65 @@ class ADSClient:
         }
         external_headers = {"User-Agent": "adsfolio-pdf-downloader"}
         session = self._base._session
+        session_lock = self._base._lock
 
         for link_type in link_types:
             gateway_url = (
                 f"https://ui.adsabs.harvard.edu/link_gateway/"
                 f"{quote(bibcode, safe='')}/{quote(str(link_type), safe='')}"
             )
+            response: requests.Response | None = None
             try:
-                response = session.get(
-                    gateway_url,
-                    headers=ads_headers,
-                    allow_redirects=True,
-                    timeout=timeout,
-                    stream=True,
-                )
-            except requests.RequestException:
-                continue
-
-            if response.status_code != 200:
-                continue
-
-            if self._is_pdf_response(response):
-                return self._save_stream_to_file(response, direct_pdf_path)
-
-            content_type = (response.headers.get("Content-Type") or "").lower()
-            if "text/html" not in content_type:
-                continue
-
-            html = response.text or ""
-            for href in self._extract_pdf_links(html):
-                pdf_url = urljoin(response.url, href)
-                try:
-                    candidate = session.get(
-                        pdf_url,
-                        headers=external_headers,
+                with session_lock:
+                    response = session.get(
+                        gateway_url,
+                        headers=ads_headers,
                         allow_redirects=True,
                         timeout=timeout,
                         stream=True,
                     )
-                except requests.RequestException:
+                if response.status_code != 200:
                     continue
 
-                if candidate.status_code == 200:
-                    if self._is_pdf_response(candidate):
-                        return self._save_stream_to_file(candidate, direct_pdf_path)
-                    saved = self._save_if_pdf_payload(candidate, direct_pdf_path)
-                    if saved is not None:
-                        return saved
+                if self._is_pdf_response(response):
+                    return self._save_stream_to_file(response, direct_pdf_path)
+
+                content_type = (response.headers.get("Content-Type") or "").lower()
+                if "text/html" not in content_type:
+                    continue
+
+                html = response.text or ""
+            except requests.RequestException:
+                continue
+            finally:
+                if response is not None:
+                    response.close()
+
+            for href in self._extract_pdf_links(html):
+                pdf_url = urljoin(response.url, href)
+                candidate: requests.Response | None = None
+                try:
+                    with session_lock:
+                        candidate = session.get(
+                            pdf_url,
+                            headers=external_headers,
+                            allow_redirects=True,
+                            timeout=timeout,
+                            stream=True,
+                        )
+                    if candidate.status_code == 200:
+                        if self._is_pdf_response(candidate):
+                            return self._save_stream_to_file(candidate, direct_pdf_path)
+                        saved = self._save_stream_to_file(
+                            candidate, direct_pdf_path, validate_pdf=True
+                        )
+                        if saved is not None:
+                            return saved
+                except requests.RequestException:
+                    continue
+                finally:
+                    if candidate is not None:
+                        candidate.close()
 
             if force_print_html and self._print_webpage_to_pdf(
                 response.url,
@@ -637,17 +708,19 @@ class ADSClient:
         if not clean_bibcodes:
             return {}
 
+        unique_bibcodes = list(dict.fromkeys(clean_bibcodes))
+
         if max_workers < 1:
             raise ValueError("max_workers must be >= 1.")
 
-        results: dict[str, Path | None] = {}
+        unique_results: dict[str, Path | None] = {}
         progress_bar = None
         if show_progress:
             try:
                 from tqdm.auto import tqdm
 
                 progress_bar = tqdm(
-                    total=len(clean_bibcodes),
+                    total=len(unique_bibcodes),
                     desc=progress_desc,
                     unit="paper",
                     leave=progress_leave,
@@ -666,17 +739,24 @@ class ADSClient:
                     timeout,
                     printed_suffix,
                 ): bibcode
-                for bibcode in clean_bibcodes
+                for bibcode in unique_bibcodes
             }
             for future in as_completed(future_to_bibcode):
                 bibcode = future_to_bibcode[future]
                 try:
-                    results[bibcode] = future.result()
-                except Exception:
-                    results[bibcode] = None
+                    unique_results[bibcode] = future.result()
+                except Exception as exc:
+                    logger.warning(
+                        "Failed downloading PDF for bibcode %s: %s",
+                        bibcode,
+                        exc,
+                        exc_info=True,
+                    )
+                    unique_results[bibcode] = None
                 if progress_bar is not None:
                     progress_bar.update(1)
 
         if progress_bar is not None:
             progress_bar.close()
-        return results
+
+        return {bibcode: unique_results.get(bibcode) for bibcode in clean_bibcodes}

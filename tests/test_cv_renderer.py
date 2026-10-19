@@ -109,6 +109,6 @@ def test_renderer_prefers_ads_custom_author_override(monkeypatch) -> None:
     renderer = create_renderer("latex", "compact")
 
     docs = [_doc("2024ApJ...900..100S", "Doe, Jane")]
-    docs[0]["_adsapi_author_text"] = "Custom, Author and Team"
+    docs[0]["_adsfolio_author_text"] = "Custom, Author and Team"
     output = renderer.render_document(docs, [], cfg)
     assert "Custom, Author and Team" in output

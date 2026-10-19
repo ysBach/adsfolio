@@ -6,4 +6,4 @@ from .libraries import LibrariesAPI
 from .metrics import MetricsAPI
 from .search import SearchAPI
 
-__all__ = ["SearchAPI", "ExportAPI", "LibrariesAPI", "MetricsAPI", "JournalsAPI"]
+__all__ = ["ExportAPI", "JournalsAPI", "LibrariesAPI", "MetricsAPI", "SearchAPI"]

@@ -5,7 +5,7 @@ Provides access to citation metrics, indicators, and histograms.
 """
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, ClassVar
 
 if TYPE_CHECKING:
     from ..client import BaseClient
@@ -72,10 +72,21 @@ class MetricsAPI:
     """
 
     # Available metric types
-    TYPES = ["basic", "citations", "indicators", "histograms", "timeseries"]
+    TYPES: ClassVar[list[str]] = [
+        "basic",
+        "citations",
+        "indicators",
+        "histograms",
+        "timeseries",
+    ]
 
     # Available histogram types
-    HISTOGRAM_TYPES = ["publications", "reads", "downloads", "citations"]
+    HISTOGRAM_TYPES: ClassVar[list[str]] = [
+        "publications",
+        "reads",
+        "downloads",
+        "citations",
+    ]
 
     def __init__(self, client: "BaseClient"):
         self._client = client

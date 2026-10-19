@@ -5,7 +5,7 @@ import pytest
 import requests
 
 from adsfolio.client import ADSClient, BaseClient
-from adsfolio.config import Config
+from adsfolio.config import ADSError, Config, RequestTooLongError
 
 TIMEOUT = (3.05, 30.0)
 HEADERS = {
@@ -33,6 +33,47 @@ def test_base_client_passes_configured_timeout_to_get(monkeypatch) -> None:
         "params": params,
         "timeout": TIMEOUT,
     }
+
+
+@pytest.mark.parametrize(
+    ("status", "body"),
+    [
+        (400, "<html>Request Line is too large (4746 &gt; 4094)</html>"),
+        (414, "URI Too Long"),
+    ],
+)
+def test_base_client_reports_request_length_rejection(
+    monkeypatch, status: int, body: str
+) -> None:
+    client = BaseClient(token="token")
+    response = Mock(ok=False, status_code=status, headers={}, text=body)
+    monkeypatch.setattr(client._session, "get", Mock(return_value=response))
+
+    with pytest.raises(RequestTooLongError, match="URL is too long"):
+        client.get("/search/query", params={"q": 'title:"Extracted text"'})
+
+
+@pytest.mark.parametrize(
+    ("status", "body"),
+    [(400, "Invalid query syntax"), (500, "Request Line is too large")],
+)
+def test_base_client_preserves_other_api_errors(
+    monkeypatch, status: int, body: str
+) -> None:
+    client = BaseClient(token="token")
+    response = Mock(
+        ok=False,
+        status_code=status,
+        headers={},
+        text=body,
+        json=Mock(return_value={"error": body}),
+    )
+    monkeypatch.setattr(client._session, "get", Mock(return_value=response))
+
+    with pytest.raises(ADSError, match=f"API error {status}") as error:
+        client.get("/search/query", params={"q": "invalid"})
+
+    assert type(error.value) is ADSError
 
 
 def test_base_client_passes_configured_timeout_to_post(monkeypatch) -> None:

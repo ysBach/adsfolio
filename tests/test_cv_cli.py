@@ -86,7 +86,7 @@ def test_generate_non_dry_run_reports_output_path(tmp_path: Path, monkeypatch) -
     monkeypatch.setattr("adsfolio.cv.cli.load_config", lambda path: cfg)
     monkeypatch.setattr("adsfolio.cv.cli.ADSClient", lambda token=None: object())
 
-    def fake_generate(client, config, **kwargs):  # noqa: ANN001
+    def fake_generate(client, config, **kwargs):
         output_path = kwargs.get("output_path") or config.output_path
         output_path.write_text("x", encoding="utf-8")
         return "x"
@@ -118,7 +118,7 @@ def test_init_creates_yaml_file(tmp_path: Path) -> None:
     assert "markers:" in text
 
 
-def test_init_uses_adsapi_set_orcid_defaults(tmp_path: Path, monkeypatch) -> None:
+def test_init_uses_adsfolio_set_orcid_defaults(tmp_path: Path, monkeypatch) -> None:
     output_path = tmp_path / "cv.yaml"
     monkeypatch.setattr(
         "adsfolio.cv.cli.Config.load_user_profile",

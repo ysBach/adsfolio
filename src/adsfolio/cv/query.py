@@ -72,7 +72,7 @@ def apply_author_format_overrides(
             overridden_docs.append(clone)
             continue
         if author_text:
-            clone["_adsapi_author_text"] = author_text
+            clone["_adsfolio_author_text"] = author_text
         overridden_docs.append(clone)
     return overridden_docs
 
