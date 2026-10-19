@@ -104,6 +104,8 @@ standalone bundle setup.
 
    adsfolio.gui
    adsfolio.gui.app
+   adsfolio.gui.about
+   adsfolio.gui.updates
    adsfolio.gui.config
    adsfolio.gui.library
    adsfolio.gui.icons

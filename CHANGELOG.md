@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- About ADSfolio shows the version, copyright, license links, and installation type.
+  App details can be copied for bug reports.
+- Help offers manual update checks and an optional check at startup.
+  New releases appear without interrupting library work. Checks use public GitHub
+  release information and never install updates or change library data.
+
 ## 0.2.1 (2026-10-19)
 
 - Successful rename and identification notices use **OK** to acknowledge completion.

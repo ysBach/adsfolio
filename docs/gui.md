@@ -25,6 +25,35 @@ The left pane lists library roots and filtered views. The middle pane shows a
 searchable publication table. The right pane shows editable metadata for the
 selected PDF.
 
+## Version information and updates
+
+Open **Help → About ADSfolio** to see the version, copyright, license links,
+and installation type. On macOS, **About ADSfolio** appears in the application menu.
+**Copy App Details** copies version and system information for a bug report.
+It does not copy your library data or paths.
+
+**Help → Check for Updates…** checks the latest stable GitHub release.
+The check runs in the background. The About window shows the result, including
+connection errors. **View Update** opens the release page with platform downloads.
+
+ADSfolio also checks once at startup by default. Disable this in
+**Help → Automatically Check for Updates**, or use the checkbox in About.
+Startup checks show a notice only when a newer release is available.
+They do not interrupt work when you are offline or already use the latest version.
+
+GitHub receives your IP address and app version. Checks send no PDFs, library
+metadata, or ADS credentials. ADSfolio does not install updates automatically.
+Update checks do not change your metadata or history.
+
+Use the update method for your installation:
+
+- **Desktop download:** install the release for your operating system.
+- **Homebrew:** run `brew upgrade --cask adsfolio`.
+- **Python installation:** update the package or source checkout, then restart.
+- **Local source launcher:** update its checkout, then restart ADSfolio.
+  Its version label does not track individual source edits.
+  A desktop installer or Homebrew upgrade replaces the source launcher.
+
 ## Library roots and missing PDFs
 
 For citations without ADS records or PDFs, use **File → Local References…**.

@@ -26,6 +26,7 @@ extensions = [
 ]
 
 intersphinx_mapping = {
+    "packaging": ("https://packaging.pypa.io/en/stable/", None),
     "python": ("https://docs.python.org/3", None),
     "click": ("https://click.palletsprojects.com/en/stable/", None),
     "qt": ("https://doc.qt.io/qtforpython-6/", None),
@@ -77,6 +78,7 @@ autodoc_type_aliases = {
     "CentralPdfRegistryState": "adsfolio.pdf.registry.CentralPdfRegistryState",
     "QWidget": "PySide6.QtWidgets.QWidget",
     "QObject": "PySide6.QtCore.QObject",
+    "QAction": "PySide6.QtGui.QAction",
 }
 napoleon_type_aliases = autodoc_type_aliases
 
