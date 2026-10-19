@@ -192,9 +192,8 @@ def _run_job(qtbot, request, client_factory):
     job.succeeded.connect(successes.append)
     job.failed.connect(failures.append)
     job.finished.connect(lambda: finished.append(None))
-    job.start()
-    qtbot.waitSignal(job.finished, timeout=2_000)
-    qtbot.wait(20)
+    with qtbot.waitSignal(job.finished, timeout=2_000):
+        job.start()
     return job, successes, failures, finished
 
 

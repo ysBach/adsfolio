@@ -214,7 +214,6 @@ class AdsLibraryJob(QObject):
         self._worker.finished.connect(self._worker.deleteLater)
         self._worker.finished.connect(self._on_worker_finished)
         self._thread.started.connect(self._worker.run)
-        self._thread.finished.connect(self._thread.deleteLater)
         self._thread.finished.connect(self._on_thread_finished)
 
     def start(self) -> None:
@@ -252,6 +251,10 @@ class AdsLibraryJob(QObject):
 
     @Slot()
     def _on_thread_finished(self) -> None:
+        # QThread.finished precedes thread-local cleanup. Join before callers
+        # can destroy this job and its thread object.
+        self._thread.wait()
+        self._thread.deleteLater()
         self._thread_finished = True
         self._maybe_emit_finished()
 
