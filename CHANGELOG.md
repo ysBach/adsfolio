@@ -2,6 +2,9 @@
 
 ## 0.1.0 (2026-10-19)
 
+- Windows file identifiers retain their full precision in the catalog.
+  Invalid library paths are rejected before platform-specific path resolution.
+
 - Closing the library window cancels pending search and watcher refresh timers
   before closing the catalog.
 

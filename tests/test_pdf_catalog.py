@@ -681,3 +681,37 @@ def test_registry_views_multiple_roots_through_one_catalog(monkeypatch, tmp_path
 
     registry_a.close()
     registry_b.close()
+
+
+@pytest.mark.parametrize("identity", [(1 << 63) - 1, 1 << 63, (1 << 128) - 1])
+def test_large_filesystem_identity_survives_reopen_and_move(
+    monkeypatch, tmp_path: Path, identity: int
+) -> None:
+    catalog = _catalog(monkeypatch, tmp_path)
+    root = tmp_path / "library"
+    first = catalog.observe_file(
+        root,
+        "first.pdf",
+        sha256="a" * 64,
+        size_bytes=10,
+        mtime_ns=20,
+        device=identity,
+        inode=identity,
+        metadata={"title": "Preserved title"},
+    )
+    catalog.close()
+    catalog = _catalog(monkeypatch, tmp_path)
+    second = catalog.observe_file(
+        root,
+        "moved.pdf",
+        sha256="a" * 64,
+        size_bytes=10,
+        mtime_ns=30,
+        device=identity,
+        inode=identity,
+    )
+    assert second.attachment_id == first.attachment_id
+    rows = catalog.query_files()
+    assert all(row["device"] == identity and row["inode"] == identity for row in rows)
+    assert all(row["metadata"]["title"] == "Preserved title" for row in rows)
+    catalog.close()

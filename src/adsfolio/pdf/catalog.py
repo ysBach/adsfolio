@@ -29,6 +29,15 @@ from .readiness import (
 )
 from .sidecar import SIDECAR_FILENAME, Sidecar
 
+
+def _sqlite_file_identity(value: int | None) -> int | str | None:
+    """Store file identifiers beyond SQLite's signed 64-bit range losslessly."""
+    if value is None or -(1 << 63) <= value < (1 << 63):
+        return value
+    # A prefix prevents INTEGER affinity from rounding large decimals to REAL.
+    return hex(value)
+
+
 CATALOG_FILENAME = "pdf-library.sqlite"
 CATALOG_SCHEMA_VERSION = 2
 LEGACY_REGISTRY_FILENAME = ".adsfolio-pdfs.sqlite"
@@ -284,8 +293,8 @@ class PdfCatalog:
                     normalized_path,
                     size_bytes,
                     mtime_ns,
-                    device,
-                    inode,
+                    _sqlite_file_identity(device),
+                    _sqlite_file_identity(inode),
                     version_id,
                     now,
                     now,
@@ -306,8 +315,8 @@ class PdfCatalog:
                 (
                     size_bytes,
                     mtime_ns,
-                    device,
-                    inode,
+                    _sqlite_file_identity(device),
+                    _sqlite_file_identity(inode),
                     version_id,
                     now,
                     location_id,
@@ -788,7 +797,12 @@ class PdfCatalog:
                         AND p.missing_at IS NULL
                 )
                 """,
-                (stat.st_dev, stat.st_ino, str(normalized_root), relative_path),
+                (
+                    _sqlite_file_identity(stat.st_dev),
+                    _sqlite_file_identity(stat.st_ino),
+                    str(normalized_root),
+                    relative_path,
+                ),
             ).fetchone()[0]
             digest = None
             if needs_digest:
@@ -1635,7 +1649,7 @@ class PdfCatalog:
                 LEFT JOIN content_versions AS v ON v.id = l.current_version_id
                 WHERE l.device = ? AND l.inode = ?
                 """,
-                (device, inode),
+                (_sqlite_file_identity(device), _sqlite_file_identity(inode)),
             ).fetchall()
             known = [row for row in rows if row["sha256"] is not None]
             candidates = list(
@@ -1833,8 +1847,12 @@ class PdfCatalog:
             "size_bytes": int(row["size_bytes"]),
             "mtime_ns": int(row["mtime_ns"]),
             "first_seen_at": row["first_seen_at"],
-            "device": row["device"],
-            "inode": row["inode"],
+            "device": int(row["device"], 16)
+            if isinstance(row["device"], str)
+            else row["device"],
+            "inode": int(row["inode"], 16)
+            if isinstance(row["inode"], str)
+            else row["inode"],
             "version_id": row["current_version_id"],
             "missing_at": row["missing_at"],
             "sha256": row["sha256"] or "",
