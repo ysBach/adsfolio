@@ -1,5 +1,6 @@
 import csv
 import os
+import shlex
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, ClassVar
@@ -1596,7 +1597,7 @@ def test_pdf_ocr_routes_non_ocr_files(tmp_path, monkeypatch):
     assert result.exit_code == 0
     assert "likely non-OCR=1" in result.output
     assert "You may run OCR with a command like this:" in result.output
-    assert f"srcdir={non_ocr_dir}" in result.output
+    assert f"srcdir={shlex.quote(str(non_ocr_dir))}" in result.output
     assert f"outdir={non_ocr_dir}_ocred" in result.output
     assert (non_ocr_dir / "scan.pdf").exists()
     assert text_pdf.exists()
@@ -1631,7 +1632,7 @@ def test_pdf_ocr_make_ocr_sh_writes_script_with_output_dir(tmp_path, monkeypatch
     script_path = tmp_path / "ocrmypdf.sh"
     assert script_path.exists()
     script_body = script_path.read_text(encoding="utf-8")
-    assert f"srcdir={non_ocr_dir}" in script_body
+    assert f"srcdir={shlex.quote(str(non_ocr_dir))}" in script_body
     assert f"outdir={non_ocr_dir}_ocred" in script_body
 
 
