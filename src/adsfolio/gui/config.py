@@ -71,6 +71,7 @@ class GuiConfig:
     detail_compact_rows: bool = True
     sidebar_visible: bool = True
     detail_visible: bool = True
+    check_updates_automatically: bool = True
     show_edit_buttons: bool = True
     show_lock_buttons: bool = True
     filename_click_action: str = "open"
@@ -394,6 +395,9 @@ def _from_mapping(payload: Mapping[str, Any]) -> GuiConfig:
         detail_compact_rows=_as_bool(payload.get("detail_compact_rows"), True),
         sidebar_visible=_as_bool(payload.get("sidebar_visible"), True),
         detail_visible=_as_bool(payload.get("detail_visible"), True),
+        check_updates_automatically=_as_bool(
+            payload.get("check_updates_automatically"), True
+        ),
         show_edit_buttons=_as_bool(payload.get("show_edit_buttons"), True),
         show_lock_buttons=_as_bool(payload.get("show_lock_buttons"), True),
         filename_click_action=filename_click_action or "open",

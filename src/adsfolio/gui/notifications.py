@@ -20,6 +20,7 @@ class NoticeAction(str, Enum):
 
     IDENTIFY_RENAME = "Identify & Rename"
     RETRY = "Retry"
+    VIEW_RELEASE = "Update Details"
 
 
 @dataclass(frozen=True)
@@ -179,7 +180,12 @@ class NoticeBar(QFrame):
         )
         self.action_button.setText(self._button_text(notice.action_label or ""))
         for button in (self.action_button, self.action_all_button):
-            button.setIcon(vector_icon("refresh", button))
+            button.setIcon(
+                vector_icon(
+                    "open" if notice.action is NoticeAction.VIEW_RELEASE else "refresh",
+                    button,
+                )
+            )
             button.setIconSize(ICON_SIZE)
             button.setAccessibleName(button.text().replace("&&", "&"))
             button.setToolTip(button.accessibleName())

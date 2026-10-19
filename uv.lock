@@ -28,6 +28,7 @@ full = [
     { name = "watchdog" },
 ]
 gui = [
+    { name = "packaging" },
     { name = "pyside6" },
 ]
 
@@ -57,6 +58,7 @@ requires-dist = [
     { name = "bibtexparser", specifier = ">=1.4.3,<2" },
     { name = "click", specifier = ">=8.0" },
     { name = "iso4", marker = "extra == 'full'", specifier = ">=0.0.2" },
+    { name = "packaging", marker = "extra == 'gui'", specifier = ">=23.2" },
     { name = "platformdirs", specifier = ">=3.0" },
     { name = "pymupdf", marker = "extra == 'full'", specifier = ">=1.24" },
     { name = "pyparsing", specifier = ">=3.0" },

@@ -65,7 +65,7 @@ full = [
     "watchdog>=3.0",
     "iso4>=0.0.2",
 ]
-gui = ["PySide6>=6.6"]
+gui = ["PySide6>=6.6", "packaging>=23.2"]
 
 [dependency-groups]
 dev = [
@@ -107,6 +107,7 @@ target-version = "py310"
 
 [tool.isort]
 profile = "black"
+known_third_party = ["packaging"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

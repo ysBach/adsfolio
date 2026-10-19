@@ -11,6 +11,7 @@ import fitz
 from iso4 import abbreviate
 from pypdf import PdfReader, PdfWriter
 from PySide6.QtCore import QTimer
+from PySide6.QtNetwork import QSslSocket
 from PySide6.QtWidgets import QApplication
 
 from adsfolio.config import Config
@@ -22,7 +23,7 @@ logger = logging.getLogger(__name__)
 
 
 def main() -> int:
-    """Exercise the bundled runtime with disposable state and no ADS requests."""
+    """Exercise the bundled runtime with disposable state and no network requests."""
     logging.basicConfig(level=logging.INFO)
     with TemporaryDirectory(prefix="adsfolio-smoke-") as directory:
         root = Path(directory)
@@ -49,6 +50,10 @@ def main() -> int:
         class Window(desktop.MainWindow):
             def __init__(self) -> None:
                 super().__init__()
+                self.config.check_updates_automatically = False
+                assert QSslSocket.supportsSsl(), (
+                    "The bundled Qt runtime cannot use HTTPS"
+                )
                 self.check_job = CommandJob(cli_argv("--version"), parent=self)
                 self.check_job.output.connect(lines.append)
                 self.check_job.finished.connect(self.checked_helper)

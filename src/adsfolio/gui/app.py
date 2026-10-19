@@ -7,9 +7,11 @@ import logging
 import os
 import sys
 
+from PySide6.QtCore import QTimer
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QApplication
 
+from .. import __version__
 from .main_window import MainWindow
 
 
@@ -29,6 +31,7 @@ def run() -> int:
         format="%(levelname)s %(name)s: %(message)s",
     )
     app = QApplication(sys.argv)
+    app.setApplicationVersion(__version__)
     app.setApplicationName("adsfolio")
     app.setApplicationDisplayName("ADSfolio")
     app.setOrganizationName("adsfolio")
@@ -41,6 +44,7 @@ def run() -> int:
     if os.environ.get("ADSFOLIO_SOURCE_LAUNCH") == "1":
         window.setWindowTitle("ADSfolio (Development)")
     window.show()
+    QTimer.singleShot(0, window.check_updates_on_start)
     return app.exec()
 
 

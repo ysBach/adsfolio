@@ -55,6 +55,7 @@ from ..pdf.registry import CentralPdfRegistryState, LibraryRefresh, PdfRegistry
 from ..pdf.rename_settings import RenameSettings
 from ..pdf.watch_session import WatchEvent, WatchOutcome, WatchState
 from ..pdf.watcher import WatchIdentifyPolicy
+from .about import AboutDialog
 from .ads_library_dialog import AdsLibraryDialog
 from .ads_library_export_dialog import ExportAdsLibraryDialog
 from .appearance import AppearanceDialog
@@ -76,6 +77,7 @@ from .osint import open_path, open_url, reveal_in_file_manager
 from .references_dialog import ReferencesDialog
 from .refresh_job import LibraryRefreshJob
 from .token_dialog import TokenDialog
+from .updates import Release, UpdateChecker
 from .watch import LibraryWatchController, WatchFailure
 
 logger = logging.getLogger(__name__)
@@ -232,6 +234,9 @@ class MainWindow(QMainWindow):
                 else None
             ),
         )
+        self.update_checker = UpdateChecker(self)
+        self.update_checker.finished.connect(self._update_check_finished)
+        self._about_dialog: AboutDialog | None = None
         self.job: Any | None = None
         self._ads_library_dialog: AdsLibraryDialog | None = None
         self._ads_library_export_dialog: ExportAdsLibraryDialog | None = None
@@ -576,7 +581,71 @@ class MainWindow(QMainWindow):
                 self.clear_search_action,
             ]
         )
+        help_menu = self.menuBar().addMenu("Help")
+        self.about_action = QAction("About ADSfolio", self)
+        self.about_action.setMenuRole(QAction.AboutRole)
+        self.about_action.triggered.connect(self._show_about)
+        self.check_updates_action = QAction("Check for Updates…", self)
+        self.check_updates_action.triggered.connect(self._check_for_updates)
+        self.automatic_updates_action = QAction("Automatically Check for Updates", self)
+        self.automatic_updates_action.setCheckable(True)
+        self.automatic_updates_action.setChecked(
+            self.config.check_updates_automatically
+        )
+        self.automatic_updates_action.toggled.connect(self._set_automatic_updates)
+        help_menu.addAction(self.about_action)
+        help_menu.addAction(self.check_updates_action)
+        help_menu.addAction(self.automatic_updates_action)
         self._sync_ads_library_action()
+
+    def check_updates_on_start(self) -> None:
+        """Check for updates when startup preferences allow it."""
+        if self.config.check_updates_automatically and not self._close_requested:
+            self.update_checker.check()
+
+    def _show_about(self) -> None:
+        if self._about_dialog is None:
+            self._about_dialog = AboutDialog(
+                self.update_checker,
+                self.automatic_updates_action,
+                self,
+                browser_command=self.config.web_browser_command,
+            )
+        self._about_dialog.browser_command = self.config.web_browser_command
+        self._about_dialog.show()
+        self._about_dialog.raise_()
+        self._about_dialog.activateWindow()
+
+    def _check_for_updates(self) -> None:
+        self._show_about()
+        self.update_checker.check()
+
+    def _set_automatic_updates(self, enabled: bool) -> None:
+        self.config.check_updates_automatically = enabled
+        try:
+            save_config(self.config)
+        except OSError as exc:
+            self.notice_bar.enqueue(
+                Notice(
+                    "update-preference",
+                    f"Could not save the update preference: {exc}",
+                    severity="error",
+                )
+            )
+
+    def _update_check_finished(self) -> None:
+        release = self.update_checker.latest
+        if release is not None:
+            self.notice_bar.dismiss("application-update")
+        if release is not None and self.update_checker.update_available:
+            self.notice_bar.enqueue(
+                Notice(
+                    "application-update",
+                    f"ADSfolio {release.version} is available.",
+                    action=NoticeAction.VIEW_RELEASE,
+                    payload=release,
+                )
+            )
 
     def _restore_config(self) -> None:
         if self.config.window_geometry:
@@ -1178,6 +1247,9 @@ class MainWindow(QMainWindow):
             self._schedule_watch_refresh(event.root)
 
     def _handle_notice_action(self, payload: object) -> None:
+        if isinstance(payload, Release):
+            self._show_about()
+            return
         if not isinstance(payload, WatchEvent) or not self._is_current_watch_event(
             payload
         ):
@@ -2896,6 +2968,9 @@ class MainWindow(QMainWindow):
             event.ignore()
             return
         self._close_requested = True
+        self.update_checker.cancel()
+        if self._about_dialog is not None:
+            self._about_dialog.close()
         self.search_timer.stop()
         self._watch_refresh_timer.stop()
         self._pending_watch_refresh_roots.clear()
