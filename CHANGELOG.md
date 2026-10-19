@@ -4,7 +4,13 @@
 
 - The macOS application menu uses ADSfolio when launched from source.
   About displays the GitHub copyright handle.
-- Discrete Shift-wheel scrolling in the main table moves one tenth as far.
+- Shift-scroll uses smaller horizontal steps for mouse wheels and trackpads,
+  including macOS wheel events with estimated pixel deltas. Header and scrollbar
+  scrolling use the same speed. Small trackpad movements accumulate correctly.
+- Identify offers a short explanation with OK to start. It checks stored bibcodes
+  first and identifies the remaining papers. Adding a folder offers this prompt,
+  and Needs ADS lookup has a direct action. Advanced options remain available.
+  Lookup retains notes, locked fields, history, filenames, and file locations.
 - ADS groups distinguish stored links from metadata readiness and PDF checks.
   Pending bibcodes can be linked from cache or batched ADS queries without
   changing existing metadata, filenames, or history.

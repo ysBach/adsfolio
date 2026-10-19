@@ -13,16 +13,21 @@ and unsigned-app approval.
 5. Press **Refresh** or **F5** to scan the selected root.
 
 Adding a root records file locations. It does not move your PDFs.
+The identification prompt opens next. Choose **OK** to start, or **Cancel** to
+browse first and adjust the subfolder setting.
 You can browse your library without an ADS account.
 Start with one folder before processing a large collection.
 
 ## Identify papers in a batch
 
-1. Select your library root.
-2. Open **Identify**.
-3. Choose the scan scope and provider order.
-4. Start identification.
-5. Review the results and job log.
+1. Open **Identify**. Adding a folder also opens this prompt.
+2. Read the lookup scope and choose **OK**.
+3. Enter an ADS token if setup appears.
+4. Review the results and job log.
+
+Select **Advanced options…** to change evidence sources or DOI provider order.
+The lookup keeps filenames and file locations. Locked fields and history stay
+intact. Identification can update unlocked publication fields.
 
 Identification checks saved results before online lookups.
 The default provider order is ADS, Crossref, then DataCite.

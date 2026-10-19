@@ -135,16 +135,19 @@ The toolbar **ADS Refresh ▾ → Look Up Stored Bibcodes…** repairs pending A
 links. It uses cached records first and queries uncached bibcodes in batches.
 It fills empty metadata fields and retains existing values, locks, and history.
 PDFs stay in place. Files with stale metadata, missing digests, or digest mismatches
-need Identify instead. No ADS token is needed when all required records are cached.
+need identification again. Select **Identify papers…**, then **OK** to check
+stored bibcodes and identify the remaining papers. No ADS token is needed when
+all required records are cached.
 
 Other ADS Refresh actions refresh and rename the selected record, a manually
 entered identifier, all stored bibcodes, or citation splits. They use saved Rename
 settings. **Refresh and Rename All ADS Records…** also includes eligible pending
 bibcodes. A local **Refresh/F5** reconciles file facts without querying ADS.
 
-Discrete **Shift + mouse wheel** scrolls the table horizontally at one tenth of
-Qt's normal page step. Trackpad scrolling and ordinary wheel scrolling retain
-their native behavior.
+Hold **Shift** to scroll the table horizontally. Each mouse-wheel event moves
+at most one tenth of the visible page. Smooth trackpad movement uses one tenth
+of its pixel distance. The same speed applies over the table header and scrollbars.
+Scrolling without Shift keeps its native behavior.
 
 Permanent cleanup remains separate: **File → Remove Missing Registry Records…**
 asks before removing missing catalog entries and never deletes files.
@@ -195,7 +198,7 @@ request occurs simply from selecting a row.
 first/last publication years, and optional ADS library IDs. These global fields
 define the publications fetched for profile matching. The years do not reject
 PDFs by their publication year. Saving the profile does not make a network
-request. Use **Tools → Identify → Refresh publication cache** when you want to
+request. Use **Tools → Identify → Advanced options… → Refresh publication cache** when you want to
 rebuild the cache.
 
 ## Custom citation styles
@@ -293,7 +296,24 @@ and catalog records are reloaded after completion so counts and metadata are fre
 Rename shows a dry-run preview before applying changes. The GUI does not render
 PDFs itself.
 
-The Identify dialog remembers reusable options across launches. **All
+**Identify…** opens a short explanation with **OK**, **Advanced options…**, and
+**Cancel**. **OK** starts the lookup directly. It checks pending stored bibcodes
+against the cache and ADS first. It then identifies PDFs that still need metadata.
+Locked fields and history are retained. Unlocked publication fields can be
+updated. Files keep their names and locations. The bibcode step covers all tracked
+PDFs in the library, including tracked subfolders. The identification step uses
+the library's subfolder setting and retains the saved unresolved-folder exclusion.
+The prompt states these scopes and the DOI provider order. View and search filters
+do not limit this library check. The library's subfolder setting controls recursion.
+Saved evidence and provider settings still apply. If ADS needs a token, setup
+opens before the job starts. The result notice shows ADS link counts and the next
+step. Use **Rename…** separately when you want to rename PDFs.
+
+Adding a PDF folder offers the same prompt. The **Needs ADS lookup** view also
+contains an **Identify papers…** button. Routine navigation does not open popups.
+
+Select **Advanced options…** to open the full Identify dialog. This dialog
+remembers reusable options across launches. **All
 libraries** stores global defaults and is selected by default. **This library
 only** stores portable overrides in that library's catalog metadata. Switching
 the scope immediately loads its values. The **Identification priority** list
@@ -601,7 +621,7 @@ The View menu shows the shortcuts available on your system.
 | Show or hide Details | Command/Ctrl+Shift+D |
 | Show or hide the job log | Command/Ctrl+Shift+J |
 | Reconcile local files | F5 or the system Refresh shortcut |
-| Open Identify options | Command/Ctrl+Shift+I |
+| Open the Identify prompt | Command/Ctrl+Shift+I |
 | Open Rename options | Command/Ctrl+Shift+R |
 
 Hiding a panel retains the selected PDF and current query.

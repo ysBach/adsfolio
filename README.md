@@ -58,9 +58,10 @@ establish that the app can open. Windows can also show publisher warnings.
    To include nested folders, enable **Include Subdirectories** on the root.
 2. Select a PDF to inspect or edit its metadata. Double-click a row to open it
    in your system PDF viewer.
-3. Use **Identify** to look up publication metadata. Configure your ADS token
-   through **Tools → NASA ADS Token…** when you need ADS services. Crossref and
-   DataCite can look up DOIs without an ADS token. Choose provider order in Identify.
+3. Choose **OK** in the **Identify** prompt to look up publication metadata.
+   The prompt also opens after adding a folder. Token setup opens if ADS needs it.
+   **Advanced options…** changes the provider order. Crossref and DataCite can
+   look up DOIs without an ADS token. Files keep their names and locations.
 4. Preview **Rename** before applying filename changes. Papers with sufficient
    metadata can be renamed without an ADS bibcode. Use **File → Local References…**
    for manual entries and BibTeX import/export, including references without PDFs.
