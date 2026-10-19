@@ -7,7 +7,7 @@ PDF opening uses a system PDF viewer. OCR software is not bundled.
 
 ## Launch and setup
 
-Version 0.2.0 provides DMG and ZIP downloads for macOS.
+Version 0.2.1 provides DMG and ZIP downloads for macOS.
 
 1. Download the package for your operating system and processor.
 2. On macOS, open the DMG and drag `ADSfolio.app` onto Applications.
@@ -129,12 +129,12 @@ application does not migrate or delete them. Prereleases are listed on the
 The workflow produces macOS DMG and ZIP files, a Windows ZIP, and a Linux tar.gz.
 DMGs contain the application and an Applications shortcut. Each image is verified
 and mounted read-only during the build. DMGs do not provide code signing or notarization.
-Version 0.1.0 has ZIP downloads only. Version 0.2.0 adds DMGs. macOS
+Version 0.1.0 has ZIP downloads only. Version 0.2.1 adds DMGs. macOS
 archives use `ditto`. Linux archives use `tar` to preserve required symbolic
 links. Ordinary ZIP creation can lose these links. See
 [PyInstaller's distribution notes](https://pyinstaller.org/en/stable/common-issues-and-pitfalls.html#requirements-imposed-by-symbolic-links-in-frozen-application).
 
-Version 0.2.0 ships unsigned bundles. macOS Developer ID signing/notarization and
+Version 0.2.1 ships unsigned bundles. macOS Developer ID signing/notarization and
 Windows publisher signing require release credentials and are not configured.
 Downloaded builds may trigger operating-system security prompts. There is no
 automatic updater or system installer. Native signing and broader installation and upgrade acceptance remain future work.

@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.2.0 (2026-10-19)
+## 0.2.1 (2026-10-19)
 
 - Successful rename and identification notices use **OK** to acknowledge completion.
 

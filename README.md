@@ -18,13 +18,13 @@ speed claim applies to every collection. Start with one folder to check results.
 
 ![ADSfolio library window](docs/_static/app-overview.png)
 
-*Application screenshot with illustrative sample data. Version 0.2.0 shown.*
+*Application screenshot with illustrative sample data. Version 0.2.1 shown.*
 
 [Website](https://ysbach.github.io/adsfolio/) · [First-library tutorial](docs/getting-started.md) · [Application guide](docs/gui.md)
 
 ## Install the desktop app
 
-Download [ADSfolio 0.2.0](https://github.com/ysBach/adsfolio/releases/latest).
+Download [ADSfolio 0.2.1](https://github.com/ysBach/adsfolio/releases/latest).
 macOS downloads include DMG installers and ZIP archives.
 Desktop downloads include Python and the application dependencies. You do not
 need a Python environment or an ADS token to browse your local library.
@@ -46,7 +46,7 @@ brew install --cask ysBach/adsfolio/adsfolio
 open -a ADSfolio
 ```
 
-**Version 0.2.0 is unsigned and not notarized.** macOS can block opening even
+**Version 0.2.1 is unsigned and not notarized.** macOS can block opening even
 when Homebrew installation succeeds. After attempting to open ADSfolio, review
 **System Settings → Privacy & Security → Open Anyway** if macOS offers that
 option. Approve it only if you trust the release. Installation alone does not
