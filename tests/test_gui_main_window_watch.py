@@ -1512,3 +1512,24 @@ def test_watched_rename_job_resumes_after_completion(monkeypatch, qtbot, tmp_pat
 
     assert controller.resume_calls == [root.resolve()]
     assert window.job is None
+
+
+def test_closing_window_cancels_deferred_library_queries(
+    monkeypatch, qtbot, tmp_path
+) -> None:
+    root = tmp_path / "library"
+    root.mkdir()
+    window, _controller, _saves = _window_factory(
+        monkeypatch, qtbot, GuiConfig(roots=[RootEntry(str(root))])
+    )
+    window.search.setText("pending search")
+    window._schedule_watch_refresh(root)
+    assert window.search_timer.isActive()
+    assert window._watch_refresh_timer.isActive()
+
+    assert window.close()
+
+    assert not window.search_timer.isActive()
+    assert not window._watch_refresh_timer.isActive()
+    assert not window._pending_watch_refresh_roots
+    qtbot.wait(window.search_timer.interval() + 1)

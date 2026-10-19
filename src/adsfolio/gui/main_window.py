@@ -2694,6 +2694,10 @@ class MainWindow(QMainWindow):
             event.ignore()
             return
         self._close_requested = True
+        self.search_timer.stop()
+        self._watch_refresh_timer.stop()
+        self._pending_watch_refresh_roots.clear()
+        self._watch_refresh_selection_id = None
         self._pending_watch_dialog = None
         self._local_refresh_context = None
         self._sync_config_roots()
