@@ -252,7 +252,6 @@ def test_worker_drains_intake_before_finishing_baseline(monkeypatch, tmp_path):
         def observe(self, snapshot, source_kind):
             del snapshot, source_kind
             timeline.append("observe")
-            return None
 
         def finish_baseline(self, snapshots):
             del snapshots
@@ -277,7 +276,7 @@ def test_worker_drains_intake_before_finishing_baseline(monkeypatch, tmp_path):
         "_start_observer",
         lambda: worker._enqueue(source, watch_module.WatchSource.CREATED),
     )
-    monkeypatch.setattr(worker, "_scan_snapshots", lambda: [])
+    monkeypatch.setattr(worker, "_scan_snapshots", list)
 
     worker.start()
 
@@ -428,3 +427,64 @@ def test_worker_classifies_move_within_root_as_modified(monkeypatch, tmp_path):
     scheduled["handler"].on_moved(event)
 
     assert (destination.resolve(), watch_module.WatchSource.MODIFIED) in worker._pending
+
+
+def test_scan_snapshots_matches_uppercase_and_skips_hidden(tmp_path):
+    import adsfolio.gui.watch as watch_module
+
+    (tmp_path / "A.PDF").write_bytes(b"x")
+    (tmp_path / ".hidden.pdf").write_bytes(b"x")
+    worker = watch_module._LibraryWatchWorker(tmp_path, "session-1")
+
+    assert [s.path.name for s in worker._scan_snapshots()] == ["A.PDF"]
+
+
+def test_scan_failure_is_reported_and_not_reconciled(monkeypatch, tmp_path):
+    import adsfolio.gui.watch as watch_module
+
+    (tmp_path / "A.pdf").write_bytes(b"x")
+    worker = watch_module._LibraryWatchWorker(tmp_path, "session-1")
+    worker._session = MagicMock()
+    failures: list[object] = []
+    monkeypatch.setattr(worker, "_emit_failure", failures.append)
+
+    def deny(path):
+        raise PermissionError("denied")
+
+    monkeypatch.setattr(watch_module.FileSnapshot, "from_path", staticmethod(deny))
+
+    worker._reconcile()
+
+    assert failures == ["denied"]
+    worker._session.reconcile.assert_not_called()
+
+
+def test_scan_snapshots_skips_symlink_outside_root_and_keeps_inside(tmp_path):
+    import adsfolio.gui.watch as watch_module
+
+    root = tmp_path / "root"
+    root.mkdir()
+    outside = tmp_path / "outside.pdf"
+    outside.write_bytes(b"x")
+    (root / "real.pdf").write_bytes(b"x")
+    (root / "escape.pdf").symlink_to(outside)
+    (root / "inside.pdf").symlink_to(root / "real.pdf")
+    worker = watch_module._LibraryWatchWorker(root, "session-1")
+
+    names = sorted(s.path.name for s in worker._scan_snapshots())
+
+    assert names == ["inside.pdf", "real.pdf"]
+
+
+def test_enqueue_ignores_path_outside_root(tmp_path):
+    import adsfolio.gui.watch as watch_module
+
+    root = tmp_path / "root"
+    root.mkdir()
+    outside = tmp_path / "outside.pdf"
+    outside.write_bytes(b"x")
+    worker = watch_module._LibraryWatchWorker(root, "session-1")
+
+    worker._enqueue(outside, watch_module.WatchSource.CREATED)
+
+    assert worker._pending == {}

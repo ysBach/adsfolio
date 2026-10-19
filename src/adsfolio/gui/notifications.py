@@ -30,6 +30,7 @@ class Notice:
     payload: object | None = None
     root: Path | None = None
     action: NoticeAction | None = None
+    details: str | None = None
 
     def __post_init__(self) -> None:
         if self.root is not None and not isinstance(self.root, Path):
@@ -57,6 +58,11 @@ class NoticeBar(QFrame):
     action_all_requested = Signal(tuple)
     dismiss_all_requested = Signal(tuple)
 
+    @staticmethod
+    def _button_text(label: str) -> str:
+        """Escape literal ampersands so Qt does not consume them as mnemonics."""
+        return label.replace("&", "&&")
+
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._notices: dict[str, Notice] = {}
@@ -66,7 +72,9 @@ class NoticeBar(QFrame):
         self.message.setWordWrap(True)
         self.pending_count = QLabel(self)
         self.action_button = QPushButton(self)
-        self.action_all_button = QPushButton("Identify & Rename All", self)
+        self.action_all_button = QPushButton(
+            self._button_text("Identify & Rename All"), self
+        )
         self.dismiss_button = QPushButton("Dismiss", self)
         self.dismiss_all_button = QPushButton("Dismiss All", self)
         layout.addWidget(self.message, 1)
@@ -139,16 +147,27 @@ class NoticeBar(QFrame):
         self.setVisible(notice is not None)
         if notice is None:
             self.message.clear()
+            self.message.setToolTip("")
             self.pending_count.clear()
+            self.pending_count.setToolTip("")
             self.action_button.hide()
             self.action_all_button.hide()
             self.dismiss_button.hide()
             self.dismiss_all_button.hide()
             return
         self.message.setText(notice.message)
+        self.message.setToolTip(notice.details or notice.message)
         remaining = len(self._notices) - 1
         self.pending_count.setText(f"{remaining} more" if remaining else "")
-        self.action_button.setText(notice.action_label or "")
+        self.pending_count.setToolTip(
+            "\n\n".join(
+                f"{item.message}\n{item.details}" if item.details else item.message
+                for item in self._notices.values()
+            )
+            if remaining
+            else ""
+        )
+        self.action_button.setText(self._button_text(notice.action_label or ""))
         self.action_button.setVisible(notice.action_label is not None)
         manual_actions = sum(
             item.action is NoticeAction.IDENTIFY_RENAME

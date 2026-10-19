@@ -15,7 +15,11 @@ from PySide6.QtCore import QThread
 
 from adsfolio.api.libraries import Library
 from adsfolio.config import ADSError, AuthenticationError, RateLimitError
-from adsfolio.library_sync import AddDocumentsResult, LibraryDestination
+from adsfolio.library_sync import (
+    AddDocumentsResult,
+    LibraryDestination,
+    LibraryExportResult,
+)
 
 
 class FakeLibraries:
@@ -27,10 +31,16 @@ class FakeLibraries:
         *,
         error: Exception | None = None,
         on_add: object | None = None,
+        documents: tuple[str, ...] = ("A",),
+        permission: str = "owner",
+        on_document: object | None = None,
     ) -> None:
         self.calls = calls
         self.error = error
         self.on_add = on_add
+        self.documents = documents
+        self.permission = permission
+        self.on_document = on_document
 
     def iter_libraries(self):
         self.calls.append(("list", threading.get_ident()))
@@ -49,11 +59,40 @@ class FakeLibraries:
         )
 
     def iter_documents(self, library_id: str, *, raw: bool = False):
-        del raw
-        self.calls.append(("load", library_id, threading.get_ident()))
+        self.calls.append(("load", library_id, raw, threading.get_ident()))
         if self.error is not None:
             raise self.error
-        return iter(("A",))
+        for index, document in enumerate(self.documents):
+            yield document
+            if self.on_document is not None:
+                self.on_document(index)
+
+    def get_library(
+        self,
+        library_id: str,
+        raw: bool = False,
+        start: int = 0,
+        rows: int = 2_000,
+    ) -> Library:
+        self.calls.append(
+            (
+                "get",
+                library_id,
+                raw,
+                start,
+                rows,
+                threading.get_ident(),
+            )
+        )
+        if self.error is not None:
+            raise self.error
+        return Library(
+            id=library_id,
+            name="Remote library",
+            permission=self.permission,
+            num_documents=len(self.documents),
+            documents=list(self.documents),
+        )
 
     def create_library(
         self,
@@ -94,15 +133,53 @@ class FakeClient:
         *,
         error: Exception | None = None,
         on_add: object | None = None,
+        documents: tuple[str, ...] = ("A",),
+        permission: str = "owner",
+        on_document: object | None = None,
+        export_error: Exception | None = None,
     ) -> None:
         self.calls = calls
         self.creation_thread = threading.get_ident()
-        self.libraries = FakeLibraries(calls, error=error, on_add=on_add)
+        self.libraries = FakeLibraries(
+            calls,
+            error=error,
+            on_add=on_add,
+            documents=documents,
+            permission=permission,
+            on_document=on_document,
+        )
+        self.export = FakeExport(calls, error=export_error)
         self.close_thread: int | None = None
 
     def close(self) -> None:
         self.close_thread = threading.get_ident()
         self.calls.append(("close", self.close_thread))
+
+
+class FakeExport:
+    """Record export requests without making network calls."""
+
+    def __init__(
+        self,
+        calls: list[tuple[object, ...]],
+        *,
+        error: Exception | None = None,
+    ) -> None:
+        self.calls = calls
+        self.error = error
+
+    def export_complete(
+        self,
+        bibcodes: tuple[str, ...],
+        *,
+        format: str = "bibtex",
+        cancelled=None,
+    ) -> str:
+        del cancelled
+        self.calls.append(("export", tuple(bibcodes), format, threading.get_ident()))
+        if self.error is not None:
+            raise self.error
+        return "exported"
 
 
 def _run_job(qtbot, request, client_factory):
@@ -140,6 +217,11 @@ def _run_job(qtbot, request, client_factory):
             "RETRY",
             {"library_id": "L1", "bibcodes": ("A", "B")},
             AddDocumentsResult,
+        ),
+        (
+            "EXPORT",
+            {"library_id": "L1", "export_format": "ris"},
+            LibraryExportResult,
         ),
     ],
 )
@@ -179,7 +261,10 @@ def test_retry_dispatches_reconciliation_and_adds_only_missing_documents(qtbot) 
     from adsfolio.gui.ads_library_jobs import AdsLibraryOperation, AdsLibraryRequest
 
     calls: list[tuple[object, ...]] = []
-    factory = lambda: FakeClient(calls)
+
+    def factory() -> FakeClient:
+        return FakeClient(calls)
+
     request = AdsLibraryRequest(
         AdsLibraryOperation.RETRY,
         library_id="L1",
@@ -300,6 +385,7 @@ def test_request_and_signal_values_are_immutable_and_request_has_no_gui_state() 
         "description",
         "public",
         "already_present",
+        "export_format",
     }
     assert isinstance(request.bibcodes, tuple)
     with pytest.raises(FrozenInstanceError):
@@ -329,3 +415,126 @@ def test_cancel_only_sets_event_and_does_not_terminate_thread(qtbot) -> None:
         QThread.terminate = original_terminate  # type: ignore[method-assign]
 
     assert terminate_calls == []
+
+
+def test_export_job_uses_complete_remote_read_only_library(qtbot) -> None:
+    from adsfolio.gui.ads_library_jobs import AdsLibraryOperation, AdsLibraryRequest
+
+    calls: list[tuple[object, ...]] = []
+    clients: list[FakeClient] = []
+
+    def factory() -> FakeClient:
+        client = FakeClient(
+            calls,
+            documents=("REMOTE-B", "REMOTE-A"),
+            permission="read",
+        )
+        clients.append(client)
+        return client
+
+    request = AdsLibraryRequest(
+        AdsLibraryOperation.EXPORT,
+        library_id="L-read",
+        bibcodes=("LOCAL-SELECTION",),
+        export_format="ris",
+    )
+    _job, successes, failures, _finished = _run_job(qtbot, request, factory)
+
+    assert failures == []
+    assert successes == [
+        LibraryExportResult(
+            text="exported",
+            bibcodes=("REMOTE-A", "REMOTE-B"),
+        )
+    ]
+    export_calls = [call for call in calls if call[0] == "export"]
+    assert export_calls == [
+        ("export", ("REMOTE-A", "REMOTE-B"), "ris", export_calls[0][3])
+    ]
+    assert [call[0] for call in calls] == ["get", "load", "export", "close"]
+    assert clients[0].close_thread == clients[0].creation_thread
+
+
+def test_export_job_reports_export_failure_and_closes_client(qtbot) -> None:
+    from adsfolio.gui.ads_library_jobs import (
+        AdsLibraryFailure,
+        AdsLibraryOperation,
+        AdsLibraryRequest,
+    )
+
+    calls: list[tuple[object, ...]] = []
+    error = ADSError("export failed")
+    clients: list[FakeClient] = []
+
+    def factory() -> FakeClient:
+        client = FakeClient(calls, export_error=error)
+        clients.append(client)
+        return client
+
+    request = AdsLibraryRequest(AdsLibraryOperation.EXPORT, library_id="L1")
+    _job, successes, failures, _finished = _run_job(qtbot, request, factory)
+
+    assert successes == []
+    assert failures == [AdsLibraryFailure(kind="ads", message=str(error))]
+    assert clients[0].close_thread == clients[0].creation_thread
+
+
+def test_export_job_cancellation_before_network_returns_empty_result(qtbot) -> None:
+    from adsfolio.gui.ads_library_jobs import (
+        AdsLibraryJob,
+        AdsLibraryOperation,
+        AdsLibraryRequest,
+    )
+
+    calls: list[tuple[object, ...]] = []
+    request = AdsLibraryRequest(AdsLibraryOperation.EXPORT, library_id="L1")
+    job = AdsLibraryJob(request, client_factory=lambda: FakeClient(calls))
+    successes: list[object] = []
+    failures: list[object] = []
+    job.succeeded.connect(successes.append)
+    job.failed.connect(failures.append)
+    job.cancel()
+    job.start()
+    qtbot.waitSignal(job.finished, timeout=2_000)
+    qtbot.wait(20)
+
+    assert failures == []
+    assert successes == [LibraryExportResult(text="", bibcodes=(), cancelled=True)]
+    assert [call[0] for call in calls] == ["close"]
+
+
+def test_export_job_cancellation_during_remote_enumeration_skips_export(qtbot) -> None:
+    from adsfolio.gui.ads_library_jobs import (
+        AdsLibraryJob,
+        AdsLibraryOperation,
+        AdsLibraryRequest,
+    )
+
+    calls: list[tuple[object, ...]] = []
+    holder: dict[str, AdsLibraryJob] = {}
+
+    def on_document(index: int) -> None:
+        if index == 0:
+            holder["job"].cancel()
+
+    def factory() -> FakeClient:
+        return FakeClient(
+            calls,
+            documents=("REMOTE-A", "REMOTE-B"),
+            on_document=on_document,
+        )
+
+    request = AdsLibraryRequest(AdsLibraryOperation.EXPORT, library_id="L1")
+    job = AdsLibraryJob(request, client_factory=factory)
+    holder["job"] = job
+    successes: list[object] = []
+    failures: list[object] = []
+    job.succeeded.connect(successes.append)
+    job.failed.connect(failures.append)
+    job.start()
+    qtbot.waitSignal(job.finished, timeout=2_000)
+    qtbot.wait(20)
+
+    assert failures == []
+    assert successes == [LibraryExportResult(text="", bibcodes=(), cancelled=True)]
+    assert [call[0] for call in calls] == ["get", "load", "close"]

@@ -14,6 +14,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 pytest.importorskip("PySide6")
 
 from PySide6.QtCore import QEvent, QItemSelectionModel, QObject, Signal
+from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import QApplication, QDialog, QMenu
 
 from adsfolio.config import Config
@@ -84,6 +85,30 @@ class CapturingAdsLibraryDialog(QDialog):
         super().show()
 
 
+class CapturingExportAdsLibraryDialog(QDialog):
+    """Capture the remote export dialog and emulate busy close handling."""
+
+    instances: ClassVar[list[CapturingExportAdsLibraryDialog]] = []
+
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self.was_shown = False
+        self.active = False
+        self.cancel_requested = False
+        self.instances.append(self)
+
+    def show(self) -> None:
+        self.was_shown = True
+        super().show()
+
+    def closeEvent(self, event: QCloseEvent) -> None:
+        if self.active:
+            self.cancel_requested = True
+            event.ignore()
+            return
+        super().closeEvent(event)
+
+
 class FakeCommandJob(QObject):
     """Expose the signals consumed by `MainWindow._watch_job`."""
 
@@ -139,6 +164,71 @@ def test_ads_library_action_requires_a_current_root(window: MainWindow, tmp_path
     _set_current_root(window, tmp_path / "library")
 
     assert window.add_to_ads_library_action.isEnabled()
+
+
+def test_export_ads_library_action_is_available_without_a_current_root(
+    window: MainWindow,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The remote export action is usable independently of local roots."""
+    import adsfolio.gui.main_window as main_window_module
+
+    CapturingExportAdsLibraryDialog.instances.clear()
+    monkeypatch.setattr(
+        main_window_module,
+        "ExportAdsLibraryDialog",
+        CapturingExportAdsLibraryDialog,
+    )
+
+    assert window.export_ads_library_action.isEnabled()
+    window.export_ads_library_action.trigger()
+
+    assert len(CapturingExportAdsLibraryDialog.instances) == 1
+    assert CapturingExportAdsLibraryDialog.instances[0].was_shown
+
+    CapturingExportAdsLibraryDialog.instances[0].close()
+    QApplication.processEvents()
+    assert window.export_ads_library_action.isEnabled()
+
+
+def test_closing_window_defers_while_export_dialog_is_busy(
+    application: QApplication,
+    monkeypatch: pytest.MonkeyPatch,
+    qtbot: Any,
+    tmp_path: Path,
+) -> None:
+    """Window teardown waits for a busy export dialog to acknowledge cancellation."""
+    import adsfolio.gui.main_window as main_window_module
+
+    monkeypatch.setattr(
+        Config,
+        "get_config_dir",
+        classmethod(lambda cls: tmp_path / "config"),
+    )
+    CapturingExportAdsLibraryDialog.instances.clear()
+    monkeypatch.setattr(
+        main_window_module,
+        "ExportAdsLibraryDialog",
+        CapturingExportAdsLibraryDialog,
+    )
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._export_ads_library()
+    dialog = CapturingExportAdsLibraryDialog.instances[0]
+    dialog.active = True
+    window.show()
+    QApplication.processEvents()
+
+    window.close()
+    QApplication.processEvents()
+
+    assert dialog.cancel_requested
+    assert not window.isHidden()
+
+    dialog.active = False
+    dialog.close()
+    QApplication.processEvents()
+    assert window.isHidden()
 
 
 def test_ads_library_action_tracks_root_selection_and_removal(
@@ -461,6 +551,11 @@ def test_ads_library_dialog_parent_teardown_does_not_touch_deleted_action(
         main_window_module,
         "AdsLibraryDialog",
         CapturingAdsLibraryDialog,
+    )
+    monkeypatch.setattr(
+        Config,
+        "get_config_dir",
+        classmethod(lambda cls: tmp_path / "config"),
     )
     window = MainWindow()
     application.processEvents()

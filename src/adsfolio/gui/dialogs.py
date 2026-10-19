@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
@@ -31,6 +32,12 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from ..config import Config
+from ..pdf.doi_providers import (
+    DEFAULT_DOI_PROVIDERS,
+    DOI_PROVIDER_LABELS,
+    DoiProvider,
+)
 from ..pdf.identify_settings import (
     IDENTIFY_STRATEGY_LABELS,
     RECOMMENDED_IDENTIFY_STRATEGIES,
@@ -47,7 +54,7 @@ from .jobs import CommandJob, cli_argv
 class OptionalYearSpinBox(QSpinBox):
     """Spin box that displays its zero sentinel as an empty year."""
 
-    def textFromValue(self, value: int) -> str:  # noqa: N802
+    def textFromValue(self, value: int) -> str:
         """Render the minimum sentinel as blank."""
         return "" if value == self.minimum() else str(value)
 
@@ -280,6 +287,23 @@ class IdentifyDialog(QDialog):
         strategy_layout.setContentsMargins(0, 0, 0, 0)
         strategy_layout.addWidget(self.strategies)
         strategy_layout.addLayout(strategy_buttons)
+        self.providers = QListWidget(self)
+        self.providers.setDragDropMode(QAbstractItemView.InternalMove)
+        self.providers.setDefaultDropAction(Qt.MoveAction)
+        self.providers.setAccessibleName("Metadata provider priority")
+        self.move_provider_up = QPushButton("Up", self)
+        self.move_provider_down = QPushButton("Down", self)
+        self.reset_providers = QPushButton("Reset recommended", self)
+        provider_buttons = QHBoxLayout()
+        provider_buttons.setContentsMargins(0, 0, 0, 0)
+        provider_buttons.addWidget(self.move_provider_up)
+        provider_buttons.addWidget(self.move_provider_down)
+        provider_buttons.addWidget(self.reset_providers)
+        provider_container = QWidget(self)
+        provider_layout = QVBoxLayout(provider_container)
+        provider_layout.setContentsMargins(0, 0, 0, 0)
+        provider_layout.addWidget(self.providers)
+        provider_layout.addLayout(provider_buttons)
         self.output = QLineEdit(self)
         self.choose_output = QPushButton("Choose…", self)
         output_layout = QHBoxLayout()
@@ -302,9 +326,10 @@ class IdentifyDialog(QDialog):
             "refresh_cache": "Rebuild your publication-profile cache for this run. This performs ADS network requests.",
             "allow_ads": "Allow fallback ADS requests without a separate interactive confirmation.",
             "strategies": "Check the evidence sources to use and drag them, or use Up and Down, to set priority. The first unique validated ADS match wins.",
+            "providers": "Check the metadata providers to query and drag them, or use Up and Down, to set priority. Defaults to NASA/ADS, Crossref, DataCite.",
             "output": "Destination for unresolved PDFs. Relative paths use the library root; moves occur only when Apply is enabled.",
             "skip_unresolved": "Exclude the unresolved destination and all of its descendants before hashing or ADS work. If no destination is set, this means <library>/unresolved.",
-            "apply_moves": "Physically move unresolved PDFs to the destination. When disabled, moves are previewed only.",
+            "apply_moves": "Move unresolved PDFs to the destination and identified PDFs from that subtree back to the library root. When disabled, moves are previewed only.",
             "verbose": "Show per-file unresolved move or dry-run details in the job log.",
             "verbose_parser": "Show low-level PDF parser warnings for this run only.",
             "ai_csv": "Optional AI-enriched unresolved CSV used for this run only.",
@@ -337,6 +362,13 @@ class IdentifyDialog(QDialog):
                 help_text["strategies"],
                 self,
             ),
+            "providers": _add_explained_row(
+                form,
+                "Metadata providers",
+                provider_container,
+                help_text["providers"],
+                self,
+            ),
             "output": _add_explained_row(
                 form,
                 "Move unresolved to",
@@ -353,7 +385,7 @@ class IdentifyDialog(QDialog):
             ),
             "apply_moves": _add_explained_row(
                 form,
-                "Apply unresolved moves",
+                "Apply file moves",
                 self.apply_moves,
                 help_text["apply_moves"],
                 self,
@@ -388,6 +420,9 @@ class IdentifyDialog(QDialog):
         self.move_strategy_up.clicked.connect(lambda: self._move_strategy(-1))
         self.move_strategy_down.clicked.connect(lambda: self._move_strategy(1))
         self.reset_strategies.clicked.connect(self._reset_strategies)
+        self.move_provider_up.clicked.connect(lambda: self._move_provider(-1))
+        self.move_provider_down.clicked.connect(lambda: self._move_provider(1))
+        self.reset_providers.clicked.connect(self._reset_providers)
         self.scope.currentIndexChanged.connect(self._load_selected_scope)
         self.output.setToolTip(help_text["output"])
         self.output.setAccessibleDescription(help_text["output"])
@@ -401,6 +436,14 @@ class IdentifyDialog(QDialog):
         ):
             control.setToolTip(help_text["strategies"])
             control.setAccessibleDescription(help_text["strategies"])
+        for control in (
+            self.providers,
+            self.move_provider_up,
+            self.move_provider_down,
+            self.reset_providers,
+        ):
+            control.setToolTip(help_text["providers"])
+            control.setAccessibleDescription(help_text["providers"])
         self.ai_csv.setToolTip(help_text["ai_csv"])
         self.ai_csv.setAccessibleDescription(help_text["ai_csv"])
         self.choose_ai_csv.setToolTip(help_text["ai_csv"])
@@ -420,6 +463,7 @@ class IdentifyDialog(QDialog):
         )
         self.recursive.setChecked(settings.recursive)
         self._populate_strategies(settings.strategies)
+        self._populate_providers(settings.providers)
         self.output.setText(settings.output_unresolved or "")
         self.skip_unresolved.setChecked(settings.skip_unresolved_directory)
         self.verbose.setChecked(settings.verbose)
@@ -428,6 +472,7 @@ class IdentifyDialog(QDialog):
         """Return normalized reusable values shown in the dialog."""
         return IdentifySettings(
             strategies=self.selected_strategies(),
+            providers=self.selected_providers(),
             recursive=self.recursive.isChecked(),
             output_unresolved=self.output.text().strip() or None,
             skip_unresolved_directory=self.skip_unresolved.isChecked(),
@@ -514,6 +559,43 @@ class IdentifyDialog(QDialog):
     def _reset_strategies(self) -> None:
         self._populate_strategies(RECOMMENDED_IDENTIFY_STRATEGIES)
 
+    def _populate_providers(self, enabled_providers: tuple[DoiProvider, ...]) -> None:
+        self.providers.clear()
+        enabled = set(enabled_providers)
+        for provider in (*enabled_providers, *DoiProvider):
+            if self._find_provider_row(provider) >= 0:
+                continue
+            item = QListWidgetItem(DOI_PROVIDER_LABELS.get(provider, provider.value))
+            item.setData(Qt.UserRole, provider.value)
+            item.setFlags(item.flags() | Qt.ItemIsUserCheckable | Qt.ItemIsDragEnabled)
+            item.setCheckState(Qt.Checked if provider in enabled else Qt.Unchecked)
+            self.providers.addItem(item)
+
+    def _find_provider_row(self, provider: DoiProvider) -> int:
+        for row in range(self.providers.count()):
+            if self.providers.item(row).data(Qt.UserRole) == provider.value:
+                return row
+        return -1
+
+    def selected_providers(self) -> tuple[DoiProvider, ...]:
+        return tuple(
+            DoiProvider(item.data(Qt.UserRole))
+            for row in range(self.providers.count())
+            if (item := self.providers.item(row)).checkState() == Qt.Checked
+        )
+
+    def _move_provider(self, offset: int) -> None:
+        row = self.providers.currentRow()
+        destination = row + offset
+        if row < 0 or destination < 0 or destination >= self.providers.count():
+            return
+        item = self.providers.takeItem(row)
+        self.providers.insertItem(destination, item)
+        self.providers.setCurrentRow(destination)
+
+    def _reset_providers(self) -> None:
+        self._populate_providers(DEFAULT_DOI_PROVIDERS)
+
     def build_argv(self) -> list[str]:
         """Return the CLI argv represented by the current controls."""
         settings = self.selected_settings()
@@ -524,6 +606,8 @@ class IdentifyDialog(QDialog):
         ]
         for strategy in settings.strategies:
             flags.extend(("--strategy", strategy.value))
+        for provider in settings.providers:
+            flags.extend(("--provider", provider.value))
         if settings.output_unresolved is None:
             flags.append("--clear-output-unresolved")
         else:
@@ -589,6 +673,7 @@ class RenameDialog(QDialog):
         library_settings: RenameSettings | None = None,
         *,
         initial_scope: str = "global",
+        identify_settings: IdentifySettings | None = None,
         save_settings: Callable[[str, RenameSettings], None] | None = None,
         parent: Any = None,
     ) -> None:
@@ -603,6 +688,11 @@ class RenameDialog(QDialog):
         self.root = Path(root)
         self._global_settings = global_settings or RenameSettings()
         self._library_settings = library_settings
+        self._identify_settings = (
+            identify_settings
+            if identify_settings is not None
+            else Config.load_identify_settings()
+        )
         self._save_settings = save_settings
         self.setWindowTitle("Rename PDFs")
         self.scope = QComboBox(self)
@@ -624,7 +714,7 @@ class RenameDialog(QDialog):
         self.char_policy = QComboBox(self)
         self.char_policy.addItems(["keep", "ascii"])
         self.table = QTableWidget(0, 2, self)
-        self.table.setHorizontalHeaderLabels(["Current name", "New name"])
+        self.table.setHorizontalHeaderLabels(["Current location", "Target location"])
         self.summary = QLabel("No preview generated", self)
         form = QFormLayout()
         scope_help = "Choose whether reusable Rename behavior applies globally or only to this library."
@@ -799,9 +889,48 @@ class RenameDialog(QDialog):
         """Return the selected author format."""
         return self.author_format.currentText().strip()
 
+    def _unresolved_directory(self) -> Path:
+        """Return the absolute unresolved directory used by Identify and Rename."""
+        configured = self._identify_settings.output_unresolved
+        directory = (
+            Path(configured).expanduser() if configured else self.root / "unresolved"
+        )
+        if not directory.is_absolute():
+            directory = self.root / directory
+        return directory.resolve()
+
+    def _target_display_path(
+        self,
+        current_name: str,
+        new_name: str,
+        *,
+        state_directory: Path,
+        unresolved_directory: Path,
+    ) -> str:
+        """Render a preview target relative to the library root.
+
+        ``PdfRenamer.batch_rename`` returns only a filename for the rendered
+        target.  Reconstructing its destination here makes nested renames and
+        moves out of the unresolved subtree visible before the subprocess runs.
+        """
+        source_path = state_directory / current_name
+        target_directory = source_path.parent
+        if (
+            state_directory in unresolved_directory.parents
+            and unresolved_directory in source_path.parents
+        ):
+            target_directory = state_directory
+        target_path = target_directory / new_name
+        try:
+            return target_path.relative_to(state_directory).as_posix()
+        except ValueError:
+            return str(target_path)
+
     def preview(self) -> None:
         """Build a one-shot in-process preview from the registry state."""
         state = open_registry_state(self.root)
+        state_directory = Path(getattr(state, "directory", self.root)).resolve()
+        unresolved_directory = self._unresolved_directory()
         QApplication.setOverrideCursor(Qt.WaitCursor)
         try:
             plans = PdfRenamer().batch_rename(
@@ -814,6 +943,12 @@ class RenameDialog(QDialog):
                 char_policy=self.char_policy.currentText(),
                 author_separator=self.author_separator.text(),
                 author_truncation_suffix=self.author_truncation_suffix.text(),
+                move_resolved_from=(
+                    unresolved_directory
+                    if state_directory in unresolved_directory.parents
+                    else None
+                ),
+                move_resolved_to=state_directory,
             )
         except ValueError as exc:
             self.summary.setText(str(exc))
@@ -825,7 +960,18 @@ class RenameDialog(QDialog):
         self.table.setRowCount(len(plans))
         for row, (old, new) in enumerate(plans):
             self.table.setItem(row, 0, QTableWidgetItem(old))
-            self.table.setItem(row, 1, QTableWidgetItem(new))
+            self.table.setItem(
+                row,
+                1,
+                QTableWidgetItem(
+                    self._target_display_path(
+                        old,
+                        new,
+                        state_directory=state_directory,
+                        unresolved_directory=unresolved_directory,
+                    )
+                ),
+            )
         self.summary.setText(f"{len(plans)} change(s)" if plans else "No changes")
 
     def build_argv(self) -> list[str]:
@@ -845,6 +991,8 @@ class RenameDialog(QDialog):
             self.author_separator.text(),
             "--author-truncation-suffix",
             self.author_truncation_suffix.text(),
+            "--output-unresolved",
+            str(self._unresolved_directory()),
         ]
         return cli_argv("pdf", "rename", str(self.root), *flags, "--apply")
 

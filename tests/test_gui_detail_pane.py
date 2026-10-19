@@ -28,7 +28,7 @@ from adsfolio.gui.detail_pane import DetailPane
 from adsfolio.gui.library import COLUMNS, FileQuery
 from adsfolio.gui.main_window import MainWindow
 from adsfolio.gui.models import FileTableModel, FirstAuthorDelegate, LinkDelegate
-from adsfolio.pdf.registry import FileReconciliation, PdfRegistry
+from adsfolio.pdf.registry import PdfRegistry
 
 
 @pytest.fixture(scope="module")
@@ -480,7 +480,7 @@ def test_table_model_reports_a_locked_registry_without_raising() -> None:
     """A transient SQLite lock is reported to the GUI instead of crashing it."""
 
     class LockedRegistry:
-        def count_files_matching(self, **_kwargs):
+        def query_files(self, **_kwargs):
             raise sqlite3.OperationalError("database is locked")
 
     model = FileTableModel(None, FileQuery())
@@ -799,26 +799,18 @@ def test_main_window_reconciles_file_facts(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """The explicit file-facts action refreshes rows without deleting them."""
+    """The file-facts menu action queues the same scan as the toolbar."""
     monkeypatch.setattr(Config, "get_config_dir", classmethod(lambda cls: tmp_path))
     window = MainWindow()
 
-    class Registry:
-        def reconcile_file_facts(self, root: Path) -> FileReconciliation:
-            assert root == tmp_path
-            return FileReconciliation(scanned=4, updated=3, missing=1)
+    window._register_root(tmp_path)
+    window._select_root(tmp_path)
+    queued: list[Path] = []
+    monkeypatch.setattr(window, "_refresh_local_files", lambda: queued.append(tmp_path))
 
-        def close(self) -> None:
-            pass
+    window.reconcile_file_facts_action.trigger()
 
-    window.current_root = tmp_path
-    window.registries[str(tmp_path)] = Registry()
-    monkeypatch.setattr(window, "refresh", lambda: None)
-
-    window._reconcile_file_facts()
-
-    assert "Updated 3 file records" in window.status.currentMessage()
-    assert "1 missing file" in window.status.currentMessage()
+    assert queued == [tmp_path]
     window.close()
 
 
@@ -842,7 +834,7 @@ def test_detail_lock_is_persisted_in_emitted_metadata(
 
     pane._set_lock("title", True)
 
-    assert changes[-1]["_adsapi_locked_fields"] == ["title"]
+    assert changes[-1]["_adsfolio_locked_fields"] == ["title"]
     pane.close()
 
 
@@ -1075,3 +1067,77 @@ def test_citation_rows_use_cached_document_and_survive_style_change(
     assert "metric_all_citations" in pane.row_keys()
     assert pane._row_widgets["metric_all_citations"].value.text() == "42"
     pane.close()
+
+
+def test_detail_pane_narrow_width_wraps_values_and_keeps_buttons_in_bounds(
+    application: QApplication,
+) -> None:
+    """Narrow widths wrap multi-line metadata without clipping values or lock buttons."""
+    pane = DetailPane()
+    pane.resize(280, 620)
+    pane.show()
+    pane.set_record(
+        {
+            "current_path": "paper.pdf",
+            "size_bytes": 1024,
+            "mtime_ns": 1_729_160_000_000_000_000,
+            "sha256": "a" * 64,
+            "status": "resolved",
+            "metadata": {
+                "bibcode": "2024A&A...680A...1B",
+                "title": [
+                    (
+                        "High-precision polarimetry of small Solar System bodies "
+                        "with SPHEREx and ground-based facilities"
+                    )
+                ],
+                "author": [
+                    "Bach, Yoonsoo P.",
+                    "Ishiguro, Masateru",
+                    "Kwon, Yuna G.",
+                ],
+                "doi": ["10.1051/0004-6361/202400001"],
+                "abstract": "word " * 120,
+            },
+        },
+        Path("/Users/ysbach/Dropbox/Studocs/PublOCR"),
+    )
+    application.processEvents()
+
+    for key in ("title", "author", "doi", "full_path"):
+        row = pane._row_widgets[key]
+        assert row.value.height() >= row.value.heightForWidth(row.value.width())
+        if row.lock_button.isVisible():
+            assert row.lock_button.geometry().right() <= pane._rows.width()
+    pane.close()
+
+
+def test_main_window_applies_default_splitter_sizes_only_when_unset(
+    application: QApplication,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """First launch uses DEFAULT_SPLITTER_SIZES while saved splitter_sizes win."""
+    monkeypatch.setattr(Config, "get_config_dir", classmethod(lambda cls: tmp_path))
+    monkeypatch.setattr("adsfolio.gui.main_window.load_config", lambda: GuiConfig())
+    monkeypatch.setattr("adsfolio.gui.main_window.save_config", lambda config: None)
+    first_window = MainWindow()
+    first_window.show()
+    application.processEvents()
+    first_sizes = first_window.splitter.sizes()
+    assert first_sizes[1] > first_sizes[2] > first_sizes[0]
+    first_window.close()
+
+    custom_sizes = [310, 520, 450]
+    monkeypatch.setattr(
+        "adsfolio.gui.main_window.load_config",
+        lambda: GuiConfig(splitter_sizes=list(custom_sizes)),
+    )
+    second_window = MainWindow()
+    second_window.show()
+    application.processEvents()
+    second_sizes = second_window.splitter.sizes()
+    assert second_sizes[0] > first_sizes[0]
+    assert second_sizes[2] > first_sizes[2]
+    assert second_sizes[1] < first_sizes[1]
+    second_window.close()

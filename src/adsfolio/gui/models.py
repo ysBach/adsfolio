@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..pdf.cli_common import is_resolved_record
+from ..pdf.readiness import metadata_ready
 from .library import (
     BASE_COLUMNS,
     ISO8601_TIMESTAMP_FORMAT,
@@ -44,7 +45,7 @@ class RowHeightDelegate(QStyledItemDelegate):
         self,
         option: QStyleOptionViewItem,
         index: QModelIndex,
-    ) -> QSize:  # noqa: N802
+    ) -> QSize:
         """Return the native size or the configured fixed row height."""
         size = super().sizeHint(option, index)
         if self._row_height is not None:
@@ -173,7 +174,9 @@ class ResolutionDelegate(RowHeightDelegate):
         style.drawControl(QStyle.CE_ItemViewItem, styled, painter, styled.widget)
         model = index.model()
         record = model.record_at(index.row()) if hasattr(model, "record_at") else None
-        if not isinstance(record, dict) or not is_resolved_record(record):
+        if not isinstance(record, dict) or not (
+            is_resolved_record(record) or metadata_ready(record)
+        ):
             return
         marker_size = min(10, styled.rect.width() - 4, styled.rect.height() - 4)
         if marker_size <= 0:
@@ -192,7 +195,7 @@ class ResolutionDelegate(RowHeightDelegate):
 
 
 class FileTableModel(QAbstractTableModel):
-    """Paged, SQL-backed table model over one ``PdfRegistry``."""
+    """Table model that pages one sorted snapshot of a ``PdfRegistry`` query."""
 
     query_failed = Signal(str)
 
@@ -214,6 +217,7 @@ class FileTableModel(QAbstractTableModel):
         self._registry = registry
         self._query = query
         self._columns: tuple[Column, ...] = tuple(columns)
+        self._snapshot: list[dict[str, Any]] = []
         self._rows: list[dict[str, Any]] = []
         self._total = 0
         self._column_fonts: dict[str, QFont] = {}
@@ -250,25 +254,27 @@ class FileTableModel(QAbstractTableModel):
         self._columns = normalized
         self.endResetModel()
 
-    def set_registry(self, registry: Any | None) -> None:
-        """Replace the registry and reload the model."""
-        self.beginResetModel()
+    def set_registry(
+        self, registry: Any | None, query: FileQuery | None = None
+    ) -> None:
+        """Replace the registry, and optionally the query, with one reload.
+
+        Parameters
+        ----------
+        registry : object or None
+            New registry, or `None` to empty the model.
+        query : FileQuery, optional
+            New query. If omitted, the current query is kept.
+        """
         self._registry = registry
-        self._rows = []
-        self._total = 0
-        if registry is not None:
-            self._load_page()
-        self.endResetModel()
+        if query is not None:
+            self._query = query
+        self._reload()
 
     def set_query(self, query: FileQuery) -> None:
         """Replace the query and reload the model."""
-        self.beginResetModel()
         self._query = query
-        self._rows = []
-        self._total = 0
-        if self._registry is not None:
-            self._load_page()
-        self.endResetModel()
+        self._reload()
 
     def record_at(self, row: int) -> dict[str, Any] | None:
         """Return the loaded record at `row`, or `None` when unavailable."""
@@ -291,11 +297,11 @@ class FileTableModel(QAbstractTableModel):
         self._timestamp_format = timestamp_format
         self.layoutChanged.emit()
 
-    def rowCount(self, parent: QModelIndex = QModelIndex()) -> int:  # noqa: N802
+    def rowCount(self, parent: QModelIndex = QModelIndex()) -> int:
         """Return the number of rows currently loaded into the model."""
         return 0 if parent.isValid() else len(self._rows)
 
-    def columnCount(self, parent: QModelIndex = QModelIndex()) -> int:  # noqa: N802
+    def columnCount(self, parent: QModelIndex = QModelIndex()) -> int:
         """Return the number of visible columns."""
         return 0 if parent.isValid() else len(self._columns)
 
@@ -314,7 +320,13 @@ class FileTableModel(QAbstractTableModel):
             if role == Qt.DisplayRole:
                 return ""
             if role in (Qt.ToolTipRole, Qt.AccessibleTextRole):
-                return "Resolved" if is_resolved_record(record) else "Needs attention"
+                return (
+                    "Resolved"
+                    if is_resolved_record(record)
+                    else "Metadata ready (not ADS linked)"
+                    if metadata_ready(record)
+                    else "Needs attention"
+                )
         if role in (Qt.ToolTipRole, Qt.AccessibleTextRole) and column.key in {
             "bibcode",
             "arxiv",
@@ -358,23 +370,17 @@ class FileTableModel(QAbstractTableModel):
             self._columns[section].header if 0 <= section < len(self._columns) else None
         )
 
-    def canFetchMore(self, parent: QModelIndex = QModelIndex()) -> bool:  # noqa: N802
-        """Return whether more matching rows remain in SQLite."""
-        return not parent.isValid() and len(self._rows) < self._total
+    def canFetchMore(self, parent: QModelIndex = QModelIndex()) -> bool:
+        """Return whether the snapshot holds rows not yet shown."""
+        return not parent.isValid() and len(self._rows) < len(self._snapshot)
 
-    def fetchMore(self, parent: QModelIndex = QModelIndex()) -> None:  # noqa: N802
-        """Fetch the next page of rows."""
+    def fetchMore(self, parent: QModelIndex = QModelIndex()) -> None:
+        """Show the next ``PAGE_SIZE`` snapshot rows without querying."""
         if parent.isValid() or not self.canFetchMore():
             return
-        rows = self._query_rows(offset=len(self._rows))
-        if rows is None:
-            return
-        if not rows:
-            self._total = len(self._rows)
-            return
         first = len(self._rows)
-        last = first + len(rows) - 1
-        self.beginInsertRows(QModelIndex(), first, last)
+        rows = self._snapshot[first : first + PAGE_SIZE]
+        self.beginInsertRows(QModelIndex(), first, first + len(rows) - 1)
         self._rows.extend(rows)
         self.endInsertRows()
 
@@ -397,23 +403,27 @@ class FileTableModel(QAbstractTableModel):
         )
 
     def _reload(self) -> None:
-        self._load_page()
+        """Run the query once and reset the model to its first page.
 
-    def _load_page(self) -> None:
+        The full sorted result is kept as a snapshot so ``fetchMore`` does not
+        query again. A failed query leaves the model empty instead of showing
+        rows from the previous registry or query.
+        """
+        self.beginResetModel()
         try:
-            total = self._registry.count_files_matching(**self._query.to_filters())
-            rows = self._query_rows(offset=0)
-        except sqlite3.OperationalError as exc:
-            self._report_query_error(exc)
-            return
-        if rows is None:
-            return
-        self._total = total
-        self._rows = rows
+            self._snapshot = []
+            self._rows = []
+            self._total = 0
+            if self._registry is not None:
+                snapshot = self._query_snapshot()
+                if snapshot is not None:
+                    self._snapshot = snapshot
+                    self._total = len(snapshot)
+                    self._rows = snapshot[:PAGE_SIZE]
+        finally:
+            self.endResetModel()
 
-    def _query_rows(self, *, offset: int) -> list[dict[str, Any]] | None:
-        if self._registry is None:
-            return []
+    def _query_snapshot(self) -> list[dict[str, Any]] | None:
         try:
             return self._registry.query_files(
                 **self._query.to_filters(),
@@ -421,8 +431,6 @@ class FileTableModel(QAbstractTableModel):
                 descending=self._query.descending,
                 secondary_order_by=self._query.secondary_order_by,
                 tertiary_order_by=self._query.tertiary_order_by,
-                limit=PAGE_SIZE,
-                offset=offset,
             )
         except sqlite3.OperationalError as exc:
             self._report_query_error(exc)

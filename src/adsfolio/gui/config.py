@@ -6,9 +6,10 @@ import json
 import logging
 import os
 import unicodedata
+from collections.abc import Mapping
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any
 
 from ..citations import CitationStyle, CitationStyleError, initial_citation_styles
 from ..config import Config
@@ -445,9 +446,9 @@ def save_config(config: GuiConfig) -> Path:
 
 
 __all__ = [
+    "DEFAULT_HIDDEN_DETAIL_ROWS",
     "GUI_CONFIG_FILENAME",
     "GUI_CONFIG_VERSION",
-    "DEFAULT_HIDDEN_DETAIL_ROWS",
     "GuiConfig",
     "RootEntry",
     "config_path",

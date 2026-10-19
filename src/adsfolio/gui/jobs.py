@@ -98,6 +98,7 @@ class CommandJob(QObject):
         self._start_failed = False
         environment = QProcessEnvironment.systemEnvironment()
         environment.insert("PYTHONUNBUFFERED", "1")
+        environment.insert("PYTHONIOENCODING", "utf-8")
         self._process.setProcessEnvironment(environment)
         if self.working_directory is not None:
             self._process.setWorkingDirectory(self.working_directory)
@@ -150,7 +151,23 @@ class CommandJob(QObject):
 
 
 def cli_argv(*args: str) -> list[str]:
-    """Build argv invoking the adsfolio CLI under the current interpreter."""
+    """Build CLI arguments for an installed package or a desktop bundle.
+
+    Parameters
+    ----------
+    *args : `str`
+        CLI arguments, passed unchanged without shell interpretation.
+
+    Returns
+    -------
+    list[str]
+        Command using the bundled console helper when frozen, otherwise the
+        current Python interpreter. The helper shares the GUI's dependencies
+        and provides output pipes even when the GUI has no console on Windows.
+    """
+    if getattr(sys, "frozen", False):
+        helper = "adsfolio-cli.exe" if sys.platform == "win32" else "adsfolio-cli"
+        return [str(Path(sys.executable).with_name(helper)), *args]
     return [sys.executable, "-m", "adsfolio.cli", *args]
 
 

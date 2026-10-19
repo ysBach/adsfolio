@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
     QFontComboBox,
     QFormLayout,
     QHBoxLayout,
+    QHeaderView,
     QLabel,
     QLineEdit,
     QPushButton,
@@ -195,6 +196,9 @@ class AppearanceDialog(QDialog):
             self._emit_settings_changed
         )
         self.font_table.resizeColumnsToContents()
+        self.font_table.horizontalHeader().setSectionResizeMode(
+            2, QHeaderView.ResizeMode.Stretch
+        )
         layout.addWidget(
             QLabel("Drag the row handles to reorder; uncheck to hide", tab)
         )
@@ -421,6 +425,9 @@ class AppearanceDialog(QDialog):
             self._emit_settings_changed
         )
         self.detail_table.resizeColumnsToContents()
+        self.detail_table.horizontalHeader().setSectionResizeMode(
+            2, QHeaderView.ResizeMode.Stretch
+        )
         layout.addWidget(self.detail_table)
         self._add_bulk_font_controls(
             layout,

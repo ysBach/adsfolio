@@ -13,7 +13,12 @@ from PySide6.QtCore import QObject, QThread, Signal, Slot
 
 from ..client import ADSClient
 from ..config import ADSError, AuthenticationError, RateLimitError
-from ..library_sync import AddDocumentsResult, AdsLibraryService, LibraryDestination
+from ..library_sync import (
+    AddDocumentsResult,
+    AdsLibraryService,
+    LibraryDestination,
+    LibraryExportResult,
+)
 
 __all__ = [
     "AdsLibraryFailure",
@@ -27,6 +32,7 @@ AdsLibraryResult: TypeAlias = (
     | tuple[str, ...]
     | LibraryDestination
     | AddDocumentsResult
+    | LibraryExportResult
 )
 
 
@@ -38,6 +44,7 @@ class AdsLibraryOperation(str, Enum):
     CREATE = "create"
     ADD = "add"
     RETRY = "retry"
+    EXPORT = "export"
 
 
 @dataclass(frozen=True)
@@ -51,6 +58,7 @@ class AdsLibraryRequest:
     description: str = ""
     public: bool = False
     already_present: tuple[str, ...] = ()
+    export_format: str = "bibtex"
 
     def __post_init__(self) -> None:
         """Freeze sequence inputs as tuples at the thread boundary."""
@@ -144,6 +152,12 @@ class _AdsLibraryWorker(QObject):
             return service.list_destinations()
         if request.operation is AdsLibraryOperation.LOAD_DOCUMENTS:
             return tuple(client.libraries.iter_documents(request.library_id))
+        if request.operation is AdsLibraryOperation.EXPORT:
+            return service.export_library(
+                request.library_id,
+                format=request.export_format,
+                cancelled=self._cancellation.is_set,
+            )
         if request.operation is AdsLibraryOperation.CREATE:
             return service.create_destination(
                 request.name,

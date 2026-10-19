@@ -4,10 +4,11 @@ from __future__ import annotations
 
 from copy import deepcopy
 from pathlib import Path
+from threading import Event
 
 import pytest
-from PySide6.QtCore import QObject, Signal
-from PySide6.QtWidgets import QDialog, QMessageBox
+from PySide6.QtCore import QItemSelectionModel, QObject, Qt, Signal
+from PySide6.QtWidgets import QDialog, QMessageBox, QToolBar
 
 from adsfolio.config import Config
 from adsfolio.gui.config import GuiConfig, RootEntry
@@ -148,6 +149,282 @@ def _event(root: Path, session_id: str, *, generation: int = 0) -> WatchEvent:
     )
 
 
+def test_f5_reconciles_files_preserving_selection_and_history(
+    monkeypatch, qtbot, tmp_path
+) -> None:
+    root = tmp_path / "library"
+    root.mkdir()
+    for name in ("keep.pdf", "move.pdf", "gone.pdf"):
+        (root / name).write_bytes(name.encode())
+    window, _controller, _saves = _window_factory(
+        monkeypatch, qtbot, GuiConfig(roots=[RootEntry(str(root))])
+    )
+    registry = window.registries[str(root)]
+    before = {row["current_path"]: row for row in registry.query_files()}
+    for row in range(window.model.rowCount()):
+        record = window.model.record_at(row)
+        if record["current_path"] in {"keep.pdf", "move.pdf"}:
+            index = window.model.index(row, 0)
+            window.table.selectionModel().select(
+                index, QItemSelectionModel.Select | QItemSelectionModel.Rows
+            )
+            if record["current_path"] == "move.pdf":
+                window.table.selectionModel().setCurrentIndex(
+                    index, QItemSelectionModel.NoUpdate
+                )
+    (root / "move.pdf").rename(root / "renamed.pdf")
+    (root / "new.pdf").write_bytes(b"new")
+    (root / "gone.pdf").unlink()
+    window.show()
+    window.activateWindow()
+    qtbot.waitUntil(window.isActiveWindow)
+
+    qtbot.keyClick(window.table, Qt.Key_F5)
+    qtbot.waitUntil(
+        lambda: (
+            window.job is None and "history retained" in window.status.currentMessage()
+        )
+    )
+
+    assert {r["current_path"] for r in window._selected_records()} == {
+        "keep.pdf",
+        "renamed.pdf",
+    }
+    assert window._selected_record()["current_path"] == "renamed.pdf"
+    registry = window.registries[str(root)]
+    assert registry.catalog.get_file(root, "gone.pdf")["missing_at"] is not None
+    assert (
+        registry.catalog.get_file(root, "renamed.pdf")["attachment_id"]
+        == before["move.pdf"]["attachment_id"]
+    )
+    assert "1 added" in window.status.currentMessage()
+    assert "1 moved" in window.status.currentMessage()
+    assert "1 missing" in window.status.currentMessage()
+    assert "history retained" in window.log.toPlainText()
+    toolbar = window.findChild(QToolBar, "search_toolbar")
+    assert window.refresh_action in toolbar.actions()
+    assert (
+        window.remove_missing_action not in window.ads_refresh_button.menu().actions()
+    )
+
+
+def test_local_refresh_waits_for_watcher_and_keeps_origin_root(
+    monkeypatch, qtbot, tmp_path
+) -> None:
+    first, second = tmp_path / "first", tmp_path / "second"
+    first.mkdir()
+    second.mkdir()
+    (first / "gone.pdf").write_bytes(b"gone")
+    window, controller, _saves = _window_factory(
+        monkeypatch,
+        qtbot,
+        GuiConfig(roots=[RootEntry(str(first)), RootEntry(str(second))]),
+    )
+    window._select_root(first)
+    window.watch_current_action.trigger()
+    controller.auto_ack_pause = False
+    (first / "gone.pdf").unlink()
+
+    window.refresh_action.trigger()
+
+    assert window.job is None
+    assert window._pending_watch_dialog == ("local_refresh", first.resolve())
+    assert not window.refresh_action.isEnabled()
+    assert not window.ads_refresh_button.isEnabled()
+    window._select_root(second)
+    controller.paused.emit(controller.session_id(first))
+    qtbot.waitUntil(
+        lambda: window.job is None and window._local_refresh_context is None
+    )
+
+    assert window.current_root == second
+    assert window.registries[str(first)].query_files() == []
+    assert controller.resume_calls == [first]
+    assert window.refresh_action.isEnabled()
+
+
+def test_failed_local_refresh_keeps_history_and_restores_controls(
+    monkeypatch, qtbot, tmp_path
+) -> None:
+    root = tmp_path / "library"
+    root.mkdir()
+    (root / "paper.pdf").write_bytes(b"paper")
+    window, _controller, _saves = _window_factory(
+        monkeypatch, qtbot, GuiConfig(roots=[RootEntry(str(root))])
+    )
+    root.rename(tmp_path / "offline")
+
+    window.refresh_action.trigger()
+    qtbot.waitUntil(
+        lambda: window.job is None and window._local_refresh_context is None
+    )
+
+    assert len(window.registries[str(root)].query_files()) == 1
+    assert window.refresh_action.isEnabled()
+    assert "Local refresh failed" in window.status.currentMessage()
+
+
+def test_close_during_local_refresh_waits_for_worker_cleanup(
+    monkeypatch, qtbot, tmp_path
+) -> None:
+    import adsfolio.gui.refresh_job as refresh_job_module
+
+    root = tmp_path / "library"
+    root.mkdir()
+    (root / "paper.pdf").write_bytes(b"paper")
+    window, _controller, _saves = _window_factory(
+        monkeypatch, qtbot, GuiConfig(roots=[RootEntry(str(root))])
+    )
+    entered, release = Event(), Event()
+    refresh = refresh_job_module.PdfRegistry.refresh_local_files
+
+    def paused_refresh(registry, **kwargs):
+        entered.set()
+        assert release.wait(5), "Test worker was not released"
+        return refresh(registry, **kwargs)
+
+    monkeypatch.setattr(
+        refresh_job_module.PdfRegistry, "refresh_local_files", paused_refresh
+    )
+    window.show()
+    window.refresh_action.trigger()
+    qtbot.waitUntil(entered.is_set)
+    job = window.job
+    try:
+        window.close()
+        assert window._close_requested
+        assert job.running
+    finally:
+        release.set()
+        qtbot.waitUntil(lambda: window.job is None)
+
+    assert not job.running
+    assert window._local_refresh_context is None
+    assert not window.isVisible()
+
+
+def test_close_cancels_local_refresh_waiting_for_watcher_pause(
+    monkeypatch, qtbot, tmp_path
+) -> None:
+    root = tmp_path / "library"
+    root.mkdir()
+    window, controller, _saves = _window_factory(
+        monkeypatch, qtbot, GuiConfig(roots=[RootEntry(str(root))])
+    )
+    window.watch_current_action.trigger()
+    controller.auto_ack_pause = False
+    session_id = controller.session_id(root)
+    window.refresh_action.trigger()
+
+    window.close()
+    controller.paused.emit(session_id)
+
+    assert window.job is None
+    assert window._local_refresh_context is None
+    assert window._pending_watch_dialog is None
+
+
+def test_ads_toolbar_reuses_selected_and_identifier_refresh(
+    monkeypatch, qtbot, tmp_path
+) -> None:
+    from PySide6.QtWidgets import QInputDialog
+
+    root = tmp_path / "library"
+    root.mkdir()
+    (root / "paper.pdf").write_bytes(b"paper")
+    window, _controller, _saves = _window_factory(
+        monkeypatch, qtbot, GuiConfig(roots=[RootEntry(str(root))])
+    )
+    registry = window.registries[str(root)]
+    registry.replace_file_metadata(root, "paper.pdf", {"bibcode": "B1"})
+    registry.update_file_status(root, "paper.pdf", "resolved")
+    window.refresh()
+    window.table.setCurrentIndex(window.model.index(0, 0))
+    calls = []
+    monkeypatch.setattr(
+        window,
+        "_start_ads_refresh",
+        lambda *args, **kwargs: calls.append((args, kwargs)),
+    )
+
+    window.refresh_selected_ads_action.trigger()
+    monkeypatch.setattr(
+        QInputDialog, "getText", lambda *args, **kwargs: ("10.1234/paper", True)
+    )
+    window.update_selected_ads_action.trigger()
+
+    assert calls[0][0][:2] == ("--bibcode", "B1")
+    assert calls[1][0][:2] == ("--identifier", "10.1234/paper")
+    assert "--relative-path" in calls[0][0]
+    assert "--relative-path" in calls[1][0]
+    assert all(
+        "Rename" in action.text()
+        for action in window.ads_refresh_button.menu().actions()
+        if not action.isSeparator()
+    )
+
+
+def test_deleted_selected_file_and_empty_views_clear_stale_detail_and_actions(
+    monkeypatch, qtbot, tmp_path
+) -> None:
+    first = tmp_path / "first"
+    second = tmp_path / "second"
+    first.mkdir()
+    second.mkdir()
+    paper = first / "paper.pdf"
+    paper.write_bytes(b"%PDF-1.4\n%test\n")
+    window, _controller, _saves = _window_factory(
+        monkeypatch,
+        qtbot,
+        GuiConfig(roots=[RootEntry(str(first)), RootEntry(str(second))]),
+    )
+    window._select_root(first)
+    registry = window.registries[str(first.resolve())]
+    registry.replace_file_metadata(
+        first.resolve(),
+        "paper.pdf",
+        {"title": ["Selected paper"], "bibcode": "B1"},
+    )
+    registry.update_file_status(first.resolve(), "paper.pdf", "resolved")
+    window.refresh()
+    window.table.setCurrentIndex(window.model.index(0, 0))
+    assert window.detail._metadata.get("bibcode") == "B1"
+    assert window.refresh_selected_ads_action.isEnabled()
+    assert window.update_selected_ads_action.isEnabled()
+
+    # Unrelated root refresh preserves current root's detail pane
+    window.refresh(second.resolve())
+    assert window.detail._metadata.get("bibcode") == "B1"
+
+    # Filtering to an empty view clears detail and disables single-record ADS actions
+    window.search.setText("nonexistent-query-token")
+    window._search_changed()
+    assert window.model.rowCount() == 0
+    assert window.detail._metadata == {}
+    assert not window.detail._actions.isEnabled()
+    assert not window.refresh_selected_ads_action.isEnabled()
+    assert not window.update_selected_ads_action.isEnabled()
+
+    # Restore search and selection, then externally unlink paper and press Refresh
+    window.search.clear()
+    window._search_changed()
+    window.table.setCurrentIndex(window.model.index(0, 0))
+    assert window.detail._metadata.get("bibcode") == "B1"
+
+    paper.unlink()
+    window.refresh_action.trigger()
+    qtbot.waitUntil(
+        lambda: window.job is None and window._local_refresh_context is None
+    )
+    assert window.model.rowCount() == 0
+    assert not window.table.currentIndex().isValid()
+    assert window.detail._metadata == {}
+    assert window.detail._record is None
+    assert not window.detail._actions.isEnabled()
+    assert not window.refresh_selected_ads_action.isEnabled()
+    assert not window.update_selected_ads_action.isEnabled()
+
+
 def test_watch_notice_keys_distinguish_reused_inode_generations(tmp_path) -> None:
     root = tmp_path / "library"
     root.mkdir()
@@ -225,7 +502,7 @@ def test_startup_only_watches_opted_in_roots(monkeypatch, qtbot, tmp_path):
     root_two = tmp_path / "two"
     root_one.mkdir()
     root_two.mkdir()
-    window, controller, _saves = _window_factory(
+    _window, controller, _saves = _window_factory(
         monkeypatch,
         qtbot,
         GuiConfig(
@@ -692,6 +969,8 @@ def test_failed_watch_outcome_offers_retry_only_for_current_session(
     window.notice_bar.action_button.click()
 
     assert window.notice_bar.action_button.text() == "Retry"
+    assert window.notice_bar.message.text() == f"{current.path.name}: ADS unavailable"
+    assert window.notice_bar.message.toolTip() == str(current.path)
     assert controller.retry_calls == [failed.event]
 
     obsolete = WatchOutcome(
@@ -707,6 +986,42 @@ def test_failed_watch_outcome_offers_retry_only_for_current_session(
     controller.outcome.emit(obsolete)
 
     assert "obsolete failure" not in window.notice_bar.message.text()
+
+
+@pytest.mark.parametrize("relocated", [False, True])
+def test_unresolved_watch_notice_identifies_current_file_path(
+    monkeypatch, qtbot, tmp_path, relocated
+) -> None:
+    root = tmp_path / "library"
+    root.mkdir()
+    window, controller, _saves = _window_factory(
+        monkeypatch,
+        qtbot,
+        GuiConfig(roots=[RootEntry(str(root))]),
+    )
+    window.watch_current_action.trigger()
+    current = _event(root, controller.session_id(root))
+    destination = root / "unresolved" / current.path.name if relocated else current.path
+    event = WatchEvent(
+        root=current.root,
+        session_id=current.session_id,
+        identity=current.identity,
+        path=current.path,
+        state=WatchState.UNRESOLVED,
+    )
+
+    controller.outcome.emit(
+        WatchOutcome(
+            event=event,
+            destination=destination if relocated else None,
+            message="No ADS record identified",
+        )
+    )
+
+    assert window.notice_bar.message.text() == (
+        f"{destination.name}: No ADS record identified"
+    )
+    assert window.notice_bar.message.toolTip() == str(destination)
 
 
 def test_dismissing_failed_notice_does_not_dismiss_terminal_worker_state(
@@ -858,6 +1173,277 @@ class FakeJob(QObject):
 
     def cancel(self) -> None:
         self.running = False
+
+
+class FakeAdsRefreshJob(QObject):
+    output = Signal(str)
+    failed = Signal(str)
+    finished = Signal(int)
+
+    def __init__(
+        self,
+        argv: list[str],
+        parent: QObject | None = None,
+        *,
+        working_directory: Path | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self.argv = argv
+        self.working_directory = working_directory
+        self.running = False
+
+    def start(self) -> None:
+        self.running = True
+
+    def cancel(self) -> None:
+        self.running = False
+
+
+def _ads_refresh_job_factory(monkeypatch, jobs: list[FakeAdsRefreshJob]) -> None:
+    import adsfolio.gui.main_window as main_window_module
+
+    def create_job(
+        argv: list[str],
+        parent: QObject | None = None,
+        *,
+        working_directory: Path | None = None,
+    ) -> FakeAdsRefreshJob:
+        job = FakeAdsRefreshJob(
+            argv,
+            parent=parent,
+            working_directory=working_directory,
+        )
+        jobs.append(job)
+        return job
+
+    monkeypatch.setattr(main_window_module, "CommandJob", create_job)
+
+
+def _argv_value(argv: list[str], option: str) -> str:
+    return argv[argv.index(option) + 1]
+
+
+def test_ads_refresh_waits_for_watcher_pause_before_starting_job(
+    monkeypatch, qtbot, tmp_path
+):
+    root = tmp_path / "library"
+    root.mkdir()
+    key = str(root.resolve())
+    config = GuiConfig(
+        roots=[RootEntry(str(root))],
+        rename_scopes={key: "library"},
+    )
+    window, controller, _saves = _window_factory(monkeypatch, qtbot, config)
+    window.watch_current_action.trigger()
+    controller.auto_ack_pause = False
+    jobs: list[FakeAdsRefreshJob] = []
+    _ads_refresh_job_factory(monkeypatch, jobs)
+
+    window._start_ads_refresh(
+        "--identifier",
+        "2020A&A...123..456A",
+        selection_id=7,
+    )
+
+    assert controller.pause_calls == [root.resolve()]
+    assert jobs == []
+    assert window._pending_watch_dialog == ("ads_refresh", root.resolve())
+
+    controller.paused.emit(controller.session_id(root))
+
+    assert len(jobs) == 1
+    assert jobs[0].running
+    assert jobs[0].working_directory == root.resolve()
+    assert _argv_value(jobs[0].argv, "--rename-scope") == "library"
+    assert _argv_value(jobs[0].argv, "--output-unresolved") == str(root / "unresolved")
+    assert _argv_value(jobs[0].argv, "--identifier") == "2020A&A...123..456A"
+    jobs[0].finished.emit(0)
+
+    assert controller.resume_calls == [root.resolve()]
+
+
+def test_ads_refresh_keeps_origin_root_and_settings_after_root_switch(
+    monkeypatch, qtbot, tmp_path
+):
+    import adsfolio.gui.main_window as main_window_module
+
+    first = tmp_path / "first"
+    second = tmp_path / "second"
+    first.mkdir()
+    second.mkdir()
+    first_key = str(first.resolve())
+    second_key = str(second.resolve())
+    config = GuiConfig(
+        roots=[RootEntry(str(first)), RootEntry(str(second))],
+        identify_scopes={first_key: "library", second_key: "global"},
+        rename_scopes={first_key: "library", second_key: "global"},
+    )
+    window, controller, _saves = _window_factory(monkeypatch, qtbot, config)
+    state = CentralPdfRegistryState(window.registries[first_key])
+    state.set_identify_settings(IdentifySettings(output_unresolved="first-pending"))
+    monkeypatch.setattr(
+        main_window_module.Config,
+        "load_identify_settings",
+        classmethod(lambda cls: IdentifySettings(output_unresolved="second-pending")),
+    )
+    window.current_root = first.resolve()
+    window.watch_current_action.trigger()
+    controller.auto_ack_pause = False
+    jobs: list[FakeAdsRefreshJob] = []
+    _ads_refresh_job_factory(monkeypatch, jobs)
+
+    window._start_ads_refresh("--all", selection_id=11)
+    window.current_root = second.resolve()
+
+    controller.paused.emit(controller.session_id(first))
+
+    assert len(jobs) == 1
+    job = jobs[0]
+    assert job.working_directory == first.resolve()
+    assert _argv_value(job.argv, "--rename-scope") == "library"
+    assert _argv_value(job.argv, "--output-unresolved") == str(first / "first-pending")
+    assert "--all" in job.argv
+    job.finished.emit(0)
+
+    assert controller.resume_calls == [first.resolve()]
+
+
+def test_ads_refresh_resumes_watcher_after_start_failure(monkeypatch, qtbot, tmp_path):
+    root = tmp_path / "library"
+    root.mkdir()
+    window, controller, _saves = _window_factory(
+        monkeypatch,
+        qtbot,
+        GuiConfig(roots=[RootEntry(str(root))]),
+    )
+    window.watch_current_action.trigger()
+    controller.auto_ack_pause = False
+    jobs: list[FakeAdsRefreshJob] = []
+    _ads_refresh_job_factory(monkeypatch, jobs)
+
+    window._start_ads_refresh("--all")
+    controller.paused.emit(controller.session_id(root))
+    jobs[0].failed.emit("could not start")
+
+    assert controller.resume_calls == [root.resolve()]
+    assert window.job is None
+
+
+def test_closing_window_cancels_pending_ads_refresh(monkeypatch, qtbot, tmp_path):
+    root = tmp_path / "library"
+    root.mkdir()
+    window, controller, _saves = _window_factory(
+        monkeypatch,
+        qtbot,
+        GuiConfig(roots=[RootEntry(str(root))]),
+    )
+    window.watch_current_action.trigger()
+    controller.auto_ack_pause = False
+    jobs: list[FakeAdsRefreshJob] = []
+    _ads_refresh_job_factory(monkeypatch, jobs)
+
+    window._start_ads_refresh("--all")
+    session_id = controller.session_id(root)
+    assert session_id is not None
+    assert window._pending_ads_refresh is not None
+
+    assert window.close()
+    controller.paused.emit(session_id)
+
+    assert jobs == []
+    assert window._pending_ads_refresh is None
+    assert window._pending_watch_dialog is None
+    assert controller.resume_calls == [root.resolve()]
+
+
+def test_removing_root_cancels_pending_ads_refresh(monkeypatch, qtbot, tmp_path):
+    root = tmp_path / "library"
+    root.mkdir()
+    window, controller, _saves = _window_factory(
+        monkeypatch,
+        qtbot,
+        GuiConfig(roots=[RootEntry(str(root))]),
+    )
+    window.watch_current_action.trigger()
+    controller.auto_ack_pause = False
+    jobs: list[FakeAdsRefreshJob] = []
+    _ads_refresh_job_factory(monkeypatch, jobs)
+
+    window._start_ads_refresh("--all")
+    session_id = controller.session_id(root)
+    assert session_id is not None
+    window._remove_root(root)
+    controller.paused.emit(session_id)
+
+    assert jobs == []
+    assert window._pending_ads_refresh is None
+    assert window._pending_watch_dialog is None
+    assert str(root.resolve()) not in window.registries
+    assert controller.resume_calls == [root.resolve()]
+
+
+def test_ads_refresh_completion_retries_ambiguity_for_origin_root(
+    monkeypatch, qtbot, tmp_path
+):
+    first = tmp_path / "first"
+    second = tmp_path / "second"
+    first.mkdir()
+    second.mkdir()
+    first_key = str(first.resolve())
+    second_key = str(second.resolve())
+    window, controller, _saves = _window_factory(
+        monkeypatch,
+        qtbot,
+        GuiConfig(roots=[RootEntry(str(first)), RootEntry(str(second))]),
+    )
+    window.watch_current_action.trigger()
+    job = FakeJob()
+    window._foreground_paused_root = first.resolve()
+    window._ads_refresh_root = first.resolve()
+    window._refresh_selection_id = 19
+    window._ads_match_candidates = [
+        {
+            "bibcode": "2020A&A...123..456A",
+            "first_author": "Author",
+            "title": "Paper",
+        }
+    ]
+    window._ambiguous_ads_match_context = (
+        first.resolve(),
+        "unresolved/paper.pdf",
+        19,
+    )
+    window._watch_job(job)
+    window.current_root = second.resolve()
+    refreshed: list[Path | None] = []
+    choices: list[tuple[Path, str, int | None]] = []
+    monkeypatch.setattr(
+        window,
+        "refresh",
+        lambda root=None: refreshed.append(root),
+    )
+
+    def choose(
+        candidates: list[dict[str, str]],
+        relative_path: str,
+        selection_id: int | None,
+        *,
+        root: Path | None = None,
+    ) -> None:
+        del candidates
+        assert root is not None
+        choices.append((root, relative_path, selection_id))
+
+    monkeypatch.setattr(window, "_choose_ambiguous_ads_match", choose)
+    job.finished.emit(0)
+
+    assert refreshed == [first.resolve()]
+    assert choices == [(first.resolve(), "unresolved/paper.pdf", 19)]
+    assert controller.resume_calls == [first.resolve()]
+    assert window.current_root == second.resolve()
+    assert window._refresh_selection_id is None
+    assert first_key in window.registries
+    assert second_key in window.registries
 
 
 def test_watched_identify_job_resumes_after_start_failure(monkeypatch, qtbot, tmp_path):

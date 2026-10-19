@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sqlite3
 from pathlib import Path
 from typing import Any
 
@@ -213,3 +214,131 @@ def test_generated_citation_column_is_displayed_but_not_sortable(qtbot) -> None:
     before = model.query
     model.sort(citation, Qt.DescendingOrder)
     assert model.query == before
+
+
+class _CountingRegistry:
+    """Static registry that records every query and can raise a sqlite error."""
+
+    def __init__(self, records: list[dict[str, Any]]) -> None:
+        self.records = records
+        self.calls: list[dict[str, Any]] = []
+        self.error: sqlite3.OperationalError | None = None
+
+    def count_files_matching(self, **filters: object) -> int:
+        raise AssertionError("the model must not run a separate count query")
+
+    def query_files(self, **kwargs: Any) -> list[dict[str, Any]]:
+        self.calls.append(kwargs)
+        if self.error is not None:
+            raise self.error
+        return list(self.records)
+
+
+def _numbered(count: int) -> list[dict[str, Any]]:
+    return [
+        {"relative_path": f"{i:04d}.pdf", "status": "resolved"} for i in range(count)
+    ]
+
+
+def test_one_query_per_reset_and_none_for_fetch_more(qtbot) -> None:
+    registry = _CountingRegistry(_numbered(2 * PAGE_SIZE + 5))
+    model = FileTableModel(registry, FileQuery())
+    assert len(registry.calls) == 1
+    assert model.total == 2 * PAGE_SIZE + 5
+    assert model.rowCount() == PAGE_SIZE
+
+    inserted: list[tuple[int, int]] = []
+    model.rowsInserted.connect(lambda _p, first, last: inserted.append((first, last)))
+    while model.canFetchMore():
+        model.fetchMore()
+
+    assert len(registry.calls) == 1
+    assert inserted == [
+        (PAGE_SIZE, 2 * PAGE_SIZE - 1),
+        (2 * PAGE_SIZE, 2 * PAGE_SIZE + 4),
+    ]
+    assert model.rowCount() == model.total
+    assert (
+        model.record_at(2 * PAGE_SIZE + 4)["relative_path"]
+        == f"{2 * PAGE_SIZE + 4:04d}.pdf"
+    )
+
+    model.fetchMore()  # nothing left: no signal and no query
+    assert len(inserted) == 2
+    assert len(registry.calls) == 1
+
+
+def test_reset_sees_new_data_and_discards_loaded_pages(qtbot) -> None:
+    registry = _CountingRegistry(_numbered(PAGE_SIZE + 1))
+    model = FileTableModel(registry, FileQuery())
+    model.fetchMore()
+    assert model.rowCount() == PAGE_SIZE + 1
+
+    registry.records = _numbered(3)
+    model.set_query(FileQuery(search="x"))
+    assert len(registry.calls) == 2
+    assert (model.total, model.rowCount()) == (3, 3)
+
+    registry.records = _numbered(4)
+    model.set_registry(registry)
+    assert len(registry.calls) == 3
+    assert (model.total, model.rowCount()) == (4, 4)
+
+    registry.records = _numbered(5)
+    model._reload()
+    assert len(registry.calls) == 4
+    assert (model.total, model.rowCount()) == (5, 5)
+
+
+def test_locked_query_clears_previous_rows_and_reports(qtbot) -> None:
+    registry = _CountingRegistry(_numbered(3))
+    model = FileTableModel(registry, FileQuery())
+    messages: list[str] = []
+    model.query_failed.connect(messages.append)
+
+    registry.error = sqlite3.OperationalError("database is locked")
+    with qtbot.waitSignal(model.modelReset):
+        model.set_query(FileQuery(search="x"))
+    assert messages == ["Library is busy; try again in a moment."]
+    assert (model.total, model.rowCount()) == (0, 0)
+    assert not model.canFetchMore()
+
+    registry.error = None
+    model.set_query(FileQuery())
+    assert model.rowCount() == 3
+    registry.error = sqlite3.OperationalError("database is locked")
+    other = _CountingRegistry(_numbered(7))
+    other.error = registry.error
+    model.set_registry(other)
+    assert (model.total, model.rowCount()) == (0, 0)
+    assert model.record_at(0) is None
+
+
+def test_other_sqlite_errors_propagate_and_reset_is_closed(qtbot) -> None:
+    registry = _CountingRegistry(_numbered(3))
+    model = FileTableModel(registry, FileQuery())
+    registry.error = sqlite3.OperationalError("no such table: files")
+    resets: list[str] = []
+    model.modelReset.connect(lambda: resets.append("end"))
+    with pytest.raises(sqlite3.OperationalError):
+        model.set_query(FileQuery(search="x"))
+    assert resets == ["end"]
+    assert model.rowCount() == 0
+
+
+def test_set_registry_with_query_resets_once(qtbot) -> None:
+    first = _CountingRegistry(_numbered(2))
+    second = _CountingRegistry(_numbered(5))
+    model = FileTableModel(first, FileQuery())
+    resets: list[int] = []
+    model.modelReset.connect(lambda: resets.append(1))
+
+    model.set_registry(second, FileQuery(search="x"))
+
+    assert resets == [1]
+    assert len(first.calls) == 1 and len(second.calls) == 1
+    assert model.query == FileQuery(search="x")
+    assert model.total == 5
+
+    model.set_registry(first)  # omitted query keeps the current one
+    assert model.query == FileQuery(search="x")

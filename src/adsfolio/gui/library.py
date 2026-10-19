@@ -2,26 +2,19 @@
 
 from __future__ import annotations
 
-import re
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
-from typing import Any, Callable, Sequence
+from typing import Any
 from urllib.parse import quote
 
 from ..citations import CitationFormatter, CitationStyle, citation_preference_key
 from ..formatting import html_to_text
+from ..pdf.arxiv import arxiv_id
 
 ISO8601_TIMESTAMP_FORMAT = "iso8601"
-_ARXIV_ID_PATTERN = re.compile(
-    r"(?<![A-Za-z0-9])((?:\d{4}\.\d{4,5}|[A-Za-z][A-Za-z0-9-]*(?:\.[A-Za-z]{2})?/\d{7})(?:v\d+)?)(?![A-Za-z0-9])",
-    re.IGNORECASE,
-)
-_LEGACY_ARXIV_BIBCODE_PATTERN = re.compile(
-    r"\d{4}arXiv(?P<identifier>\d{9})",
-    re.IGNORECASE,
-)
 
 
 class LibraryView(str, Enum):
@@ -44,7 +37,7 @@ def _first(value: Any) -> str:
     if value is None:
         return ""
     if isinstance(value, (list, tuple)):
-        return str(value[0]) if value and value[0] is not None else ""
+        return html_to_text(str(value[0])) if value and value[0] is not None else ""
     return html_to_text(str(value))
 
 
@@ -72,38 +65,6 @@ def _pub(record: dict[str, Any]) -> str:
 def _filename(record: dict[str, Any]) -> str:
     current_path = _text(record, "current_path")
     return Path(current_path).name if current_path else ""
-
-
-def _normalize_arxiv_candidate(value: Any) -> str:
-    text = html_to_text(str(value or ""))
-    legacy_match = _LEGACY_ARXIV_BIBCODE_PATTERN.search(text)
-    if legacy_match:
-        identifier = legacy_match.group("identifier")
-        return f"{identifier[:4]}.{identifier[4:]}"
-    match = _ARXIV_ID_PATTERN.search(text)
-    return match.group(1) if match else ""
-
-
-def arxiv_id(record: dict[str, Any]) -> str:
-    """Return the normalized arXiv identifier embedded in a file record."""
-    metadata = _metadata(record)
-    candidates = [
-        *(metadata.get(key, []) for key in ("arxiv", "arxiv_id", "identifier")),
-        record.get("arxiv"),
-        record.get("arxiv_id"),
-        record.get("doi"),
-        metadata.get("doi"),
-        record.get("bibcode"),
-        metadata.get("bibcode"),
-        record.get("current_path"),
-    ]
-    for candidate in candidates:
-        values = candidate if isinstance(candidate, (list, tuple)) else [candidate]
-        for value in values:
-            normalized = _normalize_arxiv_candidate(value)
-            if normalized:
-                return normalized
-    return ""
 
 
 def ads_url(bibcode: str) -> str:

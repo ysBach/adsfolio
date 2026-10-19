@@ -2,10 +2,132 @@
 
 from __future__ import annotations
 
+import os
 import shlex
 import subprocess
 import sys
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
+
+
+def _split_application(application: str) -> list[str]:
+    """Split a configured application command without invoking a shell."""
+    if sys.platform.startswith("win"):
+        import ctypes
+        from ctypes import wintypes
+
+        if not application.strip():
+            return []
+        shell32 = ctypes.WinDLL("shell32", use_last_error=True)
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        parse = shell32.CommandLineToArgvW
+        parse.argtypes = [wintypes.LPCWSTR, ctypes.POINTER(ctypes.c_int)]
+        parse.restype = ctypes.POINTER(wintypes.LPWSTR)
+        kernel32.LocalFree.argtypes = [wintypes.HLOCAL]
+        kernel32.LocalFree.restype = wintypes.HLOCAL
+        count = ctypes.c_int()
+        arguments = parse(application.strip(), ctypes.byref(count))
+        if not arguments:
+            raise ctypes.WinError(ctypes.get_last_error())
+        try:
+            return list(arguments[: count.value])
+        finally:
+            kernel32.LocalFree(ctypes.cast(arguments, wintypes.HLOCAL))
+    return shlex.split(application)
+
+
+def _without_frozen_paths(value: str | None, root: str | None) -> str | None:
+    """Remove search-path entries rooted in a frozen application directory."""
+    if not value or not root:
+        return value
+    try:
+        root_path = Path(root).resolve()
+    except (OSError, RuntimeError):
+        return value
+
+    kept: list[str] = []
+    for entry in value.split(os.pathsep):
+        if not entry:
+            kept.append(entry)
+            continue
+        try:
+            entry_path = Path(entry).resolve()
+            if entry_path == root_path or root_path in entry_path.parents:
+                continue
+        except (OSError, RuntimeError):
+            pass
+        kept.append(entry)
+    return os.pathsep.join(kept) if kept else None
+
+
+def _set_windows_dll_directory(path: str | None) -> None:
+    """Set the Windows DLL search directory when running a frozen app."""
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.SetDllDirectoryW.argtypes = [wintypes.LPCWSTR]
+    kernel32.SetDllDirectoryW.restype = wintypes.BOOL
+    if not kernel32.SetDllDirectoryW(path):
+        raise ctypes.WinError(ctypes.get_last_error())
+
+
+@contextmanager
+def _external_process_environment() -> Iterator[None]:
+    """Temporarily remove PyInstaller library-path changes for child apps."""
+    if not getattr(sys, "frozen", False):
+        yield
+        return
+
+    # Only restore keys we change; unrelated updates by workers must survive.
+    keys = (
+        "LD_LIBRARY_PATH",
+        "DYLD_LIBRARY_PATH",
+        "PATH",
+        "QT_PLUGIN_PATH",
+        "QML2_IMPORT_PATH",
+    )
+    saved_environment = {key: os.environ.get(key) for key in keys}
+    meipass = getattr(sys, "_MEIPASS", None)
+    try:
+        for key in ("QT_PLUGIN_PATH", "QML2_IMPORT_PATH"):
+            sanitized = _without_frozen_paths(os.environ.get(key), meipass)
+            if sanitized is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = sanitized
+        if sys.platform.startswith("linux"):
+            original = os.environ.get("LD_LIBRARY_PATH_ORIG")
+            if original is None:
+                os.environ.pop("LD_LIBRARY_PATH", None)
+            else:
+                os.environ["LD_LIBRARY_PATH"] = original
+        elif sys.platform == "darwin":
+            sanitized = _without_frozen_paths(
+                os.environ.get("DYLD_LIBRARY_PATH"), meipass
+            )
+            if sanitized is None:
+                os.environ.pop("DYLD_LIBRARY_PATH", None)
+            else:
+                os.environ["DYLD_LIBRARY_PATH"] = sanitized
+        elif sys.platform.startswith("win"):
+            path = _without_frozen_paths(os.environ.get("PATH"), meipass)
+            if path is None:
+                os.environ.pop("PATH", None)
+            else:
+                os.environ["PATH"] = path
+            if meipass:
+                _set_windows_dll_directory(None)
+        yield
+    finally:
+        for key, value in saved_environment.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+        if sys.platform.startswith("win") and meipass:
+            _set_windows_dll_directory(str(meipass))
 
 
 def _qt_open_path(path: Path) -> bool:
@@ -18,7 +140,8 @@ def _qt_open_path(path: Path) -> bool:
             "PySide6 is required for desktop file integration; "
             "install with `pip install 'adsfolio[gui]'`."
         ) from exc
-    return bool(QDesktopServices.openUrl(QUrl.fromLocalFile(str(path))))
+    with _external_process_environment():
+        return bool(QDesktopServices.openUrl(QUrl.fromLocalFile(str(path))))
 
 
 def _qt_open_url(url: str) -> bool:
@@ -31,21 +154,23 @@ def _qt_open_url(url: str) -> bool:
             "PySide6 is required for desktop file integration; "
             "install with `pip install 'adsfolio[gui]'`."
         ) from exc
-    return bool(QDesktopServices.openUrl(QUrl(str(url))))
+    with _external_process_environment():
+        return bool(QDesktopServices.openUrl(QUrl(str(url))))
 
 
 def _launch_application(application: str, target: str) -> bool:
     """Launch a configured application command with one target argument."""
     try:
-        command = shlex.split(application)
-    except ValueError:
+        command = _split_application(application)
+    except (ValueError, OSError):
         return False
     if not command:
         return False
     if sys.platform == "darwin" and len(command) == 1 and command[0].endswith(".app"):
         command = ["open", "-a", command[0]]
     try:
-        subprocess.Popen([*command, target], start_new_session=True)
+        with _external_process_environment():
+            subprocess.Popen([*command, target], start_new_session=True)
     except OSError:
         return False
     return True
@@ -148,15 +273,16 @@ def reveal_in_file_manager(path: Path) -> bool:
         return _open_parent(path)
 
     try:
-        result = subprocess.run(command, check=False, timeout=5)
+        with _external_process_environment():
+            result = subprocess.run(command, check=False, timeout=5)
     except (OSError, subprocess.TimeoutExpired):
         result = None
 
-    if result is not None:
-        # Explorer's documented success path returns 1, so only its launch
-        # failure (an OSError) is treated as failure above.
-        if sys.platform.startswith("win") or result.returncode == 0:
-            return True
+    # Explorer may return 1 after successfully selecting the file.
+    if result is not None and (
+        sys.platform.startswith("win") or result.returncode == 0
+    ):
+        return True
 
     if sys.platform.startswith("linux"):
         return _open_parent(path)

@@ -180,3 +180,20 @@ def test_build_columns_inserts_after_bibcode_with_correct_properties():
     }
     assert col_a.getter(record) == "2024: Test Title"
     assert col_b.getter(record) == "2024TEST...1A"
+
+
+def test_arxiv_column_uses_only_arxiv_dois():
+    arxiv_column = next(column for column in COLUMNS if column.key == "arxiv")
+
+    assert arxiv_column.getter({"doi": "10.1006/icar.1998.6100"}) == ""
+    assert (
+        arxiv_column.getter({"metadata": {"doi": ["10.48550/arXiv.2401.12345"]}})
+        == "2401.12345"
+    )
+
+
+def test_title_column_converts_html_in_list_metadata():
+    title_column = next(column for column in COLUMNS if column.key == "title")
+    record = {"metadata": {"title": ["2001 CC<SUB>21</SUB> &amp; more"]}}
+
+    assert title_column.getter(record) == "2001 CC21 & more"

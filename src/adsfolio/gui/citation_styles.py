@@ -363,7 +363,9 @@ class CitationStylesDialog(QDialog):
         try:
             self._set_editor_enabled(True)
             self.name_edit.setText(style.name)
+            self.name_edit.home(False)
             self.template_edit.setText(style.template)
+            self.template_edit.home(False)
 
             idx = self.author_format_combo.findData(style.author_format)
             if idx >= 0:
@@ -375,7 +377,9 @@ class CitationStylesDialog(QDialog):
             self.authors_when_truncated_spin.setMaximum(style.max_authors)
             self.authors_when_truncated_spin.setValue(style.authors_when_truncated)
             self.author_separator_edit.setText(style.author_separator)
+            self.author_separator_edit.home(False)
             self.author_truncation_suffix_edit.setText(style.author_truncation_suffix)
+            self.author_truncation_suffix_edit.home(False)
         finally:
             self._is_updating_ui = False
 

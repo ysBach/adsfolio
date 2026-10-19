@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import quote
 
-from PySide6.QtCore import QMimeData, Qt, Signal
+from PySide6.QtCore import QEvent, QMimeData, QSize, Qt, Signal
 from PySide6.QtGui import QColor, QDrag, QFont, QFontMetrics
 from PySide6.QtWidgets import (
     QApplication,
@@ -101,7 +101,7 @@ WRAP_OPPORTUNITY_AFTER = ("/", "_", "-", ".")
 def _wrap_opportunities(text: str) -> str:
     """Insert a zero-width space after each character that may end a line."""
     for character in WRAP_OPPORTUNITY_AFTER:
-        text = text.replace(character, f"{character}​")
+        text = text.replace(character, f"{character}\u200b")
     return text
 
 
@@ -150,14 +150,14 @@ class DragHandle(QLabel):
         self.setFixedWidth(24)
         self.setAlignment(Qt.AlignCenter | Qt.AlignTop)
 
-    def mousePressEvent(self, event: Any) -> None:  # noqa: N802
+    def mousePressEvent(self, event: Any) -> None:
         """Record the starting point for an explicit row drag."""
         if event.button() == Qt.LeftButton:
             self._press_position = event.position()
             self.setCursor(Qt.ClosedHandCursor)
         super().mousePressEvent(event)
 
-    def mouseMoveEvent(self, event: Any) -> None:  # noqa: N802
+    def mouseMoveEvent(self, event: Any) -> None:
         """Start a row drag after the pointer travels beyond Qt's threshold."""
         if (
             self._press_position is not None
@@ -173,7 +173,7 @@ class DragHandle(QLabel):
             self._press_position = None
         super().mouseMoveEvent(event)
 
-    def mouseReleaseEvent(self, event: Any) -> None:  # noqa: N802
+    def mouseReleaseEvent(self, event: Any) -> None:
         """Restore the normal drag-handle cursor."""
         self._press_position = None
         self.setCursor(Qt.OpenHandCursor)
@@ -193,17 +193,17 @@ class MetadataRowsContainer(QWidget):
         self.rows_layout.setSpacing(0)
         self.rows_layout.setAlignment(Qt.AlignTop)
 
-    def dragEnterEvent(self, event: Any) -> None:  # noqa: N802
+    def dragEnterEvent(self, event: Any) -> None:
         """Accept drags produced by a detail-row handle."""
         if event.mimeData().hasFormat(ROW_DRAG_MIME_TYPE):
             event.acceptProposedAction()
 
-    def dragMoveEvent(self, event: Any) -> None:  # noqa: N802
+    def dragMoveEvent(self, event: Any) -> None:
         """Keep accepting valid detail-row drags across the container."""
         if event.mimeData().hasFormat(ROW_DRAG_MIME_TYPE):
             event.acceptProposedAction()
 
-    def dropEvent(self, event: Any) -> None:  # noqa: N802
+    def dropEvent(self, event: Any) -> None:
         """Emit the source row and its destination index."""
         if not event.mimeData().hasFormat(ROW_DRAG_MIME_TYPE):
             return
@@ -219,6 +219,35 @@ class MetadataRowsContainer(QWidget):
                 break
         self.row_dropped.emit(source, target)
         event.acceptProposedAction()
+
+    def minimumSizeHint(self) -> QSize:
+        """Fit within the scroll viewport width while honoring wrapped row height."""
+        hint = super().minimumSizeHint()
+        if self.hasHeightForWidth() and self.width() > 0:
+            return QSize(0, max(hint.height(), self.heightForWidth(self.width())))
+        return QSize(0, hint.height())
+
+    def sizeHint(self) -> QSize:
+        """Report height-for-width when laid out inside the scroll viewport."""
+        hint = super().sizeHint()
+        if self.hasHeightForWidth() and self.width() > 0:
+            return QSize(
+                hint.width(),
+                max(hint.height(), self.heightForWidth(self.width())),
+            )
+        return hint
+
+    def resizeEvent(self, event: Any) -> None:
+        """Recompute vertical size hints when the scroll viewport width changes."""
+        super().resizeEvent(event)
+        if event.oldSize().width() != event.size().width():
+            for index in range(self.rows_layout.count()):
+                widget = self.rows_layout.itemAt(index).widget()
+                if isinstance(widget, MetadataRow):
+                    widget._invalidate_row_geometry()
+        self.rows_layout.invalidate()
+        self.rows_layout.activate()
+        self.updateGeometry()
 
 
 class CopyableLabel(QLabel):
@@ -238,7 +267,11 @@ class CopyableLabel(QLabel):
         self.setToolTip("Click to copy")
         self.setTextInteractionFlags(Qt.TextSelectableByMouse)
 
-    def mouseReleaseEvent(self, event: Any) -> None:  # noqa: N802
+    def minimumSizeHint(self) -> QSize:
+        """Allow narrow value columns to compute height-for-width at actual width."""
+        return QSize(0, super().minimumSizeHint().height())
+
+    def mouseReleaseEvent(self, event: Any) -> None:
         """Copy the label text after a primary-button click."""
         if event.button() == Qt.LeftButton and self.text():
             QApplication.clipboard().setText(self._copy_text)
@@ -316,10 +349,12 @@ class MetadataRow(QWidget):
         self._unbounded_value_height = self.value.maximumHeight()
         value_layout.addWidget(self.value)
         self.author_toggle = QToolButton(value_box)
+        self.author_toggle.setMinimumWidth(0)
         self.author_toggle.clicked.connect(self._toggle_authors)
         value_layout.addWidget(self.author_toggle, 0, Qt.AlignLeft)
         self.author_toggle.hide()
         self.abstract_toggle = QToolButton(value_box)
+        self.abstract_toggle.setMinimumWidth(0)
         self.abstract_toggle.clicked.connect(self._toggle_abstract)
         value_layout.addWidget(self.abstract_toggle, 0, Qt.AlignLeft)
         self.abstract_toggle.hide()
@@ -339,6 +374,13 @@ class MetadataRow(QWidget):
         self.lock_button.setVisible(self._lockable)
         layout.addWidget(self.lock_button, 0, Qt.AlignTop)
         self._render_lock()
+
+    def minimumSizeHint(self) -> QSize:
+        """Allow horizontal shrinking to the viewport while preserving wrapped height."""
+        hint = super().minimumSizeHint()
+        if self.hasHeightForWidth() and self.width() > 0:
+            return QSize(0, self.heightForWidth(self.width()))
+        return QSize(0, hint.height())
 
     @staticmethod
     def _as_list(value: Any) -> list[str]:
@@ -413,6 +455,7 @@ class MetadataRow(QWidget):
             self.author_toggle.setText(
                 "Show less" if self._show_all_authors else f"Show {remaining} more"
             )
+        self._invalidate_row_geometry()
         self.size_changed.emit()
 
     def _toggle_authors(self) -> None:
@@ -427,6 +470,7 @@ class MetadataRow(QWidget):
             self.value.setMinimumHeight(0)
             self.value.setMaximumHeight(self._unbounded_value_height)
             self.abstract_toggle.hide()
+            self._invalidate_row_geometry()
             return
         collapsed_height = 3 * self.value.fontMetrics().lineSpacing()
         self.value.setMinimumHeight(0)
@@ -443,21 +487,28 @@ class MetadataRow(QWidget):
         )
         self.abstract_toggle.setAccessibleName(self.abstract_toggle.toolTip())
         self.abstract_toggle.show()
+        self._invalidate_row_geometry()
         self.size_changed.emit()
 
     def _toggle_abstract(self) -> None:
         """Toggle the abstract between preview and full text."""
         self._show_full_abstract = not self._show_full_abstract
         self._render_abstract()
-        self.layout().invalidate()
-        self.layout().activate()
-        self.adjustSize()
-        parent = self.parentWidget()
-        if parent is not None and parent.layout() is not None:
-            parent.layout().invalidate()
-            parent.layout().activate()
-            parent.adjustSize()
-            parent.updateGeometry()
+
+    def _invalidate_row_geometry(self) -> None:
+        """Clear cached height-for-width state on the value container and row."""
+        self.value.updateGeometry()
+        self._value_layout.invalidate()
+        value_box = self.value.parentWidget()
+        if value_box is not None:
+            value_box.updateGeometry()
+            if QApplication.instance() is not None:
+                QApplication.sendEvent(value_box, QEvent(QEvent.LayoutRequest))
+        if self.layout() is not None:
+            self.layout().invalidate()
+        self.updateGeometry()
+        if QApplication.instance() is not None:
+            QApplication.sendEvent(self, QEvent(QEvent.LayoutRequest))
 
     def _render_lock(self) -> None:
         self.lock_button.setText("🔒")
@@ -481,6 +532,7 @@ class MetadataRow(QWidget):
         """Set visibility for this row's applicable edit and lock buttons."""
         self.edit_button.setVisible(self._editable and show_edit)
         self.lock_button.setVisible(self._lockable and show_lock)
+        self._invalidate_row_geometry()
 
     def set_content_style(self, font: QFont | None, color: QColor | None) -> None:
         """Apply the configured font and color to this row's value."""
@@ -590,6 +642,7 @@ class DetailPane(QWidget):
                 show_edit=self._show_edit_buttons,
                 show_lock=self._show_lock_buttons,
             )
+        self._refresh_rows_geometry()
 
     def set_application_commands(
         self,
@@ -605,8 +658,7 @@ class DetailPane(QWidget):
         """Set the pixel separation between adjacent metadata rows."""
         self._row_spacing = spacing if spacing is None else max(0, int(spacing))
         self._rows.rows_layout.setSpacing(self._row_spacing or 0)
-        self._rows.rows_layout.invalidate()
-        self._rows.updateGeometry()
+        self._refresh_rows_geometry()
 
     def set_label_bold(self, enabled: bool) -> None:
         """Set whether the left-column metadata labels use bold text."""
@@ -623,7 +675,16 @@ class DetailPane(QWidget):
                 row.name.setFixedWidth(label_width)
         for row in self._row_widgets.values():
             row.set_label_bold(self._label_bold)
+        self._refresh_rows_geometry()
+
+    def _refresh_rows_geometry(self) -> None:
+        """Activate row layouts and update scroll container geometry."""
+        for row in self._row_widgets.values():
+            row._invalidate_row_geometry()
+        if QApplication.instance() is not None:
+            QApplication.sendEvent(self._rows, QEvent(QEvent.LayoutRequest))
         self._rows.rows_layout.invalidate()
+        self._rows.rows_layout.activate()
         self._rows.updateGeometry()
 
     def available_rows(self) -> list[tuple[str, str]]:
@@ -660,12 +721,13 @@ class DetailPane(QWidget):
         destination = max(0, min(destination, len(keys) - 1))
         if source == destination:
             return
-        item = self._rows.rows_layout.takeAt(source)
-        widget = item.widget()
+        widget = self._rows.rows_layout.itemAt(source).widget()
         if widget is None:
             return
+        self._rows.rows_layout.removeWidget(widget)
         self._rows.rows_layout.insertWidget(destination, widget)
         self._row_order = self.row_keys()
+        self._refresh_rows_geometry()
         self.row_order_changed.emit(self._row_order)
 
     def _move_dropped_row(self, key: str, destination: int) -> None:
@@ -709,12 +771,15 @@ class DetailPane(QWidget):
             item = self._rows.rows_layout.takeAt(0)
             widget = item.widget()
             if widget is not None:
+                widget.hide()
+                widget.setParent(None)
                 widget.deleteLater()
         self._labels = {}
         self._row_widgets = {}
         self._row_labels = {}
         self._actions.setEnabled(record is not None)
         if record is None:
+            self._refresh_rows_geometry()
             return
         raw_metadata = record.get("metadata")
         self._metadata = (
@@ -746,6 +811,7 @@ class DetailPane(QWidget):
                 locked=key in locked,
                 display_text=display_text,
             )
+        self._refresh_rows_geometry()
 
     def _fill_missing_cached_metadata(
         self, cached_document: dict[str, Any] | None
@@ -876,7 +942,7 @@ class DetailPane(QWidget):
         for key, value in self._metadata.items():
             if (
                 key in {"current_filename", "source"}
-                or key.startswith("_adsapi_")
+                or key.startswith("_adsfolio_")
                 or key in known_metadata_keys
             ):
                 continue
@@ -942,10 +1008,13 @@ class DetailPane(QWidget):
         row.edit_requested.connect(self._edit_metadata)
         row.lock_changed.connect(self._set_lock)
         row.link_requested.connect(self._open_external_url)
+        row.size_changed.connect(self._refresh_rows_geometry)
         self._row_widgets[key] = row
         self._row_labels[key] = label
         self._labels[key] = row.value
         self._rows.rows_layout.addWidget(row)
+        if self._rows.isVisible():
+            row.show()
 
     def _edit_metadata(self, key: str) -> None:
         original = self._metadata.get(key, "")

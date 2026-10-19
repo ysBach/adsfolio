@@ -5,13 +5,16 @@ from __future__ import annotations
 import logging
 import threading
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Any, Callable, Protocol
+from typing import Any, Protocol
 
 from PySide6.QtCore import QEventLoop, QObject, Qt, QThread, QTimer, Signal, Slot
 
 from ..client import ADSClient
+from ..config import AuthenticationError
+from ..pdf.files import iter_pdf_paths
 from ..pdf.identify import PdfIdentifier
 from ..pdf.identify_settings import IdentifySettings
 from ..pdf.registry import CentralPdfRegistryState, open_registry_state
@@ -116,7 +119,10 @@ class _LibraryWatchWorker(QObject):
             if root_stat.st_dev == 0 or root_stat.st_ino == 0:
                 raise RuntimeError("stable filesystem identity unavailable")
             self._registry = open_registry_state(self.root)
-            self._client = ADSClient()
+            try:
+                self._client = ADSClient()
+            except AuthenticationError:
+                self._client = None
             identifier = PdfIdentifier(self._client)
             renamer = PdfRenamer(client=self._client)
             self._watcher = PdfWatcher(identifier=identifier, renamer=renamer)
@@ -175,14 +181,30 @@ class _LibraryWatchWorker(QObject):
         self._observer = observer
 
     def _scan_snapshots(self) -> list[FileSnapshot]:
-        paths = self.root.rglob("*.pdf") if self._recursive else self.root.glob("*.pdf")
+        """Snapshot every PDF under the root.
+
+        Raises
+        ------
+        OSError
+            If a directory cannot be listed or a file cannot be examined for a
+            reason other than having disappeared. The scan is then incomplete
+            and must not be reconciled.
+
+        Notes
+        -----
+        Symbolic links to files outside the root are skipped.
+        """
         snapshots: list[FileSnapshot] = []
-        for path in paths:
+        for path in iter_pdf_paths(self.root, self._recursive):
             if path.name.startswith("."):
+                continue
+            if not path.resolve().is_relative_to(self.root):
+                # A symbolic link to a file outside the root is not part of
+                # the library, as in PdfWatcher._changed_pdf_paths.
                 continue
             try:
                 snapshot = FileSnapshot.from_path(path)
-            except OSError:
+            except FileNotFoundError:
                 continue
             if snapshot.device == 0 or snapshot.inode == 0:
                 raise RuntimeError("stable filesystem identity unavailable")
@@ -192,6 +214,8 @@ class _LibraryWatchWorker(QObject):
     def _enqueue(self, path: Path, source: WatchSource) -> None:
         candidate = Path(path).resolve()
         if candidate.suffix.lower() != ".pdf" or candidate.name.startswith("."):
+            return
+        if not candidate.is_relative_to(self.root):
             return
         with self._pending_lock:
             self._pending[(candidate, source)] = None

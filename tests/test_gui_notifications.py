@@ -16,6 +16,30 @@ def test_notice_bar_shows_one_item_and_pending_count(qtbot):
     assert bar.pending_count.text() == "1 more"
 
 
+def test_notice_bar_exposes_paths_for_current_and_queued_files(qtbot, tmp_path) -> None:
+    bar = NoticeBar()
+    qtbot.addWidget(bar)
+    first = tmp_path / "one" / "paper.pdf"
+    second = tmp_path / "two" / "paper.pdf"
+    message = "paper.pdf: No ADS record identified"
+    bar.enqueue(Notice("one", message, details=str(first)))
+    bar.enqueue(Notice("two", message, details=str(second)))
+
+    assert bar.message.toolTip() == str(first)
+    assert str(first) in bar.pending_count.toolTip()
+    assert str(second) in bar.pending_count.toolTip()
+
+    bar.dismiss("one")
+
+    assert bar.message.toolTip() == str(second)
+    assert bar.pending_count.toolTip() == ""
+
+    bar.dismiss("two")
+
+    assert bar.message.toolTip() == ""
+    assert bar.pending_count.toolTip() == ""
+
+
 def test_notice_replacement_does_not_duplicate_identity(qtbot):
     bar = NoticeBar()
     qtbot.addWidget(bar)
@@ -145,3 +169,28 @@ def test_identify_all_excludes_retry_payloads_from_mixed_queue(qtbot) -> None:
     bar.action_all_button.click()
 
     assert emitted == [("manual-one", "manual-two")]
+
+
+def test_notice_bar_escapes_ampersand_in_button_labels(qtbot) -> None:
+    bar = NoticeBar()
+    qtbot.addWidget(bar)
+    bar.enqueue(
+        Notice(
+            "one",
+            "One",
+            action=NoticeAction.IDENTIFY_RENAME,
+            payload="one",
+        )
+    )
+    bar.enqueue(
+        Notice(
+            "two",
+            "Two",
+            action=NoticeAction.IDENTIFY_RENAME,
+            payload="two",
+        )
+    )
+
+    assert NoticeAction.IDENTIFY_RENAME.value == "Identify & Rename"
+    assert bar.action_button.text() == "Identify && Rename"
+    assert bar.action_all_button.text() == "Identify && Rename All"

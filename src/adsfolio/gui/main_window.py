@@ -7,7 +7,7 @@ import logging
 import sqlite3
 from collections.abc import Callable, Sequence
 from copy import deepcopy
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Generic, TypeVar
 
@@ -37,6 +37,7 @@ from PySide6.QtWidgets import (
     QProgressBar,
     QSplitter,
     QToolBar,
+    QToolButton,
     QTreeView,
     QTreeWidget,
     QTreeWidgetItem,
@@ -47,11 +48,12 @@ from PySide6.QtWidgets import (
 from ..citations import CitationStyle, citation_preference_key
 from ..config import Config
 from ..pdf.identify_settings import IdentifySettings
-from ..pdf.registry import CentralPdfRegistryState, PdfRegistry
+from ..pdf.registry import CentralPdfRegistryState, LibraryRefresh, PdfRegistry
 from ..pdf.rename_settings import RenameSettings
 from ..pdf.watch_session import WatchEvent, WatchOutcome, WatchState
 from ..pdf.watcher import WatchIdentifyPolicy
 from .ads_library_dialog import AdsLibraryDialog
+from .ads_library_export_dialog import ExportAdsLibraryDialog
 from .appearance import AppearanceDialog
 from .citation_styles import CitationStylesDialog
 from .config import RootEntry, load_config, save_config
@@ -68,11 +70,16 @@ from .models import (
 )
 from .notifications import Notice, NoticeAction, NoticeBar
 from .osint import open_path, open_url, reveal_in_file_manager
+from .references_dialog import ReferencesDialog
+from .refresh_job import LibraryRefreshJob
+from .token_dialog import TokenDialog
 from .watch import LibraryWatchController, WatchFailure
 
 logger = logging.getLogger(__name__)
 
 _SettingsT = TypeVar("_SettingsT")
+DEFAULT_WINDOW_SIZE = (1280, 780)
+DEFAULT_SPLITTER_SIZES = [220, 700, 360]
 
 
 class _SettingsPersistenceError(OSError):
@@ -167,6 +174,18 @@ class _SettingsPersistenceCoordinator(Generic[_SettingsT]):
             raise _SettingsPersistenceError(str(exc)) from exc
 
 
+@dataclass(frozen=True)
+class _LocalRefreshContext:
+    """Retain the originating view while a local scan runs."""
+
+    root: Path
+    selected: tuple[dict[str, Any], ...]
+    current: dict[str, Any] | None
+    query: FileQuery
+    loaded: int
+    scroll: int
+
+
 class MainWindow(QMainWindow):
     """Browse registered PDF roots with a paged table and metadata pane."""
 
@@ -177,7 +196,7 @@ class MainWindow(QMainWindow):
         watch_controller: LibraryWatchController | None = None,
     ) -> None:
         super().__init__(parent)
-        self.setWindowTitle("adsfolio PDF Library")
+        self.setWindowTitle("ADSfolio")
         self.config = load_config()
         self.columns = build_columns(self.config.citation_styles)
         self.registries: dict[str, PdfRegistry] = {}
@@ -212,13 +231,20 @@ class MainWindow(QMainWindow):
         )
         self.job: Any | None = None
         self._ads_library_dialog: AdsLibraryDialog | None = None
+        self._ads_library_export_dialog: ExportAdsLibraryDialog | None = None
         self._close_requested = False
         self._refresh_selection_id: int | None = None
         self._ads_match_candidates: list[dict[str, str]] = []
-        self._ambiguous_ads_match_context: tuple[str, int | None] | None = None
+        self._ambiguous_ads_match_context: tuple[Path, str, int | None] | None = None
         self._pending_watch_refresh_roots: set[Path] = set()
         self._watch_refresh_selection_id: int | None = None
         self._pending_watch_dialog: tuple[str, Path] | None = None
+        self._pending_ads_refresh: (
+            tuple[Path, tuple[str, ...], int | None, str | None] | None
+        ) = None
+        self._ads_refresh_root: Path | None = None
+        self._local_refresh_context: _LocalRefreshContext | None = None
+        self._local_refresh_result: LibraryRefresh | None = None
         self._foreground_paused_root: Path | None = None
         self._watch_refresh_timer = QTimer(self)
         self._watch_refresh_timer.setSingleShot(True)
@@ -263,11 +289,12 @@ class MainWindow(QMainWindow):
         header.setContextMenuPolicy(Qt.CustomContextMenu)
         header.customContextMenuRequested.connect(self._show_header_context_menu)
         self._rebuild_table_delegates()
+        self.model.modelReset.connect(self._sync_detail_and_selection_actions)
         self.table.doubleClicked.connect(self._open_index)
         self.table.clicked.connect(self._table_clicked)
         self.table.selectionModel().currentChanged.connect(self._current_changed)
         self.table.selectionModel().selectionChanged.connect(
-            lambda *_args: self._sync_ads_library_action()
+            lambda *_args: self._sync_detail_and_selection_actions()
         )
         self.table.setContextMenuPolicy(Qt.CustomContextMenu)
         self.table.customContextMenuRequested.connect(self._table_menu)
@@ -289,6 +316,9 @@ class MainWindow(QMainWindow):
         splitter.addWidget(self.sidebar)
         splitter.addWidget(self.table)
         splitter.addWidget(self.detail)
+        splitter.setStretchFactor(0, 0)
+        splitter.setStretchFactor(1, 1)
+        splitter.setStretchFactor(2, 0)
         self.notice_bar = NoticeBar(self)
         central = QWidget(self)
         central_layout = QVBoxLayout(central)
@@ -326,27 +356,52 @@ class MainWindow(QMainWindow):
         self.job_progress.hide()
         self.status.addPermanentWidget(self.job_progress)
         self._build_actions()
+        toolbar.addSeparator()
+        toolbar.addAction(self.refresh_action)
+        self.ads_refresh_button = QToolButton(self)
+        self.ads_refresh_button.setText("ADS Refresh")
+        self.ads_refresh_button.setPopupMode(QToolButton.InstantPopup)
+        self.ads_refresh_button.setToolTip(
+            "Update ADS metadata and apply saved rename rules"
+        )
+        ads_menu = QMenu(self.ads_refresh_button)
+        ads_menu.addAction(self.refresh_selected_ads_action)
+        ads_menu.addAction(self.update_selected_ads_action)
+        ads_menu.addSeparator()
+        ads_menu.addAction(self.refresh_all_ads_action)
+        ads_menu.addAction(self.refresh_all_citation_metrics_action)
+        self.ads_refresh_button.setMenu(ads_menu)
+        toolbar.addWidget(self.ads_refresh_button)
+        self._sync_refresh_actions()
         self._apply_table_appearance()
 
     def _build_actions(self) -> None:
         file_menu = self.menuBar().addMenu("File")
         self.add_action = QAction("Add Library Root…", self)
+        self.local_references_action = QAction("Local References…", self)
+        self.local_references_action.triggered.connect(self._open_local_references)
         self.remove_action = QAction("Remove Root", self)
         self.refresh_action = QAction("Refresh", self)
         self.refresh_action.setShortcut("F5")
+        self.refresh_action.setToolTip(
+            "Scan local PDFs and reconcile added, changed, moved, and missing files"
+        )
         self.reconcile_file_facts_action = QAction("Reconcile File Facts…", self)
         self.load_more_action = QAction("Load Next Page", self)
         self.remove_missing_action = QAction("Remove Missing Registry Records…", self)
         self.quit_action = QAction("Quit", self)
         self.add_action.triggered.connect(self._add_root)
         self.remove_action.triggered.connect(self._remove_root)
-        self.refresh_action.triggered.connect(self.refresh)
-        self.reconcile_file_facts_action.triggered.connect(self._reconcile_file_facts)
+        self.refresh_action.triggered.connect(lambda: self._refresh_local_files())
+        self.reconcile_file_facts_action.triggered.connect(
+            lambda: self._refresh_local_files()
+        )
         self.load_more_action.triggered.connect(self._load_next_page)
         self.remove_missing_action.triggered.connect(self._remove_missing_records)
         self.quit_action.triggered.connect(self.close)
         for action in (
             self.add_action,
+            self.local_references_action,
             self.remove_action,
             self.refresh_action,
             self.reconcile_file_facts_action,
@@ -356,17 +411,31 @@ class MainWindow(QMainWindow):
         ):
             file_menu.addAction(action)
         tools = self.menuBar().addMenu("Tools")
+        self.token_action = QAction("NASA ADS Token…", self)
+        self.token_action.triggered.connect(lambda: TokenDialog(self).exec())
+        tools.addAction(self.token_action)
         self.profile_action = QAction("My Publication Profile…", self)
         self.citation_styles_action = QAction("Custom Citation Styles…", self)
         self.identify_action = QAction("Identify…", self)
         self.rename_action = QAction("Rename…", self)
         self.cancel_job_action = QAction("Cancel Current Job", self)
-        self.refresh_selected_ads_action = QAction("Refresh Selected ADS Record", self)
-        self.refresh_all_ads_action = QAction("Refresh All ADS Records…", self)
+        self.refresh_selected_ads_action = QAction(
+            "Refresh and Rename Selected from ADS", self
+        )
+        self.update_selected_ads_action = QAction(
+            "Update and Rename Selected by Identifier…", self
+        )
+        self.update_selected_ads_action.triggered.connect(
+            lambda: self._update_selected_from_ads("")
+        )
+        self.refresh_all_ads_action = QAction(
+            "Refresh and Rename All ADS Records…", self
+        )
         self.refresh_all_citation_metrics_action = QAction(
-            "Refresh All Citation Splits…", self
+            "Refresh and Rename All Citation Splits…", self
         )
         self.add_to_ads_library_action = QAction("Add to ADS Library…", self)
+        self.export_ads_library_action = QAction("Export ADS Library…", self)
         self.watch_current_action = QAction("Watch Current Library", self)
         self.watch_on_start_action = QAction("Autowatch at Start", self)
         self.auto_process_action = QAction("Automatically Identify & Rename", self)
@@ -388,6 +457,7 @@ class MainWindow(QMainWindow):
             self._refresh_all_citation_metrics
         )
         self.add_to_ads_library_action.triggered.connect(self._add_to_ads_library)
+        self.export_ads_library_action.triggered.connect(self._export_ads_library)
         self.watch_current_action.triggered.connect(self._toggle_current_watch)
         self.watch_on_start_action.triggered.connect(
             lambda checked: self._set_current_watch_policy("watch_on_start", checked)
@@ -408,6 +478,7 @@ class MainWindow(QMainWindow):
         tools.addAction(self.refresh_all_ads_action)
         tools.addAction(self.refresh_all_citation_metrics_action)
         tools.addAction(self.add_to_ads_library_action)
+        tools.addAction(self.export_ads_library_action)
         tools.addSeparator()
         tools.addAction(self.watch_current_action)
         tools.addAction(self.watch_on_start_action)
@@ -451,8 +522,12 @@ class MainWindow(QMainWindow):
             self.restoreGeometry(
                 QByteArray.fromBase64(self.config.window_geometry.encode())
             )
+        else:
+            self.resize(*DEFAULT_WINDOW_SIZE)
         if self.config.splitter_sizes:
             self.splitter.setSizes(self.config.splitter_sizes)
+        else:
+            self.splitter.setSizes(list(DEFAULT_SPLITTER_SIZES))
         for entry in self.config.roots:
             try:
                 self._register_root(
@@ -510,7 +585,8 @@ class MainWindow(QMainWindow):
         key = str(path)
         if key not in self.registries:
             registry = PdfRegistry(path)
-            registry.catalog.discover_root(path, recursive=recursive)
+            if path.is_dir():
+                registry.catalog.discover_root(path, recursive=recursive)
             self.registries[key] = registry
             self.root_entries[key] = RootEntry(
                 path=key,
@@ -572,14 +648,54 @@ class MainWindow(QMainWindow):
             self.auto_process_action.setChecked(
                 entry.auto_process_new_pdfs if entry is not None else False
             )
+            if (
+                self._local_refresh_context is not None
+                and self._local_refresh_context.root == root
+            ):
+                self.watch_current_action.setEnabled(False)
         finally:
             del blockers
 
     def _sync_ads_library_action(self) -> None:
-        """Enable the ADS library action only for an available current window."""
-        if not hasattr(self, "add_to_ads_library_action"):
+        """Synchronize ADS library actions with current window activity."""
+        if hasattr(self, "add_to_ads_library_action"):
+            self.add_to_ads_library_action.setEnabled(self._can_add_to_ads_library())
+        if hasattr(self, "export_ads_library_action"):
+            self.export_ads_library_action.setEnabled(self._can_export_ads_library())
+        self._sync_refresh_actions()
+
+    def _sync_refresh_actions(self) -> None:
+        """Enable refresh controls only when their root and selection are usable."""
+        if not hasattr(self, "refresh_selected_ads_action"):
             return
-        self.add_to_ads_library_action.setEnabled(self._can_add_to_ads_library())
+        available = (
+            self.current_root is not None
+            and self.job is None
+            and self._pending_watch_dialog is None
+            and self._pending_ads_refresh is None
+            and self._local_refresh_context is None
+            and not self._close_requested
+        )
+        record = self._selected_record()
+        bibcode = (
+            (record.get("metadata") or {}).get("bibcode") or record.get("bibcode")
+            if record
+            else None
+        )
+        self.refresh_action.setEnabled(available)
+        self.reconcile_file_facts_action.setEnabled(available)
+        self.remove_missing_action.setEnabled(available)
+        self.refresh_selected_ads_action.setEnabled(
+            available
+            and bool(bibcode)
+            and not bool((record.get("metadata") or {}).get("_adsfolio_metadata_stale"))
+        )
+        self.update_selected_ads_action.setEnabled(available and record is not None)
+        self.refresh_all_ads_action.setEnabled(available)
+        self.refresh_all_citation_metrics_action.setEnabled(available)
+        if hasattr(self, "ads_refresh_button"):
+            self.ads_refresh_button.setEnabled(available)
+        self._sync_watch_actions()
 
     def _can_add_to_ads_library(self) -> bool:
         """Return whether this window can open an ADS library dialog."""
@@ -587,6 +703,16 @@ class MainWindow(QMainWindow):
             self.current_root is not None
             and self.job is None
             and self._ads_library_dialog is None
+            and self._ads_library_export_dialog is None
+        )
+
+    def _can_export_ads_library(self) -> bool:
+        """Return whether this window can open the remote export dialog."""
+        return (
+            not self._close_requested
+            and self.job is None
+            and self._ads_library_dialog is None
+            and self._ads_library_export_dialog is None
         )
 
     def _selected_records(self) -> tuple[dict[str, Any], ...]:
@@ -605,6 +731,14 @@ class MainWindow(QMainWindow):
         if self._ads_library_dialog is dialog:
             self._ads_library_dialog = None
             self._sync_ads_library_action()
+
+    def _ads_library_export_dialog_closed(self, dialog: ExportAdsLibraryDialog) -> None:
+        """Release the window's ADS export dialog after it closes."""
+        if self._ads_library_export_dialog is dialog:
+            self._ads_library_export_dialog = None
+            self._sync_ads_library_action()
+            if self._close_requested and self.job is None:
+                QTimer.singleShot(0, self.close)
 
     def _add_to_ads_library(self) -> None:
         """Open an ADS library dialog with immutable local record snapshots."""
@@ -633,6 +767,30 @@ class MainWindow(QMainWindow):
         )
         self._ads_library_dialog = dialog
         dialog.finished.connect(lambda _result: self._ads_library_dialog_closed(dialog))
+        self._sync_ads_library_action()
+        dialog.show()
+
+    def _open_local_references(self) -> None:
+        """Open local bibliography intake and export without requiring a PDF root."""
+        try:
+            dialog = ReferencesDialog(parent=self)
+        except (OSError, ValueError, sqlite3.Error) as exc:
+            QMessageBox.warning(self, "Local references", str(exc))
+            return
+        dialog.references_changed.connect(self.refresh)
+        dialog.exec()
+        dialog.deleteLater()
+
+    def _export_ads_library(self) -> None:
+        """Open the remote ADS library export dialog."""
+        if not self._can_export_ads_library():
+            self._sync_ads_library_action()
+            return
+        dialog = ExportAdsLibraryDialog(parent=self)
+        self._ads_library_export_dialog = dialog
+        dialog.finished.connect(
+            lambda _result: self._ads_library_export_dialog_closed(dialog)
+        )
         self._sync_ads_library_action()
         dialog.show()
 
@@ -676,6 +834,12 @@ class MainWindow(QMainWindow):
             self._sync_watch_actions()
             return
         root = self.current_root.resolve()
+        if (
+            self._local_refresh_context is not None
+            and self._local_refresh_context.root == root
+        ):
+            self._sync_watch_actions()
+            return
         if checked:
             self._start_root_watch(root)
         elif not self.watch_controller.stop_root(root):
@@ -767,7 +931,11 @@ class MainWindow(QMainWindow):
             return
         self._pending_watch_dialog = None
         self._foreground_paused_root = root
-        if kind == "identify":
+        if kind == "ads_refresh":
+            self._start_pending_ads_refresh(root)
+        elif kind == "local_refresh":
+            self._launch_local_refresh(root)
+        elif kind == "identify":
             self._open_identify_dialog(root)
         else:
             self._open_rename_dialog(root)
@@ -866,7 +1034,11 @@ class MainWindow(QMainWindow):
             return
         state = event.state
         destination = outcome.destination or event.path
-        message = outcome.message or f"{state.value.title()}: {destination.name}"
+        message = (
+            f"{destination.name}: {outcome.message}"
+            if outcome.message
+            else f"{state.value.title()}: {destination.name}"
+        )
         self.notice_bar.enqueue(
             Notice(
                 self._watch_notice_key(event),
@@ -883,6 +1055,7 @@ class MainWindow(QMainWindow):
                 action=(NoticeAction.RETRY if state is WatchState.FAILED else None),
                 payload=event,
                 root=event.root,
+                details=str(destination),
             )
         )
         if state in {
@@ -1027,8 +1200,7 @@ class MainWindow(QMainWindow):
             tertiary_order_by=self.current_query.tertiary_order_by,
         )
         registry = self.registries[str(self.current_root)]
-        self.model.set_registry(registry)
-        self.model.set_query(self.current_query)
+        self.model.set_registry(registry, self.current_query)
         if kind == "root":
             self._populate_views(registry)
         self._update_status()
@@ -1048,8 +1220,13 @@ class MainWindow(QMainWindow):
         self._update_status()
 
     def _current_changed(self, current: QModelIndex, previous: QModelIndex) -> None:
+        del previous
         selected = self.table.selectionModel().selectedRows()
-        record = self.model.record_at(current.row()) if len(selected) <= 1 else None
+        record = (
+            self.model.record_at(current.row())
+            if current.isValid() and len(selected) <= 1
+            else None
+        )
         cached_document = None
         if record is not None and self.current_root is not None:
             metadata = record.get("metadata")
@@ -1075,6 +1252,11 @@ class MainWindow(QMainWindow):
             self.current_root or Path(),
             cached_document,
         )
+        self._sync_ads_library_action()
+
+    def _sync_detail_and_selection_actions(self) -> None:
+        """Synchronize the detail pane and actions after selection or model changes."""
+        self._current_changed(self.table.currentIndex(), QModelIndex())
 
     def _open_index(self, index: QModelIndex) -> None:
         record = self.model.record_at(index.row())
@@ -1204,7 +1386,12 @@ class MainWindow(QMainWindow):
             lambda checked: self._set_root_recursive(root, checked)
         )
         menu.addSeparator()
-        menu.addAction("Refresh", lambda: self.refresh(root))
+        refresh_action = menu.addAction(
+            "Refresh", lambda: self._refresh_local_files(root)
+        )
+        refresh_action.setEnabled(
+            self.job is None and self._pending_watch_dialog is None
+        )
         menu.addAction("Remove from list", lambda: self._remove_root(root))
         menu.addAction(
             "Reveal in File Manager",
@@ -1254,6 +1441,10 @@ class MainWindow(QMainWindow):
             "Copy DOI", lambda: self._copy_text(str(record.get("doi") or ""))
         )
         menu.addAction("Copy Path", lambda: self._copy_text(str(path)))
+        menu.addSeparator()
+        menu.addAction(self.refresh_selected_ads_action)
+        menu.addAction(self.update_selected_ads_action)
+        menu.addSeparator()
         add_to_ads_library_action = menu.addAction(
             "Add to ADS Library…", self._add_to_ads_library
         )
@@ -1373,24 +1564,110 @@ class MainWindow(QMainWindow):
         self.log.appendPlainText(f"Removed {removed} missing registry record(s).")
         self.refresh()
 
-    def _reconcile_file_facts(self) -> None:
-        """Refresh stored file sizes and timestamps without deleting records."""
-        if self.current_root is None:
+    def _refresh_local_files(self, root: Path | None = None) -> None:
+        """Queue a filesystem scan after any watcher write has finished."""
+        root = root or self.current_root
+        if (
+            root is None
+            or self.job is not None
+            or self._pending_watch_dialog is not None
+            or self._pending_ads_refresh is not None
+            or self._local_refresh_context is not None
+        ):
             return
-        registry = self.registries[str(self.current_root)]
-        QApplication.setOverrideCursor(Qt.WaitCursor)
-        try:
-            result = registry.reconcile_file_facts(self.current_root)
-        finally:
-            QApplication.restoreOverrideCursor()
-        self.refresh()
-        self.status.showMessage(
-            (
-                f"Updated {result.updated} file records; "
-                f"{result.missing} missing files among {result.scanned} scanned."
-            ),
-            8000,
+        root = root.expanduser().resolve()
+        if str(root) not in self.registries:
+            return
+        self._local_refresh_context = _LocalRefreshContext(
+            root=root,
+            selected=self._selected_records() if root == self.current_root else (),
+            current=deepcopy(self._selected_record())
+            if root == self.current_root
+            else None,
+            query=self.current_query,
+            loaded=self.model.rowCount(),
+            scroll=self.table.verticalScrollBar().value(),
         )
+        self._request_foreground_dialog("local_refresh", root)
+        self._sync_refresh_actions()
+
+    def _launch_local_refresh(self, root: Path) -> None:
+        """Start a thread-owned scan of the originally requested root."""
+        if self._close_requested or str(root) not in self.root_entries:
+            self._local_refresh_context = None
+            self._resume_foreground_watch()
+            return
+        self._local_refresh_result = None
+        job = LibraryRefreshJob(root, self.root_entries[str(root)].recursive, self)
+        job.refreshed.connect(self._capture_local_refresh)
+        self._watch_job(job)
+        self.status.showMessage(f"Refreshing local files: {root}")
+        job.start()
+
+    def _capture_local_refresh(self, result: LibraryRefresh) -> None:
+        """Retain the scan summary until the normal job completion reload."""
+        self._local_refresh_result = result
+
+    def _restore_local_refresh_selection(self, context: _LocalRefreshContext) -> None:
+        """Restore selected locations, or their unique moved attachments."""
+        if self.current_root != context.root or self.current_query != context.query:
+            return
+        records = self.registries[str(context.root)].query_files(
+            **self.current_query.to_filters()
+        )
+        by_id = {record["location_id"]: record for record in records}
+        by_attachment: dict[int, list[int]] = {}
+        for record in records:
+            by_attachment.setdefault(record["attachment_id"], []).append(
+                record["location_id"]
+            )
+        targets: dict[int, int] = {}
+        for record in (
+            *context.selected,
+            *((context.current,) if context.current else ()),
+        ):
+            old_id = record["location_id"]
+            if old_id in by_id:
+                targets[old_id] = old_id
+            else:
+                matches = by_attachment.get(record["attachment_id"], [])
+                if len(matches) == 1:
+                    targets[old_id] = matches[0]
+        needed = set(targets.values())
+        while self.model.canFetchMore():
+            loaded = {
+                self.model.record_at(row)["location_id"]
+                for row in range(self.model.rowCount())
+            }
+            if self.model.rowCount() >= context.loaded and needed <= loaded:
+                break
+            previous = self.model.rowCount()
+            self.model.fetchMore()
+            if self.model.rowCount() == previous:
+                break
+        selection = self.table.selectionModel()
+        selection.clearSelection()
+        selected_ids = {
+            targets[record["location_id"]]
+            for record in context.selected
+            if record["location_id"] in targets
+        }
+        current_id = (
+            targets.get(context.current["location_id"]) if context.current else None
+        )
+        current_index = QModelIndex()
+        for row in range(self.model.rowCount()):
+            location_id = self.model.record_at(row)["location_id"]
+            index = self.model.index(row, 0)
+            if location_id in selected_ids:
+                selection.select(
+                    index, QItemSelectionModel.Select | QItemSelectionModel.Rows
+                )
+            if location_id == current_id:
+                current_index = index
+        selection.setCurrentIndex(current_index, QItemSelectionModel.NoUpdate)
+        self._sync_detail_and_selection_actions()
+        self.table.verticalScrollBar().setValue(context.scroll)
 
     def _edit_appearance(self) -> None:
         """Configure table and detail-pane appearance preferences."""
@@ -1735,6 +2012,21 @@ class MainWindow(QMainWindow):
             return
         root = root.expanduser().resolve()
         key = str(root)
+        if (
+            self._local_refresh_context is not None
+            and self._local_refresh_context.root == root
+        ):
+            self.status.showMessage(
+                "Wait for the local refresh to finish before removing this library."
+            )
+            return
+        if (
+            self._pending_ads_refresh is not None
+            and self._pending_ads_refresh[0] == root
+        ):
+            self._pending_ads_refresh = None
+            self._pending_watch_dialog = None
+            self.watch_controller.resume_writes(root)
         if self.watch_controller.is_watching(
             root
         ) and not self.watch_controller.stop_root(root):
@@ -1785,8 +2077,7 @@ class MainWindow(QMainWindow):
                 )
                 break
         if self.current_root == root:
-            self.model.set_registry(self.registries[key])
-            self.model.set_query(self.current_query)
+            self.model.set_registry(self.registries[key], self.current_query)
             self._populate_views(self.registries[key])
             self._update_status()
 
@@ -1816,14 +2107,35 @@ class MainWindow(QMainWindow):
         root = self.current_root.resolve()
         self._request_foreground_dialog("identify", root)
 
-    def _request_foreground_dialog(self, kind: str, root: Path) -> None:
-        if self.job is not None or self._pending_watch_dialog is not None:
+    def _request_foreground_dialog(
+        self,
+        kind: str,
+        root: Path,
+        *,
+        ads_refresh: (
+            tuple[Path, tuple[str, ...], int | None, str | None] | None
+        ) = None,
+    ) -> None:
+        if (
+            self.job is not None
+            or self._pending_watch_dialog is not None
+            or self._pending_ads_refresh is not None
+        ):
             return
+        if kind == "ads_refresh":
+            if ads_refresh is None:
+                return
+            self._pending_ads_refresh = ads_refresh
         if self.watch_controller.is_watching(root):
             self._pending_watch_dialog = (kind, root)
+            self._sync_refresh_actions()
             self.watch_controller.pause_writes(root)
             return
-        if kind == "identify":
+        if kind == "ads_refresh":
+            self._start_pending_ads_refresh(root)
+        elif kind == "local_refresh":
+            self._launch_local_refresh(root)
+        elif kind == "identify":
             self._open_identify_dialog(root)
         else:
             self._open_rename_dialog(root)
@@ -1882,7 +2194,7 @@ class MainWindow(QMainWindow):
             self.status.showMessage("Publication profile saved", 5000)
 
     def _refresh_selected_ads(self) -> None:
-        """Refresh cached ADS metadata and citation metrics for one record."""
+        """Refresh and rename one selected record from ADS metadata."""
         if self.current_root is None:
             return
         record = self._selected_record()
@@ -1907,7 +2219,7 @@ class MainWindow(QMainWindow):
         )
 
     def _update_selected_from_ads(self, initial_bibcode: str) -> None:
-        """Ask for an ADS identifier and refresh the selected file's metadata."""
+        """Ask for an ADS identifier, then refresh and rename the selected file."""
         record = self._selected_record()
         if record is None or self.current_root is None:
             return
@@ -1945,9 +2257,16 @@ class MainWindow(QMainWindow):
             )
             return
         relative_path = str(latest["relative_path"])
-        if not registry.replace_file_metadata(
-            self.current_root, relative_path, metadata
-        ):
+        try:
+            saved = registry.replace_file_metadata(
+                self.current_root, relative_path, metadata
+            )
+        except (ValueError, OSError, sqlite3.Error) as exc:
+            QMessageBox.warning(self, "Metadata update failed", str(exc))
+            self.refresh()
+            self._select_file_id(location_id)
+            return
+        if not saved:
             QMessageBox.warning(
                 self,
                 "Metadata update failed",
@@ -1993,8 +2312,8 @@ class MainWindow(QMainWindow):
                 self,
                 "Refresh all ADS records",
                 (
-                    f"Refresh ADS metadata, abstracts, and total citation counts for up "
-                    f"to {count} resolved records in batched document queries?"
+                    f"Refresh ADS metadata for up to {count} resolved records and "
+                    "rename their PDFs using saved settings?"
                 ),
             )
             != QMessageBox.Yes
@@ -2014,9 +2333,9 @@ class MainWindow(QMainWindow):
                 self,
                 "Refresh all citation splits",
                 (
-                    f"Fetch refereed/non-refereed citation splits for up to {count} "
-                    "records? ADS Metrics supplies these only per paper, so this sends "
-                    f"up to {count} requests."
+                    f"Refresh ADS metadata, rename up to {count} records, and fetch "
+                    "their refereed/non-refereed citation splits? ADS Metrics supplies "
+                    f"these only per paper, so this sends up to {count} requests."
                 ),
             )
             != QMessageBox.Yes
@@ -2029,21 +2348,103 @@ class MainWindow(QMainWindow):
         *args: str,
         selection_id: int | None = None,
         ambiguous_relative_path: str | None = None,
+        root: Path | None = None,
     ) -> None:
-        """Start the CLI-backed ADS cache refresh for the selected root."""
-        if self.current_root is None:
+        """Start the CLI-backed ADS refresh and rename for the selected root."""
+        refresh_root = (
+            root.expanduser().resolve()
+            if root is not None
+            else (
+                self.current_root.expanduser().resolve() if self.current_root else None
+            )
+        )
+        if (
+            self._close_requested
+            or refresh_root is None
+            or str(refresh_root) not in self.registries
+        ):
             return
+        if (
+            self.job is not None
+            or self._pending_watch_dialog is not None
+            or self._pending_ads_refresh is not None
+        ):
+            return
+        rename_scope = self.config.rename_scopes.get(str(refresh_root), "global")
+        output_unresolved = self._effective_unresolved_directory(refresh_root)
+        refresh_args = (
+            "--rename-scope",
+            rename_scope,
+            "--output-unresolved",
+            str(output_unresolved),
+            *args,
+        )
+        self._request_foreground_dialog(
+            "ads_refresh",
+            refresh_root,
+            ads_refresh=(
+                refresh_root,
+                refresh_args,
+                selection_id,
+                ambiguous_relative_path,
+            ),
+        )
+
+    def _effective_unresolved_directory(self, root: Path) -> Path:
+        """Resolve the Identify destination used by an ADS refresh."""
+        settings = self._effective_identify_settings(root)
+        directory = (
+            Path(settings.output_unresolved).expanduser()
+            if settings.output_unresolved
+            else root / "unresolved"
+        )
+        if not directory.is_absolute():
+            directory = root / directory
+        return directory.resolve()
+
+    def _start_pending_ads_refresh(self, root: Path) -> None:
+        """Launch a queued ADS refresh after its watcher pause is acknowledged."""
+        pending = self._pending_ads_refresh
+        self._pending_ads_refresh = None
+        if pending is None:
+            self._resume_foreground_watch()
+            return
+        pending_root, args, selection_id, ambiguous_relative_path = pending
+        if (
+            pending_root != root
+            or str(root) not in self.registries
+            or self._close_requested
+        ):
+            self._resume_foreground_watch()
+            return
+        self._launch_ads_refresh(
+            pending_root,
+            args,
+            selection_id=selection_id,
+            ambiguous_relative_path=ambiguous_relative_path,
+        )
+
+    def _launch_ads_refresh(
+        self,
+        root: Path,
+        args: tuple[str, ...],
+        *,
+        selection_id: int | None,
+        ambiguous_relative_path: str | None,
+    ) -> None:
+        """Launch one ADS refresh with its snapshotted root and arguments."""
         self._refresh_selection_id = selection_id
+        self._ads_refresh_root = root
         self._ads_match_candidates = []
         self._ambiguous_ads_match_context = (
-            (ambiguous_relative_path, selection_id)
+            (root, ambiguous_relative_path, selection_id)
             if ambiguous_relative_path is not None
             else None
         )
         job = CommandJob(
-            cli_argv("pdf", "refresh-ads", str(self.current_root), *args),
+            cli_argv("pdf", "refresh-ads", str(root), *args),
             parent=self,
-            working_directory=self.current_root,
+            working_directory=root,
         )
         job.output.connect(self._capture_ads_match_candidates)
         self._watch_job(job)
@@ -2082,6 +2483,8 @@ class MainWindow(QMainWindow):
         candidates: list[dict[str, str]],
         relative_path: str,
         selection_id: int | None,
+        *,
+        root: Path | None = None,
     ) -> None:
         """Let the user choose one coordinate-match candidate by Bibcode."""
         labels = [
@@ -2108,6 +2511,7 @@ class MainWindow(QMainWindow):
             "--relative-path",
             relative_path,
             selection_id=selection_id,
+            root=root,
         )
 
     def _rename(self) -> None:
@@ -2137,6 +2541,7 @@ class MainWindow(QMainWindow):
             Config.load_rename_settings(),
             state.rename_settings,
             initial_scope=self.config.rename_scopes.get(str(root), "global"),
+            identify_settings=self._effective_identify_settings(root),
             save_settings=save_rename_settings,
             parent=self,
         )
@@ -2151,6 +2556,7 @@ class MainWindow(QMainWindow):
             return
         self._foreground_paused_root = None
         self.watch_controller.resume_writes(root)
+        self._sync_refresh_actions()
 
     def _watch_job(self, job: Any) -> None:
         job.setParent(self)
@@ -2187,15 +2593,26 @@ class MainWindow(QMainWindow):
         self.cancel_job_action.setEnabled(False)
         self.job_progress.hide()
         self.job = None
+        self._local_refresh_context = None
+        self._local_refresh_result = None
         self._sync_ads_library_action()
         self._refresh_selection_id = None
+        self._ads_refresh_root = None
+        self._ads_match_candidates = []
+        self._ambiguous_ads_match_context = None
         self._resume_foreground_watch()
         if self._close_requested:
             self.close()
 
     def _job_finished(self, code: int) -> None:
+        local_context = self._local_refresh_context
+        local_result = self._local_refresh_result
+        self._local_refresh_context = None
+        self._local_refresh_result = None
         candidates = self._ads_match_candidates
         context = self._ambiguous_ads_match_context
+        refresh_root = local_context.root if local_context else self._ads_refresh_root
+        self._ads_refresh_root = None
         self._ads_match_candidates = []
         self._ambiguous_ads_match_context = None
         if code != 0:
@@ -2210,12 +2627,40 @@ class MainWindow(QMainWindow):
         self.job = None
         self._sync_ads_library_action()
         self._resume_foreground_watch()
-        self.refresh()
-        if self._refresh_selection_id is not None:
+        if refresh_root is None or str(refresh_root) in self.registries:
+            self.refresh(refresh_root)
+        if local_context is not None and str(local_context.root) in self.registries:
+            self._restore_local_refresh_selection(local_context)
+            if local_result is not None:
+                summary = (
+                    f"Refreshed {local_context.root.name}: {local_result.added} added, "
+                    f"{local_result.updated} modified, {local_result.moved} moved, "
+                    f"{local_result.restored} restored, {local_result.missing} missing "
+                    "(history retained)."
+                )
+                self.status.showMessage(summary)
+                self.log.appendPlainText(summary)
+            elif code != 0:
+                self.status.showMessage(
+                    "Local refresh failed; see the job log for details."
+                )
+        self._sync_refresh_actions()
+        if self._refresh_selection_id is not None and (
+            refresh_root is None or refresh_root == self.current_root
+        ):
             self._select_file_id(self._refresh_selection_id)
-            self._refresh_selection_id = None
-        if candidates and context is not None:
-            self._choose_ambiguous_ads_match(candidates, *context)
+        self._refresh_selection_id = None
+        if (
+            candidates
+            and context is not None
+            and code == 0
+            and not self._close_requested
+        ):
+            root, relative_path, selection_id = context
+            if str(root) in self.registries:
+                self._choose_ambiguous_ads_match(
+                    candidates, relative_path, selection_id, root=root
+                )
         if self._close_requested:
             self.close()
 
@@ -2226,7 +2671,19 @@ class MainWindow(QMainWindow):
             self._cancel_job()
             event.ignore()
             return
+        if self._ads_library_export_dialog is not None:
+            self._close_requested = True
+            self._ads_library_export_dialog.close()
+            if self._ads_library_export_dialog is not None:
+                event.ignore()
+                return
+        if self._pending_ads_refresh is not None:
+            pending_root = self._pending_ads_refresh[0]
+            self._pending_ads_refresh = None
+            self._pending_watch_dialog = None
+            self.watch_controller.resume_writes(pending_root)
         if not self.watch_controller.stop_all():
+            self._close_requested = False
             self.notice_bar.enqueue(
                 Notice(
                     "watch-shutdown",
@@ -2236,6 +2693,9 @@ class MainWindow(QMainWindow):
             )
             event.ignore()
             return
+        self._close_requested = True
+        self._pending_watch_dialog = None
+        self._local_refresh_context = None
         self._sync_config_roots()
         self.config.last_root = str(self.current_root) if self.current_root else None
         self.config.last_view = self.current_view.value
