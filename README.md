@@ -6,43 +6,79 @@ project, not an official ADS application.
 
 ![ADSfolio logo](docs/_static/adsfolio.png)
 
-The distribution, Python imports, and commands use `adsfolio`. Earlier settings
-and catalog data are copied into ADSfolio storage on first use. The source data
-remains intact. Close the earlier application before starting ADSfolio.
-See the [desktop installation guide](docs/desktop.md) and
-[maintainer release guide](docs/maintaining.md#publishing-releases).
+## Install the desktop app
 
-## Useful Info
-- https://ui.adsabs.harvard.edu/help/search/comprehensive-solr-term-list
+Download [ADSfolio 0.1.0](https://github.com/ysBach/adsfolio/releases/latest).
+Desktop downloads include Python and the application dependencies. You do not
+need a Python environment or an ADS token to browse your local library.
 
-## Features
+| System | Download and launch |
+| --- | --- |
+| macOS 15+, Apple Silicon | Extract `adsfolio-macos-arm64.zip`, move `ADSfolio.app` to Applications, then open it. |
+| macOS 15+, Intel | Extract `adsfolio-macos-x86_64.zip`, move `ADSfolio.app` to Applications, then open it. |
+| Windows x86-64 | Extract `adsfolio-windows-x86_64.zip`, then open `adsfolio.exe` inside the extracted folder. |
+| Linux x86-64 | Extract `adsfolio-linux-x86_64.tar.gz`, then run `adsfolio` inside the extracted folder. Requires glibc 2.39+ and system desktop libraries. |
 
-- **Full API Coverage**: Search, Export, Libraries, Metrics, and Journals APIs
-- **CLI Tools**: Easy command-line access to all functionality
-- **Rate Limiting**: Built-in rate limit handling and caching
-- **Research Utilities**: Journal-name formatting, citation key extraction, and PDF workflows
-- **Cross-Domain Discovery**: Supports astronomy, Earth science, physical science, and space-based life-science literature workflows via ADS / SciXplorer coverage
+Keep the complete extracted folder together on Windows and Linux.
+See the [platform requirements](docs/desktop.md) for details.
 
-## Installation
+### macOS with Homebrew
 
-Requires Python 3.10 or newer. Before the first package-index publication,
-install from this checkout with `uv sync --all-extras`, then launch with
-`uv run adsfolio-gui`. The commands below apply after publication.
-
-```bash
-pip install adsfolio
-
-# Install all optional features (watcher, annotation porting, ISO4 abbreviation)
-pip install adsfolio[full]
+```sh
+brew install --cask ysBach/adsfolio/adsfolio
+open -a ADSfolio
 ```
 
-## Quick Start
+**Version 0.1.0 is unsigned and not notarized.** macOS can block launch even
+when Homebrew installation succeeds. After attempting to open ADSfolio, review
+**System Settings → Privacy & Security → Open Anyway** if macOS offers that
+option. Approve it only if you trust the release. Installation alone does not
+establish that the app can launch. Windows can also show publisher warnings.
 
-### Get your API token
+### Start using your library
 
-1. Create an account at [ADS](https://ui.adsabs.harvard.edu)
-2. Get your token from [settings](https://ui.adsabs.harvard.edu/user/settings/token)
-3. Set it as environment variable: `export ADS_API_TOKEN=<your-token>`
+1. Open ADSfolio. Choose **File → Add Library Root…** and select your PDF folder.
+   To include nested folders, enable **Include Subdirectories** on the root.
+2. Select a PDF to inspect or edit its metadata. Double-click a row to open it
+   in your system PDF viewer.
+3. Use **Identify** to look up publication metadata. Configure your ADS token
+   through **Tools → NASA ADS Token…** when you need ADS services. Crossref and
+   DataCite can look up DOIs without an ADS token; choose provider order in Identify.
+4. Preview **Rename** before applying filename changes. Papers with sufficient
+   metadata can be renamed without an ADS bibcode. Use **File → Local References…**
+   for manual entries and BibTeX import/export, including references without PDFs.
+5. Press **Refresh** or **F5** after moving or deleting files outside ADSfolio.
+   This reconciles local files. Use the separate ADS refresh actions to update
+   remote metadata. Permanent cleanup remains a separate operation.
+
+See the [interactive application guide](docs/gui.md) for watching folders,
+selection, metadata editing, notifications, and refresh options.
+
+### Updates and existing libraries
+
+Quit ADSfolio before replacing the app, or run `brew upgrade --cask adsfolio`.
+The catalog, metadata, and history live in your user data directory, outside the
+application bundle. Retain that directory when upgrading or uninstalling.
+
+Earlier settings and catalogs are copied into ADSfolio storage on first use;
+the source remains intact. Close the earlier application before migration and
+keep its data until you verify the migrated library. Saved automatic watch and
+rename settings remain active, so review them before resuming library work.
+
+## Command-line and Python use
+
+The command-line tools and Python API complement the desktop application.
+Homebrew installs the `adsfolio` command alongside the app.
+
+PyPI publication is not enabled for 0.1.0. For development or Python API use,
+clone this repository and run `uv sync --all-extras` in its directory. Launch
+with `uv run adsfolio-gui`, or prefix CLI examples below with `uv run`.
+Python 3.10 or newer is required for source installations.
+
+For ADS queries, obtain a token from
+[ADS settings](https://ui.adsabs.harvard.edu/user/settings/token).
+The desktop token dialog saves it for CLI use too. Alternatively, set
+`ADS_API_TOKEN` in your environment.
 
 ### CLI Usage
 
