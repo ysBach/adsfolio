@@ -3,12 +3,16 @@
 The desktop bundle includes Python, PySide6/Qt, the CLI, and the `full`
 optional dependencies. Recipients do not need Python, pip, or uv.
 ADS queries still need an internet connection and the recipient's own API token.
-PDF opening uses a system PDF viewer; OCR software is not bundled.
+PDF opening uses a system PDF viewer. OCR software is not bundled.
 
 ## Launch and setup
 
-1. Extract the package for your operating system and processor.
-2. On macOS, move `ADSfolio.app` to Applications and open it. On Windows, open
+Version 0.1.0 provides ZIP archives for macOS. DMG downloads are prepared for
+the next release. Use the ZIP instructions for the current release.
+
+1. Download the package for your operating system and processor.
+2. On macOS, open the DMG and drag `ADSfolio.app` onto Applications.
+   Eject the image, then open ADSfolio from Applications. For a ZIP download, extract it and move `ADSfolio.app` to Applications. On Windows, extract the archive and open
    `adsfolio.exe` inside the extracted `adsfolio` folder. On Linux, launch the
    `adsfolio` executable inside the extracted `adsfolio` folder.
 3. Start browsing without a token. For ADS services, configure your token using
@@ -51,11 +55,11 @@ These are build targets, not a claim that every corresponding desktop has
 been tested. Windows desktop acceptance and minimum OS versions require
 validation on those systems. Qt and Python can set a higher minimum OS
 version than the application itself. The Linux build is compiled against Ubuntu 24.04 and requires glibc 2.39 or
-newer alongside system desktop libraries; it will not run on older distributions
+newer alongside system desktop libraries. It will not run on older distributions
 with older glibc versions or musl-based distributions such as Alpine.
 
 WordNet is a build-time download for ISO4 abbreviation. The spec bundles this
-explicit corpus and the ISO4 lookup tables; it does not copy arbitrary NLTK
+explicit corpus and the ISO4 lookup tables. It does not copy arbitrary NLTK
 data from the builder's home directory. No corpus download is needed at runtime.
 
 The checked-in GitHub Actions workflow builds each target independently and
@@ -64,7 +68,7 @@ runs. For version tags (`v*`), the workflow validates exact tag-to-version
 consistency, generates SHA-256 checksums, and publishes a GitHub Release
 containing the desktop bundles, Python packages, and checksums (marked as
 prerelease when the version tag is a prerelease or dev release). A green macOS run does
-not validate Windows or Linux. PyInstaller is not a cross-compiler; see its
+not validate Windows or Linux. PyInstaller is not a cross-compiler. See its
 [platform notes](https://pyinstaller.org/en/stable/usage.html#supporting-multiple-platforms).
 
 On Linux, install the desktop libraries listed in the workflow when missing.
@@ -100,8 +104,8 @@ QT_QPA_PLATFORM=offscreen dist/adsfolio-smoke/adsfolio-smoke
 On Windows run `dist/adsfolio-smoke/adsfolio-smoke.exe`. The smoke executable uses
 temporary settings and checks first-launch cancellation, a visible Qt window,
 PDF engines, offline ISO4 data, and actual output from the bundled CLI helper.
-It makes no ADS requests. This checks the bundled modules and libraries;
-manual native desktop testing still covers OS integration and security prompts.
+It makes no ADS requests. This checks the bundled modules and libraries.
+Manual native desktop testing still covers OS integration and security prompts.
 The macOS metadata check validates the actual `.app` executable and ensures the
 GUI is not marked as background-only. This is separate from the frozen Qt test:
 a working test executable cannot validate Finder's interpretation of the app.
@@ -117,15 +121,18 @@ a successful `--help` as evidence that those desktop operations work.
 After a release is published, download the archive for your platform from
 [GitHub Releases](https://github.com/ysBach/adsfolio/releases/latest). Compare its
 SHA-256 digest with the release checksums. Quit ADSfolio before replacing the
-application. Keep your catalog and configuration directories; replacing the
+application. Keep your catalog and configuration directories. Replacing the
 application does not migrate or delete them. Prereleases are listed on the
 [releases page](https://github.com/ysBach/adsfolio/releases).
 
 ## Archives and release status
 
-The workflow produces a macOS ZIP, a Windows ZIP, and a Linux tar.gz. macOS
-archives use `ditto`; Linux archives use `tar` to preserve required symbolic
-links. Ordinary ZIP creation can lose these links; see
+The workflow produces macOS DMG and ZIP files, a Windows ZIP, and a Linux tar.gz.
+DMGs contain the application and an Applications shortcut. Each image is verified
+and mounted read-only during the build. DMGs do not provide code signing or notarization.
+Version 0.1.0 has ZIP downloads only. DMGs enter the next release. macOS
+archives use `ditto`. Linux archives use `tar` to preserve required symbolic
+links. Ordinary ZIP creation can lose these links. See
 [PyInstaller's distribution notes](https://pyinstaller.org/en/stable/common-issues-and-pitfalls.html#requirements-imposed-by-symbolic-links-in-frozen-application).
 
 Version 0.1.0 ships unsigned bundles. macOS Developer ID signing/notarization and
@@ -146,8 +153,8 @@ desktop. Real ADS requests, PDF-viewer integration, Finder launch, and
 clean-machine installation require separate manual acceptance.
 
 The project license remains BSD-3-Clause. Bundled third-party components retain
-their own licenses; the `full` extra includes PyMuPDF. Dependency metadata and license notices accompany the bundles. PyMuPDF uses
-AGPL terms; the project license does not replace bundled component licenses.
+their own licenses. The `full` extra includes PyMuPDF. Dependency metadata and license notices accompany the bundles. PyMuPDF uses
+AGPL terms. The project license does not replace bundled component licenses.
 
 
 ## Homebrew on macOS

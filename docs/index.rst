@@ -11,6 +11,7 @@ and connected bibliographic discovery services.
 
    getting-started
    cv
+   command-line-and-python
    cli-tutorials/index
    maintaining
    cli
