@@ -86,6 +86,7 @@ aliases. Keep internal executable entry points out of recursive discovery.
   LaTeX math (`$_{2}$`) and escapes (`\&`). It is not plain text.
 - File identifiers outside SQLite's signed 64-bit range use hexadecimal text
   internally and return as Python integers. Existing integer records remain valid.
+  Windows discovery uses `os.stat` because `DirEntry.stat` omits device/inode IDs.
 - Catalog matching by filesystem identity is limited because operating systems
   reuse inode numbers. An observation matches an active path first, then a
   device and inode, then a content digest. An inode match whose stored location

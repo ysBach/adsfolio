@@ -776,7 +776,13 @@ class PdfCatalog:
                     elif entry.name.lower().endswith(".pdf"):
                         try:
                             if entry.is_file():
-                                observations.append((Path(entry.path), entry.stat()))
+                                # Windows DirEntry.stat omits device/inode IDs.
+                                stat = (
+                                    os.stat(entry.path)
+                                    if os.name == "nt"
+                                    else entry.stat()
+                                )
+                                observations.append((Path(entry.path), stat))
                         except FileNotFoundError:
                             continue
         prepared: list[tuple[str, os.stat_result, str | None]] = []
