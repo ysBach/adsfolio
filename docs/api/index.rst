@@ -104,12 +104,13 @@ standalone bundle setup.
 
    adsfolio.gui
    adsfolio.gui.app
-   adsfolio.gui.annotation_merge
    adsfolio.gui.config
    adsfolio.gui.library
+   adsfolio.gui.icons
    adsfolio.gui.models
    adsfolio.gui.main_window
    adsfolio.gui.detail_pane
+   adsfolio.gui.annotation_merge
    adsfolio.gui.dialogs
    adsfolio.gui.appearance
    adsfolio.gui.citation_styles

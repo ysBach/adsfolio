@@ -34,6 +34,7 @@ def test_config_roundtrip(monkeypatch, tmp_path):
         show_edit_buttons=False,
         show_lock_buttons=False,
         filename_click_action="reveal",
+        link_activation="single",
         pdf_viewer_command="pdf-viewer",
         web_browser_command="web-browser",
         timestamp_format="%Y-%m-%d",
@@ -175,6 +176,7 @@ def test_load_config_defaults_action_button_visibility_for_malformed_values(
     assert loaded.show_edit_buttons
     assert loaded.show_lock_buttons
     assert loaded.filename_click_action == "open"
+    assert loaded.link_activation == "double"
 
 
 def test_config_roundtrips_normalized_identify_scopes(monkeypatch, tmp_path):

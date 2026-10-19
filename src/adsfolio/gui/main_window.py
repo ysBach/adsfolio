@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import sqlite3
+import time
 from collections.abc import Callable, Sequence
 from copy import deepcopy
 from dataclasses import dataclass, replace
@@ -18,7 +19,7 @@ from PySide6.QtCore import (
     Qt,
     QTimer,
 )
-from PySide6.QtGui import QAction, QColor, QFont, QKeySequence
+from PySide6.QtGui import QAction, QColor, QFont, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QApplication,
     QComboBox,
@@ -35,6 +36,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPlainTextEdit,
     QProgressBar,
+    QPushButton,
     QSplitter,
     QToolBar,
     QToolButton,
@@ -260,6 +262,10 @@ class MainWindow(QMainWindow):
     def _build_ui(self) -> None:
         self.sidebar = QTreeWidget(self)
         self.sidebar.setHeaderHidden(True)
+        self.sidebar.setIndentation(self.sidebar.fontMetrics().horizontalAdvance("  "))
+        self.sidebar.setMinimumWidth(0)
+        self.sidebar.setTextElideMode(Qt.ElideRight)
+        self.sidebar.header().setSectionResizeMode(0, QHeaderView.Stretch)
         self.sidebar.itemSelectionChanged.connect(self._sidebar_changed)
         self.sidebar.setContextMenuPolicy(Qt.CustomContextMenu)
         self.sidebar.customContextMenuRequested.connect(self._sidebar_menu)
@@ -267,6 +273,10 @@ class MainWindow(QMainWindow):
         self.libraries_item.setData(0, Qt.UserRole + 1, "libraries")
         self.views_item = QTreeWidgetItem(["VIEWS"])
         self.views_item.setData(0, Qt.UserRole + 1, "views")
+        self.views_item.setToolTip(
+            0,
+            "ADS groups use saved matches. PDFs without ADS matches can still have complete metadata.",
+        )
         self.sidebar.addTopLevelItem(self.libraries_item)
         self.sidebar.addTopLevelItem(self.views_item)
         self.model = FileTableModel(
@@ -291,6 +301,7 @@ class MainWindow(QMainWindow):
         header.customContextMenuRequested.connect(self._show_header_context_menu)
         self._rebuild_table_delegates()
         self.model.modelReset.connect(self._sync_detail_and_selection_actions)
+        self.model.modelReset.connect(self._reset_link_activation)
         self.table.doubleClicked.connect(self._open_index)
         self.table.clicked.connect(self._table_clicked)
         self.table.selectionModel().currentChanged.connect(self._current_changed)
@@ -300,12 +311,16 @@ class MainWindow(QMainWindow):
         self.table.setContextMenuPolicy(Qt.CustomContextMenu)
         self.table.customContextMenuRequested.connect(self._table_menu)
         self.detail = DetailPane(self)
+        self.detail.set_compact_rows(self.config.detail_compact_rows)
+        self.detail.set_label_width(self.config.detail_label_width)
+        self.detail.label_width_changed.connect(self._set_detail_label_width)
         self.detail.set_citation_styles(self.config.citation_styles)
         self.detail.set_row_order(self.config.detail_row_order)
         self.detail.set_hidden_rows(self.config.detail_hidden_rows)
         self.detail.set_expand_abstracts(self.config.expand_abstracts)
         self.detail.set_row_spacing(self.config.detail_row_spacing)
         self.detail.set_label_bold(self.config.detail_label_bold)
+        self.detail.set_link_activation(self.config.link_activation)
         self._set_table_row_height(self.config.table_row_height)
         self.detail.copy_feedback.connect(
             lambda field: self.status.showMessage(f"Copied: {field}", 1500)
@@ -326,9 +341,23 @@ class MainWindow(QMainWindow):
         central_layout.setContentsMargins(0, 0, 0, 0)
         central_layout.setSpacing(0)
         central_layout.addWidget(self.notice_bar)
+        self.view_explanation = QLabel(central)
+        self.view_explanation.setWordWrap(True)
+        self.view_explanation.setContentsMargins(8, 4, 8, 4)
+        self.view_explanation.hide()
+        central_layout.addWidget(self.view_explanation)
+        self.start_library_button = QPushButton(
+            "Add a PDF folder to start your library…", central
+        )
+        self.start_library_button.setToolTip(
+            "Select an existing PDF folder. Identification is a separate step."
+        )
+        self.start_library_button.clicked.connect(self._add_root)
+        central_layout.addWidget(self.start_library_button)
         central_layout.addWidget(splitter, 1)
         self.setCentralWidget(central)
         self.splitter = splitter
+        splitter.splitterMoved.connect(self._remember_splitter_sizes)
         self.search = QLineEdit(self)
         self.search.setClearButtonEnabled(True)
         self.search.setPlaceholderText("Search title, author, bibcode, DOI, filename")
@@ -337,9 +366,11 @@ class MainWindow(QMainWindow):
         self.search_timer.setInterval(150)
         self.search.textChanged.connect(self.search_timer.start)
         self.search_timer.timeout.connect(self._search_changed)
-        toolbar = QToolBar("Search", self)
+        toolbar = QToolBar("Find", self)
+        self.search_toolbar = toolbar
+        toolbar.visibilityChanged.connect(self._find_bar_visibility_changed)
         toolbar.setObjectName("search_toolbar")
-        toolbar.addWidget(QLabel("Search: "))
+        toolbar.addWidget(QLabel("Find: "))
         toolbar.addWidget(self.search)
         self.addToolBar(toolbar)
         self.log_dock = QDockWidget("Job log", self)
@@ -349,6 +380,7 @@ class MainWindow(QMainWindow):
         self.log_dock.setWidget(self.log)
         self.addDockWidget(Qt.BottomDockWidgetArea, self.log_dock)
         self.log_dock.hide()
+        self._last_link_activation: tuple[str, float] | None = None
         self.status = self.statusBar()
         self.job_progress = QProgressBar(self)
         self.job_progress.setRange(0, 0)
@@ -359,6 +391,8 @@ class MainWindow(QMainWindow):
         self._build_actions()
         toolbar.addSeparator()
         toolbar.addAction(self.refresh_action)
+        toolbar.addAction(self.identify_action)
+        toolbar.addAction(self.rename_action)
         self.ads_refresh_button = QToolButton(self)
         self.ads_refresh_button.setText("ADS Refresh")
         self.ads_refresh_button.setPopupMode(QToolButton.InstantPopup)
@@ -385,7 +419,11 @@ class MainWindow(QMainWindow):
         self.local_references_action.triggered.connect(self._open_local_references)
         self.remove_action = QAction("Remove Root", self)
         self.refresh_action = QAction("Refresh", self)
-        self.refresh_action.setShortcut("F5")
+        refresh_shortcuts = [QKeySequence("F5")]
+        for shortcut in QKeySequence.keyBindings(QKeySequence.StandardKey.Refresh):
+            if shortcut not in refresh_shortcuts:
+                refresh_shortcuts.append(shortcut)
+        self.refresh_action.setShortcuts(refresh_shortcuts)
         self.refresh_action.setToolTip(
             "Scan local PDFs and reconcile added, changed, moved, and missing files"
         )
@@ -420,7 +458,9 @@ class MainWindow(QMainWindow):
         self.profile_action = QAction("My Publication Profile…", self)
         self.citation_styles_action = QAction("Custom Citation Styles…", self)
         self.identify_action = QAction("Identify…", self)
+        self.identify_action.setShortcut("Ctrl+Shift+I")
         self.rename_action = QAction("Rename…", self)
+        self.rename_action.setShortcut("Ctrl+Shift+R")
         self.cancel_job_action = QAction("Cancel Current Job", self)
         self.refresh_selected_ads_action = QAction(
             "Refresh and Rename Selected from ADS", self
@@ -488,12 +528,22 @@ class MainWindow(QMainWindow):
         tools.addAction(self.watch_on_start_action)
         tools.addAction(self.auto_process_action)
         view = self.menuBar().addMenu("View")
+        self.log_dock.toggleViewAction().setShortcut("Ctrl+Shift+J")
         view.addAction(self.log_dock.toggleViewAction())
+        self.sidebar_action = QAction("Show Libraries", self)
+        self.sidebar_action.setCheckable(True)
+        self.sidebar_action.setChecked(self.config.sidebar_visible)
+        self.sidebar_action.setShortcut("Ctrl+Shift+L")
+        self.sidebar_action.triggered.connect(self._toggle_sidebar)
+        view.addAction(self.sidebar_action)
+        self.search_toolbar.toggleViewAction().setText("Show Find Bar")
+        self.search_toolbar.toggleViewAction().setShortcut("Ctrl+Shift+F")
+        view.addAction(self.search_toolbar.toggleViewAction())
         self.detail_action = QAction("Show Detail Pane", self)
         self.detail_action.setCheckable(True)
-        self.detail_action.setChecked(True)
+        self.detail_action.setChecked(self.config.detail_visible)
         self.detail_action.setShortcut("Ctrl+Shift+D")
-        self.detail_action.triggered.connect(self.detail.setVisible)
+        self.detail_action.triggered.connect(self._toggle_detail)
         view.addAction(self.detail_action)
         self.appearance_action = QAction("Appearance…", self)
         self.appearance_action.triggered.connect(self._edit_appearance)
@@ -501,18 +551,27 @@ class MainWindow(QMainWindow):
         self.sort_priorities_action.triggered.connect(self._edit_sort_priorities)
         view.addAction(self.appearance_action)
         view.addAction(self.sort_priorities_action)
-        self.open_selected_action = QAction(self)
+        self.open_selected_action = QAction(self.table)
+        self.open_selected_action.setShortcutContext(Qt.WidgetWithChildrenShortcut)
+        self.table.addAction(self.open_selected_action)
         self.open_selected_action.setShortcuts(["Return", "Enter"])
         self.open_selected_action.triggered.connect(self._open_current)
-        self.search_focus_action = QAction(self)
+        self.search_focus_action = QAction("Find…", self)
         self.search_focus_action.setShortcut(QKeySequence.StandardKey.Find)
-        self.search_focus_action.triggered.connect(self.search.setFocus)
-        self.clear_search_action = QAction(self)
-        self.clear_search_action.setShortcut("Escape")
+        self.search_focus_action.triggered.connect(self._focus_search)
+        self.clear_search_action = QAction("Clear Find", self)
+        self._clear_search_shortcuts = []
+        for widget in (self.search, self.table):
+            shortcut = QShortcut(QKeySequence("Escape"), widget)
+            shortcut.setContext(Qt.WidgetWithChildrenShortcut)
+            shortcut.activated.connect(self._clear_search)
+            self._clear_search_shortcuts.append(shortcut)
         self.clear_search_action.triggered.connect(self._clear_search)
+        view.addSeparator()
+        view.addAction(self.search_focus_action)
+        view.addAction(self.clear_search_action)
         self.addActions(
             [
-                self.open_selected_action,
                 self.search_focus_action,
                 self.clear_search_action,
             ]
@@ -574,7 +633,53 @@ class MainWindow(QMainWindow):
             self._select_root(Path(next(iter(self.root_entries))))
         if self.current_root is not None and last_view is not LibraryView.ALL:
             self._select_view(last_view)
+        self.sidebar.setVisible(self.config.sidebar_visible)
+        self.detail.setVisible(self.config.detail_visible)
         self._sync_watch_actions()
+
+    def _set_detail_label_width(self, width: int | None) -> None:
+        """Retain the user's shared label-column width."""
+        self.config.detail_label_width = width
+
+    def _remember_splitter_sizes(self) -> None:
+        """Retain panel widths when Qt reports zero for a hidden panel."""
+        previous = self.config.splitter_sizes or list(DEFAULT_SPLITTER_SIZES)
+        self.config.splitter_sizes = [
+            width
+            or (
+                previous[index]
+                if index < len(previous)
+                else DEFAULT_SPLITTER_SIZES[index]
+            )
+            for index, width in enumerate(self.splitter.sizes())
+        ]
+
+    def _toggle_sidebar(self, visible: bool) -> None:
+        """Show or hide libraries and retain the preference."""
+        self._remember_splitter_sizes()
+        self.config.sidebar_visible = visible
+        self.sidebar.setVisible(visible)
+        if visible and self.splitter.sizes()[0] == 0:
+            self.splitter.setSizes(self.config.splitter_sizes)
+
+    def _toggle_detail(self, visible: bool) -> None:
+        """Show or hide metadata and retain the preference."""
+        self._remember_splitter_sizes()
+        self.config.detail_visible = visible
+        self.detail.setVisible(visible)
+        if visible and self.splitter.sizes()[2] == 0:
+            self.splitter.setSizes(self.config.splitter_sizes)
+
+    def _find_bar_visibility_changed(self, visible: bool) -> None:
+        """Keep keyboard focus usable after hiding Find."""
+        if not visible and self.search.hasFocus():
+            self.table.setFocus()
+
+    def _focus_search(self) -> None:
+        """Reveal Find and select its current query for replacement."""
+        self.search_toolbar.show()
+        self.search.setFocus()
+        self.search.selectAll()
 
     def _register_root(
         self,
@@ -608,6 +713,7 @@ class MainWindow(QMainWindow):
         root_item = QTreeWidgetItem(
             [f"{label or path.name or str(path)} ({count_text})"]
         )
+        root_item.setToolTip(0, key)
         root_item.setData(0, Qt.UserRole, key)
         root_item.setData(0, Qt.UserRole + 1, "root")
         self.libraries_item.addChild(root_item)
@@ -1147,12 +1253,11 @@ class MainWindow(QMainWindow):
         for view in LibraryView:
             count = self._safe_count(registry, **FileQuery(view=view).to_filters())
             item = QTreeWidgetItem(
-                [
-                    f"{view.value.replace('_', ' ').title()} ({count if count is not None else '?'})"
-                ]
+                [f"{view.label} ({count if count is not None else '?'})"]
             )
             item.setData(0, Qt.UserRole, str(self.current_root))
             item.setData(0, Qt.UserRole + 1, view.value)
+            item.setToolTip(0, view.description)
             self.views_item.addChild(item)
         self.views_item.setExpanded(True)
 
@@ -1265,15 +1370,17 @@ class MainWindow(QMainWindow):
         self._current_changed(self.table.currentIndex(), QModelIndex())
 
     def _open_index(self, index: QModelIndex) -> None:
+        if QApplication.keyboardModifiers() != Qt.NoModifier:
+            return
         record = self.model.record_at(index.row())
         if record is None or self.current_root is None:
             return
         columns = self._columns_for_table_model()
         if columns is not None and index.column() < len(columns):
             column_key = columns[index.column()].key
-            if column_key in {"bibcode", "arxiv"}:
-                return
-            if column_key == "filename":
+            if column_key in {"bibcode", "arxiv", "filename"}:
+                if self.config.link_activation == "double":
+                    self._activate_link_cell(index, record, column_key)
                 return
         self._open_pdf_record(record)
 
@@ -1302,6 +1409,10 @@ class MainWindow(QMainWindow):
             return
         dialog.exec()
 
+    def _reset_link_activation(self) -> None:
+        """Forget the last activated target when the table contents are replaced."""
+        self._last_link_activation = None
+
     def _columns_for_table_model(self) -> tuple[Column, ...] | None:
         """Return column definitions matching the model installed on the table."""
         table_model = self.table.model()
@@ -1318,7 +1429,7 @@ class MainWindow(QMainWindow):
         return None
 
     def _table_clicked(self, index: QModelIndex) -> None:
-        """Activate links and filename actions from single table clicks."""
+        """Copy generated cells and, if configured, activate links on single click."""
         if not index.isValid():
             return
         record = self.model.record_at(index.row())
@@ -1334,13 +1445,45 @@ class MainWindow(QMainWindow):
                 self._copy_text(str(display_text))
                 self.status.showMessage("Copied", 1500)
             return
-        value = column.getter(record)
-        if column.key == "bibcode" and value:
-            self._open_external_url(ads_url(value))
-        elif column.key == "arxiv" and value:
-            self._open_external_url(arxiv_url(value))
-        elif column.key == "filename":
+        if self.config.link_activation != "single":
+            return
+        if QApplication.keyboardModifiers() != Qt.NoModifier:
+            return
+        self._activate_link_cell(index, record, column.key)
+
+    def _activate_link_cell(
+        self, index: QModelIndex, record: dict[str, Any], column_key: str
+    ) -> None:
+        """Open the ADS, arXiv, or filename target of a table cell."""
+        if column_key == "filename":
+            if self.current_root is None:
+                return
+            target = str(self.current_root / str(record.get("current_path") or ""))
+        elif column_key in {"bibcode", "arxiv"}:
+            columns = self._columns_for_table_model()
+            column = next((c for c in columns or () if c.key == column_key), None)
+            value = column.getter(record) if column is not None else None
+            if not value:
+                return
+            target = ads_url(value) if column_key == "bibcode" else arxiv_url(value)
+        else:
+            return
+        # Qt delivers the second click of a double-click after "doubleClicked";
+        # ignore a repeat of the same target within the system interval.
+        now = time.monotonic()
+        previous = self._last_link_activation
+        interval = QApplication.doubleClickInterval() / 1000
+        if (
+            previous is not None
+            and previous[0] == target
+            and now - previous[1] < interval
+        ):
+            return
+        self._last_link_activation = (target, now)
+        if column_key == "filename":
             self._open_filename(record)
+        else:
+            self._open_external_url(target)
 
     def _open_external_url(self, url: str) -> None:
         if open_url(url, self.config.web_browser_command):
@@ -1373,6 +1516,9 @@ class MainWindow(QMainWindow):
 
     def _open_current(self) -> None:
         """Open the current table selection using the standard PDF action."""
+        focused = QApplication.focusWidget()
+        if focused is not None and self.detail.isAncestorOf(focused):
+            return
         index = self.table.currentIndex()
         record = self.model.record_at(index.row()) if index.isValid() else None
         if record is not None:
@@ -1480,6 +1626,8 @@ class MainWindow(QMainWindow):
             "Add to ADS Library…", self._add_to_ads_library
         )
         add_to_ads_library_action.setEnabled(self._can_add_to_ads_library())
+        menu.addSeparator()
+        menu.addAction(self.appearance_action)
         menu.exec(self.table.viewport().mapToGlobal(position))
 
     def _show_header_context_menu(self, position: Any) -> None:
@@ -1490,6 +1638,8 @@ class MainWindow(QMainWindow):
     def _create_header_context_menu(self) -> QMenu:
         """Build the context menu for the table's column header."""
         menu = QMenu(self)
+        menu.addAction(self.appearance_action)
+        menu.addSeparator()
         header = self.table.header()
         visible_count = sum(
             not self.table.isColumnHidden(header.logicalIndex(visual))
@@ -1860,9 +2010,11 @@ class MainWindow(QMainWindow):
         self.config.table_row_height = dialog.table_row_height
         self.config.detail_row_spacing = dialog.detail_row_spacing
         self.config.detail_label_bold = dialog.detail_label_bold
+        self.config.detail_compact_rows = dialog.detail_compact_rows
         self.config.show_edit_buttons = dialog.show_edit_buttons
         self.config.show_lock_buttons = dialog.show_lock_buttons
         self.config.filename_click_action = dialog.filename_click_action
+        self.config.link_activation = dialog.link_activation
         self.config.pdf_viewer_command = dialog.pdf_viewer_command
         self.config.web_browser_command = dialog.web_browser_command
         self.config.detail_row_order = list(dialog.detail_row_order)
@@ -1873,6 +2025,9 @@ class MainWindow(QMainWindow):
         """Apply all table and detail appearance settings to the live UI."""
         self.detail.set_row_order(self.config.detail_row_order)
         self.detail.set_hidden_rows(self.config.detail_hidden_rows)
+        self.detail.set_compact_rows(self.config.detail_compact_rows)
+        self.detail.set_label_width(self.config.detail_label_width)
+        self.detail.set_link_activation(self.config.link_activation)
         self._apply_table_appearance()
         self._current_changed(self.table.currentIndex(), QModelIndex())
 
@@ -2113,7 +2268,20 @@ class MainWindow(QMainWindow):
             self._update_status()
 
     def _update_status(self) -> None:
+        self.start_library_button.setVisible(self.current_root is None)
+        explains_ads_group = self.current_root is not None and self.current_view in {
+            LibraryView.RESOLVED,
+            LibraryView.UNRESOLVED,
+        }
+        self.view_explanation.setVisible(explains_ads_group)
+        if explains_ads_group:
+            self.view_explanation.setText(
+                "ADS matches: saved ADS matches. Changed PDFs need Identify again."
+                if self.current_view is LibraryView.RESOLVED
+                else "No ADS match: no saved ADS match. Metadata and bibcodes may still be available."
+            )
         if self.current_root is None:
+            self.status.setToolTip("")
             self.status.showMessage("No library selected")
             return
         total = self.model.total
@@ -2127,9 +2295,12 @@ class MainWindow(QMainWindow):
         if resolved is None or unresolved is None:
             return
         self.status.showMessage(
-            f"{loaded} loaded of {total} · {resolved} resolved · {unresolved} unresolved"
+            f"{loaded} loaded of {total} · {resolved} stored ADS matches · "
+            f"{unresolved} without stored ADS match"
         )
         self.load_more_action.setEnabled(self.model.canFetchMore())
+
+        self.status.setToolTip(LibraryView.RESOLVED.description)
 
     def _identify(self) -> None:
         if self.current_root is None:
@@ -2734,7 +2905,7 @@ class MainWindow(QMainWindow):
         self._sync_config_roots()
         self.config.last_root = str(self.current_root) if self.current_root else None
         self.config.last_view = self.current_view.value
-        self.config.splitter_sizes = self.splitter.sizes()
+        self._remember_splitter_sizes()
         self.config.window_geometry = bytes(self.saveGeometry().toBase64()).decode()
         self.config.window_state = bytes(self.saveState().toBase64()).decode()
         self.config.column_widths = {

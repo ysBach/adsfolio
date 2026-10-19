@@ -13,8 +13,28 @@ from urllib.parse import quote
 from ..citations import CitationFormatter, CitationStyle, citation_preference_key
 from ..formatting import html_to_text
 from ..pdf.arxiv import arxiv_id
+from ..pdf.readiness import METADATA_SHA256_KEY, METADATA_STALE_KEY
 
 ISO8601_TIMESTAMP_FORMAT = "iso8601"
+STALE_VERIFICATION_TOOLTIP = (
+    "PDF changed since identification. Run Identify to verify it again."
+)
+
+
+def verification_stale(record: dict[str, Any]) -> bool:
+    """Return whether stale metadata or a changed PDF invalidates verification display.
+
+    This controls presentation only; stored status and rename readiness are
+    unchanged. Metadata provenance can be top-level or nested in `metadata`.
+    """
+    raw_metadata = record.get("metadata")
+    metadata = raw_metadata if isinstance(raw_metadata, dict) else {}
+    expected_sha = record.get(METADATA_SHA256_KEY) or metadata.get(METADATA_SHA256_KEY)
+    return bool(
+        record.get(METADATA_STALE_KEY)
+        or metadata.get(METADATA_STALE_KEY)
+        or (expected_sha and expected_sha != record.get("sha256"))
+    )
 
 
 class LibraryView(str, Enum):
@@ -25,6 +45,29 @@ class LibraryView(str, Enum):
     UNRESOLVED = "unresolved"
     ARXIV_ONLY = "arxiv_only"
     DUPLICATES = "duplicates"
+
+    @property
+    def label(self) -> str:
+        """Name each catalog view without claiming current PDF verification."""
+        return {
+            self.ALL: "All PDFs",
+            self.RESOLVED: "ADS matches",
+            self.UNRESOLVED: "No ADS match",
+            self.ARXIV_ONLY: "arXiv",
+            self.DUPLICATES: "Duplicates",
+        }[self]
+
+    @property
+    def description(self) -> str:
+        """Explain the stored-status filter separately from current indicators."""
+        if self in {self.RESOLVED, self.UNRESOLVED}:
+            return (
+                "Filters stored catalog ADS-match status, not current PDF verification. "
+                "Changed PDFs can remain in ADS matches until identified again. "
+                "Table and detail indicators separately account for metadata staleness "
+                "and readiness."
+            )
+        return self.label
 
 
 def _metadata(record: dict[str, Any]) -> dict[str, Any]:

@@ -19,7 +19,7 @@ from PySide6.QtGui import (
     QTextCharFormat,
     QTextDocument,
 )
-from PySide6.QtWidgets import QApplication, QHeaderView, QInputDialog
+from PySide6.QtWidgets import QApplication, QHeaderView, QInputDialog, QToolBar
 
 from adsfolio.citations import CitationStyle
 from adsfolio.config import Config
@@ -313,9 +313,11 @@ def test_detail_label_boldness_is_configurable(
     assert pane._row_widgets["title"].name.font().bold()
 
     long_label = pane._row_widgets["zzzzzzzzzzzzzzzzzzzzzzzzzzzzzz"].name
-    assert long_label.fontMetrics().horizontalAdvance(long_label.text()) <= (
-        long_label.width()
+    assert (
+        long_label.fontMetrics().horizontalAdvance(long_label.text())
+        > long_label.width()
     )
+    assert long_label.text() in long_label.toolTip()
 
     pane.set_label_bold(False)
     assert not pane._row_widgets["title"].name.font().bold()
@@ -347,7 +349,8 @@ def test_detail_rows_move_without_losing_widgets_or_order(
     assert pane.row_keys()[0] == "year"
     assert set(pane.row_keys()) == set(pane._row_widgets)
     assert not pane._row_widgets["links"].link_label.openExternalLinks()
-    assert pane._row_widgets["title"].lock_button.text() == "🔒"
+    assert not pane._row_widgets["title"].lock_button.icon().isNull()
+    assert pane._row_widgets["title"].lock_button.accessibleName() == "Lock Title"
     pane.close()
 
 
@@ -620,6 +623,7 @@ def test_main_table_links_open_ads_and_arxiv(
     window = MainWindow()
     window.current_root = tmp_path
     window.config.web_browser_command = "web-browser"
+    window.config.link_activation = "single"
     record = {
         "current_path": "paper.pdf",
         "metadata": {
@@ -661,6 +665,103 @@ def test_link_delegate_switches_to_icon_when_text_does_not_fit(
     assert delegate.requires_icon("2024A&A...1A...1B", 20, font)
 
 
+def test_main_table_links_default_to_double_click(
+    application: QApplication,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Single clicks only select by default; double-clicks open the link once."""
+    monkeypatch.setattr(Config, "get_config_dir", classmethod(lambda cls: tmp_path))
+    window = MainWindow()
+    window.current_root = tmp_path
+    record = {
+        "current_path": "paper.pdf",
+        "metadata": {"bibcode": "2024ApJ...900..100S"},
+    }
+    window.model.record_at = lambda _row: record
+    window.table.setModel(QStandardItemModel(1, len(COLUMNS)))
+    opened: list[str] = []
+    monkeypatch.setattr(
+        "adsfolio.gui.main_window.open_url",
+        lambda url, application=None: opened.append(url) or True,
+    )
+    column = next(i for i, item in enumerate(COLUMNS) if item.key == "bibcode")
+    index = window.table.model().index(0, column)
+
+    window._table_clicked(index)
+    assert opened == []
+    window._open_index(index)
+
+    assert opened == ["https://adsabs.harvard.edu/abs/2024ApJ...900..100S"]
+    window.close()
+
+
+def test_single_click_then_double_click_opens_link_once(
+    application: QApplication,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """In single-click mode, the click pair of a double-click opens once."""
+    monkeypatch.setattr(Config, "get_config_dir", classmethod(lambda cls: tmp_path))
+    window = MainWindow()
+    window.current_root = tmp_path
+    window.config.link_activation = "single"
+    record = {
+        "current_path": "paper.pdf",
+        "metadata": {"bibcode": "2024ApJ...900..100S"},
+    }
+    window.model.record_at = lambda _row: record
+    window.table.setModel(QStandardItemModel(1, len(COLUMNS)))
+    opened: list[str] = []
+    monkeypatch.setattr(
+        "adsfolio.gui.main_window.open_url",
+        lambda url, application=None: opened.append(url) or True,
+    )
+    column = next(i for i, item in enumerate(COLUMNS) if item.key == "bibcode")
+    index = window.table.model().index(0, column)
+
+    window._table_clicked(index)
+    window._open_index(index)
+
+    assert len(opened) == 1
+    window.close()
+
+
+def test_link_suppression_is_keyed_by_target_and_reset_on_model_reset(
+    application: QApplication,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """A different target or a reset table is never suppressed."""
+    monkeypatch.setattr(Config, "get_config_dir", classmethod(lambda cls: tmp_path))
+    window = MainWindow()
+    window.current_root = tmp_path
+    window.config.link_activation = "single"
+    record = {"current_path": "a.pdf", "metadata": {"bibcode": "2024ApJ...900..100S"}}
+    window.model.record_at = lambda _row: record
+    window.table.setModel(QStandardItemModel(1, len(COLUMNS)))
+    opened: list[str] = []
+    monkeypatch.setattr(
+        "adsfolio.gui.main_window.open_url",
+        lambda url, application=None: opened.append(url) or True,
+    )
+    column = next(i for i, item in enumerate(COLUMNS) if item.key == "bibcode")
+    index = window.table.model().index(0, column)
+
+    window._table_clicked(index)
+    record["metadata"] = {"bibcode": "2025ApJ...901..200B"}
+    window._table_clicked(index)
+    window._reset_link_activation()
+    window._table_clicked(index)
+
+    assert opened == [
+        "https://adsabs.harvard.edu/abs/2024ApJ...900..100S",
+        "https://adsabs.harvard.edu/abs/2025ApJ...901..200B",
+        "https://adsabs.harvard.edu/abs/2025ApJ...901..200B",
+    ]
+    window.close()
+
+
 def test_filename_click_uses_configured_reveal_action(
     application: QApplication,
     monkeypatch: pytest.MonkeyPatch,
@@ -671,6 +772,7 @@ def test_filename_click_uses_configured_reveal_action(
     window = MainWindow()
     window.current_root = tmp_path
     window.config.filename_click_action = "reveal"
+    window.config.link_activation = "single"
     record = {"current_path": "paper.pdf", "metadata": {}}
     window.model.record_at = lambda _row: record
     window.table.setModel(QStandardItemModel(1, len(COLUMNS)))
@@ -1141,3 +1243,69 @@ def test_main_window_applies_default_splitter_sizes_only_when_unset(
     assert second_sizes[2] > first_sizes[2]
     assert second_sizes[1] < first_sizes[1]
     second_window.close()
+
+
+def test_toolbar_exposes_identify_and_rename_actions(
+    application: QApplication,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """The first-run workflow actions are in the toolbar and are the menu actions."""
+    monkeypatch.setattr(Config, "get_config_dir", classmethod(lambda cls: tmp_path))
+    window = MainWindow()
+    toolbar = window.findChild(QToolBar, "search_toolbar")
+
+    assert window.identify_action in toolbar.actions()
+    assert window.rename_action in toolbar.actions()
+    window.close()
+
+
+@pytest.mark.parametrize(
+    "raw_status,display_status",
+    [("resolved", "ADS verified"), ("unresolved", "Not ADS verified")],
+)
+def test_detail_status_display_preserves_metadata_and_edit_semantics(
+    application: QApplication,
+    monkeypatch: pytest.MonkeyPatch,
+    raw_status: str,
+    display_status: str,
+) -> None:
+    """Show ADS verification labels without changing stored status or field editing."""
+    pane = DetailPane()
+    record = {
+        "current_path": "paper.pdf",
+        "status": raw_status,
+        "metadata": {"title": ["Existing title"], "status": raw_status},
+    }
+    changes = []
+    pane.metadata_changed.connect(changes.append)
+    pane.set_record(record, Path("/papers"))
+    row = pane._row_widgets["status"]
+    assert row.value.text() == display_status
+    assert row.value._copy_text == raw_status
+    assert row.edit_button.isHidden()
+    assert row.lock_button.isHidden()
+    assert row.value.accessibleDescription()
+    if raw_status == "unresolved":
+        assert "Metadata is available" in row.value.toolTip()
+        assert "Existing metadata is retained" in row.value.toolTip()
+    monkeypatch.setattr(
+        QInputDialog, "getMultiLineText", lambda *args: ("Edited title", True)
+    )
+    pane._edit_metadata("title")
+    assert changes[-1]["title"] == ["Edited title"]
+    assert changes[-1]["status"] == raw_status
+    assert record["status"] == raw_status
+    assert record["metadata"]["status"] == raw_status
+    pane.close()
+
+
+@pytest.mark.parametrize("status", ["pending", "error", None])
+def test_detail_other_status_values_keep_existing_display(
+    application: QApplication, status: str | None
+) -> None:
+    """Keep status values outside resolved/unresolved unchanged."""
+    pane = DetailPane()
+    pane.set_record({"current_path": "paper.pdf", "status": status}, Path("/papers"))
+    assert pane._row_widgets["status"].value.text() == (status or "")
+    pane.close()

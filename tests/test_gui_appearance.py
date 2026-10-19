@@ -73,6 +73,7 @@ def test_appearance_dialog_exposes_file_and_browser_application_settings(
     dialog = AppearanceDialog(
         GuiConfig(
             filename_click_action="reveal",
+            link_activation="single",
             pdf_viewer_command="pdf-viewer",
             web_browser_command="web-browser",
         ),
@@ -81,6 +82,7 @@ def test_appearance_dialog_exposes_file_and_browser_application_settings(
     )
 
     assert dialog.filename_click_action == "reveal"
+    assert dialog.link_activation == "single"
     assert dialog.pdf_viewer_command == "pdf-viewer"
     assert dialog.web_browser_command == "web-browser"
     dialog.close()

@@ -7,7 +7,10 @@ from enum import Enum
 from pathlib import Path
 
 from PySide6.QtCore import Signal
+from PySide6.QtGui import QColor, QPalette
 from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QPushButton, QWidget
+
+from .icons import ICON_SIZE, VectorIconLabel, vector_icon
 
 __all__ = ["Notice", "NoticeAction", "NoticeBar"]
 
@@ -68,6 +71,7 @@ class NoticeBar(QFrame):
         self._notices: dict[str, Notice] = {}
         layout = QHBoxLayout(self)
         layout.setContentsMargins(8, 4, 8, 4)
+        self.severity_icon = VectorIconLabel("info", "Information", self)
         self.message = QLabel(self)
         self.message.setWordWrap(True)
         self.pending_count = QLabel(self)
@@ -77,6 +81,12 @@ class NoticeBar(QFrame):
         )
         self.dismiss_button = QPushButton("Dismiss", self)
         self.dismiss_all_button = QPushButton("Dismiss All", self)
+        for button in (self.dismiss_button, self.dismiss_all_button):
+            button.setIcon(vector_icon("close", button))
+            button.setIconSize(ICON_SIZE)
+            button.setAccessibleName(button.text())
+            button.setToolTip(button.text())
+        layout.addWidget(self.severity_icon)
         layout.addWidget(self.message, 1)
         layout.addWidget(self.pending_count)
         layout.addWidget(self.action_button)
@@ -168,6 +178,11 @@ class NoticeBar(QFrame):
             else ""
         )
         self.action_button.setText(self._button_text(notice.action_label or ""))
+        for button in (self.action_button, self.action_all_button):
+            button.setIcon(vector_icon("refresh", button))
+            button.setIconSize(ICON_SIZE)
+            button.setAccessibleName(button.text().replace("&&", "&"))
+            button.setToolTip(button.accessibleName())
         self.action_button.setVisible(notice.action_label is not None)
         manual_actions = sum(
             item.action is NoticeAction.IDENTIFY_RENAME
@@ -176,6 +191,20 @@ class NoticeBar(QFrame):
         self.action_all_button.setVisible(
             notice.action is NoticeAction.IDENTIFY_RENAME and manual_actions > 1
         )
+        acknowledged = notice.severity == "success" and notice.action is None
+        self.dismiss_button.setText("OK" if acknowledged else "Dismiss")
+        all_acknowledged = all(
+            item.severity == "success" and item.action is None
+            for item in self._notices.values()
+        )
+        self.dismiss_all_button.setText("OK All" if all_acknowledged else "Dismiss All")
+        for button, positive in (
+            (self.dismiss_button, acknowledged),
+            (self.dismiss_all_button, all_acknowledged),
+        ):
+            button.setIcon(vector_icon("success" if positive else "close", button))
+            button.setAccessibleName(button.text())
+            button.setToolTip(button.text())
         self.dismiss_button.show()
         self.dismiss_all_button.setVisible(len(self._notices) > 1)
         colors = {
@@ -187,3 +216,9 @@ class NoticeBar(QFrame):
         self.setStyleSheet(
             f"NoticeBar {{ background: {background}; color: {foreground}; }}"
         )
+
+        severity = notice.severity if notice.severity in colors else "info"
+        self.severity_icon.set_icon(severity, severity.capitalize())
+        palette = self.severity_icon.palette()
+        palette.setColor(QPalette.WindowText, QColor(foreground))
+        self.severity_icon.setPalette(palette)

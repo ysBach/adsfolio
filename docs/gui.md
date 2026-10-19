@@ -41,8 +41,11 @@ the watcher before changing it.  Changing the checkbox saves the scan scope
 but does not rescan the current catalog immediately. Press **Refresh** (**F5**)
 to scan the root with its updated **Include Subdirectories** setting.
 
-The sidebar separates **ADS verified** from **Not ADS verified**.
-These groups describe ADS verification, not whether citation metadata exists.
+The sidebar groups records by **ADS matches** and **No ADS match**.
+These groups use the catalog's saved match status. They do not indicate whether
+metadata is complete or the current PDF still matches that record.
+
+The table and detail pane check for changed PDFs before displaying verification.
 A stored bibcode can remain visible before Identify verifies the current PDF.
 Status tooltips explain changed files, pending verification, and metadata readiness.
 External references can be ready for renaming without an ADS link.
@@ -111,7 +114,7 @@ Applications** controls whether bibcode, arXiv, and filename cells activate on d
 (default) or single click, whether filename activation opens or reveals files, and accepts
 optional PDF-viewer and web-browser commands. Empty commands use the operating
 system defaults.
-Use the pencil control to edit a bibliographic metadata field. The lock control
+Right-click a bibliographic field to edit it or change its lock. A lock
 preserves that field through later ADS updates, including **Identify** and
 explicit refresh. Unlocked fields are replaced by ADS. File identity fields
 (filename, full path, modified date, size, and SHA-256) and workflow-state fields
@@ -506,6 +509,49 @@ root while the GUI watcher is active. Concurrent watchers can issue duplicate
 ADS work and compete to rename or update the same PDF and catalog records.
 
 While an identify, rename, or ADS refresh job runs, an indeterminate progress
-indicator appears in the status bar. Common shortcuts are **Return**, **Enter**,
-or **Space** to open the selected PDF. **F5** to refresh. **Ctrl/Cmd+F** to focus search.
-**Ctrl/Cmd+Shift+D** to toggle details. **Escape** to clear search.
+indicator appears in the status bar. **Return** or **Enter** opens the selected PDF.
+The keyboard navigation table below lists panel and Find shortcuts.
+
+## Adjust the three panels
+
+The Details panel uses compact rows by default. Values receive the space that
+previously held drag handles and edit or lock buttons.
+
+- Right-click a field or value to copy, edit, lock, or unlock it. Press F2 to edit a focused field.
+- Drag a field label to reorder it. The context menu also offers keyboard controls.
+- Drag the label/value divider to resize the shared label column. Double-click it to reset the width.
+- A compact lock marker shows protected fields. An edit alone does not protect a field from an ADS update.
+- In **View → Appearance… → Details**, disable compact rows to restore optional inline buttons.
+
+The saved row order, hidden fields, fonts, and metadata locks remain active.
+The abstract keeps its **Show more / Show less** control.
+
+The sidebar uses **ADS matches** and **No ADS match** for saved catalog states.
+A PDF without an ADS match can still have a bibcode or complete metadata.
+These groups do not classify all non-ADS papers as unidentified.
+A changed PDF can retain its saved match until Identify checks it again.
+The amber triangle means that the PDF needs a new check.
+
+Right-click a main-table column heading to open **Appearance…** or change visible columns.
+The sidebar uses less indentation. Hover over a truncated library name to see its full path.
+
+## Keyboard navigation
+
+Use **Command** on macOS and **Ctrl** on Windows or Linux for the shortcuts below.
+The View menu shows the shortcuts available on your system.
+
+| Action | Shortcut |
+| --- | --- |
+| Focus Find and select its query | Command/Ctrl+F |
+| Show or hide the Find bar | Command/Ctrl+Shift+F |
+| Clear Find and focus the table | Escape |
+| Show or hide Libraries | Command/Ctrl+Shift+L |
+| Show or hide Details | Command/Ctrl+Shift+D |
+| Show or hide the job log | Command/Ctrl+Shift+J |
+| Reconcile local files | F5 or the system Refresh shortcut |
+| Open Identify options | Command/Ctrl+Shift+I |
+| Open Rename options | Command/Ctrl+Shift+R |
+
+Hiding a panel retains the selected PDF and current query.
+Find restores its bar if the bar is hidden. Refresh updates local file facts.
+ADS metadata updates remain separate actions.

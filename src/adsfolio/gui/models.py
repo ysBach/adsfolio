@@ -6,8 +6,8 @@ import sqlite3
 from collections.abc import Sequence
 from typing import Any
 
-from PySide6.QtCore import QAbstractTableModel, QModelIndex, QSize, Qt, Signal
-from PySide6.QtGui import QColor, QFont, QFontMetrics, QPalette
+from PySide6.QtCore import QAbstractTableModel, QModelIndex, QPointF, QSize, Qt, Signal
+from PySide6.QtGui import QColor, QFont, QFontMetrics, QPainter, QPalette, QPolygonF
 from PySide6.QtWidgets import (
     QApplication,
     QStyle,
@@ -20,10 +20,12 @@ from ..pdf.readiness import metadata_ready
 from .library import (
     BASE_COLUMNS,
     ISO8601_TIMESTAMP_FORMAT,
+    STALE_VERIFICATION_TOOLTIP,
     Column,
     FileQuery,
     format_first_seen,
     format_mtime,
+    verification_stale,
 )
 
 PAGE_SIZE = 500
@@ -174,15 +176,32 @@ class ResolutionDelegate(RowHeightDelegate):
         style.drawControl(QStyle.CE_ItemViewItem, styled, painter, styled.widget)
         model = index.model()
         record = model.record_at(index.row()) if hasattr(model, "record_at") else None
-        if not isinstance(record, dict) or not (
-            is_resolved_record(record) or metadata_ready(record)
-        ):
+        if not isinstance(record, dict):
             return
         marker_size = min(10, styled.rect.width() - 4, styled.rect.height() - 4)
         if marker_size <= 0:
             return
         marker = styled.rect.center()
+        if verification_stale(record):
+            half = marker_size / 2.0
+            triangle = QPolygonF(
+                [
+                    QPointF(marker.x(), marker.y() - half),
+                    QPointF(marker.x() + half, marker.y() + half),
+                    QPointF(marker.x() - half, marker.y() + half),
+                ]
+            )
+            painter.save()
+            painter.setRenderHint(QPainter.Antialiasing, True)
+            painter.setPen(Qt.NoPen)
+            painter.setBrush(QColor("#d97706"))
+            painter.drawPolygon(triangle)
+            painter.restore()
+            return
+        if not (is_resolved_record(record) or metadata_ready(record)):
+            return
         painter.save()
+        painter.setRenderHint(QPainter.Antialiasing, True)
         painter.setPen(Qt.NoPen)
         painter.setBrush(QColor("#2e7d32"))
         painter.drawEllipse(
@@ -320,13 +339,18 @@ class FileTableModel(QAbstractTableModel):
             if role == Qt.DisplayRole:
                 return ""
             if role in (Qt.ToolTipRole, Qt.AccessibleTextRole):
-                return (
-                    "Resolved"
-                    if is_resolved_record(record)
-                    else "Metadata ready (not ADS linked)"
-                    if metadata_ready(record)
-                    else "Needs attention"
-                )
+                if verification_stale(record):
+                    return STALE_VERIFICATION_TOOLTIP
+                if is_resolved_record(record):
+                    return "ADS verified"
+                if metadata_ready(record):
+                    return "Metadata ready for renaming. No verified ADS link."
+                if record.get("bibcode"):
+                    return (
+                        "Bibcode present, but this PDF is not verified. "
+                        "Run Identify to check the match. Existing metadata is retained."
+                    )
+                return "No verified publication match. Run Identify or enter metadata."
         if role in (Qt.ToolTipRole, Qt.AccessibleTextRole) and column.key in {
             "bibcode",
             "arxiv",

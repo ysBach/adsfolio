@@ -132,6 +132,11 @@ class AppearanceDialog(QDialog):
         return self.detail_label_bold_checkbox.isChecked()
 
     @property
+    def detail_compact_rows(self) -> bool:
+        """Return whether row actions belong in the field context menu."""
+        return self.compact_rows_checkbox.isChecked()
+
+    @property
     def show_edit_buttons(self) -> bool:
         """Return whether detail-row edit buttons should be shown."""
         return self.show_edit_buttons_checkbox.isChecked()
@@ -145,6 +150,11 @@ class AppearanceDialog(QDialog):
     def filename_click_action(self) -> str:
         """Return the action used when a table filename is clicked."""
         return str(self.filename_click_action_combo.currentData() or "open")
+
+    @property
+    def link_activation(self) -> str:
+        """Return whether links activate on a "double" or "single" click."""
+        return str(self.link_activation_combo.currentData() or "double")
 
     @property
     def pdf_viewer_command(self) -> str | None:
@@ -380,7 +390,14 @@ class AppearanceDialog(QDialog):
         tab = QWidget(self)
         layout = QVBoxLayout(tab)
         self.detail_action_controls = QWidget(tab)
-        action_layout = QHBoxLayout(self.detail_action_controls)
+        action_layout = QVBoxLayout(self.detail_action_controls)
+        self.compact_rows_checkbox = QCheckBox(
+            "Compact rows (right-click a field for actions)",
+            self.detail_action_controls,
+        )
+        self.compact_rows_checkbox.setChecked(config.detail_compact_rows)
+        self.compact_rows_checkbox.toggled.connect(self._emit_settings_changed)
+        action_layout.addWidget(self.compact_rows_checkbox)
         action_layout.setContentsMargins(0, 0, 0, 0)
         self.show_edit_buttons_checkbox = QCheckBox(
             "Show edit buttons", self.detail_action_controls
@@ -394,7 +411,14 @@ class AppearanceDialog(QDialog):
         self.show_lock_buttons_checkbox.setChecked(config.show_lock_buttons)
         self.show_lock_buttons_checkbox.toggled.connect(self._emit_settings_changed)
         action_layout.addWidget(self.show_lock_buttons_checkbox)
-        action_layout.addStretch(1)
+        self.compact_rows_checkbox.toggled.connect(
+            lambda compact: self.show_edit_buttons_checkbox.setEnabled(not compact)
+        )
+        self.compact_rows_checkbox.toggled.connect(
+            lambda compact: self.show_lock_buttons_checkbox.setEnabled(not compact)
+        )
+        self.show_edit_buttons_checkbox.setEnabled(not config.detail_compact_rows)
+        self.show_lock_buttons_checkbox.setEnabled(not config.detail_compact_rows)
         layout.addWidget(self.detail_action_controls)
         rows = list(self._ordered_rows(detail_rows, config.detail_row_order))
         self._detail_row_keys = [key for key, _label in rows]
@@ -501,6 +525,14 @@ class AppearanceDialog(QDialog):
         self.filename_click_action_combo.setCurrentIndex(max(0, action_index))
         form.addRow("Filename click", self.filename_click_action_combo)
 
+        self.link_activation_combo = QComboBox(tab)
+        self.link_activation_combo.addItem("Double-click", "double")
+        self.link_activation_combo.addItem("Single click", "single")
+        self.link_activation_combo.setCurrentIndex(
+            max(0, self.link_activation_combo.findData(config.link_activation))
+        )
+        form.addRow("Open bibcode, arXiv, and filename", self.link_activation_combo)
+
         self.pdf_viewer_command_edit = QLineEdit(tab)
         self.pdf_viewer_command_edit.setText(config.pdf_viewer_command or "")
         self.pdf_viewer_command_edit.setPlaceholderText("System default")
@@ -519,6 +551,9 @@ class AppearanceDialog(QDialog):
         help_label.setWordWrap(True)
         form.addRow("", help_label)
         self.filename_click_action_combo.currentIndexChanged.connect(
+            self._emit_settings_changed
+        )
+        self.link_activation_combo.currentIndexChanged.connect(
             self._emit_settings_changed
         )
         self.pdf_viewer_command_edit.textChanged.connect(self._emit_settings_changed)

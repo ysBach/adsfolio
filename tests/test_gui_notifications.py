@@ -194,3 +194,32 @@ def test_notice_bar_escapes_ampersand_in_button_labels(qtbot) -> None:
     assert NoticeAction.IDENTIFY_RENAME.value == "Identify & Rename"
     assert bar.action_button.text() == "Identify && Rename"
     assert bar.action_all_button.text() == "Identify && Rename All"
+
+
+def test_success_acknowledgement_keeps_queue_and_payload_behavior(qtbot):
+    bar = NoticeBar()
+    qtbot.addWidget(bar)
+    dismissed = []
+    bar.dismiss_requested.connect(dismissed.append)
+    bar.enqueue(
+        Notice("renamed", "Renamed paper.pdf", severity="success", payload="renamed")
+    )
+    bar.enqueue(
+        Notice(
+            "identified",
+            "Identified paper.pdf",
+            severity="success",
+            payload="identified",
+        )
+    )
+    assert bar.dismiss_button.text() == "OK"
+    assert bar.dismiss_button.accessibleName() == "OK"
+    assert bar.dismiss_all_button.text() == "OK All"
+    bar.enqueue(Notice("warning", "Needs review", severity="warning"))
+    assert bar.dismiss_all_button.text() == "Dismiss All"
+    bar.dismiss_button.click()
+    assert dismissed == ["renamed"]
+    assert bar.queued_keys() == ("identified", "warning")
+    bar.dismiss_button.click()
+    assert bar.dismiss_button.text() == "Dismiss"
+    assert bar.dismiss_button.accessibleName() == "Dismiss"

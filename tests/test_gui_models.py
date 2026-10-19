@@ -143,11 +143,17 @@ def test_resolution_marker_has_accessible_state(qtbot, tmp_path) -> None:
     resolved = model.index(1, status_index)
     attention = model.index(0, status_index)
     assert resolved.data(Qt.DisplayRole) == ""
-    assert resolved.data(Qt.ToolTipRole) == "Resolved"
-    assert resolved.data(Qt.AccessibleTextRole) == "Resolved"
+    assert resolved.data(Qt.ToolTipRole) == "ADS verified"
+    assert resolved.data(Qt.AccessibleTextRole) == "ADS verified"
     assert attention.data(Qt.DisplayRole) == ""
-    assert attention.data(Qt.ToolTipRole) == "Needs attention"
-    assert attention.data(Qt.AccessibleTextRole) == "Needs attention"
+    assert attention.data(Qt.ToolTipRole) == (
+        "Bibcode present, but this PDF is not verified. "
+        "Run Identify to check the match. Existing metadata is retained."
+    )
+    assert attention.data(Qt.AccessibleTextRole) == (
+        "Bibcode present, but this PDF is not verified. "
+        "Run Identify to check the match. Existing metadata is retained."
+    )
     registry.close()
 
 
@@ -342,3 +348,32 @@ def test_set_registry_with_query_resets_once(qtbot) -> None:
 
     model.set_registry(first)  # omitted query keeps the current one
     assert model.query == FileQuery(search="x")
+
+
+def test_status_explains_changed_pdf_without_losing_citation(tmp_path):
+    root = tmp_path / "library"
+    root.mkdir()
+    registry = PdfRegistry(root)
+    registry.upsert_file(
+        root=root,
+        relative_path="paper.pdf",
+        current_path="paper.pdf",
+        sha256="current",
+        size_bytes=1,
+        mtime_ns=1,
+        status="unresolved",
+        metadata={
+            "bibcode": "2017MNRAS.469S.443B",
+            "title": ["A known paper"],
+            "author": ["Author, A."],
+            "year": "2017",
+            "_adsfolio_metadata_sha256": "previous",
+        },
+    )
+    model = FileTableModel(registry, FileQuery())
+    column = next(i for i, c in enumerate(COLUMNS) if c.key == "status")
+    assert model.index(0, column).data(Qt.ToolTipRole) == (
+        "PDF changed since identification. Run Identify to verify it again."
+    )
+    assert model.record_at(0)["title"] == ["A known paper"]
+    registry.close()

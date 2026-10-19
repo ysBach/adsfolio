@@ -11,15 +11,30 @@ from typing import Any
 from urllib.parse import quote
 
 from PySide6.QtCore import QEvent, QMimeData, QSize, Qt, Signal
-from PySide6.QtGui import QColor, QDrag, QFont, QFontMetrics
+from PySide6.QtGui import (
+    QColor,
+    QDrag,
+    QFont,
+    QFontMetrics,
+    QIcon,
+    QKeySequence,
+    QMouseEvent,
+    QPainter,
+    QShortcut,
+)
 from PySide6.QtWidgets import (
     QApplication,
+    QFrame,
     QHBoxLayout,
     QInputDialog,
     QLabel,
+    QMenu,
     QPushButton,
     QScrollArea,
     QSizePolicy,
+    QSplitter,
+    QSplitterHandle,
+    QStyle,
     QToolButton,
     QToolTip,
     QVBoxLayout,
@@ -28,8 +43,15 @@ from PySide6.QtWidgets import (
 
 from ..citations import CitationFormatter, CitationStyle, citation_preference_key
 from ..formatting import html_to_text
+from ..pdf.catalog import REFERENCE_FIELD_MAP, REFERENCE_METADATA_KEY
 from ..pdf.registry import LOCKED_METADATA_FIELDS_KEY
-from .library import ISO8601_TIMESTAMP_FORMAT, format_mtime
+from .icons import ICON_SIZE, vector_icon
+from .library import (
+    ISO8601_TIMESTAMP_FORMAT,
+    STALE_VERIFICATION_TOOLTIP,
+    format_mtime,
+    verification_stale,
+)
 from .osint import open_path, open_url, reveal_in_file_manager
 
 DEFAULT_ROW_ORDER = (
@@ -139,16 +161,48 @@ class _MarkupWrapper(HTMLParser):
 
 
 class DragHandle(QLabel):
-    """Explicit drag handle for a metadata row."""
+    """Drag a field label to reorder its metadata row."""
 
     def __init__(self, key: str, parent: QWidget | None = None) -> None:
-        super().__init__("⠿", parent)
+        super().__init__(parent)
         self._key = key
         self._press_position = None
+        self.locked = False
+        self._lock_icon: QIcon | None = None
+        self._lock_icon_key: tuple[int, float] | None = None
+        self.setAccessibleName("Drag to reorder")
         self.setToolTip("Drag to reorder")
         self.setCursor(Qt.OpenHandCursor)
-        self.setFixedWidth(24)
-        self.setAlignment(Qt.AlignCenter | Qt.AlignTop)
+        self.setAlignment(Qt.AlignLeft | Qt.AlignTop)
+
+    def paintEvent(self, event: Any) -> None:
+        """Elide the label and keep a compact lock visible inside its column."""
+        painter = QPainter(self)
+        try:
+            rect = self.contentsRect()
+            if self.locked:
+                size = self.fontMetrics().height()
+                badge = rect.adjusted(0, 0, 0, 0)
+                badge.setWidth(size)
+                badge.setHeight(size)
+                icon_key = (self.palette().cacheKey(), self.devicePixelRatioF())
+                if self._lock_icon is None or icon_key != self._lock_icon_key:
+                    self._lock_icon = vector_icon("lock", self)
+                    self._lock_icon_key = icon_key
+                self._lock_icon.paint(painter, badge)
+                rect.setLeft(
+                    rect.left() + size + self.fontMetrics().horizontalAdvance(" ")
+                )
+            painter.setPen(self.palette().color(self.foregroundRole()))
+            painter.drawText(
+                rect,
+                Qt.AlignLeft | Qt.AlignTop,
+                self.fontMetrics().elidedText(
+                    self.text(), Qt.ElideRight, max(0, rect.width())
+                ),
+            )
+        finally:
+            painter.end()
 
     def mousePressEvent(self, event: Any) -> None:
         """Record the starting point for an explicit row drag."""
@@ -178,6 +232,92 @@ class DragHandle(QLabel):
         self._press_position = None
         self.setCursor(Qt.OpenHandCursor)
         super().mouseReleaseEvent(event)
+
+
+class _LabelColumnHandle(QSplitterHandle):
+    """Resize the shared label column by pointer or keyboard."""
+
+    def __init__(self, orientation: Qt.Orientation, parent: QSplitter) -> None:
+        super().__init__(orientation, parent)
+        self.setFocusPolicy(Qt.StrongFocus)
+        self.setAccessibleName("Field column width")
+        self.setToolTip(
+            "Drag to resize field labels. Double-click to reset. Left/Right keys resize."
+        )
+
+    def mouseDoubleClickEvent(self, event: Any) -> None:
+        if event.button() == Qt.LeftButton:
+            self.splitter().reset_requested.emit()
+            event.accept()
+            return
+        super().mouseDoubleClickEvent(event)
+
+    def keyPressEvent(self, event: Any) -> None:
+        if event.key() in (Qt.Key_Left, Qt.Key_Right):
+            splitter = self.splitter()
+            step = self.fontMetrics().averageCharWidth()
+            width = splitter.sizes()[0] + (
+                step if event.key() == Qt.Key_Right else -step
+            )
+            splitter.width_requested.emit(width)
+            event.accept()
+            return
+        super().keyPressEvent(event)
+
+
+class _LabelColumnSplitter(QSplitter):
+    """Expose one shared boundary for every metadata row."""
+
+    width_requested = Signal(int)
+    reset_requested = Signal()
+
+    def createHandle(self) -> QSplitterHandle:
+        return _LabelColumnHandle(self.orientation(), self)
+
+
+class _RowColumnDivider(QFrame):
+    """Resize the shared field column from its line in any metadata row."""
+
+    width_requested = Signal(int)
+    reset_requested = Signal()
+
+    def __init__(self, parent: QWidget) -> None:
+        super().__init__(parent)
+        self.setFrameShape(QFrame.VLine)
+        self.setFixedWidth(self.style().pixelMetric(QStyle.PM_SplitterWidth))
+        self.setCursor(Qt.SplitHCursor)
+        self.setToolTip("Drag to resize field labels. Double-click to reset.")
+        self._press_x: float | None = None
+        self._press_width = 0
+
+    def mousePressEvent(self, event: Any) -> None:
+        if event.button() == Qt.LeftButton:
+            self._press_x = event.globalPosition().x()
+            self._press_width = self.parentWidget().name.width()
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event: Any) -> None:
+        if self._press_x is not None and event.buttons() & Qt.LeftButton:
+            self.width_requested.emit(
+                self._press_width + round(event.globalPosition().x() - self._press_x)
+            )
+            event.accept()
+            return
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event: Any) -> None:
+        self._press_x = None
+        super().mouseReleaseEvent(event)
+
+    def mouseDoubleClickEvent(self, event: Any) -> None:
+        if event.button() == Qt.LeftButton:
+            self._press_x = None
+            self.reset_requested.emit()
+            event.accept()
+            return
+        super().mouseDoubleClickEvent(event)
 
 
 class MetadataRowsContainer(QWidget):
@@ -284,6 +424,82 @@ class CopyableLabel(QLabel):
         self._copy_text = value
 
 
+class DetailLinkLabel(QLabel):
+    """Require the configured pointer gesture while retaining keyboard links."""
+
+    activated = Signal(str)
+
+    def __init__(self, text: str, parent: QWidget | None = None) -> None:
+        super().__init__(text, parent)
+        self.link_activation = "double"
+        self._double_click = False
+        self._allow_activation = True
+        self._pointer_modifiers = Qt.NoModifier
+        self.setTextFormat(Qt.RichText)
+        self.setTextInteractionFlags(Qt.TextBrowserInteraction)
+        self.setFocusPolicy(Qt.StrongFocus)
+        self.setOpenExternalLinks(False)
+        self.linkActivated.connect(self._activate)
+        self._sync_activation_feedback()
+
+    def _sync_activation_feedback(self) -> None:
+        cue = (
+            "Double-click to open in viewer or browser."
+            if self.link_activation == "double"
+            else "Click to open in viewer or browser."
+        )
+        self.setToolTip(cue)
+        self.setAccessibleDescription(cue)
+
+    def _activate(self, url: str) -> None:
+        """Forward explicit keyboard activation or an allowed pointer gesture."""
+        if self._allow_activation:
+            self.activated.emit(url)
+
+    def mousePressEvent(self, event: Any) -> None:
+        """Remember modified gestures even if modifiers are released first."""
+        self._double_click = False
+        self._pointer_modifiers = event.modifiers()
+        super().mousePressEvent(event)
+
+    def mouseDoubleClickEvent(self, event: Any) -> None:
+        """Open once per gesture, leaving modified clicks for text selection."""
+        self._double_click = event.button() == Qt.LeftButton
+        self._pointer_modifiers = event.modifiers()
+        if self.link_activation == "single" or event.modifiers() != Qt.NoModifier:
+            super().mouseDoubleClickEvent(event)
+            return
+        # QLabel selects text on a double click, cancelling its pending anchor.
+        # In double mode, treat the second press as an anchor press instead.
+        press = QMouseEvent(
+            QEvent.MouseButtonPress,
+            event.position(),
+            event.globalPosition(),
+            event.button(),
+            event.buttons(),
+            event.modifiers(),
+        )
+        super().mousePressEvent(press)
+
+    def mouseReleaseEvent(self, event: Any) -> None:
+        """Allow only unmodified primary gestures matching the preference."""
+        self._allow_activation = (
+            event.button() == Qt.LeftButton
+            and event.modifiers() == Qt.NoModifier
+            and self._pointer_modifiers == Qt.NoModifier
+            and (
+                (self.link_activation == "single" and not self._double_click)
+                or (self.link_activation == "double" and self._double_click)
+            )
+        )
+        try:
+            super().mouseReleaseEvent(event)
+        finally:
+            self._allow_activation = True
+            self._double_click = False
+            self._pointer_modifiers = Qt.NoModifier
+
+
 class MetadataRow(QWidget):
     """One draggable metadata row with copy, edit, and lock controls."""
 
@@ -292,6 +508,10 @@ class MetadataRow(QWidget):
     lock_changed = Signal(str, bool)
     link_requested = Signal(str)
     size_changed = Signal()
+    move_requested = Signal(str, int)
+    menu_closed = Signal(str)
+    label_width_requested = Signal(int)
+    label_width_reset = Signal()
 
     def __init__(
         self,
@@ -312,21 +532,33 @@ class MetadataRow(QWidget):
         self._editable = editable
         self._lockable = lockable
         self._locked = locked
+        self._copy_value = self._copy_text(value)
+        self.restriction = ""
+        self.setFocusPolicy(Qt.StrongFocus)
+        self.setAccessibleName(label)
         self._authors = self._as_list(value) if key == "author" else []
         self._show_all_authors = False
         self._abstract = self._raw_text(value) if key == "abstract" else ""
         self._show_full_abstract = expand_abstract
         layout = QHBoxLayout(self)
         layout.setContentsMargins(8, 5, 8, 5)
-        layout.setSpacing(8)
-        layout.addWidget(DragHandle(key, self), 0, Qt.AlignTop)
-        self.name = QLabel(label, self)
+        layout.setSpacing(0)
+        self.name = DragHandle(key, self)
+        self.name.setText(label)
+        self.name.setContentsMargins(0, 0, 4, 0)
         self.name.setFixedWidth(label_width)
-        self.name.setAlignment(Qt.AlignRight | Qt.AlignTop)
+        self.name.setAlignment(Qt.AlignLeft | Qt.AlignTop)
+        self.name.setToolTip(
+            f"{label}. Drag to reorder. Right-click for field actions."
+        )
         layout.addWidget(self.name, 0, Qt.AlignTop)
+        self.divider = _RowColumnDivider(self)
+        self.divider.width_requested.connect(self.label_width_requested.emit)
+        self.divider.reset_requested.connect(self.label_width_reset.emit)
+        layout.addWidget(self.divider)
         value_box = QWidget(self)
         value_layout = QVBoxLayout(value_box)
-        value_layout.setContentsMargins(0, 0, 0, 0)
+        value_layout.setContentsMargins(4, 0, 0, 0)
         value_layout.setSpacing(2)
         self._value_layout = value_layout
         self.doi_labels: list[CopyableLabel] = []
@@ -337,11 +569,8 @@ class MetadataRow(QWidget):
             )
             self.value.copied.connect(lambda: self.copied.emit(self.key))
         else:
-            self.value = QLabel(link_html, value_box)
-            self.value.setTextFormat(Qt.RichText)
-            self.value.setTextInteractionFlags(Qt.TextBrowserInteraction)
-            self.value.setOpenExternalLinks(False)
-            self.value.linkActivated.connect(self.link_requested.emit)
+            self.value = DetailLinkLabel(link_html, value_box)
+            self.value.activated.connect(self.link_requested.emit)
             self.link_label = self.value
         self.value.setWordWrap(True)
         self.value.setAlignment(Qt.AlignLeft | Qt.AlignTop)
@@ -362,7 +591,9 @@ class MetadataRow(QWidget):
         if link_html is None:
             self._set_value(value)
         self.edit_button = QToolButton(self)
-        self.edit_button.setText("✎")
+        self.edit_button.setIcon(vector_icon("edit", self.edit_button))
+        self.edit_button.setIconSize(ICON_SIZE)
+        self.edit_button.setAccessibleName(f"Edit {label}")
         self.edit_button.setToolTip(f"Edit {label}")
         self.edit_button.setFixedWidth(26)
         self.edit_button.setVisible(self._editable)
@@ -370,10 +601,106 @@ class MetadataRow(QWidget):
         layout.addWidget(self.edit_button, 0, Qt.AlignTop)
         self.lock_button = QToolButton(self)
         self.lock_button.setFixedWidth(26)
+        self.lock_button.setIconSize(ICON_SIZE)
+        self.lock_button.setCheckable(True)
         self.lock_button.clicked.connect(self._toggle_lock)
         self.lock_button.setVisible(self._lockable)
         layout.addWidget(self.lock_button, 0, Qt.AlignTop)
         self._render_lock()
+        for child in (self, self.name, self.value):
+            self._install_field_menu(child)
+        self._edit_shortcut = QShortcut(QKeySequence("F2"), self)
+        self._edit_shortcut.setContext(Qt.WidgetWithChildrenShortcut)
+        self._edit_shortcut.activated.connect(self._request_edit)
+        self._menu_shortcut = QShortcut(QKeySequence("Shift+F10"), self)
+        self._menu_shortcut.setContext(Qt.WidgetWithChildrenShortcut)
+        self._menu_shortcut.activated.connect(self._show_keyboard_menu)
+
+    def _install_field_menu(self, widget: QWidget) -> None:
+        widget.setContextMenuPolicy(Qt.CustomContextMenu)
+        widget.customContextMenuRequested.connect(
+            lambda position: self._show_field_menu(widget, position)
+        )
+
+    def _show_field_menu(self, widget: QWidget, position: Any) -> None:
+        menu = self.create_context_menu(widget)
+        menu.exec(widget.mapToGlobal(position))
+        if not self.isHidden():
+            self.setFocus(Qt.PopupFocusReason)
+        self.menu_closed.emit(self.key)
+        menu.deleteLater()
+
+    def _request_edit(self) -> None:
+        if self._editable:
+            self.edit_requested.emit(self.key)
+
+    def _show_keyboard_menu(self) -> None:
+        self._show_field_menu(self, self.rect().center())
+
+    def create_context_menu(self, origin: QWidget | None = None) -> QMenu:
+        """Offer copy, edit, lock, and reorder actions for a field.
+
+        Parameters
+        ----------
+        origin : PySide6.QtWidgets.QWidget, optional
+            Value label that opened the menu. A DOI label copies that DOI.
+            Other origins copy the full field value.
+
+        Returns
+        -------
+        PySide6.QtWidgets.QMenu
+            Actions available for this field.
+        """
+        self.setFocus()
+        menu = QMenu(self)
+        copy_action = menu.addAction("Copy bibcode" if self.key == "links" else "Copy")
+        copy_action.triggered.connect(lambda: self._copy_from_menu(origin))
+        if self.restriction:
+            notice = menu.addAction(self.restriction)
+            notice.setEnabled(False)
+        if self._editable:
+            menu.addAction("Edit…", self._request_edit)
+        if self._lockable:
+            menu.addAction("Unlock" if self._locked else "Lock", self._toggle_lock)
+        menu.addSeparator()
+        move_up = menu.addAction(
+            "Move up", lambda: self.move_requested.emit(self.key, -1)
+        )
+        move_down = menu.addAction(
+            "Move down", lambda: self.move_requested.emit(self.key, 1)
+        )
+        container = self.parentWidget()
+        if isinstance(container, MetadataRowsContainer):
+            position = container.rows_layout.indexOf(self)
+            move_up.setEnabled(position > 0)
+            move_down.setEnabled(position < container.rows_layout.count() - 1)
+        return menu
+
+    def _copy_from_menu(self, origin: QWidget | None) -> None:
+        value = (
+            origin._copy_text if isinstance(origin, CopyableLabel) else self._copy_value
+        )
+        QApplication.clipboard().setText(value)
+        self.setFocus()
+        self.copied.emit(self.key)
+
+    def keyPressEvent(self, event: Any) -> None:
+        if event.key() == Qt.Key_Menu:
+            self._show_keyboard_menu()
+            event.accept()
+            return
+        super().keyPressEvent(event)
+
+    def paintEvent(self, event: Any) -> None:
+        super().paintEvent(event)
+        if self.hasFocus():
+            painter = QPainter(self)
+            try:
+                painter.setPen(self.palette().highlight().color())
+                painter.setBrush(Qt.NoBrush)
+                painter.drawRect(self.rect().adjusted(0, 0, -1, -1))
+            finally:
+                painter.end()
 
     def minimumSizeHint(self) -> QSize:
         """Allow horizontal shrinking to the viewport while preserving wrapped height."""
@@ -410,7 +737,14 @@ class MetadataRow(QWidget):
         if self.key == "doi":
             self._render_dois(value)
             return
-        self.value.setText(DetailPane._display_text(DetailPane._join(value)))
+        display_value = (
+            {"resolved": "ADS verified", "unresolved": "Not ADS verified"}.get(
+                value, value
+            )
+            if self.key == "status" and isinstance(value, str)
+            else value
+        )
+        self.value.setText(DetailPane._display_text(DetailPane._join(display_value)))
         self.author_toggle.hide()
         self.abstract_toggle.hide()
 
@@ -432,6 +766,7 @@ class MetadataRow(QWidget):
                 copy_text=doi,
             )
             label.setWordWrap(True)
+            self._install_field_menu(label)
             label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
             label.copied.connect(lambda: self.copied.emit(self.key))
             self._value_layout.insertWidget(index, label)
@@ -511,11 +846,25 @@ class MetadataRow(QWidget):
             QApplication.sendEvent(self, QEvent(QEvent.LayoutRequest))
 
     def _render_lock(self) -> None:
-        self.lock_button.setText("🔒")
-        self.lock_button.setStyleSheet(
-            "background: #1f5f99; border: 1px solid #12456f; font-size: 16px;"
+        self.name.locked = self._locked
+        self.name.setAccessibleDescription(
+            "Locked: ADS cannot update this field."
             if self._locked
-            else "background: #f3f3f3; border: 1px solid #d0d0d0; color: #9a9a9a; font-size: 16px;"
+            else "Unlocked field."
+        )
+        self.setAccessibleDescription(self.name.accessibleDescription())
+        self.name.setToolTip(
+            f"{self.name.text()}. "
+            + ("Locked: ADS cannot update this field. " if self._locked else "")
+            + "Drag to reorder. Right-click for actions."
+        )
+        self.name.update()
+        self.lock_button.setIcon(
+            vector_icon("lock" if self._locked else "unlock", self.lock_button)
+        )
+        self.lock_button.setChecked(self._locked)
+        self.lock_button.setAccessibleName(
+            f"Unlock {self.name.text()}" if self._locked else f"Lock {self.name.text()}"
         )
         self.lock_button.setToolTip(
             "Locked: ADS cannot update this field. Click to unlock."
@@ -556,9 +905,11 @@ class DetailPane(QWidget):
     metadata_changed = Signal(dict)
     ads_update_requested = Signal(str)
     row_order_changed = Signal(list)
+    label_width_changed = Signal(object)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
+        self._link_activation = "double"
         self._record: dict[str, Any] | None = None
         self._cached_document: dict[str, Any] | None = None
         self._metadata: dict[str, Any] = {}
@@ -572,6 +923,9 @@ class DetailPane(QWidget):
         self._expand_abstracts = False
         self._row_spacing: int | None = None
         self._label_bold = True
+        self._compact_rows = False
+        self._label_width: int | None = None
+        self._pending_field_focus: tuple[Path, str, str] | None = None
         self._show_edit_buttons = True
         self._show_lock_buttons = True
         self._pdf_viewer_command: str | None = None
@@ -586,16 +940,44 @@ class DetailPane(QWidget):
         self._rows.row_dropped.connect(self._move_dropped_row)
         scroll = QScrollArea(self)
         scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         scroll.setWidget(self._rows)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
+        self.column_header = _LabelColumnSplitter(Qt.Horizontal, self)
+        self.column_header.setChildrenCollapsible(False)
+        self.column_header.addWidget(QLabel("Field", self.column_header))
+        self.column_header.addWidget(QLabel("Value", self.column_header))
+        self.column_header.setStretchFactor(0, 0)
+        self.column_header.setStretchFactor(1, 1)
+        self.column_header.splitterMoved.connect(
+            lambda position, index: self._resize_label_column(position)
+        )
+        self.column_header.width_requested.connect(self._resize_label_column)
+        self.column_header.reset_requested.connect(self.reset_label_width)
+        header_box = QWidget(self)
+        header_layout = QHBoxLayout(header_box)
+        header_layout.setContentsMargins(8, 0, 8, 0)
+        header_layout.addWidget(self.column_header)
+        layout.addWidget(header_box)
         layout.addWidget(scroll)
         self._actions = QWidget(self)
-        buttons = QVBoxLayout(self._actions)
-        update_button = QPushButton("Update from ADS…", self._actions)
+        buttons = QHBoxLayout(self._actions)
+        buttons.setContentsMargins(4, 4, 4, 4)
+        buttons.setSpacing(4)
+        update_button = QPushButton("Update ADS…", self._actions)
         open_button = QPushButton("Open", self._actions)
         reveal_button = QPushButton("Reveal", self._actions)
+        for button, icon_name, description in (
+            (update_button, "refresh", "Update metadata from ADS"),
+            (open_button, "open", "Open PDF"),
+            (reveal_button, "folder", "Reveal PDF in file manager"),
+        ):
+            button.setIcon(vector_icon(icon_name, button))
+            button.setIconSize(ICON_SIZE)
+            button.setToolTip(description)
+            button.setAccessibleName(description)
         buttons.addWidget(update_button)
         buttons.addWidget(open_button)
         buttons.addWidget(reveal_button)
@@ -604,6 +986,72 @@ class DetailPane(QWidget):
         open_button.clicked.connect(self._open)
         reveal_button.clicked.connect(self._reveal)
         self._actions.setEnabled(False)
+
+    def set_compact_rows(self, enabled: bool) -> None:
+        """Use context menus while retaining the saved inline-button choices."""
+        self._compact_rows = bool(enabled)
+        self.set_action_buttons_visible(
+            show_edit=self._show_edit_buttons, show_lock=self._show_lock_buttons
+        )
+
+    def set_label_width(self, width: int | None) -> None:
+        """Set the shared label width, or use the width of a common field name."""
+        self._label_width = width
+        self._apply_label_width()
+
+    def _apply_label_width(self) -> None:
+        available = max(
+            0, self.column_header.width() - self.column_header.handleWidth()
+        )
+        font = QFont(self.font())
+        font.setBold(self._label_bold)
+        metrics = QFontMetrics(font)
+        requested = self._label_width or (
+            metrics.horizontalAdvance("Abstract")
+            + metrics.height()
+            + metrics.horizontalAdvance(" ")
+            + 4
+        )
+        value_minimum = self.column_header.widget(1).minimumSizeHint().width()
+        width = max(0, min(requested, available - value_minimum))
+        self.column_header.setSizes([width, max(0, available - width)])
+        width = self.column_header.sizes()[0]
+        changed = False
+        for row in self._row_widgets.values():
+            if row.name.width() != width:
+                row.name.setFixedWidth(width)
+                changed = True
+        if changed:
+            self._refresh_rows_geometry()
+
+    def reset_label_width(self) -> None:
+        """Restore the default field width and retain automatic font sizing."""
+        self.set_label_width(None)
+        self.label_width_changed.emit(None)
+
+    def _resize_label_column(self, width: int) -> None:
+        self.set_label_width(max(1, width))
+        self._label_width = self.column_header.sizes()[0]
+        self.label_width_changed.emit(self._label_width)
+
+    def resizeEvent(self, event: Any) -> None:
+        super().resizeEvent(event)
+        self._apply_label_width()
+
+    def set_link_activation(self, mode: str) -> None:
+        """Set pointer link activation to `double` (default) or `single`.
+
+        Keyboard link activation remains available in either mode. Existing
+        rows update immediately, and new rows inherit the setting.
+        """
+        if mode not in {"double", "single"}:
+            raise ValueError("Link activation must be 'double' or 'single'")
+        self._link_activation = mode
+        for row in self._row_widgets.values():
+            if isinstance(row.link_label, DetailLinkLabel):
+                row.link_label.link_activation = mode
+                row.link_label._double_click = False
+                row.link_label._sync_activation_feedback()
 
     def set_citation_styles(self, styles: Sequence[CitationStyle]) -> None:
         """Configure runtime custom citation styles and rerender the current record."""
@@ -639,8 +1087,8 @@ class DetailPane(QWidget):
         self._show_lock_buttons = bool(show_lock)
         for row in self._row_widgets.values():
             row.set_action_button_visibility(
-                show_edit=self._show_edit_buttons,
-                show_lock=self._show_lock_buttons,
+                show_edit=self._show_edit_buttons and not self._compact_rows,
+                show_lock=self._show_lock_buttons and not self._compact_rows,
             )
         self._refresh_rows_geometry()
 
@@ -663,19 +1111,9 @@ class DetailPane(QWidget):
     def set_label_bold(self, enabled: bool) -> None:
         """Set whether the left-column metadata labels use bold text."""
         self._label_bold = bool(enabled)
-        label_font = QFont(self.font())
-        label_font.setBold(self._label_bold)
-        label_metrics = QFontMetrics(label_font)
-        if self._row_labels:
-            label_width = max(
-                label_metrics.horizontalAdvance(label)
-                for label in self._row_labels.values()
-            )
-            for row in self._row_widgets.values():
-                row.name.setFixedWidth(label_width)
         for row in self._row_widgets.values():
             row.set_label_bold(self._label_bold)
-        self._refresh_rows_geometry()
+        self._apply_label_width()
 
     def _refresh_rows_geometry(self) -> None:
         """Activate row layouts and update scroll container geometry."""
@@ -726,7 +1164,19 @@ class DetailPane(QWidget):
             return
         self._rows.rows_layout.removeWidget(widget)
         self._rows.rows_layout.insertWidget(destination, widget)
-        self._row_order = self.row_keys()
+        full_order = list(
+            dict.fromkeys([*self._row_order, *self._default_row_order(), *keys])
+        )
+        full_order.remove(key)
+        visible = self.row_keys()
+        next_key = visible[destination + 1] if destination + 1 < len(visible) else None
+        insertion = (
+            full_order.index(next_key)
+            if next_key is not None
+            else full_order.index(visible[destination - 1]) + 1
+        )
+        full_order.insert(insertion, key)
+        self._row_order = full_order
         self._refresh_rows_geometry()
         self.row_order_changed.emit(self._row_order)
 
@@ -762,6 +1212,20 @@ class DetailPane(QWidget):
         cached_document: dict[str, Any] | None = None,
     ) -> None:
         """Render `record`, or clear the pane when it is `None`."""
+        focused = QApplication.focusWidget()
+        focused_key = next(
+            (
+                key
+                for key, row in self._row_widgets.items()
+                if row is focused or (focused is not None and row.isAncestorOf(focused))
+            ),
+            None,
+        )
+        same_record = (
+            self._record is not None
+            and record is not None
+            and self._record.get("current_path") == record.get("current_path")
+        )
         self._record = record
         self._cached_document = cached_document if record is not None else None
         self._root = Path(root)
@@ -772,7 +1236,6 @@ class DetailPane(QWidget):
             widget = item.widget()
             if widget is not None:
                 widget.hide()
-                widget.setParent(None)
                 widget.deleteLater()
         self._labels = {}
         self._row_widgets = {}
@@ -802,6 +1265,11 @@ class DetailPane(QWidget):
             if key in self._hidden_rows:
                 continue
             label, value, editable, lockable, display_text = by_key[key]
+            if REFERENCE_METADATA_KEY in self._metadata and key in {
+                "bibcode",
+                *REFERENCE_FIELD_MAP.values(),
+            }:
+                editable, lockable = False, False
             self._add_row(
                 key,
                 label,
@@ -811,7 +1279,17 @@ class DetailPane(QWidget):
                 locked=key in locked,
                 display_text=display_text,
             )
-        self._refresh_rows_geometry()
+        self._apply_label_width()
+        pending = self._pending_field_focus
+        if pending is not None and pending[:2] == (
+            self._root,
+            str(record.get("current_path") or ""),
+        ):
+            focused_key = pending[2]
+            same_record = True
+        self._pending_field_focus = None
+        if same_record and focused_key in self._row_widgets:
+            self._row_widgets[focused_key].setFocus()
 
     def _fill_missing_cached_metadata(
         self, cached_document: dict[str, Any] | None
@@ -969,15 +1447,7 @@ class DetailPane(QWidget):
         locked: bool,
         display_text: str | None,
     ) -> None:
-        label_font = QFont(self.font())
-        label_font.setBold(self._label_bold)
-        label_metrics = QFontMetrics(label_font)
-        label_width = max(
-            label_metrics.horizontalAdvance(row_label)
-            for row_label in [*self._row_labels.values(), label]
-        )
-        for existing_row in self._row_widgets.values():
-            existing_row.name.setFixedWidth(label_width)
+        label_width = self.column_header.sizes()[0]
         row = MetadataRow(
             key,
             label,
@@ -990,11 +1460,42 @@ class DetailPane(QWidget):
             link_html=display_text,
             parent=self._rows,
         )
+        if REFERENCE_METADATA_KEY in self._metadata and key in {
+            "bibcode",
+            *REFERENCE_FIELD_MAP.values(),
+        }:
+            row.restriction = "Edit in File → Local References…"
+            row.name.setToolTip(row.name.toolTip() + " " + row.restriction)
+        row.menu_closed.connect(self._focus_metadata_row)
+        row.label_width_requested.connect(self._resize_label_column)
+        row.label_width_reset.connect(self.reset_label_width)
+        if isinstance(row.link_label, DetailLinkLabel):
+            row.link_label.link_activation = self._link_activation
+            row.link_label._sync_activation_feedback()
         row.set_label_bold(self._label_bold)
         row.set_action_button_visibility(
-            show_edit=self._show_edit_buttons,
-            show_lock=self._show_lock_buttons,
+            show_edit=self._show_edit_buttons and not self._compact_rows,
+            show_lock=self._show_lock_buttons and not self._compact_rows,
         )
+        if key == "status" and verification_stale(self._record or {}):
+            row.value.setText("Not ADS verified")
+            row.value.setToolTip(
+                f"{STALE_VERIFICATION_TOOLTIP} Click to copy the stored status."
+            )
+            row.value.setAccessibleDescription(STALE_VERIFICATION_TOOLTIP)
+        elif key == "status" and value in ("resolved", "unresolved"):
+            explanation = (
+                "ADS verified: this PDF has a verified ADS publication match."
+                if value == "resolved"
+                else (
+                    "Metadata is available, but this PDF has no verified ADS publication match. "
+                    "Existing metadata is retained."
+                    if self._metadata
+                    else "This PDF has no verified ADS publication match."
+                )
+            )
+            row.value.setToolTip(f"{explanation} Click to copy the stored status.")
+            row.value.setAccessibleDescription(explanation)
         if key == "sha256" and isinstance(row.value, CopyableLabel):
             row.value.setText(self._display_digest(str(value)))
             row.value.set_copy_text(str(value))
@@ -1004,6 +1505,11 @@ class DetailPane(QWidget):
         )
         row.copied.connect(
             lambda copied_key: self.copy_feedback.emit(self.row_label(copied_key))
+        )
+        row.move_requested.connect(
+            lambda field, delta: self.move_row(
+                field, self.row_keys().index(field) + delta
+            )
         )
         row.edit_requested.connect(self._edit_metadata)
         row.lock_changed.connect(self._set_lock)
@@ -1015,6 +1521,12 @@ class DetailPane(QWidget):
         self._rows.rows_layout.addWidget(row)
         if self._rows.isVisible():
             row.show()
+
+    def _focus_metadata_row(self, key: str) -> None:
+        """Restore field focus after a popup or metadata refresh."""
+        row = self._row_widgets.get(key)
+        if row is not None:
+            row.setFocus(Qt.PopupFocusReason)
 
     def _edit_metadata(self, key: str) -> None:
         original = self._metadata.get(key, "")
@@ -1035,7 +1547,13 @@ class DetailPane(QWidget):
             if key in LIST_FIELDS
             else value
         )
+        self._pending_field_focus = (
+            self._root,
+            str((self._record or {}).get("current_path") or ""),
+            key,
+        )
         self.metadata_changed.emit(copy.deepcopy(self._metadata))
+        self._pending_field_focus = None
 
     def _set_lock(self, key: str, locked: bool) -> None:
         current = {
@@ -1048,7 +1566,13 @@ class DetailPane(QWidget):
         else:
             current.discard(key)
         self._metadata[LOCKED_METADATA_FIELDS_KEY] = sorted(current)
+        self._pending_field_focus = (
+            self._root,
+            str((self._record or {}).get("current_path") or ""),
+            key,
+        )
         self.metadata_changed.emit(copy.deepcopy(self._metadata))
+        self._pending_field_focus = None
 
     def _request_ads_update(self) -> None:
         self.ads_update_requested.emit(str(self._metadata.get("bibcode") or ""))

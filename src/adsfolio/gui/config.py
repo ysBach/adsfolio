@@ -67,9 +67,14 @@ class GuiConfig:
     table_row_height: int | None = None
     detail_row_spacing: int | None = None
     detail_label_bold: bool = True
+    detail_label_width: int | None = None
+    detail_compact_rows: bool = True
+    sidebar_visible: bool = True
+    detail_visible: bool = True
     show_edit_buttons: bool = True
     show_lock_buttons: bool = True
     filename_click_action: str = "open"
+    link_activation: str = "double"
     pdf_viewer_command: str | None = None
     web_browser_command: str | None = None
     splitter_sizes: list[int] = field(default_factory=list)
@@ -213,6 +218,10 @@ def _from_mapping(payload: Mapping[str, Any]) -> GuiConfig:
     filename_click_action = _as_string(payload.get("filename_click_action"), "open")
     if filename_click_action not in {"open", "reveal"}:
         filename_click_action = "open"
+
+    link_activation = _as_string(payload.get("link_activation"), "double")
+    if link_activation not in {"double", "single"}:
+        link_activation = "double"
 
     raw_fonts = payload.get("column_fonts", {})
     column_fonts: dict[str, dict[str, Any]] = {}
@@ -376,9 +385,19 @@ def _from_mapping(payload: Mapping[str, Any]) -> GuiConfig:
         table_row_height=_as_optional_row_height(payload.get("table_row_height")),
         detail_row_spacing=_as_optional_row_spacing(payload.get("detail_row_spacing")),
         detail_label_bold=_as_bool(payload.get("detail_label_bold"), True),
+        detail_label_width=(
+            payload["detail_label_width"]
+            if type(payload.get("detail_label_width")) is int
+            and payload["detail_label_width"] > 0
+            else None
+        ),
+        detail_compact_rows=_as_bool(payload.get("detail_compact_rows"), True),
+        sidebar_visible=_as_bool(payload.get("sidebar_visible"), True),
+        detail_visible=_as_bool(payload.get("detail_visible"), True),
         show_edit_buttons=_as_bool(payload.get("show_edit_buttons"), True),
         show_lock_buttons=_as_bool(payload.get("show_lock_buttons"), True),
         filename_click_action=filename_click_action or "open",
+        link_activation=link_activation,
         pdf_viewer_command=_as_optional_command(payload.get("pdf_viewer_command")),
         web_browser_command=_as_optional_command(payload.get("web_browser_command")),
         splitter_sizes=splitter_sizes,
