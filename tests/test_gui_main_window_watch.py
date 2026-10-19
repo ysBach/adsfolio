@@ -1186,9 +1186,11 @@ class FakeAdsRefreshJob(QObject):
         parent: QObject | None = None,
         *,
         working_directory: Path | None = None,
+        follow_up_argv=(),
     ) -> None:
         super().__init__(parent)
         self.argv = argv
+        self.follow_up_argv = follow_up_argv
         self.working_directory = working_directory
         self.running = False
 
@@ -1207,11 +1209,13 @@ def _ads_refresh_job_factory(monkeypatch, jobs: list[FakeAdsRefreshJob]) -> None
         parent: QObject | None = None,
         *,
         working_directory: Path | None = None,
+        follow_up_argv=(),
     ) -> FakeAdsRefreshJob:
         job = FakeAdsRefreshJob(
             argv,
             parent=parent,
             working_directory=working_directory,
+            follow_up_argv=follow_up_argv,
         )
         jobs.append(job)
         return job
@@ -1549,3 +1553,388 @@ def test_stored_bibcode_action_uses_pending_metadata_only_lookup(
     monkeypatch.setattr(window, "_start_ads_refresh", lambda *args: calls.append(args))
     window.link_bibcodes_action.trigger()
     assert calls == [("--all", "--no-rename", "--pending-only")]
+
+
+def _answer_guided_prompt(monkeypatch, answer="ok"):
+    prompts = []
+
+    def execute(prompt):
+        prompts.append(prompt.informativeText())
+        if answer == "advanced":
+            button = next(
+                b for b in prompt.buttons() if b.text() == "Advanced options…"
+            )
+        else:
+            button = prompt.button(
+                QMessageBox.Ok if answer == "ok" else QMessageBox.Cancel
+            )
+        button.click()
+        return prompt.result()
+
+    monkeypatch.setattr(QMessageBox, "exec", execute)
+    monkeypatch.setattr(
+        Config, "get_token", classmethod(lambda cls, **kwargs: "test-token")
+    )
+    return prompts
+
+
+def test_guided_ok_runs_safe_steps_and_retains_selection(monkeypatch, qtbot, tmp_path):
+    root = tmp_path / "library"
+    root.mkdir()
+    (root / "paper.pdf").write_bytes(b"paper")
+    window, controller, _ = _window_factory(
+        monkeypatch, qtbot, GuiConfig(roots=[RootEntry(str(root))])
+    )
+    window.table.setCurrentIndex(window.model.index(0, 0))
+    location = window._selected_record()["location_id"]
+    window.watch_current_action.trigger()
+    jobs = []
+    _ads_refresh_job_factory(monkeypatch, jobs)
+    prompts = _answer_guided_prompt(monkeypatch)
+    window.identify_action.trigger()
+    assert len(prompts) == 1
+    assert "Select OK to start" in prompts[0]
+    assert controller.pause_calls == [root.resolve()]
+    assert len(jobs) == 1
+    assert "--no-rename" in jobs[0].argv
+    assert "--pending-only" in jobs[0].argv
+    identify = jobs[0].follow_up_argv[0]
+    assert "identify" in identify
+    assert "--allow-ads" in identify
+    assert "--apply" not in identify
+    assert not window.check_papers_button.isEnabled()
+    jobs[0].finished.emit(0)
+    assert window._selected_record()["location_id"] == location
+    assert controller.resume_calls == [root.resolve()]
+    assert "Identification finished" in window.status.currentMessage()
+    assert window.check_papers_button.isEnabled()
+
+
+def test_guided_lookup_snapshots_origin_and_provider_order_while_paused(
+    monkeypatch, qtbot, tmp_path
+):
+    from adsfolio.pdf.doi_providers import DoiProvider
+
+    first, second = tmp_path / "first", tmp_path / "second"
+    first.mkdir()
+    second.mkdir()
+    (first / "paper.pdf").write_bytes(b"paper")
+    config = GuiConfig(
+        roots=[RootEntry(str(first), recursive=True), RootEntry(str(second))],
+        identify_scopes={str(first): "library"},
+    )
+    window, controller, _ = _window_factory(monkeypatch, qtbot, config)
+    window._select_root(first)
+    CentralPdfRegistryState(window.registries[str(first)]).set_identify_settings(
+        IdentifySettings(providers=(DoiProvider.DATACITE, DoiProvider.CROSSREF))
+    )
+    window.watch_current_action.trigger()
+    controller.auto_ack_pause = False
+    jobs = []
+    _ads_refresh_job_factory(monkeypatch, jobs)
+    prompts = _answer_guided_prompt(monkeypatch)
+    window._guide_identification()
+    assert jobs == []
+    assert "ADS lookup is disabled" in prompts[0]
+    window._select_root(second)
+    controller.paused.emit(controller.session_id(first))
+    assert jobs[0].working_directory == first
+    assert "--recursive" in jobs[0].argv
+    providers = [
+        jobs[0].argv[i + 1]
+        for i, value in enumerate(jobs[0].argv)
+        if value == "--provider"
+    ]
+    assert providers == ["datacite", "crossref"]
+    assert jobs[0].follow_up_argv == []
+    jobs[0].finished.emit(0)
+    assert window.current_root == second
+    assert controller.resume_calls == [first]
+
+
+@pytest.mark.parametrize("answer", ["cancel", "advanced"])
+def test_guided_prompt_defers_work_until_ok(monkeypatch, qtbot, tmp_path, answer):
+    root = tmp_path / "library"
+    root.mkdir()
+    window, controller, _ = _window_factory(
+        monkeypatch, qtbot, GuiConfig(roots=[RootEntry(str(root))])
+    )
+    jobs = []
+    advanced = []
+    _ads_refresh_job_factory(monkeypatch, jobs)
+    _answer_guided_prompt(monkeypatch, answer)
+    monkeypatch.setattr(window, "_identify", lambda: advanced.append(root))
+    window._guide_identification()
+    assert jobs == []
+    assert controller.pause_calls == []
+    assert advanced == ([root] if answer == "advanced" else [])
+
+
+def test_guided_start_failure_resumes_watcher_and_reports_failure(
+    monkeypatch, qtbot, tmp_path
+):
+    root = tmp_path / "library"
+    root.mkdir()
+    window, controller, _ = _window_factory(
+        monkeypatch, qtbot, GuiConfig(roots=[RootEntry(str(root))])
+    )
+    window.watch_current_action.trigger()
+    jobs = []
+    _ads_refresh_job_factory(monkeypatch, jobs)
+    _answer_guided_prompt(monkeypatch)
+    window._guide_identification()
+    jobs[0].failed.emit("missing helper")
+    assert window.job is None
+    assert window._guided_identify_context is None
+    assert controller.resume_calls == [root]
+
+
+def test_pending_category_has_direct_action_without_automatic_popup(
+    monkeypatch, qtbot, tmp_path
+):
+    from adsfolio.gui.library import LibraryView
+
+    root = tmp_path / "library"
+    root.mkdir()
+    (root / "paper.pdf").write_bytes(b"paper")
+    window, _, _ = _window_factory(
+        monkeypatch, qtbot, GuiConfig(roots=[RootEntry(str(root))])
+    )
+    calls = []
+    monkeypatch.setattr(window, "_guide_identification", lambda: calls.append(root))
+    window._select_view(LibraryView.UNRESOLVED)
+    assert calls == []
+    assert not window.check_papers_button.isHidden()
+    window.check_papers_button.click()
+    assert calls == [root]
+
+
+def test_adding_folder_offers_identification_directly(monkeypatch, qtbot, tmp_path):
+    from PySide6.QtWidgets import QFileDialog
+
+    root = tmp_path / "new-library"
+    root.mkdir()
+    (root / "paper.pdf").write_bytes(b"paper")
+    window, _, _ = _window_factory(monkeypatch, qtbot, GuiConfig())
+    monkeypatch.setattr(QFileDialog, "getExistingDirectory", lambda *args: str(root))
+    calls = []
+    monkeypatch.setattr(
+        window, "_guide_identification", lambda: calls.append(window.current_root)
+    )
+    window._add_root()
+    assert calls == [root]
+
+
+def test_guided_identification_keeps_saved_folder_exclusion(
+    monkeypatch, qtbot, tmp_path
+):
+    root = tmp_path / "library"
+    root.mkdir()
+    config = GuiConfig(
+        roots=[RootEntry(str(root))], identify_scopes={str(root): "library"}
+    )
+    window, _, _ = _window_factory(monkeypatch, qtbot, config)
+    CentralPdfRegistryState(window.registries[str(root)]).set_identify_settings(
+        IdentifySettings(
+            output_unresolved="needs-review",
+            skip_unresolved_directory=True,
+            strategies=(IdentifyStrategy.PDF_METADATA_DOI,),
+        )
+    )
+    jobs = []
+    _ads_refresh_job_factory(monkeypatch, jobs)
+    prompts = _answer_guided_prompt(monkeypatch)
+    window._guide_identification()
+    argv = jobs[0].follow_up_argv[0]
+    assert _argv_value(argv, "--output-unresolved") == "needs-review"
+    assert "--skip-unresolved-directory" in argv
+    assert _argv_value(argv, "--settings-scope") == "library"
+    assert _argv_value(argv, "--strategy") == "pdf_metadata_doi"
+    assert "configured unresolved folder is skipped" in prompts[0]
+    jobs[0].finished.emit(0)
+
+
+@pytest.mark.parametrize("ads_only", [False, True])
+def test_guided_cached_lookup_requests_token_only_when_cli_requires_it(
+    monkeypatch, qtbot, tmp_path, ads_only
+):
+    import hashlib
+
+    from adsfolio.config import AuthenticationError
+    from adsfolio.gui import main_window as module
+
+    root = tmp_path / "library"
+    root.mkdir()
+    content = b"paper"
+    (root / "paper.pdf").write_bytes(content)
+    from adsfolio.pdf.registry import PdfRegistry
+
+    registry = PdfRegistry(root)
+    state = CentralPdfRegistryState(registry)
+    state.upsert_file(
+        "paper.pdf",
+        {
+            "bibcode": "2017MNRAS.469S.443B",
+            "status": "unresolved",
+            "sha256": hashlib.sha256(content).hexdigest(),
+        },
+    )
+    state.registry.upsert_ads_documents(
+        [{"bibcode": "2017MNRAS.469S.443B", "title": ["Paper"]}], source="test"
+    )
+    if ads_only:
+        from adsfolio.pdf.doi_providers import DoiProvider
+
+        state.set_identify_settings(IdentifySettings(providers=(DoiProvider.ADS,)))
+    registry.close()
+    window, _, _ = _window_factory(
+        monkeypatch,
+        qtbot,
+        GuiConfig(roots=[RootEntry(str(root))], identify_scopes={str(root): "library"}),
+    )
+    _answer_guided_prompt(monkeypatch)
+
+    def no_token(cls, **kwargs):
+        raise AuthenticationError("No token")
+
+    monkeypatch.setattr(Config, "get_token", classmethod(no_token))
+    token_prompts = []
+    monkeypatch.setattr(
+        module.TokenDialog,
+        "exec",
+        lambda self: (token_prompts.append(True), QDialog.Rejected)[1],
+    )
+    jobs = []
+    _ads_refresh_job_factory(monkeypatch, jobs)
+    window._guide_identification()
+    assert token_prompts == ([True] if ads_only else [])
+    assert len(jobs) == (0 if ads_only else 1)
+    if jobs:
+        jobs[0].finished.emit(0)
+
+
+def test_guided_missing_token_cancel_does_not_start_job(monkeypatch, qtbot, tmp_path):
+    from adsfolio.config import AuthenticationError
+    from adsfolio.gui import main_window as module
+
+    root = tmp_path / "library"
+    root.mkdir()
+    (root / "paper.pdf").write_bytes(b"paper")
+    window, controller, _ = _window_factory(
+        monkeypatch, qtbot, GuiConfig(roots=[RootEntry(str(root))])
+    )
+    _answer_guided_prompt(monkeypatch)
+
+    def no_token(cls, **kwargs):
+        raise AuthenticationError("No token")
+
+    monkeypatch.setattr(Config, "get_token", classmethod(no_token))
+    monkeypatch.setattr(module.TokenDialog, "exec", lambda self: QDialog.Rejected)
+    jobs = []
+    _ads_refresh_job_factory(monkeypatch, jobs)
+    window._guide_identification()
+    assert jobs == []
+    assert controller.pause_calls == []
+    assert window._guided_identify_context is None
+
+
+def test_guided_cli_steps_preserve_cached_metadata_and_content_history(
+    monkeypatch, qtbot, tmp_path
+):
+    import hashlib
+
+    import requests
+    from click.testing import CliRunner
+
+    from adsfolio.gui import main_window as module
+    from adsfolio.pdf.cli import pdf
+    from adsfolio.pdf.registry import LOCKED_METADATA_FIELDS_KEY, PdfRegistry
+
+    root = tmp_path / "library"
+    root.mkdir()
+    content = b"paper content"
+    (root / "paper.pdf").write_bytes(content)
+    registry = PdfRegistry(root)
+    state = CentralPdfRegistryState(registry)
+    state.upsert_file(
+        "paper.pdf",
+        {
+            "bibcode": "2017MNRAS.469S.443B",
+            "status": "unresolved",
+            "title": ["My title"],
+            "author": ["My author"],
+            "year": "2017",
+            "notes": "Keep this note",
+            LOCKED_METADATA_FIELDS_KEY: ["title"],
+            "sha256": hashlib.sha256(content).hexdigest(),
+        },
+    )
+    registry.upsert_ads_documents(
+        [
+            {
+                "bibcode": "2017MNRAS.469S.443B",
+                "title": ["ADS title"],
+                "author": ["ADS author"],
+                "year": "2017",
+                "abstract": "New abstract",
+            }
+        ],
+        source="test",
+    )
+    before = registry.query_files()[0]
+    history = registry.catalog.content_versions(before["attachment_id"])
+    registry.close()
+    window, _, _ = _window_factory(
+        monkeypatch, qtbot, GuiConfig(roots=[RootEntry(str(root))])
+    )
+    window.table.setCurrentIndex(window.model.index(0, 0))
+    _answer_guided_prompt(monkeypatch)
+
+    def no_network(*args, **kwargs):
+        raise AssertionError("Cached identification must not use the network")
+
+    monkeypatch.setattr(requests.Session, "request", no_network)
+    results = []
+
+    class InProcessJob(QObject):
+        output = Signal(str)
+        failed = Signal(str)
+        finished = Signal(int)
+        running = False
+
+        def __init__(
+            self, argv, parent=None, *, working_directory=None, follow_up_argv=()
+        ):
+            super().__init__(parent)
+            self.commands = [argv, *follow_up_argv]
+
+        def start(self):
+            self.running = True
+            for argv in self.commands:
+                result = CliRunner().invoke(pdf, argv[argv.index("pdf") + 1 :])
+                results.append(result)
+                self.output.emit(result.output)
+                if result.exit_code:
+                    break
+            self.running = False
+            self.finished.emit(result.exit_code)
+
+    monkeypatch.setattr(module, "CommandJob", InProcessJob)
+    window._guide_identification()
+    assert len(results) == 2
+    assert all(result.exit_code == 0 for result in results), [
+        result.output for result in results
+    ]
+    after = window.registries[str(root)].query_files()[0]
+    assert after["status"] == "resolved"
+    for key, value in before["metadata"].items():
+        if key != "status":
+            assert after["metadata"][key] == value
+    assert after["metadata"]["abstract"] == "New abstract"
+    assert after["location_id"] == before["location_id"]
+    assert (
+        window.registries[str(root)].catalog.content_versions(after["attachment_id"])
+        == history
+    )
+    assert window._selected_record()["location_id"] == before["location_id"]
+    assert list(root.glob("*.pdf")) == [root / "paper.pdf"]

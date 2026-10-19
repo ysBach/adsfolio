@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sys
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
@@ -46,6 +47,9 @@ class CommandJob(QObject):
     working_directory : `Path` or `str`, optional
         Directory in which to run the command.  The GUI passes the selected
         library root so relative CLI paths have the same semantics as the CLI.
+    follow_up_argv : sequence of sequences of `str`, optional
+        Commands to run in order after successful completion. A failed or
+        cancelled command stops the sequence.
     root : `Path` or `str`, optional
         Backward-compatible alias for `working_directory` used by the dialogs.
     """
@@ -61,6 +65,7 @@ class CommandJob(QObject):
         *,
         working_directory: Path | str | None = None,
         root: Path | str | None = None,
+        follow_up_argv: Sequence[Sequence[str]] = (),
     ) -> None:
         super().__init__(parent)
         if not argv:
@@ -68,6 +73,11 @@ class CommandJob(QObject):
         if working_directory is not None and root is not None:
             raise ValueError("Specify only one of working_directory or root")
         self.argv = [str(argument) for argument in argv]
+        if any(not command for command in follow_up_argv):
+            raise ValueError("Follow-up commands must not be empty")
+        self._follow_up_argv = [list(map(str, command)) for command in follow_up_argv]
+        self._pending_commands: list[list[str]] = []
+        self._cancel_requested = False
         self.working_directory = (
             str(working_directory if working_directory is not None else root)
             if working_directory is not None or root is not None
@@ -96,6 +106,8 @@ class CommandJob(QObject):
             return
         self._buffer = ""
         self._start_failed = False
+        self._cancel_requested = False
+        self._pending_commands = list(self._follow_up_argv)
         environment = QProcessEnvironment.systemEnvironment()
         environment.insert("PYTHONUNBUFFERED", "1")
         environment.insert("PYTHONIOENCODING", "utf-8")
@@ -111,6 +123,8 @@ class CommandJob(QObject):
         """Request termination, escalating to a kill after three seconds."""
         if self._process is None or not self.running:
             return
+        self._cancel_requested = True
+        self._pending_commands.clear()
         self._process.terminate()
         self._kill_timer = QTimer.singleShot(3000, self._kill_if_running)
 
@@ -131,12 +145,20 @@ class CommandJob(QObject):
             line, self._buffer = self._buffer.split("\n", 1)
             self.output.emit(line.removesuffix("\r"))
 
-    def _on_finished(self, exit_code: int, _exit_status: Any) -> None:
+    def _on_finished(self, exit_code: int, exit_status: Any) -> None:
         self._read_output()
         if self._buffer:
             self.output.emit(self._buffer.removesuffix("\r"))
             self._buffer = ""
-        self.finished.emit(int(exit_code))
+        if exit_status == QProcess.CrashExit and exit_code == 0:
+            exit_code = -1
+        if exit_code == 0 and not self._cancel_requested and self._pending_commands:
+            command = self._pending_commands.pop(0)
+            self._process.start(command[0], command[1:])
+            self._process.closeWriteChannel()
+            return
+        self._pending_commands.clear()
+        self.finished.emit(-1 if self._cancel_requested else int(exit_code))
 
     def _on_error(self, error: Any) -> None:
         if self._process is None:

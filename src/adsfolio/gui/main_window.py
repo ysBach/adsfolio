@@ -27,6 +27,7 @@ from PySide6.QtWidgets import (
     QDialogButtonBox,
     QDockWidget,
     QFileDialog,
+    QHBoxLayout,
     QHeaderView,
     QInputDialog,
     QLabel,
@@ -48,10 +49,11 @@ from PySide6.QtWidgets import (
 )
 
 from ..citations import CitationStyle, citation_preference_key
-from ..config import Config
+from ..config import AuthenticationError, Config
 from ..pdf.annotation_merge import AnnotationMergeError, MissingDependencyError
+from ..pdf.doi_providers import DOI_PROVIDER_LABELS, DoiProvider
 from ..pdf.identify_settings import IdentifySettings
-from ..pdf.readiness import stored_bibcode_matches_file
+from ..pdf.readiness import metadata_ready, stored_bibcode_matches_file
 from ..pdf.registry import CentralPdfRegistryState, LibraryRefresh, PdfRegistry
 from ..pdf.rename_settings import RenameSettings
 from ..pdf.watch_session import WatchEvent, WatchOutcome, WatchState
@@ -65,7 +67,15 @@ from .config import RootEntry, load_config, save_config
 from .detail_pane import DetailPane
 from .dialogs import IdentifyDialog, RenameDialog, UserProfileDialog
 from .jobs import CommandJob, cli_argv
-from .library import Column, FileQuery, LibraryView, ads_url, arxiv_url, build_columns
+from .library import (
+    Column,
+    FileQuery,
+    LibraryView,
+    ads_url,
+    arxiv_url,
+    build_columns,
+    verification_stale,
+)
 from .models import (
     FileTableModel,
     FirstAuthorDelegate,
@@ -182,8 +192,8 @@ class _SettingsPersistenceCoordinator(Generic[_SettingsT]):
 
 
 @dataclass(frozen=True)
-class _LocalRefreshContext:
-    """Retain the originating view while a local scan runs."""
+class _LibraryViewContext:
+    """Retain the originating view while a library job runs."""
 
     root: Path
     selected: tuple[dict[str, Any], ...]
@@ -253,8 +263,10 @@ class MainWindow(QMainWindow):
             tuple[Path, tuple[str, ...], int | None, str | None] | None
         ) = None
         self._ads_refresh_root: Path | None = None
-        self._local_refresh_context: _LocalRefreshContext | None = None
+        self._local_refresh_context: _LibraryViewContext | None = None
         self._local_refresh_result: LibraryRefresh | None = None
+        self._guided_identify_context: _LibraryViewContext | None = None
+        self._guided_identify_commands: list[list[str]] = []
         self._foreground_paused_root: Path | None = None
         self._watch_refresh_timer = QTimer(self)
         self._watch_refresh_timer.setSingleShot(True)
@@ -348,16 +360,22 @@ class MainWindow(QMainWindow):
         central_layout.setContentsMargins(0, 0, 0, 0)
         central_layout.setSpacing(0)
         central_layout.addWidget(self.notice_bar)
-        self.view_explanation = QLabel(central)
+        self.lookup_guidance = QWidget(central)
+        guidance_layout = QHBoxLayout(self.lookup_guidance)
+        guidance_layout.setContentsMargins(8, 4, 8, 4)
+        self.view_explanation = QLabel(self.lookup_guidance)
         self.view_explanation.setWordWrap(True)
-        self.view_explanation.setContentsMargins(8, 4, 8, 4)
-        self.view_explanation.hide()
-        central_layout.addWidget(self.view_explanation)
+        guidance_layout.addWidget(self.view_explanation, 1)
+        self.check_papers_button = QPushButton("Identify papers…", self.lookup_guidance)
+        self.check_papers_button.clicked.connect(lambda: self._guide_identification())
+        guidance_layout.addWidget(self.check_papers_button)
+        self.lookup_guidance.hide()
+        central_layout.addWidget(self.lookup_guidance)
         self.start_library_button = QPushButton(
             "Add a PDF folder to start your library…", central
         )
         self.start_library_button.setToolTip(
-            "Select an existing PDF folder. Identification is a separate step."
+            "Select a PDF folder, then choose OK to identify its papers."
         )
         self.start_library_button.clicked.connect(self._add_root)
         central_layout.addWidget(self.start_library_button)
@@ -501,7 +519,7 @@ class MainWindow(QMainWindow):
         self.cancel_job_action.setEnabled(False)
         self.profile_action.triggered.connect(self._edit_user_profile)
         self.citation_styles_action.triggered.connect(self._edit_citation_styles)
-        self.identify_action.triggered.connect(self._identify)
+        self.identify_action.triggered.connect(lambda: self._guide_identification())
         self.rename_action.triggered.connect(self._rename)
         self.cancel_job_action.triggered.connect(self._cancel_job)
         self.refresh_selected_ads_action.triggered.connect(self._refresh_selected_ads)
@@ -869,6 +887,8 @@ class MainWindow(QMainWindow):
             if record
             else None
         )
+        self.check_papers_button.setEnabled(available)
+        self.identify_action.setEnabled(available)
         self.refresh_action.setEnabled(available)
         self.reconcile_file_facts_action.setEnabled(available)
         self.remove_missing_action.setEnabled(available)
@@ -1125,6 +1145,8 @@ class MainWindow(QMainWindow):
             self._launch_local_refresh(root)
         elif kind == "identify":
             self._open_identify_dialog(root)
+        elif kind == "guided_identify":
+            self._launch_guided_identification(root)
         else:
             self._open_rename_dialog(root)
 
@@ -1838,7 +1860,7 @@ class MainWindow(QMainWindow):
         root = root.expanduser().resolve()
         if str(root) not in self.registries:
             return
-        self._local_refresh_context = _LocalRefreshContext(
+        self._local_refresh_context = _LibraryViewContext(
             root=root,
             selected=self._selected_records() if root == self.current_root else (),
             current=deepcopy(self._selected_record())
@@ -1868,7 +1890,7 @@ class MainWindow(QMainWindow):
         """Retain the scan summary until the normal job completion reload."""
         self._local_refresh_result = result
 
-    def _restore_local_refresh_selection(self, context: _LocalRefreshContext) -> None:
+    def _restore_library_selection(self, context: _LibraryViewContext) -> None:
         """Restore selected locations, or their unique moved attachments."""
         if self.current_root != context.root or self.current_query != context.query:
             return
@@ -2270,6 +2292,8 @@ class MainWindow(QMainWindow):
         if selected:
             self._register_root(Path(selected))
             self._select_root(Path(selected))
+            if self.model.total:
+                self._guide_identification()
 
     def _remove_root(self, root: Path | None = None) -> None:
         root = root or self.current_root
@@ -2277,12 +2301,12 @@ class MainWindow(QMainWindow):
             return
         root = root.expanduser().resolve()
         key = str(root)
-        if (
-            self._local_refresh_context is not None
-            and self._local_refresh_context.root == root
+        if any(
+            context is not None and context.root == root
+            for context in (self._local_refresh_context, self._guided_identify_context)
         ):
             self.status.showMessage(
-                "Wait for the local refresh to finish before removing this library."
+                "Wait for the library operation to finish before removing this library."
             )
             return
         if (
@@ -2352,12 +2376,14 @@ class MainWindow(QMainWindow):
             LibraryView.RESOLVED,
             LibraryView.UNRESOLVED,
         }
+        self.lookup_guidance.setVisible(explains_ads_group)
         self.view_explanation.setVisible(explains_ads_group)
+        self.check_papers_button.setVisible(self.current_view is LibraryView.UNRESOLVED)
         if explains_ads_group:
             self.view_explanation.setText(
-                "ADS linked: the catalog has a saved ADS link. Changed PDFs need Identify again."
+                "ADS linked: these papers have saved ADS records. Changed PDFs need identification again."
                 if self.current_view is LibraryView.RESOLVED
-                else "Needs ADS lookup: no completed ADS link. Bibcodes or complete local metadata may be present. Use Look Up Stored Bibcodes or Identify."
+                else "These papers have no saved ADS link. A bibcode or usable non-ADS metadata may already be present. Select Identify papers… to check them."
             )
         if self.current_root is None:
             self.status.setToolTip("")
@@ -2380,6 +2406,155 @@ class MainWindow(QMainWindow):
         self.load_more_action.setEnabled(self.model.canFetchMore())
 
         self.status.setToolTip(LibraryView.RESOLVED.description)
+
+    def _guide_identification(self) -> None:
+        """Explain identification and start it with one confirmation."""
+        root = self.current_root
+        if (
+            root is None
+            or self.job is not None
+            or self._pending_watch_dialog is not None
+            or self._pending_ads_refresh is not None
+            or self._close_requested
+        ):
+            return
+        settings = self._effective_identify_settings(root)
+        providers = " → ".join(DOI_PROVIDER_LABELS[p] for p in settings.providers)
+        skipped_folder = (
+            " The configured unresolved folder is skipped."
+            if settings.skip_unresolved_directory
+            else ""
+        )
+        prompt = QMessageBox(self)
+        prompt.setWindowTitle("Identify papers")
+        prompt.setTextFormat(Qt.PlainText)
+        prompt.setIcon(QMessageBox.Information)
+        prompt.setText(f"Find publication details for PDFs in {root.name}?")
+        cache_step = (
+            "1. Link stored bibcodes from the cache or ADS, including tracked subfolders.\n"
+            if DoiProvider.ADS in settings.providers
+            else "1. Use the selected metadata providers. ADS lookup is disabled.\n"
+        )
+        scope = (
+            "this folder and its subfolders"
+            if self.root_entries[str(root)].recursive
+            else "this folder only"
+        )
+        prompt.setInformativeText(
+            cache_step
+            + f"2. Identify papers that still need metadata in {scope}.{skipped_folder}\n\n"
+            f"DOI provider order: {providers}. Search and category filters do not limit the check.\n\n"
+            "Locked fields and history stay intact. Unlocked publication fields can be updated. PDFs keep their names and locations.\n\n"
+            "Select OK to start. If ADS needs a token, setup opens first."
+        )
+        prompt.setToolTip(str(root))
+        prompt.setStandardButtons(QMessageBox.Ok | QMessageBox.Cancel)
+        prompt.setDefaultButton(QMessageBox.Ok)
+        prompt.setEscapeButton(QMessageBox.Cancel)
+        advanced = prompt.addButton("Advanced options…", QMessageBox.ActionRole)
+        prompt.exec()
+        if prompt.clickedButton() is advanced:
+            self._identify()
+            return
+        if prompt.standardButton(prompt.clickedButton()) != QMessageBox.Ok:
+            return
+        if DoiProvider.ADS in settings.providers:
+            try:
+                Config.get_token(prompt=False)
+            except AuthenticationError:
+                registry = self.registries[str(root)]
+                records = list(registry.iter_files())
+                codes = {
+                    self._scalar_metadata_value(
+                        record.get("bibcode") or record["metadata"].get("bibcode")
+                    )
+                    for record in records
+                    if record.get("status") != "resolved"
+                    and stored_bibcode_matches_file(record)
+                }
+                cached = registry.find_ads_documents_by_bibcodes(list(codes))
+                needs_token = (
+                    settings.providers == (DoiProvider.ADS,)
+                    or any(code.lower() not in cached for code in codes)
+                    or any(
+                        not stored_bibcode_matches_file(record)
+                        and (verification_stale(record) or not metadata_ready(record))
+                        for record in records
+                    )
+                )
+                if needs_token and TokenDialog(self).exec() != QDialog.Accepted:
+                    return
+            except OSError as exc:
+                QMessageBox.warning(self, "Could not read ADS token", str(exc))
+                return
+        self._guided_identify_context = _LibraryViewContext(
+            root=root,
+            selected=self._selected_records(),
+            current=deepcopy(self._selected_record()),
+            query=self.current_query,
+            loaded=self.model.rowCount(),
+            scroll=self.table.verticalScrollBar().value(),
+        )
+        flags = [
+            "--settings-scope",
+            self.config.identify_scopes.get(str(root), "global"),
+            "--recursive"
+            if self.root_entries[str(root)].recursive
+            else "--no-recursive",
+        ]
+        for strategy in settings.strategies:
+            flags.extend(("--strategy", strategy.value))
+        for provider in settings.providers:
+            flags.extend(("--provider", provider.value))
+        if settings.skip_unresolved_directory and settings.output_unresolved:
+            flags.extend(("--output-unresolved", settings.output_unresolved))
+        else:
+            flags.append("--clear-output-unresolved")
+        flags.extend(
+            (
+                "--skip-unresolved-directory"
+                if settings.skip_unresolved_directory
+                else "--include-unresolved-directory",
+                "--allow-ads",
+            )
+        )
+        commands = []
+        if DoiProvider.ADS in settings.providers:
+            commands.append(
+                cli_argv(
+                    "pdf",
+                    "refresh-ads",
+                    str(root),
+                    "--all",
+                    "--no-rename",
+                    "--pending-only",
+                )
+            )
+        commands.append(cli_argv("pdf", "identify", str(root), *flags))
+        self._guided_identify_commands = commands
+        self._request_foreground_dialog("guided_identify", root)
+        self._sync_refresh_actions()
+
+    def _launch_guided_identification(self, root: Path) -> None:
+        """Run the approved lookup steps after watcher writes pause."""
+        if self._close_requested or str(root) not in self.registries:
+            self._guided_identify_context = None
+            self._guided_identify_commands.clear()
+            self._resume_foreground_watch()
+            return
+        commands = self._guided_identify_commands
+        self._guided_identify_commands = []
+        job = CommandJob(
+            commands[0],
+            follow_up_argv=commands[1:],
+            parent=self,
+            working_directory=root,
+        )
+        self._refresh_selection_id = None
+        self._watch_job(job)
+        self._sync_refresh_actions()
+        self.status.showMessage(f"Identifying papers: {root.name}")
+        job.start()
 
     def _identify(self) -> None:
         if self.current_root is None:
@@ -2418,6 +2593,8 @@ class MainWindow(QMainWindow):
             self._launch_local_refresh(root)
         elif kind == "identify":
             self._open_identify_dialog(root)
+        elif kind == "guided_identify":
+            self._launch_guided_identification(root)
         else:
             self._open_rename_dialog(root)
 
@@ -2896,7 +3073,7 @@ class MainWindow(QMainWindow):
             self.job.cancel()
             self.cancel_job_action.setEnabled(False)
 
-    def _job_failed(self, _message: str) -> None:
+    def _job_failed(self, message: str) -> None:
         """Restore controls when a subprocess cannot be started."""
         self.identify_action.setEnabled(True)
         self.rename_action.setEnabled(True)
@@ -2909,6 +3086,18 @@ class MainWindow(QMainWindow):
         self.job = None
         self._local_refresh_context = None
         self._local_refresh_result = None
+        if self._guided_identify_context is not None:
+            root = self._guided_identify_context.root
+            self.notice_bar.enqueue(
+                Notice(
+                    f"identify:{root}",
+                    f"Identification could not start: {message}",
+                    severity="error",
+                    root=root,
+                )
+            )
+        self._guided_identify_context = None
+        self._guided_identify_commands.clear()
         self._sync_ads_library_action()
         self._refresh_selection_id = None
         self._ads_refresh_root = None
@@ -2919,13 +3108,22 @@ class MainWindow(QMainWindow):
             self.close()
 
     def _job_finished(self, code: int) -> None:
+        identify_context = self._guided_identify_context
+        self._guided_identify_context = None
+        self._guided_identify_commands.clear()
         local_context = self._local_refresh_context
         local_result = self._local_refresh_result
         self._local_refresh_context = None
         self._local_refresh_result = None
         candidates = self._ads_match_candidates
         context = self._ambiguous_ads_match_context
-        refresh_root = local_context.root if local_context else self._ads_refresh_root
+        refresh_root = (
+            identify_context.root
+            if identify_context
+            else local_context.root
+            if local_context
+            else self._ads_refresh_root
+        )
         self._ads_refresh_root = None
         self._ads_match_candidates = []
         self._ambiguous_ads_match_context = None
@@ -2945,7 +3143,7 @@ class MainWindow(QMainWindow):
         if refresh_root is None or str(refresh_root) in self.registries:
             self.refresh(refresh_root)
         if local_context is not None and str(local_context.root) in self.registries:
-            self._restore_local_refresh_selection(local_context)
+            self._restore_library_selection(local_context)
             if local_result is not None:
                 summary = (
                     f"Refreshed {local_context.root.name}: {local_result.added} added, "
@@ -2959,6 +3157,32 @@ class MainWindow(QMainWindow):
                 self.status.showMessage(
                     "Local refresh failed; see the job log for details."
                 )
+        if (
+            identify_context is not None
+            and str(identify_context.root) in self.registries
+        ):
+            self._restore_library_selection(identify_context)
+            if code == 0:
+                registry = self.registries[str(identify_context.root)]
+                linked = self._safe_count(registry, resolved=True)
+                pending = self._safe_count(registry, resolved=False)
+                summary = (
+                    f"Identification finished in {identify_context.root.name}: "
+                    f"{linked if linked is not None else 'unknown'} ADS linked, {pending if pending is not None else 'unknown'} without ADS links. "
+                    "Non-ADS papers can still have usable metadata. "
+                    "Review the results, then use Rename… if needed."
+                )
+            else:
+                summary = "Identification stopped. See the job log for details."
+            self.status.showMessage(summary)
+            self.notice_bar.enqueue(
+                Notice(
+                    f"identify:{identify_context.root}",
+                    summary,
+                    severity="info" if code == 0 else "warning",
+                    root=identify_context.root,
+                )
+            )
         self._sync_refresh_actions()
         if self._refresh_selection_id is not None and (
             refresh_root is None or refresh_root == self.current_root
@@ -3018,6 +3242,8 @@ class MainWindow(QMainWindow):
         self._watch_refresh_selection_id = None
         self._pending_watch_dialog = None
         self._local_refresh_context = None
+        self._guided_identify_context = None
+        self._guided_identify_commands.clear()
         self._sync_config_roots()
         self.config.last_root = str(self.current_root) if self.current_root else None
         self.config.last_view = self.current_view.value
