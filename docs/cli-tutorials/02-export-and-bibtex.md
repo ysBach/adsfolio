@@ -2,6 +2,10 @@
 
 This tutorial covers `adsfolio export` output formats and BibTeX workflows.
 
+For references outside ADS, use `adsfolio reference import` and `adsfolio reference
+export`. These local commands can combine imported citations and cataloged ADS
+documents in one bibliography. See [References outside ADS](../local-references.md).
+
 ## 0) Start with `--help`
 
 Check complete export options before running the examples:
@@ -23,7 +27,7 @@ Key export options to understand:
 ## 1) Export a single bibcode
 
 ```bash
-adsfolio export 2024A&A...684A..80B
+adsfolio export '2024A&A...684A..80B'
 ```
 
 Default format is `bibtex`.
@@ -31,13 +35,13 @@ Default format is `bibtex`.
 ## 2) Export multiple bibcodes
 
 ```bash
-adsfolio export 2024A&A...684A..80B 2021A&A...654A.113B
+adsfolio export '2024A&A...684A..80B' '2021A&A...654A.113B'
 ```
 
 ## 3) Save to file
 
 ```bash
-adsfolio export 2024A&A...684A..80B 2021A&A...654A.113B \
+adsfolio export '2024A&A...684A..80B' '2021A&A...654A.113B' \
   --format bibtex \
   --output references.bib
 ```
@@ -45,7 +49,7 @@ adsfolio export 2024A&A...684A..80B 2021A&A...654A.113B \
 ## 4) Choose format and sort
 
 ```bash
-adsfolio export 2024A&A...684A..80B \
+adsfolio export '2024A&A...684A..80B' \
   --format aastex \
   --sort "first_author asc"
 ```
@@ -53,7 +57,7 @@ adsfolio export 2024A&A...684A..80B \
 ## 5) Custom export template
 
 ```bash
-adsfolio export 2024A&A...684A..80B \
+adsfolio export '2024A&A...684A..80B' \
   --format custom \
   --custom "%R %T"
 ```
@@ -62,13 +66,13 @@ adsfolio export 2024A&A...684A..80B \
 
 ```bash
 # ADS macro style (default, e.g. \apj)
-adsfolio export 2024A&A...684A..80B --journal ads
+adsfolio export '2024A&A...684A..80B' --journal ads
 
 # Full journal name
-adsfolio export 2024A&A...684A..80B --journal full
+adsfolio export '2024A&A...684A..80B' --journal full
 
 # ISO4 abbreviation (requires iso4 from adsfolio[full])
-adsfolio export 2024A&A...684A..80B --journal iso4
+adsfolio export '2024A&A...684A..80B' --journal iso4
 ```
 
 ## 7) Typical flow from search to export

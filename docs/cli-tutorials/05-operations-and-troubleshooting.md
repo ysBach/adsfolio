@@ -65,7 +65,7 @@ adsfolio set
 | Route likely non-OCR PDFs (optional) | `adsfolio pdf ocr <dir> --recursive -o ocr_required` |
 | Identify PDFs on disk | `adsfolio pdf identify <dir> --recursive` |
 | Inspect publication cache | `adsfolio cache status` |
-| Export folder registry | `adsfolio pdf export <dir> -o pdfs-backup.json` |
+| Export a library's catalog records | `adsfolio pdf export <dir> -o pdfs-backup.json` |
 | Preview PDF rename plan | `adsfolio pdf rename <dir>` |
 | Apply PDF rename plan | `adsfolio pdf rename <dir> --apply` |
 | Watch folder for new PDFs | `adsfolio pdf watch <dir> --recursive --apply` |
@@ -83,31 +83,77 @@ adsfolio set
 ### Watchdog unavailable
 
 - Symptom: `--use-watchdog` fails.
-- Fix: install optional extras: `pip install adsfolio[full]`.
+- Fix: install optional extras: `pip install 'adsfolio[full]'`.
 
 ### ISO4 journal conversion unavailable
 
 - Symptom: `--journal iso4` warns and returns full names.
-- Fix: install optional extras: `pip install adsfolio[full]`.
+- Fix: install optional extras: `pip install 'adsfolio[full]'`.
 
 ### PDF rename changed nothing
 
 - Symptom: `adsfolio pdf rename` outputs "No files to rename."
-- Check: run `adsfolio pdf identify <dir>` first to populate the registry.
+- Check: run `adsfolio pdf identify <dir> --recursive` first to populate the catalog.
 
 ### `pdf identify` does not use the cache
 
 - Symptom: identify is slow even though you ran it recently.
-- Cause: PDFs whose SHA-256 is already in the SQLite registry are skipped automatically;
-  publication matching also uses the user cache and folder ADS-document cache.
-  If all 1000+ files appear as "pending", the registry is either missing, in the
-  wrong directory, or the files have been moved/renamed since last run.
+- Cause: resolved PDFs with unchanged content reuse catalog metadata. Unresolved
+  or changed PDFs still need identification. Matching also uses the publication
+  cache and the library's cached ADS documents; these are separate from PDF
+  resolution status.
 - Fix:
-  - run `adsfolio pdf status <dir> --recursive` to confirm registry record counts
-  - check that `.adsapi-pdfs.sqlite` exists at the scan root directory
+  - run `adsfolio pdf status <dir> --recursive` to inspect the library's records
+  - check the central `pdf-library.sqlite` under `Config.get_config_dir()`
+    (`~/Library/Application Support/adsfolio` on macOS); new libraries do not create
+    `.adsfolio-pdfs.sqlite` at the scan root
   - run `adsfolio cache status` and `adsfolio cache refresh` if the publication cache is missing
-  - if files were renamed externally, the SHA match will still find them; if the
-    registry is missing entirely, re-run identify once to rebuild it
+  - rerun `adsfolio pdf identify <dir> --recursive` to reconcile externally renamed
+    files by content hash and identify pending files
+
+### Identify cannot verify a first-page title
+
+Identify collects heading candidates from first-page typography instead of
+sending the entire page as a title. It uses transformed font sizes and excludes
+fontless form aggregates that duplicate the page text. It retains sentence
+candidates when a heading shares a line with its authors.
+
+ADS must return a unique matching title after case and punctuation normalization.
+Conflicting matches leave the file unresolved. Queries share a cache and are
+batched. Oversized batches split into smaller queries rather than dropping the
+file. A single oversized candidate is still reported with its file path.
+
+Typography is a heuristic: uniform-font OCR, titles split across font sizes,
+and poor text layers can still fail. The text-boundary fallback recognizes
+parenthesized submission dates but cannot reliably separate every title from
+its authors. Metadata DOI and metadata title strategies run before first-page
+titles in the default order.
+
+To correct a remaining unresolved file, select it and use **Update from ADS…**
+with a verified DOI or Bibcode. From the CLI:
+
+```bash
+adsfolio pdf refresh-ads <dir> --identifier 10.1051/0004-6361/201834764 \
+  --relative-path <path-of-pdf-inside-dir>
+```
+
+Check the identifier against the paper. The eyepiece article by F. E. Wright
+uses DOI `10.1364/JOSA.24.000206` and Bibcode `1934JOSA...24..206W`.
+
+### PDFs exist in subdirectories but are absent from the GUI
+
+The GUI displays catalog records. A new root discovers only top-level PDFs by
+default. **Refresh/F5** scans the selected root using its current recursion setting.
+
+1. Right-click the root under **LIBRARIES** and turn off **Watch Current Library**
+   if checked.
+2. Reopen that context menu and enable **Include Subdirectories**.
+3. Press **Refresh/F5**, select **All**, and clear the search field.
+
+The recursive scan restores nested locations marked missing and discovers new
+PDFs. Top-level scans leave nested records unchanged. **Unresolved** is
+a status filter, not a listing of the `unresolved/` directory. See the
+[GUI guide](../gui.md) for the distinction between root scope and Identify settings.
 
 ### `pdf identify` warns about large query batch
 
@@ -124,12 +170,13 @@ adsfolio set
 ### CV init fails with PyYAML error
 
 - Symptom: `adsfolio cv init` exits with a PyYAML import error.
-- Fix: `pip install pyyaml` or `pip install adsfolio[full]`.
+- Fix: reinstall the package in the environment running the command. PyYAML is
+  a required dependency of the base package; the `full` extra is unnecessary.
 
 ### CV generate produces wrong author name
 
-- Check `author.me_target` in `cv.yaml` — it must match the ADS author string exactly
-  (case-insensitive prefix match is used).
+- Check `author.me_target` in `cv.yaml`: it uses case-insensitive prefix matching
+  against the ADS author string.
 - Use `--dry-run` to inspect output before writing.
 
 ## 4) Safe execution pattern

@@ -1,19 +1,60 @@
-Desktop GUI
-==========
+# Desktop GUI
 
-Install the optional Qt dependency with::
+ADSfolio provides a graphical desktop application for browsing, cataloging,
+and organizing scientific PDF libraries.
 
-   pip install 'adsfolio[gui]'
+For a development checkout, run `uv sync --all-extras` and then
+`uv run adsfolio-gui`. After package-index publication, install the Qt extra:
 
-Launch the browser with either ``adsfolio gui`` or ``adsfolio-gui``.  The window has
+```bash
+uv pip install 'adsfolio[gui]'
+```
+
+Use `'adsfolio[full,gui]'` to include GUI watching and PDF annotation tools.
+
+Launch the desktop application with ``adsfolio-gui``, ``adsfolio gui``, or ``adsfolio-gui``.
+Startup does not require an ADS token; local PDF roots can be added, inspected,
+and organized offline. If an operation requires NASA ADS network services (such
+as ADS Refresh, Add to ADS Library, or ADS Identify fallback), an explicit token
+dialog is presented. Bibliographic identification supports ADS, Crossref, and DataCite, in that default
+order. Reorder or disable providers in the Identify dialog. Crossref and DataCite
+look up exact DOIs without an ADS token; title matching uses ADS. OpenAlex and
+PMID/PubMed lookup are not supported.  The window has
 three panes: registered library roots and virtual views on the left, a paged
 sortable/searchable file table in the middle, and editable metadata for the
 selected file on the right.
 
-Add a root from **File → Add Library Root**.  The views show all, resolved,
-unresolved, arXiv-only, and duplicate records.  Double-click a row to open the
-PDF in the operating system's default viewer; the context menu can reveal a
-file, copy its path, or copy its Bibcode/DOI.
+## Library roots and missing PDFs
+
+For citations without ADS records or PDFs, use **File → Local References…**.
+That window imports BibTeX, accepts manual entries, links optional PDFs, and
+exports ADS and external references together. It is independent of the selected
+PDF root. See [References outside ADS](local-references.md) for the complete flow.
+
+Add a root from **File → Add Library Root…**.  Registration discovers PDFs
+immediately.  New roots use a non-recursive scan by default, so only PDFs
+directly in the selected directory are discovered.  To include nested
+directories, right-click the root under **LIBRARIES** and enable **Include
+Subdirectories**.  The checkbox is disabled while that root is watched; stop
+the watcher before changing it.  Changing the checkbox saves the scan scope
+but does not rescan the current catalog immediately; press **Refresh** (**F5**)
+to scan the root with its updated **Include Subdirectories** setting.
+
+The views show all, resolved, unresolved, arXiv-only, and duplicate records.
+**All** and **Unresolved** are catalog-status views, rather than directory
+views: **All** includes current catalog locations regardless of resolution, and
+**Unresolved** filters those locations by unresolved status.  Normal queries
+exclude locations marked missing, so a PDF that was never discovered or whose
+catalog location is marked missing appears in neither view.  Double-click a
+row to open the PDF in the operating system's default viewer; the context menu
+can reveal a file, copy its path, or copy its Bibcode/DOI.
+
+Non-recursive discovery updates only top-level locations. Previously cataloged
+nested files remain unchanged, including their missing status. Enable
+**Include Subdirectories** and press **F5** to restore existing
+nested files and discover new ones.
+
+## Browsing files and editing metadata
 
 The table loads records in pages to keep large libraries responsive. Bibcode and
 arXiv columns are clickable links to ADS and arXiv, respectively. If a link
@@ -28,18 +69,31 @@ sort places the most recently added files first.
 The status
 bar reports the loaded and total counts; scroll or use **File → Load Next Page**
 to load another page. Its narrow, unlabeled resolution column shows a green dot
-for a record with a successful ADS match. Click that header to group records
+for a successful ADS match or complete, current external metadata. Its tooltip
+distinguishes ADS linkage from metadata readiness. Click that header to group records
 needing attention first. Use **View → Appearance…** to choose a fixed-width
 font and point size independently for each table column, configure right-pane
 metadata text, and select ISO 8601 or any Python ``strftime`` timestamp format
 (for example ``%Y-%m-%d``; month is lowercase ``%m``).
 
-Registry entries remain after a PDF is moved or deleted outside adsfolio so their
-metadata is not silently discarded. Select **File → Remove Missing Registry
-Records…** to review and remove those stale entries; this never deletes files.
-Use **File → Reconcile File Facts…** to refresh stored file sizes and modified
-timestamps from paths that still exist. It reports missing paths without
-removing them, so review and delete stale records separately.
+Use the toolbar **Refresh** button or **F5** after adding, editing, moving, or
+deleting PDFs outside adsfolio. Refresh scans the selected root using its
+**Include Subdirectories** setting. It runs locally in a background job, updates
+changed file facts, discovers new PDFs, and hides missing paths while retaining
+their catalog history. Existing metadata and local edits are preserved; moved
+files retain their metadata when their filesystem identity matches. The status
+bar and job log report added, modified, moved, restored, and missing counts.
+Selection, search, and sort settings are retained when the originating view is
+still active. Watcher writes pause during the scan. **File → Reconcile File
+Facts…** runs the same scan.
+
+The toolbar **ADS Refresh ▾** menu provides refresh and rename actions for the
+selected record, a manually entered identifier, all ADS records, or all citation
+splits. These actions contact ADS and apply the saved rename settings. A local
+Refresh does neither.
+
+Permanent cleanup remains separate: **File → Remove Missing Registry Records…**
+asks before removing missing catalog entries and never deletes files.
 Metadata rows in the right pane can be dragged to choose their display order; the
 order is saved for the next launch. **View → Appearance… → Details** also lets
 you reorder rows and choose which ones appear. Click a value to copy it. The
@@ -64,9 +118,14 @@ encoded in the bibcode. ADS HTML display markup is converted to plain text in th
 table, detail pane, and generated filenames.
 
 Use **Update from ADS…** in the detail pane to enter or correct the selected
-file's Bibcode, DOI, or journal-volume-page coordinates. It refreshes that
+file's Bibcode, DOI, or journal-volume-page coordinates. A DOI may be bare,
+`DOI:`-prefixed, or an HTTP(S) `doi.org` / `dx.doi.org` link; other publisher
+URLs are not recognized. A DOI is used exactly as typed (apart from
+lower-casing), so trailing punctuation or parentheses that belong to the DOI are
+kept; remove any sentence punctuation you pasted along with it. It refreshes that
 file's unlocked ADS metadata, abstract, and citation counts, and marks the file
-resolved after a unique matching ADS record is found. If a Bibcode has no ADS
+resolved after a unique matching ADS record is found. It then renames the PDF
+using the selected global or library Rename settings. If a Bibcode has no ADS
 match, it is cleared and the local file remains tracked as unresolved.
 **Tools → Refresh Selected ADS Record** performs the same update using the
 current Bibcode, including detailed citation splits. **Tools → Refresh All ADS
@@ -84,8 +143,7 @@ PDFs by their publication year. Saving the profile does not make a network
 request. Use **Tools → Identify → Refresh publication cache** when you want to
 rebuild the cache.
 
-Custom citation styles
-----------------------
+## Custom citation styles
 
 Custom citations are edited from the exact menu command
 ``Tools -> Custom Citation Styles...`` (displayed by Qt as **Tools → Custom
@@ -172,9 +230,11 @@ authors, and **Truncation suffix** is appended only to ``{authors}`` when
 truncation occurs. A no-comma author name uses its last token as the surname
 and preceding tokens as given names.
 
+## Identify and Rename
+
 **Tools → Identify** and **Tools → Rename** use the same CLI commands as the
 terminal application, run as subprocesses.  Output is streamed to the log dock,
-and the registry is reopened after completion so counts and metadata are fresh.
+and catalog records are reloaded after completion so counts and metadata are fresh.
 Rename shows a dry-run preview before applying changes. The GUI does not render
 PDFs itself.
 
@@ -197,14 +257,41 @@ CSV are one-run inputs. **Skip unresolved directory** excludes
 the configured unresolved destination before hashing, metadata extraction, or
 ADS queries; without a destination it means `<library>/unresolved`. It is off by
 default, so existing unresolved files continue to be retried unless you enable
-it. **Refresh publication cache**, **Allow ADS fallback**, and **Apply unresolved
+it. **Refresh publication cache**, **Allow ADS fallback**, and **Apply file
 moves** are intentionally one-run actions and always reopen disabled. Every
 non-obvious Identify and Rename row has a visible **?** button as well as a
 tooltip and accessible description. Rename's filename-template help lists all
 supported fields and explains truncation, sanitization, and automatic `.pdf`.
 
-Adding identified PDFs to a remote ADS library
-----------------------------------------------
+Enable **Apply file moves** to return successfully identified files from the
+unresolved subtree to the library root. Identify keeps their filenames; Rename
+and **Identify & Rename** watcher actions also apply the configured filename
+template. With Apply disabled, Identify reports a preview. The unresolved
+directory is the configured Identify destination, or `<library>/unresolved` by
+default. Recursive scanning must include those files, and **Skip unresolved
+directory** must be off. Previously identified files in that scanned subtree
+are returned too, without repeating their ADS lookup. AI CSV matches are
+handled in the same run.
+
+**Update from ADS** and ADS refresh rename successfully updated PDFs using the
+effective Rename settings. Files in the unresolved subtree also return to the
+root in the same move; other PDFs are renamed within their current directory.
+Filenames use the refreshed metadata, including any locally locked fields.
+These actions apply immediately and pause the library watcher while running.
+Optional detailed citation metrics are fetched after renaming, so a metrics
+request failure does not leave successfully refreshed PDFs waiting for a rename.
+Plain metadata edits do not move files. If a filename collision or rename error
+occurs, the refreshed metadata is retained and the job log explains why the
+rename did not complete.
+
+Rename preview and Apply use the same effective Identify destination for the
+selected library. Existing destination files are never overwritten: the log
+reports collisions and leaves the identified source in place. File moves and
+catalog locations are updated together, with rollback on catalog failure.
+Automatic return is limited to an unresolved subtree inside the library root;
+no parent library is inferred when an external folder is selected as a root.
+
+## Adding identified PDFs to a remote ADS library
 
 The GUI distinguishes two different kinds of library:
 
@@ -220,8 +307,7 @@ local metadata, Rename settings, or watch state. The main window snapshots
 local records before opening the dialog; network work runs in a worker outside
 the GUI thread.
 
-Entry points and source scope
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+### Entry points and source scope
 
 Use **Tools → Add to ADS Library…** or the table context menu's **Add to ADS
 Library…** action. The action requires a current local PDF root and is disabled
@@ -244,8 +330,7 @@ in first-seen order, so duplicate local files do not produce duplicate
 submissions. The source summary reports **Source files**, **Eligible unique
 Bibcodes**, **Ineligible files**, and **Local duplicate Bibcodes**.
 
-Remote destinations and request safety
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+### Remote destinations and request safety
 
 The destination table shows the ADS library's name, document count, public or
 private visibility, and permission. Only `owner`, `admin`, and `write`
@@ -281,8 +366,7 @@ to submit. The POST begins only after an affirmative answer. The ADS/SciXplorer
 document-management contract permits at most 2,000 Bibcodes per request, so
 larger submissions use stable-order batches of no more than 2,000.
 
-Progress, cancellation, partial results, and retry
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+### Progress, cancellation, partial results, and retry
 
 The add operation runs asynchronously and reports progress without blocking
 the GUI. **Cancel** takes effect before the next add batch; a request already
@@ -309,8 +393,35 @@ that read-only reconciliation fails, the dialog warns that a raw retry may
 resubmit Bibcodes with an uncertain server outcome and requires a second
 explicit confirmation before allowing it.
 
-Watching library roots
-----------------------
+## Exporting a remote ADS library
+
+Use **Tools → Export ADS Library…**, select a remote library and bibliography
+style, and click **Export**. Choose the save location after ADS finishes.
+This works without adding a local PDF folder and includes libraries where you
+have read permission. It exports the entire selected remote library, independent
+of local table selections.
+
+BibTeX (`.bib`) is the default. Other choices are BibTeX with abstracts, RIS
+(`.ris`), EndNote, AASTeX, MNRAS, Icarus, Solar Physics, ADS tagged, ProCite,
+RefWorks, and MEDLARS. Journal bibliography styles use `.tex`; the remaining
+tagged formats use `.txt`. Formatting comes from ADS, including its default
+journal macros and author limits; local PDF metadata edits and custom table
+citation styles are not applied to this export.
+
+Network work runs in the background. All library pages are loaded, then ADS
+exports are batched using its documented 2,000-record limit. Each response is
+checked against the requested Bibcodes before a file can be saved. Records are
+ordered by Bibcode across the complete file. Count mismatches and missing export
+records produce an error instead of a partial bibliography. Library pagination
+is not a server-side snapshot; avoid editing its membership during export. See the
+[ADS export service](https://github.com/adsabs/export_service) for format details.
+
+An empty library produces no file. Cancelling the operation or Save dialog leaves
+existing files intact. Saving uses an atomic replacement after any native
+overwrite confirmation. This action does not change ADS library membership,
+local PDFs, or the local catalog.
+
+## Watching library roots
 
 Each registered root has three independent controls in the **Tools** menu and
 its sidebar context menu:
@@ -327,6 +438,11 @@ its sidebar context menu:
   and apply a configured unresolved-file move. It is off by default. When it is
   off, the non-modal notice bar offers **Identify & Rename** and **Dismiss** for
   each new arrival.
+
+The watcher recognizes the ``.pdf`` suffix in any letter case, such as
+``PAPER.PDF``. A symbolic link to a PDF outside the root is ignored. If a
+periodic scan cannot read a folder or file, it reports a watch failure and
+leaves the tracked files unchanged; they are not marked missing.
 
 The active watcher is shown with a ``●`` beside the root label. Recursive root
 scope cannot be changed until that root's watcher is stopped. Foreground

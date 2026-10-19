@@ -1,6 +1,4 @@
-adsfolio.cv.cli
-=============
+﻿adsfolio.cv.cli
+===============
 
 .. automodule:: adsfolio.cv.cli
-
-   

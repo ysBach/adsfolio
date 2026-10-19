@@ -1,15 +1,4 @@
-adsfolio.cv.render\_legend
-========================
+﻿adsfolio.cv.render\_legend
+==========================
 
 .. automodule:: adsfolio.cv.render_legend
-
-   
-   .. rubric:: Functions
-
-   .. autosummary::
-   
-      journal_legend_lines
-      marker_legend_markdown
-      marker_summary_latex
-      style_header_label
-   

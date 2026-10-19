@@ -1,6 +1,16 @@
-# adsfolio
+# ADSfolio
 
-Comprehensive Python client for NASA ADS / SciXplorer API with CLI tools.
+A desktop application and Python toolkit for organizing research PDFs with NASA
+ADS / SciXplorer, Crossref, and DataCite metadata. ADSfolio is an independent
+project, not an official ADS application.
+
+![ADSfolio logo](docs/_static/adsfolio.png)
+
+The distribution, Python imports, and commands use `adsfolio`. Earlier settings
+and catalog data are copied into ADSfolio storage on first use. The source data
+remains intact. Close the earlier application before starting ADSfolio.
+See the [desktop installation guide](docs/desktop.md) and
+[maintainer release guide](docs/releasing.md).
 
 ## Useful Info
 - https://ui.adsabs.harvard.edu/help/search/comprehensive-solr-term-list
@@ -15,7 +25,9 @@ Comprehensive Python client for NASA ADS / SciXplorer API with CLI tools.
 
 ## Installation
 
-Requires Python 3.10 or newer.
+Requires Python 3.10 or newer. Before the first package-index publication,
+install from this checkout with `uv sync --all-extras`, then launch with
+`uv run adsfolio-gui`. The commands below apply after publication.
 
 ```bash
 pip install adsfolio
@@ -84,8 +96,8 @@ configuration directory, so adding roots does not create databases inside
 synced folders. The user-level publication cache is the platform-specific
 `platformdirs` cache path returned by `adsfolio cache status`. Use `adsfolio cache
 clear` to remove the publication cache and `adsfolio pdf export DIR -o
-snapshot.json` for a readable registry backup. Legacy `.adsapi-pdfs.sqlite`
-and `.adsapi-pdfs.json` files are imported read-only and remain available as
+snapshot.json` for a readable registry backup. Legacy `.adsfolio-pdfs.sqlite`
+and `.adsfolio-pdfs.json` files are imported read-only and remain available as
 source backups.
 
 ### Desktop GUI

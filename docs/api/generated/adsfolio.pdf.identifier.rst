@@ -1,19 +1,4 @@
-adsfolio.pdf.identifier
-=====================
+﻿adsfolio.pdf.identifier
+=======================
 
 .. automodule:: adsfolio.pdf.identifier
-
-   
-   .. rubric:: Functions
-
-   .. autosummary::
-   
-      extract_doi_candidates_pdf
-      extract_first_page_text_pdf
-   
-   .. rubric:: Classes
-
-   .. autosummary::
-   
-      PdfIdentifier
-   

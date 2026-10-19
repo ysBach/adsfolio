@@ -1,6 +1,4 @@
-adsfolio.pdf.cli
-==============
+﻿adsfolio.pdf.cli
+================
 
 .. automodule:: adsfolio.pdf.cli
-
-   

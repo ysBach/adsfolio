@@ -12,6 +12,7 @@ adsfolio set --help
 adsfolio cache --help
 adsfolio pdf ocr --help
 adsfolio pdf identify --help
+adsfolio pdf refresh-ads --help
 adsfolio pdf rename --help
 adsfolio pdf watch --help
 adsfolio pdf status --help
@@ -27,6 +28,7 @@ Key PDF options to understand:
 | --- | --- | --- |
 | `identify --settings-scope global/library` | Load reusable global or per-library settings | Share defaults or keep one library distinct |
 | `identify --recursive/--no-recursive` | Override saved recursive scanning for one run | Multi-folder paper archives |
+| `identify --strategy` | Select one or more ordered evidence strategies for one run | Limit or reorder local metadata extraction and lookups |
 | `identify --debut-year/--end-year` | Override publication-prefetch years for one run | Narrow a cache refresh without changing setup |
 | `identify --refresh-cache` | Rebuild the publication cache first | Deliberate cache refresh |
 | `identify --output-unresolved` | Move unresolved PDFs to a separate directory | Keep review queue clean |
@@ -35,7 +37,7 @@ Key PDF options to understand:
 | `identify --ai-csv` | Apply AI-enriched unresolved CSV directly | Non-interactive AI roundtrip |
 | `identify -v` | Print per-file unresolved move logs | Debug detailed unresolved routing |
 | `identify --verbose-parser` | Show raw parser warnings from malformed PDFs | Debugging problematic files or corrupt inputs |
-| `--apply` | Execute destructive actions (rename/move/push/upgrade) | Always run after dry-run verification |
+| `--apply` | Apply the command's file moves, renames, remote additions, or upgrades | Preview the command first; this flag does not disable all catalog writes or ADS requests |
 | `rename --scheme` | Template defining output filename | Enforce your citation/file naming convention |
 | `rename --author-format` | Author token style (`surname`, `surname_initials`, etc.) | Match your preferred filename style |
 | `watch --use-watchdog` | Event-driven watcher backend | Lower-latency updates on supported systems |
@@ -55,7 +57,7 @@ Key PDF options to understand:
 Install optional features:
 
 ```bash
-pip install adsfolio[full]
+pip install 'adsfolio[full]'
 ```
 
 Run `adsfolio set` once before first `pdf identify` so the tool can cache your publication list
@@ -68,20 +70,42 @@ Run `adsfolio set` again only when token/profile values change.
 `adsfolio pdf identify` uses the central user catalog `pdf-library.sqlite` as its
 incremental state. Legacy per-root registry and JSON files are imported without
 being renamed or deleted.
-The user-level publication cache is separate and is managed by `adsfolio cache`. On each run it:
+The user-level publication cache is separate and is managed by `adsfolio cache`. For
+each new, changed, or unresolved catalog location, it:
 
-1. Compares stored size, modification time, and filesystem identity first.
-2. Computes SHA-256 only for new or changed PDFs, then reuses matching catalog attachments.
-3. Tries the publication cache first, then the folder ADS-document cache.
-4. For remaining PDFs, extracts DOI/bibcode candidates from filename, PDF metadata, and first-page text.
-5. Resolves candidates with batched ADS DOI/bibcode queries, then title fallback queries for remaining PDFs.
+1. Scans the selected root top-level or recursively, and skips the configured
+   unresolved destination before hashing when `--skip-unresolved-directory` is enabled.
+2. Compares stored size, modification time, and filesystem identity first.
+3. Computes SHA-256 only for new or changed PDFs, then reuses matching catalog attachments.
+4. Runs the enabled evidence strategies in order. Each stage handles only PDFs
+   still unresolved and checks the root's cached ADS documents and publication
+   cache before making any ADS network request.
+5. With the default strategy order, extracts and looks up:
+   `filename_bibcode`, `filename_doi`, `pdf_metadata_bibcode`,
+   `pdf_metadata_doi`, `first_page_bibcode`, `first_page_doi`,
+   `structured_filename`, `pdf_metadata_title`, and `first_page_title`.
+   Candidate lookups are batched by identifier where possible. Repeat
+   `--strategy` to select an ordered subset for one run, for example:
+
+   ```bash
+   adsfolio pdf identify ~/Papers \
+     --strategy filename_doi \
+     --strategy first_page_title
+   ```
+
 6. If files remain unresolved, writes `unresolved.csv` and prints an AI prompt.
 7. In interactive mode, waits for an AI-enriched CSV path and applies batched
    ADS bibcode/DOI lookups from that CSV.
 
 With `--recursive`, all tracked files still go into the same central catalog.
-Already-identified PDFs are never re-queried regardless of how many times you
-run the command.
+First-page title identification collects typography candidates and verifies them
+against ADS titles. A larger journal masthead does not automatically become the
+title. Conflicting records remain unresolved. Uniform-font OCR and titles with
+mixed font sizes can still require a verified DOI or Bibcode.
+
+Resolved PDFs with unchanged content reuse their catalog metadata without
+repeat identification queries. Unresolved or changed PDFs remain eligible for
+identification.
 
 ## 1) Optional: route non-OCR PDFs before identify
 
@@ -105,7 +129,7 @@ The command prints an `ocrmypdf` script template. If these files have annotation
 verify OCR outputs carefully. You can manually move selected files out of
 `ocr_required` to skip OCR for those files.
 
-## 2) Identify PDFs and create registry metadata
+## 2) Identify PDFs and update catalog metadata
 
 ```bash
 adsfolio pdf identify ~/Papers --recursive
@@ -114,7 +138,7 @@ adsfolio pdf identify ~/Papers --recursive
 This matches the publication cache, reuses cached fallback ADS documents, and
 writes the central catalog outside the library root.
 
-Reusable Identify settings include recursive scanning, filename inference,
+Reusable Identify settings include ordered evidence strategies, recursive scanning,
 unresolved destination, unresolved-directory skipping, and verbosity. Personal
 identity and publication-year bounds are global profile data configured by
 `adsfolio set` or **Tools → My Publication Profile…**; they are not library-scoped
@@ -145,8 +169,8 @@ adsfolio pdf export ~/Papers -o pdfs-backup.json
 If many files remain unmatched after cache/profile matching,
 `identify` asks for confirmation before launching fallback query batches and prints an
 estimated DOI batch query count.
-At high traffic levels (about >1000 requests in 24h), ADS may temporarily block
-requests for roughly one day.
+Use `adsfolio rate-limit` to inspect limits returned by ADS for your account.
+Request allowances and reset times depend on the endpoint and server response.
 In non-interactive runs, fallback ADS queries are skipped by default; use
 `--allow-ads` to run them without a prompt.
 If unresolved files remain at the end, `identify` writes `unresolved.csv` in the scan
@@ -180,6 +204,9 @@ adsfolio pdf identify ~/Papers --recursive \
   --skip-unresolved-directory
 ```
 
+Identify updates catalog records and may make ADS requests or export an
+unresolved CSV without `--apply`; that flag controls the unresolved-file moves.
+
 The skip is path-based and happens before hashing or ADS work. It does not skip
 unresolved-status records elsewhere. If `--output-unresolved` is omitted, the
 effective skipped path is `~/Papers/unresolved`. The option defaults off.
@@ -191,6 +218,16 @@ adsfolio pdf identify ~/Papers --recursive --ai-csv ~/Papers/unresolved_ai.csv
 ```
 
 ## 3) Rename safely: dry-run then apply
+
+`adsfolio pdf refresh-ads` also renames successfully updated PDFs immediately,
+using the library's saved Rename settings or global settings when no library
+override exists. Pass `--rename-scope global` to use global settings explicitly.
+Files under the configured unresolved directory return to the library root
+with their new name; other PDFs stay in their current directory. The
+`--output-unresolved` option overrides the saved unresolved directory. Existing
+destinations are not overwritten, and the log reports skipped renames while
+retaining the refreshed ADS metadata. Optional citation-metrics requests run
+after these renames; a metrics failure does not undo completed file updates.
 
 Available template variables: `{bibcode}`, `{year}`, `{title}`,
 `{first_author}`, `{first_author_full}`, `{authors}`, `{authors_N}`, `{journal}`,
@@ -239,7 +276,7 @@ Author format options:
 | `last_comma_first` | `Smith,_J.` |
 | `ads_custom:FORMAT` | delegates to ADS export API |
 
-## 5) Watch a folder for new PDFs
+## 4) Watch a folder for new PDFs
 
 Polling (default):
 
@@ -254,20 +291,30 @@ adsfolio pdf watch ~/Papers --recursive --use-watchdog --interval 60 \
   --output-unresolved unresolved --apply
 ```
 
-The event callback only queues paths; one worker performs PDF parsing, ADS
-queries, renames, and catalog writes. `--interval` controls a periodic
-filesystem-facts reconciliation that catches missed events without hashing or
-re-identifying unchanged PDFs. Incomplete, encrypted, or concurrently changing
-PDFs are deferred until a later event or reconciliation. Watch-mode unresolved
-destinations must be inside the watched root.
+At startup, CLI watch performs a filesystem reconciliation: untracked or changed
+PDFs already present can be processed, while catalog entries whose filesystem
+facts still match are skipped. Later `--interval` passes reconcile filesystem
+facts to catch missed events without hashing or re-identifying unchanged PDFs.
+With `--use-watchdog`, event callbacks only queue paths and one worker performs
+PDF parsing, ADS queries, renames, and catalog writes. Incomplete, encrypted, or
+concurrently changing PDFs are deferred until a later event or reconciliation.
+Watch mode matches the `.pdf` suffix in any letter case and ignores symbolic
+links to PDFs outside the watched root. If a pass cannot read a folder or file
+(for example, permission denied), it logs the error, skips that pass, and does
+not mark tracked files missing; the next pass retries.
+Watch-mode unresolved destinations must be inside the watched root. This initial
+reconciliation differs from the GUI watcher, whose startup scan establishes a
+baseline and leaves existing PDFs alone; the GUI only offers later arrivals for
+watch processing.
 
 Filename rendering preserves Unicode by default, for example `Wesołowski`.
 Use `--char-policy ascii` to request `Wesolowski`. Without `--apply`, watch mode
 reports proposed path changes but does not rename or move files.
 
 The author separator and truncation suffix are independent settings.
-`--max-authors` is inclusive: one or two authors are fully shown, while three
-or more are truncated. `--authors-when-truncated` controls how many leading
+`--max-authors` is inclusive: a list at or below that size is fully shown;
+a longer list is truncated. With `--max-authors 2`, three or more authors are
+truncated. `--authors-when-truncated` controls how many leading
 authors remain in a truncated result and defaults to one. For example,
 `--max-authors 2 --authors-when-truncated 1 --author-separator "+"
 --author-truncation-suffix "+"` renders three authors as `SmithJ+`;
@@ -281,7 +328,8 @@ PDFs.
 ### Run continuously on macOS
 
 Create `~/Library/LaunchAgents/org.example.adsfolio-pdf-watch.plist`, replacing
-every `/Users/YOU/...` path with an absolute path valid for your account:
+every `/Users/YOU/...` path with an absolute path valid for your account (the
+executable is the output of `which adsfolio`):
 
 ```xml
 <?xml version="1.0" encoding="UTF-8"?>
@@ -292,7 +340,7 @@ every `/Users/YOU/...` path with an absolute path valid for your account:
   <key>Label</key><string>org.example.adsfolio-pdf-watch</string>
   <key>ProgramArguments</key>
   <array>
-    <string>/Users/YOU/.venvs/ysbpy/bin/adsfolio</string>
+    <string>/Users/YOU/path/to/venv/bin/adsfolio</string>
     <string>pdf</string><string>watch</string>
     <string>/Users/YOU/Papers</string>
     <string>--recursive</string><string>--use-watchdog</string>
@@ -319,7 +367,7 @@ The package does not install or start this agent automatically because the
 executable path, library path, naming policy, and filesystem permissions are
 user-specific.
 
-## 6) Check current state
+## 5) Check current state
 
 ```bash
 adsfolio pdf status ~/Papers --recursive
@@ -330,7 +378,7 @@ groups. With `--recursive`, all locations share the same central catalog. Do not
 run identify/watch from two machines against the same library concurrently; use
 the export command for portable backups.
 
-## 7) Upgrade arXiv PDFs to published versions
+## 6) Upgrade arXiv PDFs to published versions
 
 Dry-run:
 
@@ -358,14 +406,14 @@ Force re-check entries already marked as published:
 adsfolio pdf upgrade ~/Papers --apply --force
 ```
 
-## 8) Auto-upgrade while watching
+## 7) Auto-upgrade while watching
 
 ```bash
 adsfolio pdf watch ~/Papers --recursive --apply \
   --auto-upgrade --upgrade-interval 24
 ```
 
-## 9) Push resolved bibcodes to an ADS library
+## 8) Push resolved bibcodes to an ADS library
 
 Dry-run:
 
@@ -379,7 +427,7 @@ Apply:
 adsfolio pdf push-library ~/Papers <library_id> --apply
 ```
 
-## 10) Generate Obsidian-friendly notes
+## 9) Generate Obsidian-friendly notes
 
 If the PDFs already live inside an Obsidian vault, `pdf obsidian` writes one Markdown note per
 tracked PDF (YAML frontmatter with title/authors/year/journal/bibcode, plus an `## Abstract`
@@ -393,7 +441,7 @@ adsfolio pdf obsidian ~/Papers
 ```
 
 Apply — fetches any missing abstracts from ADS in one batched query, caches them into the
-registry/sidecar, and writes the notes:
+central catalog, and writes the notes:
 
 ```bash
 adsfolio pdf obsidian ~/Papers --apply

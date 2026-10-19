@@ -18,7 +18,6 @@ from typing import Any
 
 import adsfolio
 
-
 DEFAULT_QUERY = (
     'author:"doe, jane" '
     "year:2010- "
@@ -449,7 +448,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--token",
         default=None,
-        help="ADS API token. If omitted, ADS_API_TOKEN/config is used.",
+        help="NASA ADS token. If omitted, ADS_API_TOKEN/config is used.",
     )
     parser.add_argument(
         "--output-dir",

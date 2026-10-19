@@ -27,6 +27,13 @@ adsfolio cv generate --config cv.yaml --author-format 'ads_custom:%3.2l'
 adsfolio cv generate --config cv.yaml --output out/publications.tex
 ```
 
+`--dry-run` still queries ADS and renders the result; it prints to stdout instead
+of writing a file. `--format` selects a renderer but does not rewrite an existing
+configured filename, so supply `--output out/publications.md` when switching a
+LaTeX configuration to Markdown. Relative `output.dir` paths are resolved against
+the YAML file's directory; an explicit CLI `--output` is relative to the current
+working directory.
+
 ORCID behavior:
 
 - `adsfolio cv init` reads defaults from your `adsfolio set` profile.
@@ -155,6 +162,9 @@ Important details from the SciX custom-format reference:
 - Author truncation can use `%[n.m]l` (example: `%3.2l`).
 - Useful author directives include `%l`, `%A`, `%G`, `%m`, `%M`.
 - In `adsfolio cv`, this custom output replaces only the author segment of each rendered entry.
+- Custom author formatting makes an export request per publication. If that
+  request raises `ADSError`, generation logs a warning and retains local author
+  formatting for that publication.
 
 ### Journal handling
 

@@ -26,10 +26,13 @@ export ADS_API_TOKEN="YOUR_TOKEN"
 
 ```bash
 uv sync
-uv add pandas
 ```
 
-`pandas` is needed only if you also generate talks from a CSV URL.
+This uses the project's `.venv`; never synchronize a shared environment.
+`pandas` is needed only for talks from a CSV URL. Add it temporarily to that run
+with `uv run --with pandas python docs/examples/build_cv_markdown.py
+--talks-csv-url 'https://example.org/talks.csv'`. Use an actual CSV URL in place
+of the example. This leaves the package's dependency declarations unchanged.
 
 ## Quick Run
 
@@ -38,6 +41,11 @@ uv run python docs/examples/build_cv_markdown.py \
   --first-author-prefix "bach, y" \
   --me-target "Bach, Y."
 ```
+
+Set `--query` to your ADS query and `--output-dir` to choose a destination.
+The example performs live ADS queries and writes Markdown; it has no dry-run
+option. For a config-driven workflow that can print output without writing it,
+use [`adsfolio cv generate`](cv.md) (its dry-run still queries ADS).
 
 ## What the script does
 

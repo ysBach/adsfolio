@@ -1,6 +1,4 @@
-adsfolio.cli.commands
-===================
+﻿adsfolio.cli.commands
+=====================
 
 .. automodule:: adsfolio.cli.commands
-
-   

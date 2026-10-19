@@ -25,7 +25,7 @@ Key search options to understand:
 | `--sort` / `-s` | Sort expression like `"citation_count desc"` | Prioritize highly cited or most recent results |
 | `--fq` | Extra filter query | Narrow by database, property, etc. without changing main query |
 | `--json` | Print machine-readable JSON output | Pipe to tools (`jq`, Python, shell scripts) |
-| `--token` | Override token only for this command | Temporary token switching without changing saved config |
+| `adsfolio --token` | Global option; put it before the subcommand (`adsfolio --token T search ...`). Not accepted after `search` | Temporary token switching without changing saved config |
 
 ## 1) Install
 
@@ -38,7 +38,7 @@ pip install adsfolio
 If you also want all optional features (watchdog, annotation porting, ISO4):
 
 ```bash
-pip install adsfolio[full]
+pip install 'adsfolio[full]'
 ```
 
 ## 2) Run first-time setup
