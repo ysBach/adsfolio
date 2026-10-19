@@ -128,11 +128,10 @@ archives use `ditto`; Linux archives use `tar` to preserve required symbolic
 links. Ordinary ZIP creation can lose these links; see
 [PyInstaller's distribution notes](https://pyinstaller.org/en/stable/common-issues-and-pitfalls.html#requirements-imposed-by-symbolic-links-in-frozen-application).
 
-These are development bundles. macOS Developer ID signing/notarization and
+Version 0.1.0 ships unsigned bundles. macOS Developer ID signing/notarization and
 Windows publisher signing require release credentials and are not configured.
 Downloaded builds may trigger operating-system security prompts. There is no
-automatic updater or system installer. Native signing, installation, and
-upgrade acceptance remain release work.
+automatic updater or system installer. Native signing and broader installation and upgrade acceptance remain future work.
 
 ### Status and manual acceptance
 
@@ -141,14 +140,14 @@ The macOS bundle sets `LSBackgroundOnly` to `false` in `packaging/adsfolio.spec`
 `packaging/check_macos_bundle.py` checks the built app's metadata and
 executable paths. The smoke executable cannot catch this problem.
 
-Native desktop builds remain in an unverified status until validated on
-physical hardware. Windows, Linux, and Intel macOS builds need native CI or
-hands-on validation. Real ADS requests, PDF-viewer integration, Finder launch,
-and clean-machine installation remain manual acceptance checks before public release.
+Release workflows require native tests and frozen runtime checks on all four
+build targets. These automated checks do not establish compatibility with every
+desktop. Real ADS requests, PDF-viewer integration, Finder launch, and
+clean-machine installation require separate manual acceptance.
 
 The project license remains BSD-3-Clause. Bundled third-party components retain
-their own licenses; the `full` extra includes PyMuPDF. Preserve dependency
-notices and review redistribution requirements before publishing binaries.
+their own licenses; the `full` extra includes PyMuPDF. Dependency metadata and license notices accompany the bundles. PyMuPDF uses
+AGPL terms; the project license does not replace bundled component licenses.
 
 
 ## Homebrew on macOS
