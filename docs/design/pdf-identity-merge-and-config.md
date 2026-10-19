@@ -2,6 +2,10 @@
 
 Date: 2026-08-14
 
+Status: unimplemented proposal, retained for future design work. The behavior and
+configuration below are proposed requirements, not current package functionality.
+Reconcile this historical proposal with the current code before implementation.
+
 ## Objective
 
 Make PDF identification converge every representation of one scholarly work on
@@ -43,11 +47,11 @@ or use fuzzy text similarity to place annotations without review.
 
 The only non-secret configuration authorities are:
 
-- global: `~/Library/Application Support/ads/config.toml` on macOS, resolved via
+- global: `~/Library/Application Support/adsfolio/config.toml` on macOS, resolved via
   `platformdirs` on other systems;
 - library: `<library root>/.adsfolio.toml`.
 
-The library file stores only overrides. The ADS API token remains in the current
+The library file stores only overrides. The NASA ADS token remains in the current
 mode-`0600` token file because it is a secret, not normal configuration. The
 central SQLite catalog may cache effective values but is never authoritative.
 
@@ -109,7 +113,7 @@ known setting so newer configuration is not destroyed by an older client.
 
 When `config.toml` does not yet exist, adsfolio imports the existing `gui.json` and
 `setup.json`. For each registered library, it imports root-specific Identify
-settings from catalog metadata and legacy `.adsapi-pdfs.json` settings into
+settings from catalog metadata and legacy `.adsfolio-pdfs.json` settings into
 `.adsfolio.toml` only when they differ from the global effective value.
 
 Migration is deterministic and idempotent. Legacy files are left untouched so a
