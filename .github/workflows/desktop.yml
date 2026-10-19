@@ -1,0 +1,308 @@
+name: Desktop bundles
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+  pull_request:
+    paths:
+      - "src/**"
+      - "tests/**"
+      - "packaging/**"
+      - "pyproject.toml"
+      - "uv.lock"
+      - ".github/workflows/desktop.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  validate-tag:
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-24.04
+    outputs:
+      prerelease: ${{ steps.version-check.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - name: Install dependencies
+        run: uv sync --locked
+      - name: Validate exact tag-to-version equality and prerelease status
+        id: version-check
+        run: |
+          uv run --no-sync python - <<'PY'
+          import os
+          import sys
+          from packaging.version import Version
+          import adsfolio
+
+          ref = os.environ.get("GITHUB_REF", "")
+          tag = ref.removeprefix("refs/tags/v") if ref.startswith("refs/tags/v") else ref.removeprefix("refs/tags/")
+          pkg_ver = adsfolio.__version__
+          print(f"Tag: {tag}, Package version: {pkg_ver}")
+
+          if tag != pkg_ver:
+              sys.exit(f"Error: Tag {tag!r} does not match package version {pkg_ver!r}")
+
+          v_tag = Version(tag)
+          is_pre = v_tag.is_prerelease or v_tag.is_devrelease
+          print(f"Tag matches package version exactly. is_prerelease: {is_pre}")
+          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+              f.write(f"prerelease={str(is_pre).lower()}\n")
+          PY
+
+  checks:
+    needs: [validate-tag]
+    if: startsWith(github.ref, 'refs/tags/v')
+    uses: ./.github/workflows/ci.yml
+
+  build-desktop:
+    needs: [validate-tag]
+    if: always() && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled')
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            platform: macos-arm64
+          - runner: macos-15-intel
+            platform: macos-x86_64
+          - runner: windows-2022
+            platform: windows-x86_64
+          - runner: ubuntu-24.04
+            platform: linux-x86_64
+    runs-on: ${{ matrix.runner }}
+    env:
+      QT_QPA_PLATFORM: offscreen
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - name: Install Python and build dependencies
+        run: uv sync --locked --python 3.13 --extra gui --extra full --group desktop
+      - name: Install Linux desktop libraries
+        if: runner.os == 'Linux'
+        run: >-
+          sudo apt-get update && sudo apt-get install -y
+          libegl1 libopengl0 libxkbcommon-x11-0 libxcb-cursor0
+          libxcb-icccm4 libxcb-keysyms1 libxcb-shape0 libxcb-xinerama0
+      - name: Test
+        run: uv run --no-sync pytest -q
+      - name: Prepare ISO4 WordNet data
+        run: uv run --no-sync python -m nltk.downloader -d build/nltk_data wordnet
+      - name: Build native bundle
+        run: uv run --no-sync pyinstaller --noconfirm --clean packaging/adsfolio.spec -- --with-smoke-test
+      - name: Check frozen Qt runtime and helper
+        run: |
+          if [[ "$RUNNER_OS" == "Windows" ]]; then
+            dist/adsfolio-smoke/adsfolio-smoke.exe
+          else
+            dist/adsfolio-smoke/adsfolio-smoke
+          fi
+      - name: Check macOS application launch metadata
+        if: runner.os == 'macOS'
+        run: uv run --no-sync python packaging/check_macos_bundle.py dist/ADSfolio.app
+      - name: Check bundled CLI
+        run: |
+          if [[ "$RUNNER_OS" == "macOS" ]]; then
+            dist/ADSfolio.app/Contents/MacOS/adsfolio-cli --version
+            dist/ADSfolio.app/Contents/MacOS/adsfolio-cli pdf identify --help
+          elif [[ "$RUNNER_OS" == "Windows" ]]; then
+            dist/adsfolio/adsfolio-cli.exe --version
+            dist/adsfolio/adsfolio-cli.exe pdf identify --help
+          else
+            dist/adsfolio/adsfolio-cli --version
+            dist/adsfolio/adsfolio-cli pdf identify --help
+          fi
+      - name: Archive macOS app with symbolic links
+        if: runner.os == 'macOS'
+        run: ditto -c -k --sequesterRsrc --keepParent dist/ADSfolio.app dist/adsfolio-${{ matrix.platform }}.zip
+      - name: Archive Windows app
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: Compress-Archive -Path dist/adsfolio -DestinationPath dist/adsfolio-${{ matrix.platform }}.zip
+      - name: Archive Linux app with symbolic links
+        if: runner.os == 'Linux'
+        run: tar -czf dist/adsfolio-${{ matrix.platform }}.tar.gz -C dist adsfolio
+      - name: Generate SHA-256 checksums
+        run: |
+          cd dist
+          uv run --no-sync python -c "
+          import hashlib, glob
+          from pathlib import Path
+
+          def sha256_file(p: Path) -> str:
+              h = hashlib.sha256()
+              with open(p, 'rb') as f:
+                  while chunk := f.read(65536):
+                      h.update(chunk)
+              return h.hexdigest()
+
+          archives = glob.glob('adsfolio-${{ matrix.platform }}.*')
+          lines = []
+          for a in sorted(archives):
+              digest = sha256_file(Path(a))
+              lines.append(f'{digest}  {a}')
+          output = '\n'.join(lines) + '\n'
+          Path('adsfolio-${{ matrix.platform }}.sha256').write_text(output, newline='\n')
+          print(output)
+          "
+      - uses: actions/upload-artifact@v4
+        with:
+          name: adsfolio-${{ matrix.platform }}
+          path: |
+            dist/adsfolio-${{ matrix.platform }}.zip
+            dist/adsfolio-${{ matrix.platform }}.tar.gz
+            dist/adsfolio-${{ matrix.platform }}.sha256
+          if-no-files-found: error
+
+  package-distributions:
+    needs: [validate-tag]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          python-version: "3.13"
+      - name: Build sdist and wheel
+        run: uv build
+      - name: Generate Python distribution SHA-256 checksums
+        run: |
+          cd dist
+          uv run --no-sync python -c "
+          import hashlib, glob
+          from pathlib import Path
+
+          def sha256_file(p: Path) -> str:
+              h = hashlib.sha256()
+              with open(p, 'rb') as f:
+                  while chunk := f.read(65536):
+                      h.update(chunk)
+              return h.hexdigest()
+
+          dists = glob.glob('adsfolio-*')
+          lines = []
+          for d in sorted(dists):
+              digest = sha256_file(Path(d))
+              lines.append(f'{digest}  {d}')
+          output = '\n'.join(lines) + '\n'
+          Path('adsfolio-packages.sha256').write_text(output, newline='\n')
+          print(output)
+          "
+      - uses: actions/upload-artifact@v4
+        with:
+          name: python-distributions
+          path: |
+            dist/*
+          if-no-files-found: error
+
+  publish-release:
+    needs: [validate-tag, checks, build-desktop, package-distributions]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: release-artifacts
+      - name: Stage release assets, check duplicates, and verify checksums
+        run: |
+          python3 - <<'PY'
+          import os
+          import shutil
+          import subprocess
+          import sys
+          from pathlib import Path
+
+          root = Path("release-artifacts")
+          dest = Path("release-files")
+          dest.mkdir(exist_ok=True)
+
+          seen = {}
+          for file_path in root.rglob("*"):
+              if file_path.is_file():
+                  name = file_path.name
+                  if name in seen:
+                      sys.exit(f"Error: Duplicate asset filename detected: {name} (from {file_path} and {seen[name]})")
+                  seen[name] = file_path
+                  shutil.copy2(file_path, dest / name)
+
+          # Combine all .sha256 files into SHA256SUMS.txt
+          sha_lines = [
+              sha_file.read_text().strip()
+              for sha_file in sorted(dest.glob("*.sha256"))
+          ]
+          sums_file = dest / "SHA256SUMS.txt"
+          sums_content = "\n".join(filter(None, sha_lines)) + "\n"
+          sums_file.write_text(sums_content, newline="\n")
+          print(f"Combined SHA256SUMS.txt:\n{sums_content}")
+
+          # Verify checksums of staged files
+          subprocess.run(["sha256sum", "-c", "SHA256SUMS.txt"], cwd=dest, check=True)
+          print("All SHA-256 checksums verified successfully.")
+          PY
+      - name: Generate Homebrew cask for stable releases
+        if: needs.validate-tag.outputs.prerelease == 'false'
+        env:
+          TAG: ${{ github.ref_name }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          python3 scripts/homebrew_cask.py "${TAG#v}" --repository "$REPOSITORY" \
+            --checksums release-files/SHA256SUMS.txt --output release-files/adsfolio.rb
+          cd release-files
+          sha256sum adsfolio.rb >> SHA256SUMS.txt
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+          IS_PRERELEASE: ${{ needs.validate-tag.outputs.prerelease }}
+        run: |
+          PRERELEASE_FLAG=""
+          if [[ "$IS_PRERELEASE" == "true" ]]; then
+            PRERELEASE_FLAG="--prerelease"
+          fi
+
+          # Check if a release for this tag already exists; fail if existing release assets present
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            EXISTING_ASSETS=$(gh release view "$TAG" --json assets --jq '.assets | length')
+            if [[ "$EXISTING_ASSETS" -gt 0 ]]; then
+              echo "Error: Release for tag $TAG already exists and has $EXISTING_ASSETS asset(s). Failing to prevent overwrite." >&2
+              exit 1
+            fi
+            echo "Release exists without assets; uploading assets to existing release."
+            gh release upload "$TAG" release-files/*
+          else
+            echo "Creating new GitHub Release for $TAG (prerelease=$IS_PRERELEASE)..."
+            gh release create "$TAG" release-files/* \
+              --title "$TAG" \
+              --generate-notes \
+              $PRERELEASE_FLAG
+          fi
+
+
+
+  publish-pypi:
+    needs: [publish-release]
+    if: startsWith(github.ref, 'refs/tags/v') && vars.PUBLISH_PYPI == 'true'
+    runs-on: ubuntu-24.04
+    environment: pypi
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: astral-sh/setup-uv@v6
+      - uses: actions/download-artifact@v4
+        with:
+          name: python-distributions
+          path: dist
+      - run: uv publish --trusted-publishing always dist/*.whl dist/*.tar.gz

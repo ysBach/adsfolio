@@ -1,0 +1,122 @@
+name: Package checks
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.10", "3.11", "3.12", "3.13"]
+    env:
+      QT_QPA_PLATFORM: offscreen
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          python-version: ${{ matrix.python }}
+      - name: Install Qt runtime libraries
+        run: sudo apt-get update && sudo apt-get install -y libegl1 libopengl0
+      - run: uv sync --locked --all-extras
+      - run: uv run --no-sync pytest -q
+
+  lint:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          python-version: "3.13"
+      - run: uv sync --locked
+      # Keep the blocking rule set explicit; broader lint debt is tracked in
+      # docs/release-readiness.md. isort owns import ordering.
+      - run: uv run --no-sync ruff check --select E4,E7,E9,F src tests packaging scripts
+      - run: uv run --no-sync ruff format --check src tests packaging scripts
+      - run: uv run --no-sync isort --check-only src tests packaging scripts
+
+  docs:
+    runs-on: ubuntu-24.04
+    env:
+      QT_QPA_PLATFORM: offscreen
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          python-version: "3.13"
+      - name: Install Qt runtime libraries
+        run: sudo apt-get update && sudo apt-get install -y libegl1 libopengl0
+      - run: uv sync --locked --extra gui --group docs
+      - run: uv run --no-sync sphinx-build -n -W --keep-going -b html docs docs/_build/html
+
+  distribution:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.10"
+      - run: uv build
+      - name: Install the wheel without optional dependencies
+        run: |
+          uv venv .venv
+          uv pip install dist/*.whl
+      - name: Smoke test installed package outside the checkout
+        working-directory: ${{ runner.temp }}
+        run: |
+          "$GITHUB_WORKSPACE/.venv/bin/adsfolio" --version
+          "$GITHUB_WORKSPACE/.venv/bin/adsfolio" reference --help
+          "$GITHUB_WORKSPACE/.venv/bin/adsfolio" reference --help
+          "$GITHUB_WORKSPACE/.venv/bin/adsfolio" pdf identify --help
+          "$GITHUB_WORKSPACE/.venv/bin/adsfolio" pdf identify --help
+          "$GITHUB_WORKSPACE/.venv/bin/python" - <<'PY'
+          import subprocess
+          import sys
+          import tempfile
+          from importlib.metadata import version
+          from pathlib import Path
+
+          import adsfolio
+          from adsfolio.pdf.catalog import PdfCatalog
+          from adsfolio.references import LocalReferences
+
+          dist_ver = version("adsfolio")
+          assert adsfolio.__version__ == dist_ver
+
+          # Canonical adsfolio commands
+          cli_canonical = Path(sys.executable).with_name("adsfolio")
+          reported_canonical = subprocess.check_output([str(cli_canonical), "--version"], text=True)
+          assert reported_canonical.strip() == f"ADSfolio, version {dist_ver}", reported_canonical
+
+          gui_canonical = subprocess.run(
+              [str(Path(sys.executable).with_name("adsfolio-gui"))],
+              capture_output=True, text=True, check=False,
+          )
+          assert gui_canonical.returncode == 1, gui_canonical
+          assert "adsfolio[gui]" in gui_canonical.stderr, gui_canonical.stderr
+          assert "Traceback" not in gui_canonical.stderr, gui_canonical.stderr
+
+          with tempfile.TemporaryDirectory() as directory:
+              catalog = PdfCatalog(Path(directory) / "catalog.sqlite")
+              try:
+                  library = LocalReferences(catalog)
+                  entry = library.add(cite_key="Offline", fields={"title": "Offline"})
+                  assert "Offline" in library.export_bibtex([entry["id"]])
+              finally:
+                  catalog.close()
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: python-distributions
+          path: dist/*
+          if-no-files-found: error
