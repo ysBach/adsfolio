@@ -8,6 +8,12 @@ from dataclasses import dataclass, replace
 from enum import Enum
 from typing import Any
 
+from .doi_providers import (
+    DEFAULT_DOI_PROVIDERS,
+    DOI_PROVIDER_LABELS,
+    DoiProvider,
+)
+
 logger = logging.getLogger(__name__)
 
 _UNSET = object()
@@ -93,6 +99,37 @@ def _normalize_strategies(
     return tuple(normalized)
 
 
+def _normalize_providers(
+    value: Any,
+) -> tuple[DoiProvider, ...]:
+    if value is None:
+        return DEFAULT_DOI_PROVIDERS
+    if isinstance(value, (str, bytes, Mapping)) or not isinstance(value, Iterable):
+        logger.warning("Ignoring malformed providers: %r", value)
+        return DEFAULT_DOI_PROVIDERS
+    normalized: list[DoiProvider] = []
+    seen: set[DoiProvider] = set()
+    for item in value:
+        try:
+            provider = (
+                item
+                if isinstance(item, DoiProvider)
+                else DoiProvider(str(item).lower())
+            )
+        except (ValueError, TypeError):
+            logger.warning("Ignoring unknown metadata provider: %r", item)
+            continue
+        if provider in seen:
+            logger.warning("Ignoring duplicate metadata provider: %r", provider.value)
+            continue
+        seen.add(provider)
+        normalized.append(provider)
+    if not normalized:
+        logger.warning("No valid providers found in %r; using default order", value)
+        return DEFAULT_DOI_PROVIDERS
+    return tuple(normalized)
+
+
 @dataclass(frozen=True)
 class IdentifySettings:
     """Reusable PDF Identify behavior, separate from the user's identity.
@@ -105,6 +142,7 @@ class IdentifySettings:
     """
 
     strategies: tuple[IdentifyStrategy, ...] = RECOMMENDED_IDENTIFY_STRATEGIES
+    providers: tuple[DoiProvider, ...] = DEFAULT_DOI_PROVIDERS
     recursive: bool = False
     output_unresolved: str | None = None
     skip_unresolved_directory: bool = False
@@ -137,6 +175,30 @@ class IdentifySettings:
         if not validated:
             raise ValueError("At least one identification strategy is required")
         object.__setattr__(self, "strategies", tuple(validated))
+        if not isinstance(self.providers, Iterable) or isinstance(
+            self.providers, (str, bytes, Mapping)
+        ):
+            raise ValueError(
+                f"providers must be an iterable of DoiProvider, got {self.providers!r}"
+            )
+        validated_providers: list[DoiProvider] = []
+        seen_providers: set[DoiProvider] = set()
+        for item in self.providers:
+            try:
+                provider = (
+                    item
+                    if isinstance(item, DoiProvider)
+                    else DoiProvider(str(item).lower())
+                )
+            except (ValueError, TypeError) as exc:
+                raise ValueError(f"Unknown metadata provider: {item!r}") from exc
+            if provider in seen_providers:
+                raise ValueError(f"duplicate metadata provider: {provider.value!r}")
+            seen_providers.add(provider)
+            validated_providers.append(provider)
+        if not validated_providers:
+            raise ValueError("At least one metadata provider is required")
+        object.__setattr__(self, "providers", tuple(validated_providers))
 
     @classmethod
     def from_mapping(
@@ -168,8 +230,13 @@ class IdentifySettings:
             strategies = RECOMMENDED_IDENTIFY_STRATEGIES
         else:
             strategies = base.strategies
+        if "providers" in payload:
+            providers = _normalize_providers(payload["providers"])
+        else:
+            providers = base.providers
         return cls(
             strategies=strategies,
+            providers=providers,
             recursive=_boolean(
                 payload.get("recursive", base.recursive),
                 base.recursive,
@@ -198,6 +265,7 @@ class IdentifySettings:
         """Return the canonical JSON-compatible representation."""
         return {
             "strategies": [strategy.value for strategy in self.strategies],
+            "providers": [provider.value for provider in self.providers],
             "recursive": self.recursive,
             "output_unresolved": self.output_unresolved,
             "skip_unresolved_directory": self.skip_unresolved_directory,
@@ -208,6 +276,7 @@ class IdentifySettings:
         self,
         *,
         strategies: Sequence[IdentifyStrategy | str] | object = _UNSET,
+        providers: Sequence[DoiProvider | str] | object = _UNSET,
         recursive: bool | object = _UNSET,
         output_unresolved: str | None | object = _UNSET,
         skip_unresolved_directory: bool | object = _UNSET,
@@ -221,6 +290,10 @@ class IdentifySettings:
                 if strategies is not None
                 else RECOMMENDED_IDENTIFY_STRATEGIES
             )
+        if providers is not _UNSET:
+            changes["providers"] = (
+                tuple(providers) if providers is not None else DEFAULT_DOI_PROVIDERS
+            )
         if recursive is not _UNSET:
             changes["recursive"] = recursive
         if output_unresolved is not _UNSET:
@@ -233,8 +306,11 @@ class IdentifySettings:
 
 
 __all__ = [
+    "DEFAULT_DOI_PROVIDERS",
+    "DOI_PROVIDER_LABELS",
     "IDENTIFY_STRATEGY_LABELS",
+    "RECOMMENDED_IDENTIFY_STRATEGIES",
+    "DoiProvider",
     "IdentifySettings",
     "IdentifyStrategy",
-    "RECOMMENDED_IDENTIFY_STRATEGIES",
 ]

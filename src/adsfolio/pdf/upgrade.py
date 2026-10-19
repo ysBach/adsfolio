@@ -28,16 +28,16 @@ if TYPE_CHECKING:
     from ..client import ADSClient
 
 __all__ = [
+    "PdfUpgrader",
     "PublishedMatch",
     "UpgradeResult",
+    "batch_upgrade",
+    "check_published_version",
+    "check_published_versions",
+    "detect_arxiv_entries",
     "is_arxiv_bibcode",
     "is_arxiv_doi",
     "is_arxiv_entry",
-    "detect_arxiv_entries",
-    "check_published_versions",
-    "check_published_version",
-    "PdfUpgrader",
-    "batch_upgrade",
 ]
 
 _UNSET_PUBLISHED_MATCH = object()
@@ -55,7 +55,7 @@ class PdfUpgrader:
     ) -> Path | None:
         if not unported:
             return None
-        out_dir = sidecar_dir / ".adsapi-pdfs-unported-annots"
+        out_dir = sidecar_dir / ".adsfolio-pdfs-unported-annots"
         out_dir.mkdir(parents=True, exist_ok=True)
         out_path = out_dir / f"{_safe_bibcode_name(bibcode)}.json"
         payload = {"bibcode": bibcode, "unported": unported}

@@ -3,10 +3,20 @@ import logging
 from types import SimpleNamespace
 from unittest.mock import Mock
 
+import pytest
+
 from adsfolio.api.search import SearchResult
+from adsfolio.config import ADSError, RequestTooLongError
 from adsfolio.pdf.identifier import PdfIdentifier
 from adsfolio.pdf.identify import cached_ads_record
 from adsfolio.pdf.identify_settings import IdentifyStrategy
+
+
+@pytest.fixture(autouse=True)
+def _disable_external_network_in_identifier_tests(monkeypatch):
+    """Ensure no un-mocked external network calls occur during unit tests."""
+    monkeypatch.setattr("adsfolio.pdf.identifier.fetch_crossref_doi", lambda doi: None)
+    monkeypatch.setattr("adsfolio.pdf.identifier.fetch_datacite_doi", lambda doi: None)
 
 
 class _SearchStub:
@@ -272,10 +282,8 @@ def test_parse_filename_extracts_search_hints():
 def test_parse_filename_handles_multi_author_stem_with_title_suffix():
     identifier, _ = _build_identifier({})
     parsed = identifier.parse_filename(
-        (
-            "AfanasievVL+RosenbushVK+KiselevNN_2014_ApBU_69_211_"
-            "Polarimetry of major Uranian moons at the 6-m telescope.pdf"
-        )
+        "AfanasievVL+RosenbushVK+KiselevNN_2014_ApBU_69_211_"
+        "Polarimetry of major Uranian moons at the 6-m telescope.pdf"
     )
     assert parsed == {
         "author": "Afanasiev",
@@ -350,7 +358,7 @@ def test_resolve_uses_metadata_doi_before_title_fallback(tmp_path):
 
     identifier.extract_doi_from_metadata = Mock(return_value="10.1234/abc")
     identifier.extract_doi_from_text = Mock(return_value=None)
-    identifier.extract_title_from_text = Mock(return_value=None)
+    identifier.extract_title_candidates = Mock(return_value=None)
     identifier.extract_title_from_metadata = Mock(return_value=None)
 
     record = identifier.resolve(path)
@@ -377,7 +385,7 @@ def test_resolve_validates_filename_bibcode_before_doi_and_title(tmp_path):
     identifier.extract_bibcode_from_first_page = Mock(return_value=None)
     identifier.extract_doi_from_metadata = Mock(return_value=None)
     identifier.extract_doi_from_text = Mock(return_value=None)
-    identifier.extract_title_from_text = Mock(return_value=None)
+    identifier.extract_title_candidates = Mock(return_value=None)
     identifier.extract_title_from_metadata = Mock(return_value=None)
 
     record = identifier.resolve(path)
@@ -402,7 +410,7 @@ def test_resolve_falls_through_when_filename_bibcode_is_not_validated(tmp_path):
     identifier.extract_bibcode_from_first_page = Mock(return_value=None)
     identifier.extract_doi_from_metadata = Mock(return_value=None)
     identifier.extract_doi_from_text = Mock(return_value=None)
-    identifier.extract_title_from_text = Mock(return_value=title)
+    identifier.extract_title_candidates = Mock(return_value=title)
     identifier.extract_title_from_metadata = Mock(return_value=None)
 
     record = identifier.resolve(path)
@@ -449,11 +457,18 @@ def test_resolve_zhelto_style_pdf_via_first_page_title(tmp_path, monkeypatch):
         lambda _: _FakeReader(metadata={}, text=page_text),
     )
 
+    search.results['bibcode:"2025RNAAS...9..338Z"'] = SearchResult(
+        num_found=1, start=0, docs=[document]
+    )
     record = identifier.resolve(path)
 
     assert record is not None
     assert record["bibcode"] == "2025RNAAS...9..338Z"
-    assert [call["q"] for call in search.calls] == [f'title:"{title}"']
+    assert [call["q"] for call in search.calls] == [
+        f'title:"{title}"',
+        f'title:"{title}"',
+        'bibcode:"2025RNAAS...9..338Z"',
+    ]
 
 
 def test_resolve_many_extracts_and_validates_filename_bibcodes_by_default(
@@ -499,14 +514,14 @@ def test_resolve_handles_metadata_doi_direct_ads_lookup(tmp_path):
 
     identifier.extract_doi_from_metadata = Mock(return_value="10.1234/abc")
     identifier.extract_doi_from_text = Mock(return_value=None)
-    identifier.extract_title_from_text = Mock(return_value=None)
+    identifier.extract_title_candidates = Mock(return_value=None)
     identifier.extract_title_from_metadata = Mock(return_value=None)
 
     record = identifier.resolve(path)
     assert record is not None
     assert record["bibcode"] == "2024ApJ...900..100S"
     assert search.calls[0]["q"] == query
-    identifier.extract_title_from_text.assert_not_called()
+    identifier.extract_title_candidates.assert_not_called()
 
 
 def test_resolve_uses_title_after_other_strategies(tmp_path):
@@ -524,7 +539,7 @@ def test_resolve_uses_title_after_other_strategies(tmp_path):
     identifier.extract_doi_from_metadata = Mock(return_value=None)
     identifier.extract_doi_from_text = Mock(return_value=None)
     identifier.parse_filename = Mock(return_value={})
-    identifier.extract_title_from_text = Mock(
+    identifier.extract_title_candidates = Mock(
         return_value="Interesting Result on Star Formation"
     )
     identifier.extract_title_from_metadata = Mock(return_value=None)
@@ -547,7 +562,7 @@ def test_resolve_returns_none_for_ambiguous_match(tmp_path):
     identifier.extract_doi_from_metadata = Mock(return_value="10.1234/ambiguous")
     identifier.extract_doi_from_text = Mock(return_value=None)
     identifier.parse_filename = Mock(return_value={})
-    identifier.extract_title_from_text = Mock(return_value=None)
+    identifier.extract_title_candidates = Mock(return_value=None)
     identifier.extract_title_from_metadata = Mock(return_value=None)
     observed: list[list[dict]] = []
 
@@ -572,9 +587,9 @@ def test_resolve_deduplicates_same_normalized_ambiguous_doi(tmp_path):
     identifier, search = _build_identifier(
         {query: SearchResult(num_found=2, start=0, docs=docs)}
     )
-    identifier.extract_doi_from_metadata = Mock(return_value="10.1234/AMBIGUOUS.")
+    identifier.extract_doi_from_metadata = Mock(return_value=" 10.1234/AMBIGUOUS ")
     identifier.extract_doi_from_text = Mock(return_value="10.1234/ambiguous")
-    identifier.extract_title_from_text = Mock(return_value=None)
+    identifier.extract_title_candidates = Mock(return_value=None)
     identifier.extract_title_from_metadata = Mock(return_value=None)
     observed: list[list[dict]] = []
 
@@ -586,6 +601,34 @@ def test_resolve_deduplicates_same_normalized_ambiguous_doi(tmp_path):
     assert record is None
     assert len(search.calls) == 1
     assert observed == [docs]
+
+
+def test_resolve_treats_distinct_trailing_punctuation_as_distinct_complete_doi(
+    tmp_path,
+):
+    path = tmp_path / "paper.pdf"
+    path.write_bytes(b"%PDF")
+    query1 = 'doi:"10.1234/ambiguous."'
+    query2 = 'doi:"10.1234/ambiguous"'
+    docs1 = [{"bibcode": "B1", "doi": ["10.1234/ambiguous."]}]
+    docs2 = [{"bibcode": "B2", "doi": ["10.1234/ambiguous"]}]
+    identifier, search = _build_identifier(
+        {
+            query1: SearchResult(num_found=1, start=0, docs=docs1),
+            query2: SearchResult(num_found=1, start=0, docs=docs2),
+        }
+    )
+    identifier.extract_doi_from_metadata = Mock(return_value="10.1234/ambiguous.")
+    identifier.extract_doi_from_text = Mock(return_value="10.1234/ambiguous")
+    identifier.extract_title_candidates = Mock(return_value=None)
+    identifier.extract_title_from_metadata = Mock(return_value=None)
+
+    record = identifier.resolve(path)
+
+    assert record is not None
+    assert record["bibcode"] == "B1"
+    assert len(search.calls) == 1
+    assert search.calls[0]["q"] == query1
 
 
 def test_resolve_many_obeys_configured_strategy_order(tmp_path, monkeypatch):
@@ -888,7 +931,7 @@ def test_resolve_many_batches_metadata_doi_queries(tmp_path):
     doi_map = {first: "10.1234/a", second: "10.1234/b"}
     identifier.extract_doi_from_metadata = Mock(side_effect=lambda path: doi_map[path])
     identifier.extract_doi_from_text = Mock(return_value=None)
-    identifier.extract_title_from_text = Mock(return_value=None)
+    identifier.extract_title_candidates = Mock(return_value=None)
     identifier.extract_title_from_metadata = Mock(return_value=None)
 
     resolved = identifier.resolve_many([first, second])
@@ -956,7 +999,7 @@ def test_resolve_many_deduplicates_same_metadata_doi(tmp_path):
 
     identifier.extract_doi_from_metadata = Mock(return_value="10.1234/shared")
     identifier.extract_doi_from_text = Mock(return_value=None)
-    identifier.extract_title_from_text = Mock(return_value=None)
+    identifier.extract_title_candidates = Mock(return_value=None)
     identifier.extract_title_from_metadata = Mock(return_value=None)
 
     resolved = identifier.resolve_many([first, second])
@@ -992,7 +1035,7 @@ def test_resolve_many_caches_duplicate_title_fallback_queries(tmp_path):
 
     identifier.extract_doi_from_metadata = Mock(return_value=None)
     identifier.extract_doi_from_text = Mock(return_value=None)
-    identifier.extract_title_from_text = Mock(return_value="Shared Title")
+    identifier.extract_title_candidates = Mock(return_value="Shared Title")
     identifier.extract_title_from_metadata = Mock(return_value=None)
 
     resolved = identifier.resolve_many([first, second])
@@ -1003,6 +1046,68 @@ def test_resolve_many_caches_duplicate_title_fallback_queries(tmp_path):
     assert resolved[second]["bibcode"] == "2026ApJ...777..888D"
     assert len(search.calls) == 1
     assert search.calls[0]["q"] == query
+
+
+@pytest.mark.parametrize("fallback", [False, True])
+def test_oversized_title_query_preserves_other_files_and_later_strategies(
+    tmp_path, caplog, fallback: bool
+) -> None:
+    first = tmp_path / "first.pdf"
+    duplicate = tmp_path / "duplicate.pdf"
+    other = tmp_path / "other.pdf"
+    for path in (first, duplicate, other):
+        path.write_bytes(b"%PDF")
+    rejected_title = "Extracted title and body text"
+    good_title = "Valid title"
+    rejected_query = f'title:"{rejected_title}"'
+    good_query = f'title:"{good_title}"'
+    document = {"bibcode": "B1", "title": [good_title]}
+    identifier, search = _build_identifier({})
+
+    def query(q: str, **kwargs: object) -> SearchResult:
+        if q == rejected_query:
+            raise RequestTooLongError("ADS rejected the oversized URL")
+        assert q == good_query
+        return SearchResult(num_found=1, start=0, docs=[document])
+
+    search.query = Mock(side_effect=query)
+    identifier.extract_title_from_metadata = Mock(
+        side_effect=lambda path: good_title if path == other else rejected_title
+    )
+    identifier.extract_title_candidates = Mock(
+        return_value=good_title if fallback else rejected_title
+    )
+
+    resolved = identifier.resolve_many(
+        [first, duplicate, other],
+        strategies=(
+            IdentifyStrategy.PDF_METADATA_TITLE,
+            IdentifyStrategy.FIRST_PAGE_TITLE,
+        ),
+    )
+
+    assert resolved[other]["bibcode"] == "B1"
+    for path in (first, duplicate):
+        if fallback:
+            assert resolved[path]["bibcode"] == "B1"
+        else:
+            assert resolved[path] is None
+        assert str(path) in caplog.text
+    assert "oversized title query" in caplog.text
+    queries = [call.kwargs["q"] for call in search.query.call_args_list]
+    assert queries.count(rejected_query) == 1
+    assert queries.count(good_query) == 1
+
+
+def test_title_lookup_preserves_unrelated_api_failures(tmp_path) -> None:
+    path = tmp_path / "paper.pdf"
+    path.write_bytes(b"%PDF")
+    identifier, search = _build_identifier({})
+    identifier.extract_title_candidates = Mock(return_value="A title")
+    search.query = Mock(side_effect=ADSError("ADS unavailable"))
+
+    with pytest.raises(ADSError, match="ADS unavailable"):
+        identifier.resolve(path, strategies=(IdentifyStrategy.FIRST_PAGE_TITLE,))
 
 
 def test_resolve_many_skips_disabled_structured_filename_strategy(tmp_path):
@@ -1033,7 +1138,7 @@ def test_resolve_many_skips_disabled_structured_filename_strategy(tmp_path):
         side_effect=AssertionError("normal mode should not parse filename hints")
     )
     title_map = {first: "Title One", second: "Title Two"}
-    identifier.extract_title_from_text = Mock(side_effect=lambda path: title_map[path])
+    identifier.extract_title_candidates = Mock(side_effect=lambda path: title_map[path])
     identifier.extract_title_from_metadata = Mock(return_value=None)
 
     resolved = identifier.resolve_many(
@@ -1080,7 +1185,7 @@ def test_resolve_many_structured_filename_only_skips_pdf_content_extraction(tmp_
     identifier.extract_doi_from_text = Mock(
         side_effect=AssertionError("disabled first-page DOI strategy ran")
     )
-    identifier.extract_title_from_text = Mock(
+    identifier.extract_title_candidates = Mock(
         side_effect=AssertionError("disabled first-page title strategy ran")
     )
     identifier.extract_title_from_metadata = Mock(
@@ -1097,3 +1202,219 @@ def test_resolve_many_structured_filename_only_skips_pdf_content_extraction(tmp_
     assert resolved[unknown] is None
     assert len(search.calls) == 1
     assert search.calls[0]["q"] == query
+
+
+@pytest.mark.parametrize(
+    "input_doi",
+    [
+        "10.1000/ab(c)",
+        "https://doi.org/10.1000/ab(c)",
+        "http://dx.doi.org/10.1000/ab(c)",
+        "doi:10.1000/ab(c)",
+        "DOI: https://doi.org/10.1000/ab(c)",
+        "https://doi.org/10.1000/ab%28c%29",
+    ],
+)
+def test_query_docs_for_dois_matches_bare_and_url_with_closing_paren(input_doi):
+    query = 'doi:"10.1000/ab(c)"'
+    doc = {"bibcode": "2024Test...1..100X", "doi": ["10.1000/ab(c)"]}
+    identifier, search = _build_identifier(
+        {query: SearchResult(num_found=1, start=0, docs=[doc])}
+    )
+
+    resolved = identifier.query_docs_for_dois([input_doi])
+
+    assert resolved == {"10.1000/ab(c)": doc}
+    assert len(search.calls) == 1
+    assert search.calls[0]["q"] == query
+
+
+@pytest.mark.parametrize(
+    "metadata_value",
+    [
+        "10.1000/ab(c)",
+        "https://doi.org/10.1000/ab(c)",
+        "doi:10.1000/ab(c)",
+        "DOI: https://doi.org/10.1000/ab(c)",
+    ],
+)
+def test_extract_doi_from_metadata_preserves_url_and_prefix_with_closing_paren(
+    tmp_path, monkeypatch, metadata_value
+):
+    path = tmp_path / "paper.pdf"
+    path.write_bytes(b"%PDF")
+    identifier, _ = _build_identifier({})
+    monkeypatch.setattr(
+        identifier,
+        "_load_reader",
+        lambda _: _FakeReader(metadata={"/doi": metadata_value}),
+    )
+
+    assert identifier.extract_doi_from_metadata(path) == "10.1000/ab(c)"
+
+
+class _TypographyPage:
+    def __init__(self, runs):
+        self.runs = runs
+
+    def extract_text(self, visitor_text=None):
+        for text, size, scale in self.runs:
+            if visitor_text:
+                visitor_text(
+                    text, [scale, 0, 0, scale, 0, 0], [1, 0, 0, 1, 0, 0], {}, size
+                )
+        return "".join(text for text, _, _ in self.runs)
+
+
+def test_typography_retains_title_below_larger_masthead(tmp_path, monkeypatch):
+    identifier, _ = _build_identifier({})
+    page = _TypographyPage(
+        [
+            ("Journal masthead\n", 20, 1),
+            ("A title over\n", 8, 2),
+            ("two lines\n", 16, 1),
+            ("An Author\n", 12, 1),
+            ("(Received May 25, 1934)\n", 10, 1),
+            ("Body text. " * 100, 10, 1),
+        ]
+    )
+    monkeypatch.setattr(
+        identifier, "_load_reader", lambda _: SimpleNamespace(pages=[page])
+    )
+    candidates = identifier.extract_title_candidates(tmp_path / "paper.pdf")
+    assert "A title over two lines" in candidates
+    assert candidates[0] == "Journal masthead"
+    assert all(
+        "Body text" not in value and "Received" not in value for value in candidates
+    )
+
+
+@pytest.mark.parametrize(
+    "documents,expected",
+    [
+        ([{"bibcode": "BIB1", "title": ["Actual title"]}], "BIB1"),
+        (
+            [
+                {"bibcode": "BIB1", "title": ["Actual title"]},
+                {"bibcode": "BIB2", "title": ["Journal heading"]},
+            ],
+            None,
+        ),
+        ([{"bibcode": "BIB1", "title": ["Actual title extended"]}], None),
+    ],
+)
+def test_typography_candidates_require_one_exact_ads_identity(
+    tmp_path, documents, expected
+):
+    query = 'title:"Journal heading" OR title:"Actual title"'
+    identifier, search = _build_identifier(
+        {query: SearchResult(num_found=len(documents), start=0, docs=documents)}
+    )
+    for document in documents:
+        search.results[f'bibcode:"{document["bibcode"]}"'] = SearchResult(
+            num_found=1, start=0, docs=[document]
+        )
+    if len(documents) == 2:
+        search.results['bibcode:"BIB1" OR bibcode:"BIB2"'] = SearchResult(
+            num_found=2, start=0, docs=documents
+        )
+    path = tmp_path / "paper.pdf"
+    path.write_bytes(b"%PDF")
+    identifier.extract_title_candidates = Mock(
+        return_value=("Journal heading", "Actual title")
+    )
+    result = identifier.resolve(path, strategies=(IdentifyStrategy.FIRST_PAGE_TITLE,))
+    assert (result["bibcode"] if result else None) == expected
+    assert search.calls[0]["q"] == query
+
+
+def test_title_batch_splits_incomplete_results_before_accepting(tmp_path):
+    doc = {"bibcode": "BIB1", "title": ["Actual title"]}
+    identifier, _ = _build_identifier(
+        {
+            'title:"Journal" OR title:"Actual title"': SearchResult(
+                num_found=3000, start=0, docs=[doc]
+            ),
+            'title:"Journal"': SearchResult(num_found=0, start=0, docs=[]),
+            'title:"Actual title"': SearchResult(num_found=2, start=0, docs=[doc]),
+        }
+    )
+    path = tmp_path / "paper.pdf"
+    path.write_bytes(b"%PDF")
+    identifier.extract_title_candidates = Mock(return_value=("Journal", "Actual title"))
+    assert (
+        identifier.resolve(path, strategies=(IdentifyStrategy.FIRST_PAGE_TITLE,))
+        is None
+    )
+
+
+def test_typography_ignores_form_aggregate_and_keeps_title_sentence(
+    tmp_path, monkeypatch
+):
+    class Page:
+        def extract_text(self, visitor_text=None):
+            matrix = [1, 0, 0, 1, 0, 0]
+            for text, size, font in [
+                ("A proceedings title. A. Author\n", 12, {}),
+                ("Body text. " * 100, 9, {}),
+                ("Duplicated whole-page text " * 200, 20, None),
+            ]:
+                visitor_text(text, matrix, matrix, font, size)
+            return ""
+
+    identifier, _ = _build_identifier({})
+    monkeypatch.setattr(
+        identifier, "_load_reader", lambda _: SimpleNamespace(pages=[Page()])
+    )
+    candidates = identifier.extract_title_candidates(tmp_path / "paper.pdf")
+    assert "A proceedings title." in candidates
+    assert all("Duplicated" not in value for value in candidates)
+
+
+def test_typography_keeps_whitespace_and_normalizes_ligatures(tmp_path, monkeypatch):
+    page = _TypographyPage(
+        [
+            ("Dust", 16, 1),
+            (" ", 16, 1),
+            ("ﬂow", 16, 1),
+            ("\n", 16, 1),
+            ("on comets", 16, 1),
+            ("Abstract\n", 10, 1),
+            ("Body " * 100, 10, 1),
+        ]
+    )
+    identifier, _ = _build_identifier({})
+    monkeypatch.setattr(
+        identifier, "_load_reader", lambda _: SimpleNamespace(pages=[page])
+    )
+    assert identifier.extract_title_candidates(tmp_path / "paper.pdf") == (
+        "Dust flow on comets",
+    )
+
+
+def test_title_probe_caches_only_verified_full_record(tmp_path):
+    doc = {"bibcode": "BIB1", "title": ["Actual title"], "author": ["Author, A."]}
+    identifier, _ = _build_identifier(
+        {
+            'title:"Journal" OR title:"Actual title"': SearchResult(
+                num_found=2,
+                start=0,
+                docs=[
+                    {"bibcode": "BIB1", "title": ["Actual title"]},
+                    {"bibcode": "OTHER", "title": ["An unrelated journal paper"]},
+                ],
+            ),
+            'bibcode:"BIB1"': SearchResult(num_found=1, start=0, docs=[doc]),
+        }
+    )
+    path = tmp_path / "paper.pdf"
+    path.write_bytes(b"%PDF")
+    identifier.extract_title_candidates = Mock(return_value=("Journal", "Actual title"))
+    callback = Mock()
+    result = identifier.resolve(
+        path,
+        strategies=(IdentifyStrategy.FIRST_PAGE_TITLE,),
+        ads_documents_callback=callback,
+    )
+    assert result["bibcode"] == "BIB1"
+    callback.assert_called_once_with([doc])

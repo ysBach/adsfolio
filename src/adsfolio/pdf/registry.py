@@ -3,20 +3,23 @@
 from __future__ import annotations
 
 import copy
-import hashlib
 import json
-import re
+from collections import Counter
+from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Iterator, Mapping
+from typing import TYPE_CHECKING, Any
 
+from .arxiv import arxiv_id
 from .catalog import (
     CATALOG_SCHEMA_VERSION,
     LEGACY_REGISTRY_FILENAME,
     LOCKED_METADATA_FIELDS_KEY,
     PdfCatalog,
 )
+from .files import sha256_file
 from .identify_settings import IdentifySettings
+from .readiness import METADATA_STALE_KEY
 
 if TYPE_CHECKING:
     from .rename_settings import RenameSettings
@@ -38,6 +41,7 @@ ADS_METADATA_FIELDS = (
     "bibstem",
 )
 
+NUMERIC_SORT_COLUMNS = frozenset({"size_bytes", "mtime_ns"})
 SORTABLE_COLUMNS = {
     key: key
     for key in (
@@ -60,20 +64,16 @@ SORTABLE_COLUMNS = {
     )
 }
 
-_ARXIV_NUMERIC_PATTERN = re.compile(r"(?<![A-Za-z0-9])(\d{4}\.\d{4,5})(?:v\d+)?")
-_LEGACY_ARXIV_BIBCODE_PATTERN = re.compile(
-    r"\d{4}arXiv(?P<identifier>\d{9})", re.IGNORECASE
-)
-
 __all__ = [
     "ADS_METADATA_FIELDS",
-    "FileReconciliation",
     "LOCKED_METADATA_FIELDS_KEY",
-    "PdfRegistry",
-    "PdfRegistryState",
     "REGISTRY_FILENAME",
     "SCHEMA_VERSION",
     "SORTABLE_COLUMNS",
+    "FileReconciliation",
+    "LibraryRefresh",
+    "PdfRegistry",
+    "PdfRegistryState",
     "merge_ads_metadata",
     "migrate_sidecar",
     "open_registry_state",
@@ -86,6 +86,18 @@ class FileReconciliation:
 
     scanned: int
     updated: int
+    missing: int
+
+
+@dataclass(frozen=True)
+class LibraryRefresh:
+    """Count local file changes while retaining missing-location history."""
+
+    scanned: int
+    added: int
+    updated: int
+    moved: int
+    restored: int
     missing: int
 
 
@@ -143,12 +155,24 @@ class CentralPdfRegistry:
         """Return the number of shared cached ADS documents."""
         return self.catalog.count_ads_documents()
 
-    def reconcile_file_facts(self, root: Path) -> FileReconciliation:
+    def reconcile_file_facts(
+        self,
+        root: Path,
+        *,
+        recursive: bool = True,
+        cancelled: Callable[[], bool] | None = None,
+    ) -> FileReconciliation:
         """Refresh current filesystem facts without deleting locations."""
         records = self.catalog.query_files(root=root)
+        if not recursive:
+            records = [
+                record for record in records if "/" not in record["current_path"]
+            ]
         updated = 0
         missing = 0
         for record in records:
+            if cancelled is not None and cancelled():
+                raise InterruptedError("Local refresh cancelled")
             path = Path(root) / str(record["current_path"])
             try:
                 stat = path.stat()
@@ -164,7 +188,7 @@ class CentralPdfRegistry:
             if facts_match:
                 continue
             try:
-                sha256 = _sha256_file(path)
+                sha256 = sha256_file(path)
             except OSError:
                 missing += 1
                 continue
@@ -184,6 +208,62 @@ class CentralPdfRegistry:
             scanned=len(records),
             updated=updated,
             missing=missing,
+        )
+
+    def refresh_local_files(
+        self,
+        *,
+        recursive: bool = True,
+        cancelled: Callable[[], bool] | None = None,
+    ) -> LibraryRefresh:
+        """Scan local PDFs, update changed facts, and retain missing history.
+
+        No ADS queries or file renames are performed. Files with changed facts
+        are hashed before discovery updates those facts. Incomplete directory
+        scans raise an error instead of marking unseen paths missing.
+        """
+        before = self.catalog.query_files(root=self.directory, include_missing=True)
+        if not recursive:
+            before = [record for record in before if "/" not in record["current_path"]]
+        reconciled = self.reconcile_file_facts(
+            self.directory, recursive=recursive, cancelled=cancelled
+        )
+        scanned = self.catalog.discover_root(
+            self.directory, recursive=recursive, cancelled=cancelled
+        )
+        after = self.catalog.query_files(root=self.directory)
+        if not recursive:
+            after = [record for record in after if "/" not in record["current_path"]]
+        previous = {
+            record["location_id"] for record in before if not record["missing_at"]
+        }
+        current = {record["location_id"] for record in after}
+        disappeared = Counter(
+            record["attachment_id"]
+            for record in before
+            if record["location_id"] in previous - current
+        )
+        appeared = [record for record in after if record["location_id"] not in previous]
+        historical = {
+            record["location_id"] for record in before if record["missing_at"]
+        }
+        arrivals = Counter(
+            record["attachment_id"]
+            for record in appeared
+            if record["location_id"] not in historical
+        )
+        moved = sum(
+            min(count, arrivals[attachment])
+            for attachment, count in disappeared.items()
+        )
+        restored = sum(record["location_id"] in historical for record in appeared)
+        return LibraryRefresh(
+            scanned=scanned,
+            added=len(appeared) - moved - restored,
+            updated=reconciled.updated,
+            moved=moved,
+            restored=restored,
+            missing=sum(disappeared.values()) - moved,
         )
 
     def upsert_file(
@@ -225,35 +305,27 @@ class CentralPdfRegistry:
 
     def find_file_by_sha256(self, sha256: str) -> dict[str, Any] | None:
         """Return the first current location matching a digest."""
-        records = [
-            record
-            for record in self.catalog.query_files(root=self.directory)
-            if record["sha256"] == sha256
-        ]
+        records = self.catalog.query_files(root=self.directory, sha256=sha256)
         return records[0] if records else None
 
     def find_files_by_sha256(self, sha256_values: list[str]) -> list[dict[str, Any]]:
         """Return current locations matching any supplied digest."""
         values = {str(value).strip() for value in sha256_values if str(value).strip()}
-        return [
-            record
-            for record in self.catalog.query_files(root=self.directory)
-            if record["sha256"] in values
-        ]
+        return self.catalog.query_files(root=self.directory, sha256=values)
 
     def find_file_by_id(self, file_id: int) -> dict[str, Any] | None:
         """Return a current location for one attachment identifier."""
-        for record in self.catalog.query_files(root=self.directory):
-            if record["attachment_id"] == int(file_id):
-                return record
-        return None
+        records = self.catalog.query_files(
+            root=self.directory, attachment_id=int(file_id)
+        )
+        return records[0] if records else None
 
     def find_location_by_id(self, location_id: int) -> dict[str, Any] | None:
         """Return a current location for one location identifier."""
-        for record in self.catalog.query_files(root=self.directory):
-            if record["location_id"] == int(location_id):
-                return record
-        return None
+        records = self.catalog.query_files(
+            root=self.directory, location_id=int(location_id)
+        )
+        return records[0] if records else None
 
     def find_file_by_relative_path(
         self, root: Path, relative_path: str
@@ -267,6 +339,15 @@ class CentralPdfRegistry:
             record
             for record in self.catalog.query_files(root=root)
             if str(record.get("bibcode") or "").strip() == bibcode
+            and not bool(
+                record.get(METADATA_STALE_KEY)
+                or (
+                    isinstance(record.get("metadata"), dict)
+                    and record["metadata"].get(METADATA_STALE_KEY)
+                )
+            )
+            and record.get("document_id") is not None
+            and str(record.get("status") or "").strip() != "unresolved"
         ]
 
     def find_file_by_current_path(
@@ -316,7 +397,22 @@ class CentralPdfRegistry:
         )
 
     def count_files_matching(self, **filters: Any) -> int:
-        """Count current locations matching supported catalog filters."""
+        """Count current locations matching supported catalog filters.
+
+        Counts in SQL when the filters allow it. The `source` filter reads
+        metadata JSON and `duplicates_only` compares digests across the
+        filtered rows, so those still load the records.
+        """
+        sql_filters = dict(filters)
+        source = sql_filters.pop("source", None)
+        duplicates_only = sql_filters.pop("duplicates_only", False)
+        digest = sql_filters.get("sha256")
+        if (
+            source is None
+            and not duplicates_only
+            and (digest is None or isinstance(digest, str))
+        ):
+            return self.catalog.count_files(root=self.directory, **sql_filters)
         return len(self._query_records(**filters))
 
     def query_files(
@@ -467,7 +563,12 @@ class CentralPdfRegistry:
         return records
 
     @staticmethod
-    def _sort_value(record: Mapping[str, Any], key: str) -> tuple[bool, str]:
+    def _sort_value(record: Mapping[str, Any], key: str) -> tuple[bool, str | int]:
+        if key in NUMERIC_SORT_COLUMNS:
+            try:
+                return False, int(record[key])
+            except (KeyError, TypeError, ValueError):
+                return True, 0
         if key == "status":
             resolved = (
                 bool(record.get("bibcode")) and record.get("status") == "resolved"
@@ -480,7 +581,7 @@ class CentralPdfRegistry:
         elif key == "sha256":
             value = record.get("sha256")
         elif key == "arxiv":
-            value = CentralPdfRegistry._arxiv_sort_value(record)
+            value = arxiv_id(record)
         else:
             value = record.get(key)
             if value in (None, "", []):
@@ -488,34 +589,6 @@ class CentralPdfRegistry:
         if isinstance(value, (list, tuple)):
             value = value[0] if value else ""
         return value in (None, "", []), str(value or "")
-
-    @staticmethod
-    def _arxiv_sort_value(record: Mapping[str, Any]) -> str:
-        """Derive a sortable arXiv identifier from common ADS metadata forms."""
-        metadata = record.get("metadata")
-        metadata = metadata if isinstance(metadata, Mapping) else {}
-        candidates = [
-            record.get("arxiv"),
-            record.get("arxiv_id"),
-            metadata.get("arxiv"),
-            metadata.get("arxiv_id"),
-            record.get("doi"),
-            metadata.get("doi"),
-            record.get("bibcode"),
-            metadata.get("bibcode"),
-        ]
-        for candidate in candidates:
-            values = candidate if isinstance(candidate, (list, tuple)) else [candidate]
-            for value in values:
-                text = str(value or "")
-                match = _ARXIV_NUMERIC_PATTERN.search(text)
-                if match:
-                    return match.group(1)
-                legacy_match = _LEGACY_ARXIV_BIBCODE_PATTERN.search(text)
-                if legacy_match:
-                    identifier = legacy_match.group("identifier")
-                    return f"{identifier[:4]}.{identifier[4:]}"
-        return ""
 
 
 class CentralPdfRegistryState:
@@ -534,6 +607,7 @@ class CentralPdfRegistryState:
             "current_filename": record["current_path"],
             "sha256": record["sha256"],
             "status": record["status"],
+            "document_id": record.get("document_id"),
         }
 
     @property
@@ -704,15 +778,6 @@ class CentralPdfRegistryState:
 
 PdfRegistry = CentralPdfRegistry
 PdfRegistryState = CentralPdfRegistryState
-
-
-def _sha256_file(path: Path) -> str:
-    """Hash one changed file in bounded memory."""
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 def migrate_sidecar(json_path: Path, registry: CentralPdfRegistry) -> int:

@@ -85,7 +85,7 @@ def test_refresh_file_metadata_replaces_only_unlocked_ads_fields(
         metadata={
             "title": ["Manually corrected title"],
             "doi": ["10.0/old"],
-            "_adsapi_locked_fields": ["title"],
+            "_adsfolio_locked_fields": ["title"],
         },
     )
 

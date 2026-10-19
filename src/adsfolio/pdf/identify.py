@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from functools import partial
 from pathlib import Path
 from time import perf_counter
-from typing import Any, Callable
+from typing import Any
 
 import click
 
@@ -17,6 +18,7 @@ from ..config import Config
 from .cli_common import is_resolved_record
 from .cli_common import iter_pdf_paths as _iter_pdf_paths
 from .cli_common import unique_destination
+from .doi_providers import DEFAULT_DOI_PROVIDERS, DoiProvider
 from .identifier import (
     CachedCandidateLookup,
     PdfIdentifier,
@@ -24,16 +26,17 @@ from .identifier import (
 )
 from .identify_settings import IdentifyStrategy
 from .prefetch import PublicationProfile, load_profile, query_publications
+from .readiness import metadata_ready
 from .registry import open_registry_state
-from .tracked_move import move_tracked_file
+from .tracked_move import move_tracked_file, resolved_file_directory
 from .upgrade_utils import _normalize_doi
 
 LOGGER = logging.getLogger(__name__)
 
 __all__ = [
     "IdentifyWorkflowHelpers",
-    "cached_ads_record",
     "build_cached_candidate_lookup",
+    "cached_ads_record",
     "print_cache_status",
     "run_identify",
 ]
@@ -182,8 +185,14 @@ def run_identify(
     verbose: int,
     profile: PublicationProfile | None = None,
     prompt_for_ai_csv: bool = True,
+    providers: tuple[DoiProvider, ...] = DEFAULT_DOI_PROVIDERS,
 ) -> None:
     """Identify PDFs and persist their ADS metadata."""
+    # Scan and catalog keys must share the same root spelling, including when
+    # the supplied root is relative or traverses a symbolic link.
+    directory = directory.expanduser().resolve()
+    if output_unresolved is not None:
+        output_unresolved = output_unresolved.expanduser().resolve()
     identifier = PdfIdentifier(
         client,
         suppress_parser_warnings=not verbose_parser,
@@ -198,8 +207,9 @@ def run_identify(
             end_year=end_year if end_year is not None else profile.end_year,
             retire_year=end_year if end_year is not None else profile.end_year,
         )
-    cached = None if refresh_cache else pubcache.load_publications()
-    if refresh_cache:
+    ads_enabled = client is not None and DoiProvider.ADS in providers
+    cached = None if refresh_cache or not ads_enabled else pubcache.load_publications()
+    if refresh_cache and ads_enabled:
         if not profile.has_identity:
             click.secho(
                 "Cannot refresh publication cache without a setup identity.",
@@ -262,6 +272,7 @@ def run_identify(
             f"({unresolved_directory})"
         )
     scanned_count = len(scanned_paths)
+    relocation_candidates = set(scanned_paths)
     if scanned_paths:
         click.echo(f"Scan phase: hashing {scanned_count} PDFs...")
     sidecar = open_registry_state(sidecar_directory)
@@ -368,7 +379,7 @@ def run_identify(
                     sidecar_dirty = True
         if existing is not None:
             original_name, record = existing
-            if is_resolved_record(record):
+            if is_resolved_record(record) or metadata_ready(record):
                 if record.get("current_filename") != sidecar_key:
                     sidecar.set_current_filename(original_name, sidecar_key)
                     sidecar_dirty = True
@@ -391,10 +402,8 @@ def run_identify(
         pending_paths.append(pdf_path)
         pending_sha256[pdf_path] = sha256
     click.echo(
-        (
-            f"Scan phase completed in {helpers.format_elapsed(perf_counter() - scan_started)} "
-            f"({scanned_count} PDFs discovered)."
-        )
+        f"Scan phase completed in {helpers.format_elapsed(perf_counter() - scan_started)} "
+        f"({scanned_count} PDFs discovered)."
     )
 
     if pending_paths:
@@ -446,6 +455,7 @@ def run_identify(
     allow_network_lookup = False
     if (
         query_targets
+        and ads_enabled
         and helpers.should_prompt_ads_permission()
         and analysis is not None
     ):
@@ -455,7 +465,7 @@ def run_identify(
         allow_network_lookup = decision != "none"
         if not allow_network_lookup and estimated < helpers.ads_block_risk_threshold:
             click.echo("Skipped ADS network queries at user request; checking caches.")
-    elif query_targets and analysis is not None and not allow_ads:
+    elif ads_enabled and query_targets and analysis is not None and not allow_ads:
         click.secho(
             (
                 "Skipping ADS network queries because stdin is non-interactive; "
@@ -464,17 +474,17 @@ def run_identify(
             ),
             fg="yellow",
         )
-    elif query_targets and analysis is not None and allow_ads:
+    elif ads_enabled and query_targets and analysis is not None and allow_ads:
         decision, _ = helpers.confirm_ads_queries(analysis, interactive=False)
         allow_network_lookup = decision != "none"
 
+    if not ads_enabled:
+        providers = tuple(p for p in providers if p is not DoiProvider.ADS)
+        allow_network_lookup = bool(providers)
     resolved_map: dict[Path, dict[str, Any] | None] = {}
     if query_targets:
         click.echo(
-            (
-                f"Step 2/3: running ordered identification for "
-                f"{len(query_targets)} PDFs..."
-            )
+            f"Step 2/3: running ordered identification for {len(query_targets)} PDFs..."
         )
         fallback_started = perf_counter()
         fallback_progress = helpers.progress_reporter_factory()
@@ -496,6 +506,7 @@ def run_identify(
                 identifier.resolve_many(
                     query_targets,
                     strategies=strategies,
+                    providers=providers,
                     sha256_by_path=pending_sha256,
                     progress_callback=fallback_progress,
                     ads_documents_callback=ads_documents_callback,
@@ -506,10 +517,8 @@ def run_identify(
         finally:
             fallback_progress.close()
         click.echo(
-            (
-                "Step 2/3: ADS fallback identification completed in "
-                f"{helpers.format_elapsed(perf_counter() - fallback_started)}."
-            )
+            "Step 2/3: ADS fallback identification completed in "
+            f"{helpers.format_elapsed(perf_counter() - fallback_started)}."
         )
     apply_started = perf_counter()
     apply_progress = helpers.build_progress(
@@ -569,10 +578,8 @@ def run_identify(
         apply_progress.close()
     if pending_paths:
         click.echo(
-            (
-                f"Step 2/3: result application completed in "
-                f"{helpers.format_elapsed(perf_counter() - apply_started)}."
-            )
+            f"Step 2/3: result application completed in "
+            f"{helpers.format_elapsed(perf_counter() - apply_started)}."
         )
 
     if sidecar_dirty:
@@ -580,10 +587,8 @@ def run_identify(
         sidecar_save_started = perf_counter()
         sidecar.save()
         click.echo(
-            (
-                "Step 3/3: sidecar write completed in "
-                f"{helpers.format_elapsed(perf_counter() - sidecar_save_started)}."
-            )
+            "Step 3/3: sidecar write completed in "
+            f"{helpers.format_elapsed(perf_counter() - sidecar_save_started)}."
         )
 
     unresolved_first_page_texts: dict[Path, str] = {}
@@ -630,6 +635,7 @@ def run_identify(
         if (
             ai_csv_path is None
             and prompt_for_ai_csv
+            and ads_enabled
             and helpers.should_prompt_ads_permission()
         ):
             provided = click.prompt(
@@ -660,6 +666,7 @@ def run_identify(
                         sidecar_key = helpers.to_sidecar_key(path, sidecar_directory)
                         record["current_filename"] = sidecar_key
                         sidecar.upsert_file(sidecar_key, record)
+                        relocation_candidates.add(path)
                     sidecar.save()
                     sidecar_dirty = True
                     unresolved_paths = [
@@ -686,8 +693,39 @@ def run_identify(
                         fg="yellow",
                     )
 
+    moved_resolved = 0
+    planned_resolved = 0
+    for source in sorted(relocation_candidates):
+        target_directory = resolved_file_directory(
+            sidecar_directory, source, output_unresolved
+        )
+        if target_directory == source.resolve().parent or not source.is_file():
+            continue
+        relative_path = helpers.to_sidecar_key(source, sidecar_directory)
+        tracked = sidecar.find_by_current_filename(relative_path)
+        if tracked is None or not is_resolved_record(tracked[1]):
+            continue
+        target = target_directory / source.name
+        if target.exists():
+            click.secho(
+                f"Resolved PDF remains in unresolved; destination exists: {target}",
+                fg="yellow",
+            )
+            continue
+        if apply:
+            move_tracked_file(sidecar, source, target)
+            moved_resolved += 1
+            click.echo(f"Moved resolved PDF out of unresolved: {source} -> {target}")
+        else:
+            planned_resolved += 1
+            click.echo(
+                f"[dry-run] move resolved PDF out of unresolved: {source} -> {target}"
+            )
+
     click.echo(f"Scanned directory: {directory}")
     click.echo(f"Resolved PDFs: {resolved}")
     click.echo(f"Unresolved PDFs: {unresolved}")
-    if output_unresolved and not apply:
-        click.echo("Use --apply to actually move unresolved files.")
+    if moved_resolved:
+        click.echo(f"Resolved PDFs moved out of unresolved: {moved_resolved}")
+    if (output_unresolved or planned_resolved) and not apply:
+        click.echo("Use --apply to perform the previewed file moves.")

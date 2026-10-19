@@ -1,5 +1,6 @@
 import pytest
 
+from adsfolio.pdf.doi_providers import DoiProvider
 from adsfolio.pdf.identify_settings import (
     RECOMMENDED_IDENTIFY_STRATEGIES,
     IdentifySettings,
@@ -125,3 +126,31 @@ def test_identify_settings_with_overrides_strategies():
     settings = IdentifySettings()
     updated = settings.with_overrides(strategies=(IdentifyStrategy.FILENAME_BIBCODE,))
     assert updated.strategies == (IdentifyStrategy.FILENAME_BIBCODE,)
+
+
+def test_identify_settings_roundtrips_providers():
+    settings = IdentifySettings.from_mapping(
+        {"providers": ["datacite", "crossref", "ads"]}
+    )
+    assert settings.providers == (
+        DoiProvider.DATACITE,
+        DoiProvider.CROSSREF,
+        DoiProvider.ADS,
+    )
+    assert settings.to_mapping()["providers"] == ["datacite", "crossref", "ads"]
+
+
+def test_identify_settings_rejects_duplicate_providers():
+    with pytest.raises(ValueError, match="duplicate metadata provider"):
+        IdentifySettings(providers=(DoiProvider.ADS, DoiProvider.ADS))
+
+
+def test_identify_settings_rejects_empty_providers():
+    with pytest.raises(ValueError, match="At least one metadata provider"):
+        IdentifySettings(providers=())
+
+
+def test_identify_settings_overrides_providers():
+    settings = IdentifySettings()
+    updated = settings.with_overrides(providers=(DoiProvider.CROSSREF,))
+    assert updated.providers == (DoiProvider.CROSSREF,)

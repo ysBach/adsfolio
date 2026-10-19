@@ -1,18 +1,19 @@
 """Shared helpers for pdf CLI commands."""
 
 from pathlib import Path
-from typing import Iterable
 
 import click
 
 from ..client import ADSClient
+from .files import iter_pdf_paths
+from .readiness import METADATA_STALE_KEY
 
 __all__ = [
     "get_client",
-    "iter_pdf_paths",
-    "unique_destination",
     "handle_unresolved",
     "is_resolved_record",
+    "iter_pdf_paths",
+    "unique_destination",
     "validate_author_format",
     "validate_char_policy",
 ]
@@ -23,11 +24,6 @@ def get_client(ctx: click.Context) -> ADSClient:
     if ctx.obj:
         token = ctx.obj.get("token")
     return ADSClient(token=token)
-
-
-def iter_pdf_paths(directory: Path, recursive: bool) -> Iterable[Path]:
-    globber = directory.rglob if recursive else directory.glob
-    yield from globber("*.pdf")
 
 
 def unique_destination(output_dir: Path, filename: str) -> Path:
@@ -47,6 +43,10 @@ def unique_destination(output_dir: Path, filename: str) -> Path:
 
 def is_resolved_record(record: dict[str, object]) -> bool:
     """Return whether a registry record contains a successful ADS match."""
+    raw_metadata = record.get("metadata")
+    metadata = raw_metadata if isinstance(raw_metadata, dict) else {}
+    if bool(record.get(METADATA_STALE_KEY) or metadata.get(METADATA_STALE_KEY)):
+        return False
     bibcode = record.get("bibcode", "")
     if isinstance(bibcode, list):
         has_bibcode = any(str(value).strip() for value in bibcode)

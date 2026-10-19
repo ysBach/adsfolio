@@ -4,34 +4,59 @@ import hashlib
 import logging
 import os
 import re
-from collections.abc import Callable
+import unicodedata
+from collections import Counter
+from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from math import hypot
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Mapping
+from typing import TYPE_CHECKING, Any, ClassVar, TypeVar
 
 if TYPE_CHECKING:
     from ..client import ADSClient
 
+from ..api.search import escape_query_phrase
+from ..config import AuthenticationError, RequestTooLongError
+from .doi_providers import (
+    DEFAULT_DOI_PROVIDERS,
+    DoiProvider,
+    fetch_crossref_doi,
+    fetch_datacite_doi,
+)
 from .identify_settings import (
     RECOMMENDED_IDENTIFY_STRATEGIES,
     IdentifyStrategy,
 )
-from .upgrade_utils import _normalize_doi
+from .upgrade_utils import _extract_doi_resolver_path, _normalize_doi
 
 DOI_PATTERN = re.compile(r"\b10\.\d{4,9}/[-._;()/:A-Z0-9]+", re.IGNORECASE)
 BIBCODE_PATTERN = re.compile(
     r"\b(\d{4}[A-Za-z&.]{5}[A-Za-z0-9.]{4}[A-Za-z0-9.][A-Za-z0-9.]{4}[A-Za-z])\b"
 )
+_ExtractedValue = TypeVar("_ExtractedValue")
 AdsDocumentsCallback = Callable[[list[dict[str, Any]]], None]
+
+
+def _fetch_external_doi(provider: DoiProvider, doi: str) -> dict[str, Any] | None:
+    doc = None
+    if provider is DoiProvider.CROSSREF:
+        doc = fetch_crossref_doi(doi)
+    elif provider is DoiProvider.DATACITE:
+        doc = fetch_datacite_doi(doi)
+    if doc is not None:
+        doc["provider"] = provider.value
+    return doc
+
+
 CachedCandidateLookup = Callable[[str, Any], tuple[bool, dict[str, Any] | None]]
 
 __all__ = [
+    "DOI_PATTERN",
     "AdsQueryResult",
     "PdfIdentifier",
-    "DOI_PATTERN",
     "extract_doi_candidates_pdf",
     "extract_first_page_text_pdf",
 ]
@@ -62,6 +87,12 @@ def _extract_doi_from_metadata_map(metadata: Any) -> str | None:
         key_text = str(key).strip("/").lower()
         value_text = str(value).strip()
         if "doi" in key_text:
+            candidate = re.sub(
+                r"^doi\s*:\s*", "", value_text.strip(), flags=re.IGNORECASE
+            ).strip()
+            candidate = _extract_doi_resolver_path(candidate) or candidate
+            if DOI_PATTERN.fullmatch(candidate):
+                return candidate
             doi = _extract_doi_text(value_text)
             if doi:
                 return doi
@@ -187,7 +218,7 @@ def extract_first_page_text_pdf(
 class PdfIdentifier:
     """Resolve ADS metadata for local PDF files."""
 
-    SEARCH_FIELDS = [
+    SEARCH_FIELDS: ClassVar[list[str]] = [
         "abstract",
         "bibcode",
         "citation_count",
@@ -206,7 +237,7 @@ class PdfIdentifier:
 
     def __init__(
         self,
-        client: "ADSClient",
+        client: "ADSClient | None" = None,
         logger: logging.Logger | None = None,
         suppress_parser_warnings: bool = True,
     ) -> None:
@@ -420,6 +451,74 @@ class PdfIdentifier:
             self.logger.debug("Failed extracting DOI text from %s: %s", pdf_path, exc)
             return None
 
+    def extract_title_candidates(self, pdf_path: Path) -> tuple[str, ...]:
+        """Extract first-page heading blocks for exact ADS title verification.
+
+        Text larger than the character-weighted modal font size supplies
+        candidates. This assumes the dominant size is body text. Font sizes
+        include the PDF text and page transforms. Uniform-size OCR falls back
+        to the text-boundary extractor; neither method proves a title's identity.
+        """
+        runs: list[tuple[float, str]] = []
+
+        def visit(
+            text: str, cm: list[float], tm: list[float], font: Any, size: float
+        ) -> None:
+            # pypdf also visits whole Form XObjects with no font. Those are
+            # aggregate text, not glyph runs, and would double-count the page.
+            if not text.strip():
+                if runs:
+                    runs[-1] = (runs[-1][0], runs[-1][1] + text)
+                return
+            if font is not None:
+                scale = hypot(
+                    tm[2] * cm[0] + tm[3] * cm[2], tm[2] * cm[1] + tm[3] * cm[3]
+                )
+                runs.append((abs(size * scale), text))
+
+        try:
+            with self._quiet_pypdf_logs():
+                reader = self._load_reader(pdf_path)
+                if not reader.pages:
+                    return ()
+                reader.pages[0].extract_text(visitor_text=visit)
+        except Exception as exc:
+            self.logger.debug("Typography extraction failed for %s: %s", pdf_path, exc)
+        if not runs:
+            title = self.extract_title_from_text(pdf_path)
+            return (title,) if title else ()
+        weights: Counter[float] = Counter()
+        for size, text in runs:
+            weights[size] += len(text.strip())
+        body_size = weights.most_common(1)[0][0]
+        blocks: list[tuple[float, str]] = []
+        for size, text in runs:
+            # Submission dates and abstract labels delimit the article heading.
+            if re.match(
+                r"^\s*[([]?\s*(?:abstract|received|accepted|submitted)\b",
+                text,
+                re.IGNORECASE,
+            ):
+                break
+            if blocks and blocks[-1][0] == size:
+                blocks[-1] = (size, blocks[-1][1] + text)
+            else:
+                blocks.append((size, text))
+        candidates_list: list[str] = []
+        for size, text in sorted(blocks, key=lambda block: -block[0]):
+            if size <= body_size or not text.strip():
+                continue
+            block = re.sub(r"\s+", " ", unicodedata.normalize("NFKC", text)).strip()
+            candidates_list.append(block)
+            # Proceedings often put the title and authors in the same run.
+            # Retain the full block and its sentences for ADS to distinguish.
+            candidates_list.extend(re.split(r"(?<=[.!?])\s+", block))
+        candidates = tuple(dict.fromkeys(candidates_list))
+        if candidates:
+            return candidates
+        title = self.extract_title_from_text(pdf_path)
+        return (title,) if title else ()
+
     def extract_title_from_text(self, pdf_path: Path) -> str | None:
         """Heuristically infer paper title from the first page."""
         try:
@@ -447,7 +546,7 @@ class PdfIdentifier:
                 if title_lines:
                     break
                 continue
-            lower = line.casefold()
+            lower = line.casefold().lstrip("([ ")
             is_publisher_banner = "open access" in lower and (
                 "pdf" in lower or "provided" in lower
             )
@@ -544,7 +643,10 @@ class PdfIdentifier:
         query: str,
         ads_documents_callback: AdsDocumentsCallback | None = None,
     ) -> AdsQueryResult:
-        """Return all ADS documents available for one focused metadata query."""
+        """Return one ADS result page and its total match count."""
+        if self.client is None:
+            self.logger.debug("No ADS client configured; skipping ADS query.")
+            return AdsQueryResult(0, ())
         result = self.client.search.query(
             q=query,
             fl=self.SEARCH_FIELDS,
@@ -578,15 +680,15 @@ class PdfIdentifier:
     def _parallel_extract_values(
         self,
         paths: list[Path],
-        extractor: Callable[[Path], str | None],
+        extractor: Callable[[Path], _ExtractedValue | None],
         progress_callback: Callable[[int, int], None] | None = None,
-    ) -> dict[Path, str]:
+    ) -> dict[Path, _ExtractedValue]:
         if not paths:
             return {}
 
         total = len(paths)
         worker_count = self._analysis_worker_count(total)
-        extracted: dict[Path, str] = {}
+        extracted: dict[Path, _ExtractedValue] = {}
 
         if worker_count == 1:
             for index, path in enumerate(paths, start=1):
@@ -629,6 +731,9 @@ class PdfIdentifier:
 
         Returns normalized DOI -> unique matching doc, or None when ambiguous/missing.
         """
+        if self.client is None:
+            self.logger.debug("No ADS client configured; skipping ADS DOI query.")
+            return {}
         normalized = []
         seen: set[str] = set()
         for raw in dois:
@@ -644,7 +749,7 @@ class PdfIdentifier:
         if progress_callback is not None and total_chunks > 0:
             progress_callback(0, total_chunks)
         for index, chunk in enumerate(chunks, start=1):
-            terms = [f'doi:"{doi.replace(chr(34), " ")}"' for doi in chunk]
+            terms = [f'doi:"{escape_query_phrase(doi)}"' for doi in chunk]
             query = " OR ".join(terms)
             rows = min(max(len(chunk) * 5, 10), 2000)
             result = self.client.search.query(
@@ -687,6 +792,9 @@ class PdfIdentifier:
 
         Returns bibcode -> unique matching ADS document, or None when missing.
         """
+        if self.client is None:
+            self.logger.debug("No ADS client configured; skipping ADS bibcode query.")
+            return {}
         normalized: list[str] = []
         seen: set[str] = set()
         for raw in bibcodes:
@@ -820,7 +928,7 @@ class PdfIdentifier:
         title: str,
         ads_documents_callback: AdsDocumentsCallback | None = None,
     ) -> dict[str, Any] | None:
-        clean_title = title.replace('"', " ").strip()
+        clean_title = escape_query_phrase(title.strip())
         return self._query_unique_doc(
             f'title:"{clean_title}"',
             ads_documents_callback=ads_documents_callback,
@@ -1001,11 +1109,15 @@ class PdfIdentifier:
         pdf_path: Path,
         sha256: str | None = None,
     ) -> dict[str, Any]:
-        """Build canonical sidecar record from an ADS document and local PDF."""
-        record = {
-            "bibcode": self._first_scalar(doc.get("bibcode")),
+        digest = sha256 if sha256 else self.compute_sha256(pdf_path)
+        bibcode = self._first_scalar(doc.get("bibcode"))
+        is_ads = bool(bibcode)
+        now = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+        provider = str(doc.get("provider") or "").strip()
+        record: dict[str, Any] = {
+            "bibcode": bibcode,
             "doi": self._first_scalar(doc.get("doi")),
-            "sha256": sha256 if sha256 else self.compute_sha256(pdf_path),
+            "sha256": digest,
             "title": self._as_list(doc.get("title")),
             "author": self._as_list(doc.get("author")),
             "year": self._first_scalar(doc.get("year")),
@@ -1013,11 +1125,20 @@ class PdfIdentifier:
             "volume": self._first_scalar(doc.get("volume")),
             "page": self._as_list(doc.get("page")),
             "pub": self._first_scalar(doc.get("pub")),
+            "publisher": self._first_scalar(doc.get("publisher")),
             "current_filename": Path(pdf_path).name,
-            "identified_at": datetime.now(timezone.utc)
-            .replace(microsecond=0)
-            .isoformat(),
+            "identified_at": now,
+            "_adsfolio_metadata_sha256": digest,
         }
+        if is_ads:
+            record["status"] = "resolved"
+        else:
+            record["status"] = "unresolved"
+            record["_adsfolio_external_metadata"] = {
+                "provider": provider or "external",
+                "doi": record["doi"],
+                "identified_at": now,
+            }
         return record
 
     @staticmethod
@@ -1033,7 +1154,7 @@ class PdfIdentifier:
         progress_callback: Callable[[str, int, int], None] | None,
     ) -> dict[Path, Any]:
         """Extract candidates for one configured strategy."""
-        extractors: dict[IdentifyStrategy, Callable[[Path], str | None]] = {
+        extractors: dict[IdentifyStrategy, Callable[[Path], Any]] = {
             IdentifyStrategy.FILENAME_BIBCODE: lambda path: (
                 self.extract_bibcode_from_filename(path.name)
             ),
@@ -1045,7 +1166,7 @@ class PdfIdentifier:
             IdentifyStrategy.FIRST_PAGE_BIBCODE: self.extract_bibcode_from_first_page,
             IdentifyStrategy.FIRST_PAGE_DOI: self.extract_doi_from_text,
             IdentifyStrategy.PDF_METADATA_TITLE: self.extract_title_from_metadata,
-            IdentifyStrategy.FIRST_PAGE_TITLE: self.extract_title_from_text,
+            IdentifyStrategy.FIRST_PAGE_TITLE: self.extract_title_candidates,
         }
         if strategy is IdentifyStrategy.STRUCTURED_FILENAME:
             return {
@@ -1088,7 +1209,7 @@ class PdfIdentifier:
                     candidate_cache[("bibcode", key)] = doc
                     continue
             pending.setdefault(key, value)
-        if not allow_network_lookup:
+        if not allow_network_lookup or self.client is None:
             for key in pending:
                 candidate_cache[("bibcode", key)] = None
             return
@@ -1116,33 +1237,94 @@ class PdfIdentifier:
         ads_documents_callback: AdsDocumentsCallback | None,
         cached_candidate_lookup: CachedCandidateLookup | None,
         allow_network_lookup: bool,
+        providers: Sequence[DoiProvider] = DEFAULT_DOI_PROVIDERS,
     ) -> None:
         pending: set[str] = set()
         for candidate in candidates.values():
-            normalized = _normalize_doi(str(candidate))
+            try:
+                normalized = _normalize_doi(str(candidate))
+            except ValueError:
+                continue
             if not normalized or ("doi", normalized) in candidate_cache:
                 continue
-            if cached_candidate_lookup is not None:
-                cache_hit, doc = cached_candidate_lookup("doi", normalized)
-                if cache_hit:
-                    candidate_cache[("doi", normalized)] = doc
-                    continue
             pending.add(normalized)
-        if not allow_network_lookup:
-            for normalized in pending:
-                candidate_cache[("doi", normalized)] = None
+
+        # Allow cached ADS DOI hits even when allow_network_lookup is False,
+        # but only if ADS is active in providers.
+        if (
+            not allow_network_lookup
+            and DoiProvider.ADS in providers
+            and cached_candidate_lookup is not None
+        ):
+            for normalized in list(pending):
+                cache_hit, doc = cached_candidate_lookup("doi", normalized)
+                if cache_hit and doc is not None:
+                    candidate_cache[("doi", normalized)] = doc
+                    pending.remove(normalized)
+
+        if not pending or not allow_network_lookup:
+            if not allow_network_lookup:
+                for normalized in pending:
+                    candidate_cache[("doi", normalized)] = None
             return
-        docs = self.query_docs_for_dois(
-            sorted(pending),
-            progress_callback=(
-                (lambda done, total: progress_callback("ads_doi_batches", done, total))
-                if progress_callback is not None
-                else None
-            ),
-            ads_documents_callback=ads_documents_callback,
-        )
-        for normalized in pending:
-            candidate_cache[("doi", normalized)] = docs.get(normalized)
+
+        remaining = set(pending)
+        for provider in providers:
+            if not remaining:
+                break
+
+            if provider is DoiProvider.ADS:
+                if cached_candidate_lookup is not None:
+                    for normalized in list(remaining):
+                        cache_hit, doc = cached_candidate_lookup("doi", normalized)
+                        if cache_hit and doc is not None:
+                            candidate_cache[("doi", normalized)] = doc
+                            remaining.remove(normalized)
+
+                if not remaining or self.client is None:
+                    continue
+
+                try:
+                    docs = self.query_docs_for_dois(
+                        sorted(remaining),
+                        progress_callback=(
+                            (
+                                lambda done, total: progress_callback(
+                                    "ads_doi_batches", done, total
+                                )
+                            )
+                            if progress_callback is not None
+                            else None
+                        ),
+                        ads_documents_callback=ads_documents_callback,
+                    )
+                except AuthenticationError as exc:
+                    if len(providers) > 1:
+                        self.logger.warning(
+                            "ADS authentication token unavailable; skipping ADS provider: %s",
+                            exc,
+                        )
+                        continue
+                    raise
+
+                for normalized in list(remaining):
+                    doc = docs.get(normalized)
+                    if doc is not None:
+                        candidate_cache[("doi", normalized)] = doc
+                        remaining.remove(normalized)
+
+            elif provider in {DoiProvider.CROSSREF, DoiProvider.DATACITE}:
+                for normalized in list(remaining):
+                    try:
+                        doc = _fetch_external_doi(provider, normalized)
+                    except ValueError:
+                        continue
+                    if doc is not None:
+                        candidate_cache[("doi", normalized)] = doc
+                        remaining.remove(normalized)
+
+        for normalized in remaining:
+            candidate_cache[("doi", normalized)] = None
 
     def _query_structured_candidates(
         self,
@@ -1163,7 +1345,7 @@ class PdfIdentifier:
                     candidate_cache[("structured", key)] = doc
                     continue
             hints.setdefault(key, parsed)
-        if not allow_network_lookup:
+        if not allow_network_lookup or self.client is None:
             for key in hints:
                 candidate_cache[("structured", key)] = None
             return
@@ -1176,14 +1358,19 @@ class PdfIdentifier:
 
     def _query_title_candidates(
         self,
-        candidates: Mapping[Path, str],
+        candidates: Mapping[Path, str | tuple[str, ...]],
         candidate_cache: dict[tuple[str, Any], dict[str, Any] | None],
         ads_documents_callback: AdsDocumentsCallback | None,
         cached_candidate_lookup: CachedCandidateLookup | None,
         allow_network_lookup: bool,
     ) -> None:
         titles: dict[str, str] = {}
-        for title in candidates.values():
+        title_values = (
+            title
+            for value in candidates.values()
+            for title in ((value,) if isinstance(value, str) else value)
+        )
+        for title in title_values:
             normalized = self._normalized_title(title)
             if not normalized or ("title", normalized) in candidate_cache:
                 continue
@@ -1193,22 +1380,122 @@ class PdfIdentifier:
                     candidate_cache[("title", normalized)] = doc
                     continue
             titles.setdefault(normalized, str(title).strip())
-        if not allow_network_lookup:
+        if not allow_network_lookup or self.client is None:
             for normalized in titles:
                 candidate_cache[("title", normalized)] = None
             return
-        for normalized, title in titles.items():
-            doc = self._search_by_title(
-                title,
-                ads_documents_callback=ads_documents_callback,
+
+        multiple_candidates = any(
+            not isinstance(value, str) for value in candidates.values()
+        )
+
+        def lookup(keys: list[str]) -> None:
+            query = " OR ".join(
+                f'title:"{escape_query_phrase(titles[key])}"' for key in keys
             )
-            document_titles = self._as_list(doc.get("title")) if doc else []
-            if not any(
-                self._normalized_title(document_title) == normalized
-                for document_title in document_titles
-            ):
-                doc = None
-            candidate_cache[("title", normalized)] = doc
+            try:
+                if multiple_candidates:
+                    count = self.client.search.query(q=query, fl=["bibcode"], rows=0)
+                    if count.num_found > 2000:
+                        if len(keys) > 1:
+                            middle = len(keys) // 2
+                            lookup(keys[:middle])
+                            lookup(keys[middle:])
+                        else:
+                            candidate_cache[("title", keys[0])] = None
+                        return
+                    if count.num_found == 0:
+                        for key in keys:
+                            candidate_cache[("title", key)] = None
+                        return
+                response = self.client.search.query(
+                    q=query,
+                    fl=["bibcode", "title"]
+                    if multiple_candidates
+                    else self.SEARCH_FIELDS,
+                    rows=2000,
+                )
+                result = AdsQueryResult(int(response.num_found), tuple(response.docs))
+            except RequestTooLongError:
+                if len(keys) > 1:
+                    middle = len(keys) // 2
+                    lookup(keys[:middle])
+                    lookup(keys[middle:])
+                    return
+                key = keys[0]
+                candidate_cache[("title", key)] = None
+                for path, candidate in candidates.items():
+                    values = (candidate,) if isinstance(candidate, str) else candidate
+                    if any(self._normalized_title(value) == key for value in values):
+                        self.logger.warning(
+                            "ADS rejected an oversized title query for %s; "
+                            "skipping this title candidate.",
+                            path,
+                        )
+                return
+            if result.num_found != len(result.documents):
+                # A broad phrase must not hide a second exact title match.
+                if len(keys) > 1:
+                    middle = len(keys) // 2
+                    lookup(keys[:middle])
+                    lookup(keys[middle:])
+                else:
+                    candidate_cache[("title", keys[0])] = None
+                return
+            matches: dict[str, dict[str, dict[str, Any]]] = {key: {} for key in keys}
+            for doc in result.documents:
+                bibcode = self._first_scalar(doc.get("bibcode"))
+                if not bibcode:
+                    continue
+                for title in self._as_list(doc.get("title")):
+                    key = self._normalized_title(title)
+                    if key in matches:
+                        matches[key][bibcode] = doc
+            for key, documents in matches.items():
+                candidate_cache[("title", key)] = (
+                    next(iter(documents.values())) if len(documents) == 1 else None
+                )
+
+        # Keep single-title metadata lookups independent for cache compatibility.
+        chunks = self._chunked(
+            list(titles), self.MAX_BATCH_TERMS if multiple_candidates else 1
+        )
+        for chunk in chunks:
+            lookup(chunk)
+        # Cache only exact matches, never thousands of unrelated heading hits.
+        verified = {
+            self._first_scalar(doc.get("bibcode")): doc
+            for key in titles
+            if (doc := candidate_cache.get(("title", key))) is not None
+        }
+        if verified:
+            documents = (
+                self.query_docs_for_bibcodes(list(verified))
+                if multiple_candidates
+                else verified
+            )
+            for key in titles:
+                doc = candidate_cache.get(("title", key))
+                if doc is not None:
+                    full = documents.get(self._first_scalar(doc.get("bibcode")))
+                    # A changing ADS record must not silently lose title validation.
+                    candidate_cache[("title", key)] = (
+                        full
+                        if full
+                        and any(
+                            self._normalized_title(title) == key
+                            for title in self._as_list(full.get("title"))
+                        )
+                        else None
+                    )
+            if ads_documents_callback is not None:
+                accepted = {
+                    self._first_scalar(doc.get("bibcode")): doc
+                    for key in titles
+                    if (doc := candidate_cache.get(("title", key))) is not None
+                }
+                if accepted:
+                    ads_documents_callback(list(accepted.values()))
 
     def _candidate_cache_key(
         self,
@@ -1247,21 +1534,23 @@ class PdfIdentifier:
         ads_documents_callback: AdsDocumentsCallback | None,
         cached_candidate_lookup: CachedCandidateLookup | None,
         allow_network_lookup: bool,
+        providers: Sequence[DoiProvider] = DEFAULT_DOI_PROVIDERS,
     ) -> tuple[dict[Path, dict[str, Any]], list[Path]]:
-        """Resolve one stage and return records plus still-unresolved paths."""
+        ads_enabled = DoiProvider.ADS in providers
         if strategy in {
             IdentifyStrategy.FILENAME_BIBCODE,
             IdentifyStrategy.PDF_METADATA_BIBCODE,
             IdentifyStrategy.FIRST_PAGE_BIBCODE,
         }:
-            self._query_bibcode_candidates(
-                candidates,
-                candidate_cache,
-                progress_callback,
-                ads_documents_callback,
-                cached_candidate_lookup,
-                allow_network_lookup,
-            )
+            if ads_enabled:
+                self._query_bibcode_candidates(
+                    candidates,
+                    candidate_cache,
+                    progress_callback,
+                    ads_documents_callback,
+                    cached_candidate_lookup,
+                    allow_network_lookup,
+                )
         elif strategy in {
             IdentifyStrategy.FILENAME_DOI,
             IdentifyStrategy.PDF_METADATA_DOI,
@@ -1274,29 +1563,44 @@ class PdfIdentifier:
                 ads_documents_callback,
                 cached_candidate_lookup,
                 allow_network_lookup,
+                providers=providers,
             )
         elif strategy is IdentifyStrategy.STRUCTURED_FILENAME:
-            self._query_structured_candidates(
-                candidates,
-                candidate_cache,
-                ads_documents_callback,
-                cached_candidate_lookup,
-                allow_network_lookup,
-            )
+            if ads_enabled:
+                self._query_structured_candidates(
+                    candidates,
+                    candidate_cache,
+                    ads_documents_callback,
+                    cached_candidate_lookup,
+                    allow_network_lookup,
+                )
         else:
-            self._query_title_candidates(
-                candidates,
-                candidate_cache,
-                ads_documents_callback,
-                cached_candidate_lookup,
-                allow_network_lookup,
-            )
-
+            if ads_enabled:
+                self._query_title_candidates(
+                    candidates,
+                    candidate_cache,
+                    ads_documents_callback,
+                    cached_candidate_lookup,
+                    allow_network_lookup,
+                )
         resolved: dict[Path, dict[str, Any]] = {}
         unresolved: list[Path] = []
         for path in paths:
-            key = self._candidate_cache_key(strategy, candidates.get(path))
-            doc = candidate_cache.get(key) if key is not None else None
+            candidate = candidates.get(path)
+            if strategy is IdentifyStrategy.FIRST_PAGE_TITLE and candidate:
+                values = (candidate,) if isinstance(candidate, str) else candidate
+                matches = {}
+                for title in values:
+                    key = self._candidate_cache_key(strategy, title)
+                    match = candidate_cache.get(key)
+                    if match is not None:
+                        matches[self._first_scalar(match.get("bibcode"))] = match
+                doc = next(iter(matches.values())) if len(matches) == 1 else None
+                if len(matches) > 1:
+                    self.logger.warning("Conflicting ADS title matches for %s", path)
+            else:
+                key = self._candidate_cache_key(strategy, candidate)
+                doc = candidate_cache.get(key) if key is not None else None
             if doc is None:
                 unresolved.append(path)
                 continue
@@ -1318,6 +1622,7 @@ class PdfIdentifier:
         allow_network_lookup: bool = True,
         *,
         strategies: tuple[IdentifyStrategy, ...] = RECOMMENDED_IDENTIFY_STRATEGIES,
+        providers: tuple[DoiProvider, ...] = DEFAULT_DOI_PROVIDERS,
     ) -> dict[str, Any] | None:
         """Resolve one PDF with the canonical ordered strategy engine."""
         path = Path(pdf_path)
@@ -1325,6 +1630,7 @@ class PdfIdentifier:
             [path],
             journal_map=journal_map,
             strategies=strategies,
+            providers=providers,
             ads_documents_callback=ads_documents_callback,
             cached_candidate_lookup=cached_candidate_lookup,
             allow_network_lookup=allow_network_lookup,
@@ -1341,6 +1647,7 @@ class PdfIdentifier:
         allow_network_lookup: bool = True,
         *,
         strategies: tuple[IdentifyStrategy, ...] = RECOMMENDED_IDENTIFY_STRATEGIES,
+        providers: tuple[DoiProvider, ...] = DEFAULT_DOI_PROVIDERS,
     ) -> dict[Path, dict[str, Any] | None]:
         """Resolve PDFs in configured stage order while batching equal lookups."""
         ordered_paths = [Path(path) for path in pdf_paths]
@@ -1371,6 +1678,7 @@ class PdfIdentifier:
                 ads_documents_callback,
                 cached_candidate_lookup,
                 allow_network_lookup,
+                providers=providers,
             )
             results.update(resolved)
             self.logger.info(

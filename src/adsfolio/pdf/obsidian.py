@@ -1,9 +1,10 @@
 """Obsidian-friendly Markdown note generation for tracked PDFs."""
 
 import logging
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Mapping
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from ..client import ADSClient

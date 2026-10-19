@@ -2,18 +2,24 @@ import csv
 import os
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any, ClassVar
 
 import pytest
+import requests
 from click.testing import CliRunner
 
 from adsfolio.cli.commands import main
-from adsfolio.config import Config, RateLimitError
+from adsfolio.config import ADSError, Config, RateLimitError
+from adsfolio.library_sync import AdsLibraryService
 from adsfolio.pdf.catalog import CATALOG_FILENAME
 from adsfolio.pdf.cli import (
     _estimate_ads_queries_for_targets,
+    _parse_ads_identifier,
     pdf,
 )
 from adsfolio.pdf.cli_common import handle_unresolved
+from adsfolio.pdf.doi_providers import DEFAULT_DOI_PROVIDERS
+from adsfolio.pdf.files import sha256_file
 from adsfolio.pdf.identifier import PdfIdentifier
 from adsfolio.pdf.identify import build_cached_candidate_lookup
 from adsfolio.pdf.identify_settings import (
@@ -148,6 +154,7 @@ def test_identify_command_delegates_to_identify_workflow(tmp_path, monkeypatch):
         "apply": False,
         "verbose_parser": False,
         "strategies": RECOMMENDED_IDENTIFY_STRATEGIES,
+        "providers": DEFAULT_DOI_PROVIDERS,
         "allow_ads": True,
         "ai_csv": None,
         "verbose": 0,
@@ -895,7 +902,7 @@ def test_identify_rehashes_replacement_at_missing_catalog_path(tmp_path, monkeyp
     state.upsert_file(
         "current.pdf",
         _metadata(
-            sha256="sha-old",
+            sha256=sha256_file(current_pdf),
             current_filename="current.pdf",
             bibcode="2021A&A...654A.113B",
         ),
@@ -1032,7 +1039,7 @@ def test_rename_passes_character_and_author_join_policies_to_renamer(
         _metadata(
             current_filename="old.pdf",
             bibcode="2021A&A...654A.113B",
-            sha256="sha-old",
+            sha256=sha256_file(source),
         ),
     )
     sidecar.save()
@@ -1127,7 +1134,7 @@ def test_rename_dry_run_then_apply(tmp_path):
         _metadata(
             current_filename="old.pdf",
             bibcode="2021A&A...654A.113B",
-            sha256="sha-old",
+            sha256=sha256_file(source),
         ),
     )
     sidecar.save()
@@ -1209,12 +1216,25 @@ def test_push_library_apply_calls_add_documents(tmp_path, monkeypatch):
             self.calls.append((library_id, bibcodes))
             return {"number_added": len(bibcodes)}
 
+        def iter_libraries(self):
+            yield SimpleNamespace(
+                id="LIB123",
+                name="Papers",
+                permission="owner",
+                public=False,
+                num_documents=0,
+            )
+
     class StubClient:
-        instances = []
+        instances: ClassVar[list[Any]] = []
 
         def __init__(self, token=None):
             self.libraries = StubLibraries()
+            self.closed = False
             StubClient.instances.append(self)
+
+        def close(self):
+            self.closed = True
 
     monkeypatch.setattr("adsfolio.pdf.cli_common.ADSClient", StubClient)
 
@@ -1224,10 +1244,158 @@ def test_push_library_apply_calls_add_documents(tmp_path, monkeypatch):
         ["push-library", str(tmp_path), "LIB123", "--apply"],
     )
     assert result.exit_code == 0
-    assert "Library update response" in result.output
+    assert "ADS acknowledged 1 bibcodes" in result.output
     assert StubClient.instances[0].libraries.calls == [
         ("LIB123", ["2024ApJ...900..100S"])
     ]
+    assert StubClient.instances[0].closed
+
+
+class _FakeLibraries:
+    """Record ADS library writes and optionally fail one add request."""
+
+    def __init__(self, permission="owner", fail_call=None, error=None):
+        self.permission = permission
+        self.fail_call = fail_call
+        self.error = error
+        self.calls = []
+
+    def iter_libraries(self):
+        yield SimpleNamespace(
+            id="LIB123",
+            name="Papers",
+            permission=self.permission,
+            public=False,
+            num_documents=0,
+        )
+
+    def add_documents(self, library_id, bibcodes):
+        self.calls.append((library_id, list(bibcodes)))
+        if len(self.calls) == self.fail_call:
+            raise self.error
+        return {"number_added": len(bibcodes)}
+
+
+class _FakeLibraryClient:
+    def __init__(self, libraries):
+        self.libraries = libraries
+        self.closed = False
+
+    def close(self):
+        self.closed = True
+
+
+def _catalog_resolved_papers(root, count):
+    """Catalog resolved PDFs with distinct identities and return their Bibcodes."""
+    bibcodes = [f"2024Test.{index:05d}" for index in range(count)]
+    state = open_registry_state(root)
+    try:
+        for index, bibcode in enumerate(bibcodes):
+            name = f"paper{index:05d}.pdf"
+            state.upsert_file(
+                name,
+                _metadata(
+                    bibcode=bibcode,
+                    doi=f"10.1234/{index}",
+                    sha256=f"sha-{index}",
+                    current_filename=name,
+                ),
+            )
+        state.save()
+    finally:
+        state.close()
+    return bibcodes
+
+
+def test_push_library_dry_run_submits_nothing_and_skips_unresolved(
+    tmp_path, monkeypatch
+):
+    _catalog_resolved_papers(tmp_path, 2)
+    state = open_registry_state(tmp_path)
+    state.upsert_file(
+        "candidate.pdf",
+        _metadata(
+            bibcode="2024Cand.00001",
+            doi="10.1234/candidate",
+            sha256="sha-candidate",
+            current_filename="candidate.pdf",
+            status="unresolved",
+        ),
+    )
+    state.save()
+    state.close()
+
+    def forbid_client(ctx):
+        raise AssertionError("dry-run must not create an ADS client")
+
+    monkeypatch.setattr("adsfolio.pdf.cli._get_client", forbid_client)
+
+    result = CliRunner().invoke(pdf, ["push-library", str(tmp_path), "LIB123"])
+
+    assert result.exit_code == 0, result.output
+    assert "Prepared 2 bibcodes for library LIB123." in result.output
+    assert "Skipped 1 records without a resolved ADS Bibcode." in result.output
+    assert "Dry-run only" in result.output
+
+
+def test_push_library_apply_batches_over_request_limit(tmp_path, monkeypatch):
+    limit = AdsLibraryService.MAX_DOCUMENTS_PER_REQUEST
+    bibcodes = _catalog_resolved_papers(tmp_path, limit + 1)
+    client = _FakeLibraryClient(_FakeLibraries())
+    monkeypatch.setattr("adsfolio.pdf.cli._get_client", lambda ctx: client)
+
+    result = CliRunner().invoke(
+        pdf, ["push-library", str(tmp_path), "LIB123", "--apply"]
+    )
+
+    assert result.exit_code == 0, result.output
+    calls = client.libraries.calls
+    assert [len(batch) for _, batch in calls] == [limit, 1]
+    assert [code for _, batch in calls for code in batch] == sorted(bibcodes)
+    assert f"ADS acknowledged {limit + 1} bibcodes" in result.output
+    assert client.closed
+
+
+@pytest.mark.parametrize(
+    ("error", "outcome"),
+    [
+        (ADSError("quota exceeded"), "rejected 3, status unknown 0"),
+        (requests.ConnectionError("reset"), "rejected 0, status unknown 3"),
+    ],
+)
+def test_push_library_later_batch_failure_reports_partial_progress(
+    tmp_path, monkeypatch, error, outcome
+):
+    limit = AdsLibraryService.MAX_DOCUMENTS_PER_REQUEST
+    _catalog_resolved_papers(tmp_path, limit + 3)
+    client = _FakeLibraryClient(_FakeLibraries(fail_call=2, error=error))
+    monkeypatch.setattr("adsfolio.pdf.cli._get_client", lambda ctx: client)
+
+    result = CliRunner().invoke(
+        pdf, ["push-library", str(tmp_path), "LIB123", "--apply"]
+    )
+
+    assert result.exit_code == 1
+    assert len(client.libraries.calls) == 2
+    assert f"Acknowledged {limit}, {outcome}, not attempted 0" in result.output
+    assert "Re-run this command" in result.output
+    assert client.closed
+
+
+def test_push_library_refuses_read_only_library(tmp_path, monkeypatch):
+    _catalog_resolved_papers(tmp_path, 1)
+    client = _FakeLibraryClient(_FakeLibraries(permission="read"))
+    monkeypatch.setattr("adsfolio.pdf.cli._get_client", lambda ctx: client)
+
+    result = CliRunner().invoke(
+        pdf, ["push-library", str(tmp_path), "LIB123", "--apply"]
+    )
+
+    assert result.exit_code == 1
+    assert "not writable" in result.output
+    assert "No bibcodes were submitted." in result.output
+    assert client.libraries.calls == []
+    assert client.closed
 
 
 def test_status_reports_identified_unresolved_and_duplicates(tmp_path):
@@ -1691,6 +1859,7 @@ def test_rename_allow_ads_identifies_pending_pdfs(tmp_path, monkeypatch):
         "apply": False,
         "verbose_parser": False,
         "strategies": RECOMMENDED_IDENTIFY_STRATEGIES,
+        "providers": DEFAULT_DOI_PROVIDERS,
         "allow_ads": True,
         "ai_csv": None,
         "verbose": 0,
@@ -2037,3 +2206,205 @@ def test_upgrade_command_uses_registry_without_creating_sidecar(tmp_path, monkey
     assert result.exit_code == 0
     assert isinstance(captured["state"], PdfRegistryState)
     assert (tmp_path / "config" / CATALOG_FILENAME).exists()
+
+
+def test_parse_ads_identifier_normalizes_doi_resolver_urls() -> None:
+    assert _parse_ads_identifier("https://doi.org/10.1364/JOSA.24.000206") == (
+        "doi",
+        "10.1364/josa.24.000206",
+    )
+    assert _parse_ads_identifier("https://doi.org/10.1234/a(b)") == (
+        "doi",
+        "10.1234/a(b)",
+    )
+    assert _parse_ads_identifier("https://dx.doi.org/10.1234/a%28b%29?loc=1#f") == (
+        "doi",
+        "10.1234/a(b)",
+    )
+    assert _parse_ads_identifier(
+        "http://dx.doi.org/10.1002/%28SICI%291097-0258%2819980815%2917?loc=en#frag"
+    ) == (
+        "doi",
+        "10.1002/(sici)1097-0258(19980815)17",
+    )
+    assert _parse_ads_identifier(
+        "DOI: https://doi.org/10.1051/0004-6361/201834764"
+    ) == (
+        "doi",
+        "10.1051/0004-6361/201834764",
+    )
+    assert _parse_ads_identifier("DOI: 10.1234/a(b).") == (
+        "doi",
+        "10.1234/a(b).",
+    )
+    assert _parse_ads_identifier("https://doi.org/10.1000/ab(c)") == (
+        "doi",
+        "10.1000/ab(c)",
+    )
+    assert _parse_ads_identifier("10.1000/ab(c)") == (
+        "doi",
+        "10.1000/ab(c)",
+    )
+    assert _parse_ads_identifier("https://example.org/10.1364/JOSA.24.000206") == (
+        "bibcode",
+        "https://example.org/10.1364/JOSA.24.000206",
+    )
+    assert _parse_ads_identifier("https://[") == ("bibcode", "https://[")
+
+
+def test_refresh_ads_cli_resolves_doi_resolver_url_with_closing_paren(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    library = tmp_path / "library"
+    library.mkdir()
+    pdf_path = library / "paper.pdf"
+    pdf_path.write_bytes(b"%PDF-1.4\n%test\n")
+    state = open_registry_state(library)
+    try:
+        state.upsert_file(
+            "paper.pdf",
+            {
+                "current_filename": "paper.pdf",
+                "sha256": "sha-paren",
+                "status": "unresolved",
+            },
+        )
+        state.save()
+    finally:
+        state.close()
+
+    queries: list[str] = []
+
+    class FakeSearch:
+        def query(self, *, q: str, fl: list[str], rows: int):
+            del fl, rows
+            queries.append(q)
+            return SimpleNamespace(
+                num_found=1,
+                docs=[
+                    {
+                        "bibcode": "1998StatM..17.1661B",
+                        "doi": ["10.1234/a(b)"],
+                        "title": ["Parenthesis DOI Paper"],
+                        "author": ["Bach, Yoonsoo P."],
+                        "year": "1998",
+                        "bibstem": ["StatM"],
+                        "volume": "17",
+                        "page": ["1661"],
+                        "pub": "Statistics in Medicine",
+                    }
+                ],
+            )
+
+    monkeypatch.setattr(
+        "adsfolio.pdf.cli._get_client",
+        lambda _ctx: SimpleNamespace(search=FakeSearch()),
+    )
+    runner = CliRunner()
+    result = runner.invoke(
+        pdf,
+        [
+            "refresh-ads",
+            str(library),
+            "--identifier",
+            "https://doi.org/10.1234/a(b)",
+            "--relative-path",
+            "paper.pdf",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert queries == ['doi:"10.1234/a(b)"']
+
+    verify_state = open_registry_state(library)
+    try:
+        records = list(verify_state.registry.iter_files())
+        assert len(records) == 1
+        assert records[0]["status"] == "resolved"
+        assert records[0]["bibcode"] == "1998StatM..17.1661B"
+        assert records[0]["metadata"]["title"] == ["Parenthesis DOI Paper"]
+    finally:
+        verify_state.close()
+
+
+def test_external_identify_then_rename_without_ads_token(tmp_path, monkeypatch):
+    root = tmp_path / "library"
+    root.mkdir()
+    source = root / "10.1234_example.pdf"
+    source.write_bytes(b"%PDF-1.4 external publication")
+    monkeypatch.setattr(
+        "adsfolio.pdf.cli._get_client",
+        lambda ctx: pytest.fail(
+            "External lookup and local rename must not create an ADS client"
+        ),
+    )
+    monkeypatch.setattr(
+        "adsfolio.pdf.identifier.fetch_crossref_doi",
+        lambda doi: {
+            "doi": [doi],
+            "title": ["External Paper"],
+            "author": ["Curie, Marie"],
+            "year": "2024",
+        },
+    )
+    result = CliRunner().invoke(
+        pdf,
+        [
+            "identify",
+            str(root),
+            "--provider",
+            "crossref",
+            "--strategy",
+            "filename_doi",
+            "--apply",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    state = open_registry_state(root)
+    before = state.registry.find_file_by_current_path(root, source.name)
+    assert before["metadata"]["_adsfolio_external_metadata"]["provider"] == "crossref"
+    identity = before["id"]
+    state.close()
+    result = CliRunner().invoke(pdf, ["rename", str(root), "--apply"])
+    assert result.exit_code == 0, result.output
+    renamed = list(root.glob("*.pdf"))
+    assert len(renamed) == 1
+    assert renamed[0].name == "CurieM_2024-External_Paper.pdf"
+    state = open_registry_state(root)
+    after = state.registry.find_file_by_current_path(root, renamed[0].name)
+    assert after["id"] == identity
+    assert after["metadata"]["title"] == ["External Paper"]
+    state.close()
+
+
+def test_external_lookup_failure_does_not_move_pdf(tmp_path, monkeypatch):
+    from adsfolio.pdf.doi_providers import ProviderNetworkError
+
+    root = tmp_path / "library"
+    root.mkdir()
+    source = root / "10.1234_example.pdf"
+    content = b"%PDF-1.4 preserved on failure"
+    source.write_bytes(content)
+
+    def fail_lookup(doi):
+        raise ProviderNetworkError(f"Crossref timeout for DOI {doi}")
+
+    monkeypatch.setattr("adsfolio.pdf.identifier.fetch_crossref_doi", fail_lookup)
+    result = CliRunner().invoke(
+        pdf,
+        [
+            "identify",
+            str(root),
+            "--provider",
+            "crossref",
+            "--strategy",
+            "filename_doi",
+            "--output-unresolved",
+            str(root / "unresolved"),
+            "--apply",
+        ],
+    )
+    assert result.exit_code == 1
+    assert "Crossref timeout" in result.output
+    assert source.read_bytes() == content
+    assert not (root / "unresolved" / source.name).exists()

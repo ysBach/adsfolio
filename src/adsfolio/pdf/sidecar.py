@@ -4,15 +4,17 @@ import copy
 import json
 import shutil
 import unicodedata
+from collections.abc import Mapping
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any
 
+from ..data_migration import LEGACY_SIDECAR, normalize_metadata
 from .identify_settings import IdentifySettings
 
-SIDECAR_FILENAME = ".adsapi-pdfs.json"
+SIDECAR_FILENAME = ".adsfolio-pdfs.json"
 SIDECAR_VERSION = 2
 
-__all__ = ["Sidecar", "SidecarError", "SIDECAR_FILENAME", "SIDECAR_VERSION"]
+__all__ = ["SIDECAR_FILENAME", "SIDECAR_VERSION", "Sidecar", "SidecarError"]
 
 
 class SidecarError(Exception):
@@ -32,12 +34,12 @@ def _normalize_unicode(value: Any) -> Any:
 
 
 class Sidecar:
-    """Manage ``.adsapi-pdfs.json`` files for a single directory."""
+    """Manage ``.adsfolio-pdfs.json`` files for a single directory."""
 
     def __init__(self, directory: Path, filename: str = SIDECAR_FILENAME):
         self.directory = Path(directory)
         self.path = self.directory / filename
-        self._data = self._load()
+        self._data = normalize_metadata(self._load())
         self._sha_index: dict[str, list[str]] = {}
         self._current_filename_index: dict[str, list[str]] = {}
         self._rebuild_indexes()
@@ -116,6 +118,10 @@ class Sidecar:
 
     def _load(self) -> dict[str, Any]:
         load_path = self.path
+        if not load_path.exists() and self.path.name == SIDECAR_FILENAME:
+            legacy = self.directory / LEGACY_SIDECAR
+            if legacy.exists():
+                load_path = legacy
         migrated_path = self.path.with_name(f"{self.path.name}.migrated")
         if not load_path.exists() and migrated_path.exists():
             load_path = migrated_path
@@ -131,7 +137,7 @@ class Sidecar:
 
     def reload(self) -> dict[str, Any]:
         """Reload the sidecar from disk and return a copy."""
-        self._data = self._load()
+        self._data = normalize_metadata(self._load())
         self._rebuild_indexes()
         return self.data
 

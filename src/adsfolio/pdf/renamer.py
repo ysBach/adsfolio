@@ -3,10 +3,14 @@
 import logging
 import re
 import unicodedata
+from collections.abc import Mapping
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Mapping
+from typing import TYPE_CHECKING, Any
 
 from ..formatting import html_to_text
+from .cli_common import is_resolved_record
+from .files import sha256_file
+from .readiness import METADATA_SHA256_KEY, metadata_ready
 from .sidecar import Sidecar
 from .tracked_move import move_tracked_file
 
@@ -14,6 +18,7 @@ if TYPE_CHECKING:
     from ..client import ADSClient
 
 DEFAULT_SCHEME = "{authors}_{bibcode}-{title}"
+DEFAULT_NONBIBCODE_SCHEME = "{authors}_{year}-{title}"
 _INVALID_FILENAME_CHARS = re.compile(r'[\\/:*?"<>|\x00-\x1f]')
 _ALLOWED_COMPONENT_PUNCT = {".", "_", "+", ",", "-"}
 _ALLOWED_CHAR_POLICIES = {"ascii", "keep"}
@@ -46,7 +51,16 @@ _NONDECOMPOSABLE_LATIN_ASCII = str.maketrans(
     }
 )
 
-__all__ = ["PdfRenamer", "DEFAULT_SCHEME"]
+__all__ = ["DEFAULT_NONBIBCODE_SCHEME", "DEFAULT_SCHEME", "PdfRenamer"]
+
+
+def _resolve_rename_template(template: str, metadata: Mapping[str, Any]) -> str:
+    has_bibcode = bool(
+        str(metadata.get("bibcode") or "").strip()
+    ) and is_resolved_record(dict(metadata))
+    if not has_bibcode and template == DEFAULT_SCHEME:
+        return DEFAULT_NONBIBCODE_SCHEME
+    return template
 
 
 class PdfRenamer:
@@ -298,16 +312,16 @@ class PdfRenamer:
         author_separator: str = "+",
         author_truncation_suffix: str = "+",
     ) -> list[tuple[str, str]]:
-        """Batch-rename resolved files tracked in the sidecar.
+        """Rename tracked PDFs with verified ADS or ready local metadata.
 
         If both move directories are supplied, resolved files below
         ``move_resolved_from`` are placed in ``move_resolved_to`` after the
-        new filename is rendered. Unresolved records are left untouched.
+        new filename is rendered. Non-ADS records are renamed in place.
         """
         self._validate_author_limits(max_authors, authors_when_truncated)
         plans: list[tuple[str, str]] = []
         for original_name, metadata in sidecar.files.items():
-            if not metadata.get("bibcode") or metadata.get("status") == "unresolved":
+            if not (is_resolved_record(dict(metadata)) or metadata_ready(metadata)):
                 continue
             current_name = metadata.get("current_filename", original_name)
             source_path = sidecar.directory / current_name
@@ -315,8 +329,23 @@ class PdfRenamer:
                 self.logger.warning("Missing file for rename: %s", source_path)
                 continue
 
+            stored_sha = str(
+                metadata.get("sha256") or metadata.get(METADATA_SHA256_KEY) or ""
+            ).strip()
+            if stored_sha:
+                try:
+                    actual_sha = sha256_file(source_path)
+                except OSError:
+                    continue
+                if actual_sha != stored_sha:
+                    self.logger.warning(
+                        "Skipping rename due to hash mismatch: %s", source_path
+                    )
+                    continue
+
+            effective_template = _resolve_rename_template(template, metadata)
             new_name = self.render(
-                template,
+                effective_template,
                 metadata,
                 author_format,
                 max_authors,
@@ -326,7 +355,11 @@ class PdfRenamer:
                 author_truncation_suffix,
             )
             target_directory = source_path.parent
-            if move_resolved_from is not None and move_resolved_to is not None:
+            if (
+                is_resolved_record(dict(metadata))
+                and move_resolved_from is not None
+                and move_resolved_to is not None
+            ):
                 try:
                     source_path.relative_to(move_resolved_from)
                 except ValueError:
@@ -360,20 +393,40 @@ class PdfRenamer:
         char_policy: str = "keep",
         author_separator: str = "+",
         author_truncation_suffix: str = "+",
+        target_directory: Path | None = None,
     ) -> Path:
         """Plan or apply a rename for one tracked resolved PDF."""
-        source = Path(source_path).resolve()
-        target = source.with_name(
-            self.render(
-                template,
-                metadata,
-                author_format=author_format,
-                max_authors=max_authors,
-                authors_when_truncated=authors_when_truncated,
-                char_policy=char_policy,
-                author_separator=author_separator,
-                author_truncation_suffix=author_truncation_suffix,
+        source = Path(source_path).expanduser().resolve()
+        if not (is_resolved_record(dict(metadata)) or metadata_ready(metadata)):
+            raise ValueError(
+                "Record is neither resolved nor metadata-ready for renaming."
             )
+        stored_sha = str(
+            metadata.get("sha256") or metadata.get(METADATA_SHA256_KEY) or ""
+        ).strip()
+        if stored_sha and source.is_file():
+            actual_sha = sha256_file(source)
+            if actual_sha != stored_sha:
+                raise ValueError(
+                    f"File content hash mismatch for {source}: "
+                    f"expected {stored_sha}, got {actual_sha}"
+                )
+
+        effective_template = _resolve_rename_template(template, metadata)
+        destination_directory = (
+            source.parent
+            if target_directory is None
+            else Path(target_directory).expanduser().resolve()
+        )
+        target = destination_directory / self.render(
+            effective_template,
+            metadata,
+            author_format=author_format,
+            max_authors=max_authors,
+            authors_when_truncated=authors_when_truncated,
+            char_policy=char_policy,
+            author_separator=author_separator,
+            author_truncation_suffix=author_truncation_suffix,
         )
         if target == source or dry_run:
             return target

@@ -235,7 +235,9 @@ def test_port_annotations_reports_unported_records(monkeypatch, tmp_path):
         )
     ]
 
-    monkeypatch.setattr("adsfolio.pdf.annotations.extract_annotations", lambda _: records)
+    monkeypatch.setattr(
+        "adsfolio.pdf.annotations.extract_annotations", lambda _: records
+    )
     monkeypatch.setattr(
         "adsfolio.pdf.annotations.match_annotations",
         lambda _records, _target: matched,

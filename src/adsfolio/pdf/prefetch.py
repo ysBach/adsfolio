@@ -26,14 +26,14 @@ PREFETCH_FIELDS = [
 BIGQUERY_CHUNK_SIZE = 2000
 
 __all__ = [
-    "PublicationProfile",
     "PublicationIndex",
-    "load_profile",
-    "query_publications",
+    "PublicationProfile",
     "build_publication_index",
-    "match_prefetch_from_doi_candidates",
-    "match_pdf_from_prefetch",
     "estimated_query_budget",
+    "load_profile",
+    "match_pdf_from_prefetch",
+    "match_prefetch_from_doi_candidates",
+    "query_publications",
 ]
 
 

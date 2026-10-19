@@ -3,20 +3,48 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
+import os
+import re
 import sqlite3
+from collections.abc import Callable, Collection, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
-from typing import Any, Mapping
+from typing import Any
 
 from ..config import Config
+from ..data_migration import (
+    LEGACY_REGISTRY,
+    LEGACY_SIDECAR,
+    migrate_catalog_keys,
+    normalize_metadata,
+)
+from .files import sha256_file
+from .readiness import (
+    EXTERNAL_METADATA_KEY,
+    METADATA_SHA256_KEY,
+    METADATA_STALE_KEY,
+)
 from .sidecar import SIDECAR_FILENAME, Sidecar
 
 CATALOG_FILENAME = "pdf-library.sqlite"
 CATALOG_SCHEMA_VERSION = 2
-LEGACY_REGISTRY_FILENAME = ".adsapi-pdfs.sqlite"
-LOCKED_METADATA_FIELDS_KEY = "_adsapi_locked_fields"
+LEGACY_REGISTRY_FILENAME = ".adsfolio-pdfs.sqlite"
+LOCKED_METADATA_FIELDS_KEY = "_adsfolio_locked_fields"
+REFERENCE_METADATA_KEY = "_adsfolio_reference"
+REFERENCE_FIELD_MAP = {
+    "title": "title",
+    "author": "author",
+    "year": "year",
+    "journal": "pub",
+    "volume": "volume",
+    "number": "issue",
+    "pages": "page",
+    "doi": "doi",
+    "abstract": "abstract",
+}
 
 
 @dataclass(frozen=True)
@@ -63,6 +91,7 @@ class PdfCatalog:
         except sqlite3.OperationalError:
             pass
         self._initialize_schema()
+        migrate_catalog_keys(self._connection)
 
     @property
     def schema_version(self) -> int:
@@ -115,8 +144,15 @@ class PdfCatalog:
         """Register one observation without opening a transaction.
 
         Matching uses an active path first, then a unique filesystem identity,
-        then a unique content digest. Ambiguous matches create a new
-        attachment instead of silently merging records.
+        then a unique content digest. Operating systems reuse inode numbers,
+        any stored location with that identity and a known digest is evidence:
+        only attachments whose known digest equals the incoming digest match,
+        and unknown-digest locations are ignored. If none match, the file can
+        still rejoin through the digest lookup. Only when no stored location
+        with that identity has a digest does identity alone decide (residual
+        risk: a reused inode then inherits that attachment).
+        Ambiguous matches create a new attachment instead of silently merging
+        records.
         """
         normalized_root = self._normalize_root(root)
         normalized_path = self._normalize_relative_path(relative_path)
@@ -152,7 +188,9 @@ class PdfCatalog:
                 "SELECT sha256 FROM content_versions WHERE id = ?",
                 (location["current_version_id"],),
             ).fetchone()
-            content_changed = version is None or version["sha256"] != normalized_sha
+            content_changed = normalized_sha is not None and (
+                version is None or version["sha256"] != normalized_sha
+            )
 
         attachment = self._attachment(attachment_id)
         if attachment is None:
@@ -168,6 +206,14 @@ class PdfCatalog:
                 for key, value in incoming_metadata.items()
                 if key not in existing_metadata
                 or existing_metadata[key] in (None, "", [])
+            }
+        if incoming_metadata.get(EXTERNAL_METADATA_KEY):
+            incoming_metadata = {
+                key: value
+                for key, value in incoming_metadata.items()
+                if key.startswith("_adsfolio_")
+                or key in {"sha256", "identified_at"}
+                or existing_metadata.get(key) in (None, "", [])
             }
         merged_metadata = self._merge_metadata(
             existing_metadata,
@@ -188,8 +234,27 @@ class PdfCatalog:
             next_status = existing_status
         else:
             next_status = str(status or existing_status)
-        if next_status == "resolved" and document_id is None:
+        if next_status == "resolved" and (
+            document_id is None
+            or (
+                REFERENCE_METADATA_KEY in merged_metadata
+                and not merged_metadata.get("bibcode")
+            )
+        ):
             next_status = "unresolved"
+        stale = content_changed or bool(existing_metadata.get(METADATA_STALE_KEY))
+        fresh_ads = (
+            status == "resolved"
+            and bool(incoming_metadata.get("bibcode"))
+            and bool(normalized_sha)
+            and incoming_metadata.get(METADATA_SHA256_KEY) == normalized_sha
+        )
+        if stale and not fresh_ads:
+            merged_metadata[METADATA_STALE_KEY] = True
+            document_id = None
+            next_status = "unresolved"
+        elif fresh_ads:
+            merged_metadata.pop(METADATA_STALE_KEY, None)
         self._update_attachment(
             attachment_id,
             document_id=document_id,
@@ -302,6 +367,179 @@ class PdfCatalog:
             "metadata": metadata,
         }
 
+    def get_document(self, document_id: int) -> dict[str, Any] | None:
+        """Return one canonical document, or `None` when its ID is unknown."""
+        row = self._connection.execute(
+            "SELECT id, bibcode, metadata_json FROM documents WHERE id = ?",
+            (document_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        return {
+            "id": int(row["id"]),
+            "bibcode": row["bibcode"],
+            "metadata": json.loads(row["metadata_json"]),
+        }
+
+    def list_documents(self) -> list[dict[str, Any]]:
+        """Return canonical documents, including references without PDFs."""
+        return [
+            {
+                "id": int(row["id"]),
+                "bibcode": row["bibcode"],
+                "metadata": json.loads(row["metadata_json"]),
+            }
+            for row in self._connection.execute("SELECT * FROM documents ORDER BY id")
+        ]
+
+    def save_reference_documents(
+        self, documents: list[Mapping[str, Any]], *, source_text: str | None = None
+    ) -> list[int]:
+        """Save one reference batch atomically and update attached metadata.
+
+        Parameters
+        ----------
+        documents
+            Document mappings containing `metadata`, optional `bibcode`, and
+            optional existing `id`. Duplicate citation keys and DOIs fail the
+            whole batch; existing documents are never merged implicitly.
+        source_text
+            Original BibTeX to store once for the batch, addressed by its
+            SHA-256 digest in `catalog_meta`.
+        """
+        with self._connection:
+            self._connection.execute("BEGIN IMMEDIATE")
+            existing = self.list_documents()
+            replacing = {item.get("id") for item in documents if item.get("id")}
+            known_ids = {item["id"] for item in existing}
+            if replacing - known_ids:
+                raise ValueError(
+                    f"Unknown reference IDs: {sorted(replacing - known_ids)}"
+                )
+            keys: set[str] = set()
+            dois: set[str] = set()
+            retained = [d for d in existing if d["id"] not in replacing]
+            for index, item in enumerate(retained + documents):
+                metadata = item["metadata"]
+                reference = metadata.get(REFERENCE_METADATA_KEY, {})
+                key = str(reference.get("cite_key") or item.get("bibcode") or "")
+                if index >= len(retained) and key and key in keys:
+                    raise ValueError(f"Citation key already exists: {key}")
+                if key:
+                    keys.add(key)
+                values = metadata.get("doi") or []
+                if isinstance(values, str):
+                    values = [values]
+                normalized = {
+                    re.sub(
+                        r"^(?:https?://(?:dx\.)?doi\.org/|doi:\s*)",
+                        "",
+                        self._normalize_doi(value),
+                    )
+                    for value in values
+                    if value
+                }
+                if index >= len(retained) and dois & normalized:
+                    raise ValueError(f"DOI already exists: {min(dois & normalized)}")
+                dois.update(normalized)
+            ids: list[int] = []
+            source_id = None
+            if source_text is not None:
+                source_id = hashlib.sha256(source_text.encode("utf-8")).hexdigest()
+                self._connection.execute(
+                    "INSERT OR IGNORE INTO catalog_meta(key, value) VALUES (?, ?)",
+                    (f"reference_source:{source_id}", source_text),
+                )
+            for item in documents:
+                metadata = copy.deepcopy(dict(item["metadata"]))
+                if source_id is not None:
+                    metadata[REFERENCE_METADATA_KEY]["source_id"] = source_id
+                now = self._utc_timestamp()
+                document_id = item.get("id")
+                try:
+                    if document_id is None:
+                        cursor = self._connection.execute(
+                            "INSERT INTO documents(bibcode, metadata_json, created_at, updated_at) "
+                            "VALUES (?, ?, ?, ?)",
+                            (
+                                item.get("bibcode"),
+                                self._encode_json(metadata),
+                                now,
+                                now,
+                            ),
+                        )
+                        document_id = int(cursor.lastrowid)
+                    else:
+                        self._connection.execute(
+                            "UPDATE documents SET metadata_json = ?, updated_at = ? WHERE id = ?",
+                            (self._encode_json(metadata), now, document_id),
+                        )
+                except sqlite3.IntegrityError as exc:
+                    raise ValueError(
+                        "ADS bibcode already belongs to another reference"
+                    ) from exc
+                ids.append(document_id)
+                for row in self._connection.execute(
+                    "SELECT id, metadata_json FROM attachments WHERE document_id = ?",
+                    (document_id,),
+                ).fetchall():
+                    attached = json.loads(row["metadata_json"])
+                    locks = set(attached.get(LOCKED_METADATA_FIELDS_KEY, []))
+                    attached.update(metadata)
+                    attached[LOCKED_METADATA_FIELDS_KEY] = sorted(
+                        locks | set(metadata.get(LOCKED_METADATA_FIELDS_KEY, []))
+                    )
+                    self._connection.execute(
+                        "UPDATE attachments SET metadata_json = ?, updated_at = ? WHERE id = ?",
+                        (self._encode_json(attached), now, row["id"]),
+                    )
+            return ids
+
+    def attach_document_file(
+        self,
+        document_id: int,
+        path: Path,
+        *,
+        sha256: str,
+        size_bytes: int,
+        mtime_ns: int,
+        device: int,
+        inode: int,
+    ) -> dict[str, Any]:
+        """Observe a PDF and link it without replacing another document identity."""
+        with self._connection:
+            self._connection.execute("BEGIN IMMEDIATE")
+            row = self._connection.execute(
+                "SELECT metadata_json FROM documents WHERE id = ?", (document_id,)
+            ).fetchone()
+            if row is None:
+                raise ValueError(f"Unknown reference ID: {document_id}")
+            observation = self._observe_file(
+                path.parent,
+                path.name,
+                sha256=sha256,
+                size_bytes=size_bytes,
+                mtime_ns=mtime_ns,
+                device=device,
+                inode=inode,
+            )
+            attachment = self._attachment(observation.attachment_id)
+            if attachment["document_id"] not in (None, document_id):
+                raise ValueError("PDF already belongs to another reference")
+            metadata = json.loads(attachment["metadata_json"])
+            locks = set(metadata.get(LOCKED_METADATA_FIELDS_KEY, []))
+            metadata.update(json.loads(row["metadata_json"]))
+            metadata[LOCKED_METADATA_FIELDS_KEY] = sorted(
+                locks | set(metadata.get(LOCKED_METADATA_FIELDS_KEY, []))
+            )
+            self._update_attachment(
+                observation.attachment_id,
+                document_id=document_id,
+                status="resolved" if metadata.get("bibcode") else "unresolved",
+                metadata=metadata,
+            )
+        return self.get_file(path.parent, path.name)
+
     def query_files(
         self,
         *,
@@ -310,6 +548,10 @@ class PdfCatalog:
         resolved: bool | None = None,
         search: str | None = None,
         include_missing: bool = False,
+        document_id: int | None = None,
+        attachment_id: int | None = None,
+        location_id: int | None = None,
+        sha256: str | Collection[str] | None = None,
     ) -> list[dict[str, Any]]:
         """Return location records matching local catalog filters.
 
@@ -318,6 +560,123 @@ class PdfCatalog:
         include_missing
             Include historical locations whose files are no longer observed.
             Normal queries return only current locations.
+        document_id
+            Restrict locations to one canonical document when supplied.
+        attachment_id, location_id
+            Restrict results to one attachment or one location identifier.
+        sha256
+            One digest, or a collection of digests, of the current content.
+            An empty collection matches nothing. A collection runs one indexed
+            query per distinct digest and merges the rows, so its size is not
+            limited by the number of SQL variables.
+        """
+        if sha256 is not None and not isinstance(sha256, str):
+            merged: dict[int, dict[str, Any]] = {}
+            for digest in dict.fromkeys(sha256):
+                for record in self.query_files(
+                    root=root,
+                    status=status,
+                    resolved=resolved,
+                    search=search,
+                    include_missing=include_missing,
+                    document_id=document_id,
+                    attachment_id=attachment_id,
+                    location_id=location_id,
+                    sha256=digest,
+                ):
+                    merged[record["location_id"]] = record
+            return sorted(
+                merged.values(),
+                key=lambda record: (record["relative_path"], record["location_id"]),
+            )
+        version_join, where, params = self._file_filter_sql(
+            root=root,
+            status=status,
+            resolved=resolved,
+            search=search,
+            include_missing=include_missing,
+            document_id=document_id,
+            attachment_id=attachment_id,
+            location_id=location_id,
+            sha256=sha256,
+        )
+        rows = self._connection.execute(
+            f"""
+            SELECT
+                l.id AS location_id, l.attachment_id, r.canonical_path AS root,
+                l.relative_path, l.size_bytes, l.mtime_ns, l.device, l.inode,
+                l.current_version_id, l.first_seen_at, l.missing_at,
+                a.document_id, a.status, a.metadata_json,
+                v.sha256
+            FROM file_locations AS l
+            JOIN library_roots AS r ON r.id = l.root_id
+            JOIN attachments AS a ON a.id = l.attachment_id
+            {version_join} content_versions AS v ON v.id = l.current_version_id
+            {where}
+            ORDER BY l.relative_path, l.id
+            """,
+            params,
+        ).fetchall()
+        return [self._record_from_row(row) for row in rows]
+
+    def count_files(
+        self,
+        *,
+        root: Path | None = None,
+        status: str | None = None,
+        resolved: bool | None = None,
+        search: str | None = None,
+        include_missing: bool = False,
+        document_id: int | None = None,
+        attachment_id: int | None = None,
+        location_id: int | None = None,
+        sha256: str | None = None,
+    ) -> int:
+        """Count the locations that `query_files` returns for the same filters.
+
+        The count is done in SQL, so no metadata JSON is parsed. Digest
+        collections are not accepted; call `query_files` for those.
+        """
+        version_join, where, params = self._file_filter_sql(
+            root=root,
+            status=status,
+            resolved=resolved,
+            search=search,
+            include_missing=include_missing,
+            document_id=document_id,
+            attachment_id=attachment_id,
+            location_id=location_id,
+            sha256=sha256,
+        )
+        row = self._connection.execute(
+            f"""
+            SELECT COUNT(*)
+            FROM file_locations AS l
+            JOIN library_roots AS r ON r.id = l.root_id
+            JOIN attachments AS a ON a.id = l.attachment_id
+            {version_join} content_versions AS v ON v.id = l.current_version_id
+            {where}
+            """,
+            params,
+        ).fetchone()
+        return int(row[0])
+
+    def _file_filter_sql(
+        self,
+        *,
+        root: Path | None,
+        status: str | None,
+        resolved: bool | None,
+        search: str | None,
+        include_missing: bool,
+        document_id: int | None,
+        attachment_id: int | None,
+        location_id: int | None,
+        sha256: str | None,
+    ) -> tuple[str, str, list[Any]]:
+        """Return the version join, WHERE clause, and parameters for file queries.
+
+        Shared by `query_files` and `count_files` so both select the same rows.
         """
         clauses: list[str] = []
         params: list[Any] = []
@@ -326,6 +685,18 @@ class PdfCatalog:
         if root is not None:
             clauses.append("r.canonical_path = ?")
             params.append(self._normalize_root(root))
+        if document_id is not None:
+            clauses.append("a.document_id = ?")
+            params.append(document_id)
+        if attachment_id is not None:
+            clauses.append("a.id = ?")
+            params.append(attachment_id)
+        if location_id is not None:
+            clauses.append("l.id = ?")
+            params.append(location_id)
+        if sha256 is not None:
+            clauses.append("v.sha256 = ?")
+            params.append(sha256)
         if status is not None:
             clauses.append("a.status = ?")
             params.append(status)
@@ -340,24 +711,10 @@ class PdfCatalog:
             )
             params.extend([pattern, pattern, pattern])
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
-        rows = self._connection.execute(
-            f"""
-            SELECT
-                l.id AS location_id, l.attachment_id, r.canonical_path AS root,
-                l.relative_path, l.size_bytes, l.mtime_ns, l.device, l.inode,
-                l.current_version_id, l.first_seen_at, l.missing_at,
-                a.document_id, a.status, a.metadata_json,
-                v.sha256
-            FROM file_locations AS l
-            JOIN library_roots AS r ON r.id = l.root_id
-            JOIN attachments AS a ON a.id = l.attachment_id
-            LEFT JOIN content_versions AS v ON v.id = l.current_version_id
-            {where}
-            ORDER BY l.relative_path, l.id
-            """,
-            params,
-        ).fetchall()
-        return [self._record_from_row(row) for row in rows]
+        # A digest filter rejects locations without a version, so an inner join
+        # lets SQLite start from idx_version_sha256.
+        version_join = "JOIN" if sha256 is not None else "LEFT JOIN"
+        return version_join, where, params
 
     def content_versions(self, attachment_id: int) -> list[dict[str, Any]]:
         """Return content versions in observation order."""
@@ -377,34 +734,81 @@ class PdfCatalog:
         with self._connection:
             return self._ensure_root(self._normalize_root(root))
 
-    def discover_root(self, root: Path, *, recursive: bool = True) -> int:
-        """Register every PDF in a root using filesystem facts only.
+    def discover_root(
+        self,
+        root: Path,
+        *,
+        recursive: bool = True,
+        cancelled: Callable[[], bool] | None = None,
+    ) -> int:
+        """Discover PDFs and verify known identity candidates by content.
 
-        The discovery pass deliberately leaves SHA-256 unknown. A later sync or
-        identify pass can hash only new or changed locations while unresolved
-        files already remain queryable in the catalog.
+        The discovery pass leaves SHA-256 unknown, with one exception: a file at
+        a path with no active location is hashed once, before any catalog write,
+        when a stored location with the same device and inode has a known
+        digest. The digest decides whether the file is that content again
+        (see `_observe_file`). Unchanged files are never hashed. A file that
+        vanishes before hashing is skipped; any other read error aborts the
+        scan before the catalog changes.
         """
         normalized_root = Path(self._normalize_root(root))
-        paths = (
-            normalized_root.rglob("*.pdf")
-            if recursive
-            else normalized_root.glob("*.pdf")
-        )
+        # Finish enumeration before changing locations. An inaccessible directory
+        # must not look like a completed scan in which its files disappeared.
+        directories = [normalized_root]
+        observations: list[tuple[Path, os.stat_result]] = []
+        while directories:
+            if cancelled is not None and cancelled():
+                raise InterruptedError("Local refresh cancelled")
+            with os.scandir(directories.pop()) as entries:
+                for entry in entries:
+                    if entry.is_dir(follow_symlinks=False):
+                        if recursive:
+                            directories.append(Path(entry.path))
+                    elif entry.name.lower().endswith(".pdf"):
+                        try:
+                            if entry.is_file():
+                                observations.append((Path(entry.path), entry.stat()))
+                        except FileNotFoundError:
+                            continue
+        prepared: list[tuple[str, os.stat_result, str | None]] = []
+        for path, stat in observations:
+            if cancelled is not None and cancelled():
+                raise InterruptedError("Local refresh cancelled")
+            relative_path = path.relative_to(normalized_root).as_posix()
+            needs_digest = self._connection.execute(
+                """
+                SELECT EXISTS(
+                    SELECT 1 FROM file_locations AS c
+                    JOIN content_versions AS v ON v.id = c.current_version_id
+                    WHERE c.device = ? AND c.inode = ? AND v.sha256 IS NOT NULL
+                ) AND NOT EXISTS(
+                    SELECT 1 FROM file_locations AS p
+                    JOIN library_roots AS r ON r.id = p.root_id
+                    WHERE r.canonical_path = ? AND p.relative_path = ?
+                        AND p.missing_at IS NULL
+                )
+                """,
+                (stat.st_dev, stat.st_ino, str(normalized_root), relative_path),
+            ).fetchone()[0]
+            digest = None
+            if needs_digest:
+                try:
+                    digest = sha256_file(path)
+                except FileNotFoundError:
+                    continue
+            prepared.append((relative_path, stat, digest))
         seen_paths: set[str] = set()
         discovered = 0
         with self._connection:
             self._ensure_root(str(normalized_root))
-            for path in paths:
-                try:
-                    stat = path.stat()
-                    relative_path = path.relative_to(normalized_root).as_posix()
-                except OSError:
-                    continue
+            for relative_path, stat, digest in prepared:
+                if cancelled is not None and cancelled():
+                    raise InterruptedError("Local refresh cancelled")
                 seen_paths.add(relative_path)
                 self._observe_file(
                     normalized_root,
                     relative_path,
-                    sha256=None,
+                    sha256=digest,
                     size_bytes=stat.st_size,
                     mtime_ns=stat.st_mtime_ns,
                     device=stat.st_dev,
@@ -413,7 +817,7 @@ class PdfCatalog:
                     status=None,
                 )
                 discovered += 1
-        self.mark_missing_locations(normalized_root, seen_paths)
+        self.mark_missing_locations(normalized_root, seen_paths, recursive=recursive)
         return discovered
 
     def update_file_status(self, root: Path, relative_path: str, status: str) -> bool:
@@ -421,7 +825,13 @@ class PdfCatalog:
         record = self.get_file(root, relative_path)
         if record is None:
             return False
-        if status == "resolved" and record["document_id"] is None:
+        if status == "resolved" and (
+            record["document_id"] is None
+            or (
+                REFERENCE_METADATA_KEY in record["metadata"]
+                and not record["metadata"].get("bibcode")
+            )
+        ):
             status = "unresolved"
         with self._connection:
             cursor = self._connection.execute(
@@ -449,19 +859,48 @@ class PdfCatalog:
             for key, value in metadata.items()
             if key not in {"status", "current_filename", "current_path"}
         }
+        managed = REFERENCE_METADATA_KEY in record["metadata"]
+        if managed:
+            existing = record["metadata"]
+            owned = {REFERENCE_METADATA_KEY, "bibcode", *REFERENCE_FIELD_MAP.values()}
+            if any(clean_metadata.get(key) != existing.get(key) for key in owned):
+                raise ValueError(
+                    "Edit this reference's bibliographic fields in File → Local References…"
+                )
+            if not owned.issubset(
+                set(clean_metadata.get(LOCKED_METADATA_FIELDS_KEY, []))
+            ):
+                raise ValueError(
+                    "Reference fields stay protected; edit them in File → Local References…"
+                )
         with self._connection:
-            if "bibcode" in clean_metadata:
-                document_id = self._ensure_document(clean_metadata)
-            else:
-                document_id = record["document_id"]
-            if "status" in metadata and metadata["status"] not in (None, ""):
-                status = str(metadata["status"])
-            elif "bibcode" in clean_metadata:
-                status = "resolved" if document_id is not None else "unresolved"
-            else:
-                status = str(record["status"])
-            if status == "resolved" and document_id is None:
+            existing_stale = bool(
+                record["metadata"].get(METADATA_STALE_KEY)
+                or record.get(METADATA_STALE_KEY)
+            )
+            if existing_stale:
+                clean_metadata[METADATA_STALE_KEY] = True
+
+            if existing_stale:
+                document_id = None
                 status = "unresolved"
+            else:
+                if managed:
+                    document_id = record["document_id"]
+                elif "bibcode" in clean_metadata:
+                    document_id = self._ensure_document(clean_metadata)
+                else:
+                    document_id = record["document_id"]
+                if managed and not clean_metadata.get("bibcode"):
+                    status = "unresolved"
+                elif "status" in metadata and metadata["status"] not in (None, ""):
+                    status = str(metadata["status"])
+                elif "bibcode" in clean_metadata:
+                    status = "resolved" if document_id is not None else "unresolved"
+                else:
+                    status = str(record["status"])
+                if status == "resolved" and document_id is None:
+                    status = "unresolved"
             self._update_attachment(
                 int(record["attachment_id"]),
                 document_id=document_id,
@@ -701,7 +1140,7 @@ class PdfCatalog:
         raw = json.loads(row["raw_json"] or "{}")
         if not isinstance(raw, dict):
             raw = {}
-        raw["_adsapi_metrics"] = dict(metrics)
+        raw["_adsfolio_metrics"] = dict(metrics)
         with self._connection:
             result = self._connection.execute(
                 "UPDATE ads_documents SET raw_json = ? WHERE bibcode = ?",
@@ -753,29 +1192,39 @@ class PdfCatalog:
     def migrate_legacy_root(self, root: Path) -> LegacyMigrationReport:
         """Import legacy root state without changing its source files."""
         normalized_root = self._normalize_root(root)
-        sources: list[tuple[str, list[dict[str, Any]]]] = []
-        legacy_ads_source: tuple[str, list[dict[str, Any]]] | None = None
+        sources: list[tuple[str, Callable[[], list[dict[str, Any]]]]] = []
         legacy_path = Path(normalized_root) / LEGACY_REGISTRY_FILENAME
+        if not legacy_path.exists():
+            legacy_path = Path(normalized_root) / LEGACY_REGISTRY
         sidecar_path = Path(normalized_root) / SIDECAR_FILENAME
+        if not sidecar_path.exists():
+            sidecar_path = Path(normalized_root) / LEGACY_SIDECAR
+        legacy_ads_key = f"sqlite:{legacy_path}:ads_documents"
+        sidecar_key = f"sidecar:{sidecar_path}"
         if legacy_path.exists():
             sources.append(
-                (f"sqlite:{legacy_path}", self._read_legacy_sqlite(legacy_path))
-            )
-            legacy_ads_source = (
-                f"sqlite:{legacy_path}:ads_documents",
-                self._read_legacy_ads_documents(legacy_path),
+                (
+                    f"sqlite:{legacy_path}",
+                    lambda: self._read_legacy_sqlite(legacy_path),
+                )
             )
         if sidecar_path.exists():
             sources.append(
-                (f"sidecar:{sidecar_path}", self._read_legacy_sidecar(sidecar_path))
+                (sidecar_key, lambda: self._read_legacy_sidecar(sidecar_path))
             )
+        # Settings are imported only with the first sidecar import; later opens
+        # must not replace settings changed in the catalog.
+        import_sidecar_settings = (
+            sidecar_path.exists() and not self._migration_complete(sidecar_key)
+        )
 
         imported = 0
         with self._connection:
             self._ensure_root(normalized_root)
-            for source_key, records in sources:
+            for source_key, read_records in sources:
                 if self._migration_complete(source_key):
                     continue
+                records = read_records()
                 for record in records:
                     current_path = self._normalize_relative_path(
                         str(
@@ -796,7 +1245,9 @@ class PdfCatalog:
                         mtime_ns = int(record.get("mtime_ns", 0) or 0)
                         device = record.get("device")
                         inode = record.get("inode")
-                    metadata = dict(record.get("metadata") or record)
+                    metadata = normalize_metadata(
+                        dict(record.get("metadata") or record)
+                    )
                     metadata.pop("current_filename", None)
                     metadata.pop("current_path", None)
                     metadata.pop("size_bytes", None)
@@ -822,23 +1273,22 @@ class PdfCatalog:
                     """,
                     (source_key, self._utc_timestamp(), len(records)),
                 )
-            if legacy_ads_source is not None:
-                source_key, documents = legacy_ads_source
-                if not self._migration_complete(source_key):
-                    for document in documents:
-                        self._upsert_ads_document(
-                            document,
-                            source=f"migration:{legacy_path}",
-                        )
-                    self._connection.execute(
-                        """
-                        INSERT INTO catalog_migrations(
-                            source_key, imported_at, imported_count
-                        ) VALUES (?, ?, ?)
-                        """,
-                        (source_key, self._utc_timestamp(), len(documents)),
+            if legacy_path.exists() and not self._migration_complete(legacy_ads_key):
+                documents = self._read_legacy_ads_documents(legacy_path)
+                for document in documents:
+                    self._upsert_ads_document(
+                        document,
+                        source=f"migration:{legacy_path}",
                     )
-            if sidecar_path.exists():
+                self._connection.execute(
+                    """
+                    INSERT INTO catalog_migrations(
+                        source_key, imported_at, imported_count
+                    ) VALUES (?, ?, ?)
+                    """,
+                    (legacy_ads_key, self._utc_timestamp(), len(documents)),
+                )
+            if import_sidecar_settings:
                 sidecar = Sidecar(
                     sidecar_path.parent,
                     filename=sidecar_path.name,
@@ -848,7 +1298,7 @@ class PdfCatalog:
                     self._connection.execute(
                         """
                         INSERT INTO catalog_meta(key, value) VALUES (?, ?)
-                        ON CONFLICT(key) DO UPDATE SET value = excluded.value
+                        ON CONFLICT(key) DO NOTHING
                         """,
                         (
                             f"root:{normalized_root}:identify_profile",
@@ -860,7 +1310,7 @@ class PdfCatalog:
                     self._connection.execute(
                         """
                         INSERT INTO catalog_meta(key, value) VALUES (?, ?)
-                        ON CONFLICT(key) DO UPDATE SET value = excluded.value
+                        ON CONFLICT(key) DO NOTHING
                         """,
                         (
                             f"root:{normalized_root}:identify_settings",
@@ -1075,6 +1525,12 @@ class PdfCatalog:
                     WHERE missing_at IS NULL;
                 CREATE INDEX IF NOT EXISTS idx_location_identity
                     ON file_locations(device, inode);
+                CREATE INDEX IF NOT EXISTS idx_attachment_document
+                    ON attachments(document_id);
+                CREATE INDEX IF NOT EXISTS idx_location_attachment
+                    ON file_locations(attachment_id);
+                CREATE INDEX IF NOT EXISTS idx_location_version
+                    ON file_locations(current_version_id);
                 CREATE INDEX IF NOT EXISTS idx_version_sha256
                     ON content_versions(sha256);
                 CREATE TABLE IF NOT EXISTS catalog_migrations (
@@ -1174,12 +1630,21 @@ class PdfCatalog:
         if device is not None and inode is not None:
             rows = self._connection.execute(
                 """
-                SELECT DISTINCT attachment_id FROM file_locations
-                WHERE device = ? AND inode = ?
+                SELECT DISTINCT l.attachment_id, v.sha256
+                FROM file_locations AS l
+                LEFT JOIN content_versions AS v ON v.id = l.current_version_id
+                WHERE l.device = ? AND l.inode = ?
                 """,
                 (device, inode),
             ).fetchall()
-            candidates = [int(row["attachment_id"]) for row in rows]
+            known = [row for row in rows if row["sha256"] is not None]
+            candidates = list(
+                {
+                    int(row["attachment_id"])
+                    for row in (known or rows)
+                    if not known or row["sha256"] == sha256
+                }
+            )
             if len(candidates) == 1:
                 return candidates[0], "filesystem identity"
             if len(candidates) > 1:
@@ -1342,6 +1807,9 @@ class PdfCatalog:
             if str(field).strip()
         }
         for key, value in incoming.items():
+            if key == LOCKED_METADATA_FIELDS_KEY:
+                merged[key] = sorted(locked | {str(field) for field in value})
+                continue
             if key in locked or key in {"current_filename", "current_path"}:
                 continue
             if value in (None, "", []):
@@ -1409,7 +1877,7 @@ class PdfCatalog:
             "abstract": raw.get("abstract", ""),
             "author_count": raw.get("author_count"),
             "citation_count": raw.get("citation_count"),
-            "metrics": raw.get("_adsapi_metrics", {}),
+            "metrics": raw.get("_adsfolio_metrics", {}),
             "raw": raw,
             "source": row["source"],
             "fetched_at": row["fetched_at"],

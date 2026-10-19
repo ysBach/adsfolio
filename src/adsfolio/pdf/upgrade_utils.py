@@ -1,12 +1,16 @@
 """Utility models and helpers for arXiv upgrade workflow."""
 
+from __future__ import annotations
+
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Sequence
+from typing import TYPE_CHECKING, Any
+from urllib.parse import unquote, urlsplit
 
-from .sidecar import Sidecar
+from ..api.search import escape_query_phrase
 
 if TYPE_CHECKING:
     from ..client import ADSClient
@@ -33,15 +37,15 @@ __all__ = [
     "UpgradeResult",
     "_as_list",
     "_first_string",
+    "_relative_path",
+    "_safe_bibcode_name",
+    "_utc_now_iso",
+    "check_published_version",
+    "check_published_versions",
+    "detect_arxiv_entries",
     "is_arxiv_bibcode",
     "is_arxiv_doi",
     "is_arxiv_entry",
-    "detect_arxiv_entries",
-    "check_published_versions",
-    "check_published_version",
-    "_utc_now_iso",
-    "_safe_bibcode_name",
-    "_relative_path",
 ]
 
 MAX_BATCH_TERMS = 25
@@ -120,7 +124,7 @@ def is_arxiv_entry(entry: dict[str, Any]) -> bool:
     return is_arxiv_doi(doi)
 
 
-def detect_arxiv_entries(sidecar: Sidecar) -> list[str]:
+def detect_arxiv_entries(sidecar: Any) -> list[str]:
     """Return sidecar keys that are identified as arXiv entries."""
     entries: list[str] = []
     for original_filename, metadata in sidecar.files.items():
@@ -148,8 +152,32 @@ def _chunked(items: list[str], chunk_size: int) -> list[list[str]]:
     return [items[i : i + chunk_size] for i in range(0, len(items), chunk_size)]
 
 
+def _extract_doi_resolver_path(value: str) -> str | None:
+    """Extract and percent-decode the DOI path from an HTTP(S) doi.org URL."""
+    try:
+        parsed = urlsplit(value.strip())
+    except ValueError:
+        return None
+    if parsed.scheme.lower() not in {"http", "https"}:
+        return None
+    if parsed.netloc.lower() not in {"doi.org", "dx.doi.org"}:
+        return None
+    candidate = unquote(parsed.path.lstrip("/")).strip()
+    return candidate or None
+
+
 def _normalize_doi(doi: str) -> str:
-    return str(doi or "").strip().rstrip(").,;").lower()
+    raw = str(doi or "").strip()
+    if not raw:
+        return ""
+    resolver_doi = _extract_doi_resolver_path(raw)
+    if resolver_doi is not None:
+        return resolver_doi.lower()
+    raw = re.sub(r"^doi\s*:\s*", "", raw, flags=re.IGNORECASE)
+    resolver_after_prefix = _extract_doi_resolver_path(raw)
+    if resolver_after_prefix is not None:
+        return resolver_after_prefix.lower()
+    return raw.strip().lower()
 
 
 def _doc_mentions_bibcode(doc: dict[str, Any], bibcode: str) -> bool:
@@ -174,7 +202,7 @@ def _batch_query_docs_by_doi(
 
     docs_by_doi: dict[str, dict[str, dict[str, Any]]] = {doi: {} for doi in normalized}
     for chunk in _chunked(normalized, MAX_BATCH_TERMS):
-        terms = [f'doi:"{doi.replace(chr(34), " ")}"' for doi in chunk]
+        terms = [f'doi:"{escape_query_phrase(doi)}"' for doi in chunk]
         query = " OR ".join(terms)
         rows = min(max(len(chunk) * 10, 10), 2000)
         result = client.search.query(q=query, fl=SEARCH_FIELDS, rows=rows)

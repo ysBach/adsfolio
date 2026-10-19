@@ -1,4 +1,5 @@
 import json
+import os
 import sqlite3
 from pathlib import Path
 
@@ -17,6 +18,31 @@ def _catalog(monkeypatch, tmp_path: Path) -> PdfCatalog:
         classmethod(lambda cls: config_dir),
     )
     return PdfCatalog()
+
+
+def test_incomplete_discovery_does_not_hide_files(monkeypatch, tmp_path: Path) -> None:
+    catalog = _catalog(monkeypatch, tmp_path)
+    root = tmp_path / "library"
+    nested = root / "blocked"
+    nested.mkdir(parents=True)
+    (nested / "paper.pdf").write_bytes(b"paper")
+    catalog.discover_root(root)
+    scandir = os.scandir
+
+    def inaccessible(path: Path) -> object:
+        if Path(path) == nested:
+            raise PermissionError("Directory cannot be read")
+        return scandir(path)
+
+    monkeypatch.setattr(os, "scandir", inaccessible)
+
+    with pytest.raises(PermissionError):
+        catalog.discover_root(root)
+
+    assert {row["current_path"] for row in catalog.query_files()} == {
+        "blocked/paper.pdf"
+    }
+    catalog.close()
 
 
 def test_catalog_uses_one_database_for_multiple_roots(monkeypatch, tmp_path):
@@ -42,8 +68,8 @@ def test_catalog_uses_one_database_for_multiple_roots(monkeypatch, tmp_path):
     assert catalog.path == tmp_path / "config" / CATALOG_FILENAME
     assert first.attachment_id == second.attachment_id
     assert len(catalog.query_files()) == 2
-    assert not (root_a / ".adsapi-pdfs.sqlite").exists()
-    assert not (root_b / ".adsapi-pdfs.sqlite").exists()
+    assert not (root_a / ".adsfolio-pdfs.sqlite").exists()
+    assert not (root_b / ".adsfolio-pdfs.sqlite").exists()
 
     catalog.close()
 
@@ -261,6 +287,31 @@ def test_catalog_discovers_pdfs_without_hashing_or_downgrading_known_records(
     catalog.close()
 
 
+@pytest.mark.parametrize("recursive", [False, True])
+def test_discovery_marks_missing_files_only_within_scan_scope(
+    monkeypatch, tmp_path: Path, recursive: bool
+) -> None:
+    catalog = _catalog(monkeypatch, tmp_path)
+    root = tmp_path / "library"
+    nested = root / "nested"
+    nested.mkdir(parents=True)
+    for path in (root / "top.pdf", nested / "present.pdf", nested / "gone.pdf"):
+        path.write_bytes(b"pdf")
+    catalog.discover_root(root)
+    (root / "top.pdf").unlink()
+    (nested / "gone.pdf").unlink()
+
+    try:
+        catalog.discover_root(root, recursive=recursive)
+        visible = {record["current_path"] for record in catalog.query_files()}
+        expected = {"nested/present.pdf"}
+        if not recursive:
+            expected.add("nested/gone.pdf")
+        assert visible == expected
+    finally:
+        catalog.close()
+
+
 def test_catalog_links_resolved_attachment_to_document(monkeypatch, tmp_path):
     catalog = _catalog(monkeypatch, tmp_path)
     observation = catalog.observe_file(
@@ -352,7 +403,7 @@ def test_catalog_migrates_legacy_ads_cache(monkeypatch, tmp_path):
     catalog = _catalog(monkeypatch, tmp_path)
     root = tmp_path / "legacy-library"
     root.mkdir()
-    legacy_path = root / ".adsapi-pdfs.sqlite"
+    legacy_path = root / ".adsfolio-pdfs.sqlite"
     legacy = sqlite3.connect(legacy_path)
     legacy.execute(
         """
@@ -471,7 +522,7 @@ def test_catalog_migrates_legacy_registry_once_without_mutating_source(
 ):
     catalog = _catalog(monkeypatch, tmp_path)
     root = tmp_path / "legacy-library"
-    legacy_path = root / ".adsapi-pdfs.sqlite"
+    legacy_path = root / ".adsfolio-pdfs.sqlite"
     root.mkdir()
     legacy = sqlite3.connect(legacy_path)
     legacy.executescript(
@@ -561,7 +612,7 @@ def test_catalog_migrates_sidecar_without_deleting_it(monkeypatch, tmp_path):
     catalog = _catalog(monkeypatch, tmp_path)
     root = tmp_path / "sidecar-library"
     root.mkdir()
-    sidecar_path = root / ".adsapi-pdfs.json"
+    sidecar_path = root / ".adsfolio-pdfs.json"
     sidecar_path.write_text(
         json.dumps(
             {
@@ -625,8 +676,8 @@ def test_registry_views_multiple_roots_through_one_catalog(monkeypatch, tmp_path
         registry_a.find_file_by_relative_path(root_a, "paper.pdf")["id"]
         == (registry_b.find_file_by_relative_path(root_b, "copy.pdf")["id"])
     )
-    assert not (root_a / ".adsapi-pdfs.sqlite").exists()
-    assert not (root_b / ".adsapi-pdfs.sqlite").exists()
+    assert not (root_a / ".adsfolio-pdfs.sqlite").exists()
+    assert not (root_b / ".adsfolio-pdfs.sqlite").exists()
 
     registry_a.close()
     registry_b.close()

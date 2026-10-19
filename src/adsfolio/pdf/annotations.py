@@ -2,9 +2,10 @@
 
 import re
 import shutil
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
 PORTABLE_TYPE_NAMES = {
     8: "Highlight",
@@ -18,11 +19,11 @@ __all__ = [
     "AnnotationRecord",
     "MatchedAnnotation",
     "PortingReport",
+    "apply_annotations",
     "extract_annotations",
     "match_annotations",
-    "apply_annotations",
-    "port_annotations",
     "normalize_text",
+    "port_annotations",
 ]
 
 

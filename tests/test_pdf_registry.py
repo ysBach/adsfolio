@@ -1,3 +1,4 @@
+import hashlib
 import json
 from pathlib import Path
 
@@ -13,6 +14,101 @@ from adsfolio.pdf.registry import (
     open_registry_state,
 )
 from adsfolio.pdf.rename_settings import RenameSettings
+
+
+def test_local_refresh_reports_changes_and_preserves_history(tmp_path: Path) -> None:
+    root = tmp_path / "library"
+    root.mkdir()
+    registry = PdfRegistry(root)
+    originals = {}
+    for name in ("keep.pdf", "move.pdf", "gone.pdf", "change.pdf"):
+        path = root / name
+        path.write_bytes(name.encode())
+        stat = path.stat()
+        originals[name] = registry.catalog.observe_file(
+            root,
+            name,
+            sha256=hashlib.sha256(path.read_bytes()).hexdigest(),
+            size_bytes=stat.st_size,
+            mtime_ns=stat.st_mtime_ns,
+            device=stat.st_dev,
+            inode=stat.st_ino,
+            metadata={"bibcode": name, "notes": "Keep manual notes"},
+            status="resolved",
+        )
+    (root / "new.pdf").write_bytes(b"new")
+    (root / "move.pdf").rename(root / "renamed.pdf")
+    (root / "gone.pdf").rename(tmp_path / "away.pdf")
+    (root / "change.pdf").write_bytes(b"changed content")
+
+    result = registry.refresh_local_files()
+
+    assert (
+        result.scanned,
+        result.added,
+        result.updated,
+        result.moved,
+        result.restored,
+        result.missing,
+    ) == (4, 1, 1, 1, 0, 1)
+    assert {row["current_path"] for row in registry.query_files()} == {
+        "keep.pdf",
+        "renamed.pdf",
+        "change.pdf",
+        "new.pdf",
+    }
+    moved = registry.catalog.get_file(root, "renamed.pdf")
+    assert moved["attachment_id"] == originals["move.pdf"].attachment_id
+    assert moved["metadata"]["notes"] == "Keep manual notes"
+    assert moved["status"] == "resolved"
+    assert registry.catalog.get_file(root, "move.pdf")["missing_at"] is not None
+    assert registry.catalog.get_file(root, "gone.pdf")["missing_at"] is not None
+    changed = registry.catalog.get_file(root, "change.pdf")
+    assert changed["sha256"] == hashlib.sha256(b"changed content").hexdigest()
+    assert len(registry.catalog.content_versions(changed["attachment_id"])) == 2
+
+    (tmp_path / "away.pdf").rename(root / "gone.pdf")
+    restored = registry.refresh_local_files()
+
+    assert restored.restored == 1
+    assert restored.added == restored.moved == restored.missing == restored.updated == 0
+    assert (
+        registry.catalog.get_file(root, "gone.pdf")["location_id"]
+        == originals["gone.pdf"].location_id
+    )
+    registry.close()
+
+
+@pytest.mark.parametrize("recursive", [False, True])
+def test_local_refresh_respects_scan_scope(tmp_path: Path, recursive: bool) -> None:
+    root = tmp_path / "library"
+    nested = root / "nested"
+    nested.mkdir(parents=True)
+    path = nested / "paper.pdf"
+    path.write_bytes(b"nested")
+    registry = PdfRegistry(root)
+    registry.catalog.discover_root(root)
+    path.unlink()
+
+    result = registry.refresh_local_files(recursive=recursive)
+
+    assert result.missing == int(recursive)
+    assert len(registry.query_files()) == int(not recursive)
+    registry.close()
+
+
+def test_cancelled_local_refresh_preserves_locations(tmp_path: Path) -> None:
+    root = tmp_path / "library"
+    root.mkdir()
+    (root / "paper.pdf").write_bytes(b"paper")
+    registry = PdfRegistry(root)
+    registry.catalog.discover_root(root)
+
+    with pytest.raises(InterruptedError, match="cancelled"):
+        registry.refresh_local_files(cancelled=lambda: True)
+
+    assert len(registry.query_files()) == 1
+    registry.close()
 
 
 @pytest.fixture(autouse=True)
@@ -41,7 +137,7 @@ def test_registry_state_save_uses_only_sqlite_for_fresh_registry(
     state.save()
 
     assert (tmp_path / "config" / CATALOG_FILENAME).exists()
-    assert not (tmp_path / ".adsapi-pdfs.json").exists()
+    assert not (tmp_path / ".adsfolio-pdfs.json").exists()
 
 
 def test_registry_upserts_and_finds_file_records(tmp_path: Path) -> None:
@@ -283,7 +379,7 @@ def test_merge_ads_metadata_preserves_locked_fields() -> None:
         {
             "title": ["My corrected title"],
             "doi": ["10.0/old"],
-            "_adsapi_locked_fields": ["title"],
+            "_adsfolio_locked_fields": ["title"],
         },
         {
             "bibcode": "2022StGal...5....4B",
@@ -296,7 +392,7 @@ def test_merge_ads_metadata_preserves_locked_fields() -> None:
     assert merged["title"] == ["My corrected title"]
     assert merged["doi"] == ["10.0/new"]
     assert merged["abstract"] == "ADS abstract"
-    assert merged["_adsapi_locked_fields"] == ["title"]
+    assert merged["_adsfolio_locked_fields"] == ["title"]
 
 
 def test_registry_status_rename_iteration_and_batch_ads_lookup(tmp_path: Path) -> None:
@@ -314,7 +410,7 @@ def test_registry_status_rename_iteration_and_batch_ads_lookup(tmp_path: Path) -
 
     assert registry.update_file_status(tmp_path, "paper.pdf", "unresolved")
     assert registry.record_rename(tmp_path, "paper.pdf", "renamed.pdf")
-    assert list(registry.iter_files(status="unresolved"))[0]["current_path"] == (
+    assert next(iter(registry.iter_files(status="unresolved")))["current_path"] == (
         "renamed.pdf"
     )
     registry.upsert_ads_document(
@@ -332,7 +428,7 @@ def test_registry_state_upsert_preserves_locked_metadata_fields(tmp_path: Path) 
             "current_filename": "paper.pdf",
             "sha256": "a" * 64,
             "title": ["Manual title"],
-            "_adsapi_locked_fields": ["title"],
+            "_adsfolio_locked_fields": ["title"],
         },
     )
 
@@ -355,7 +451,7 @@ def test_registry_state_upsert_preserves_locked_metadata_fields(tmp_path: Path) 
 def test_registry_migrates_sidecar_and_exports_lossless_metadata(
     tmp_path: Path,
 ) -> None:
-    sidecar_path = tmp_path / ".adsapi-pdfs.json"
+    sidecar_path = tmp_path / ".adsfolio-pdfs.json"
     payload = {
         "version": 2,
         "identify_profile": {"orcid": "0000", "end_year": 2026},
@@ -372,7 +468,7 @@ def test_registry_migrates_sidecar_and_exports_lossless_metadata(
 
     state = open_registry_state(tmp_path)
     assert sidecar_path.exists()
-    assert not (tmp_path / ".adsapi-pdfs.json.migrated").exists()
+    assert not (tmp_path / ".adsfolio-pdfs.json.migrated").exists()
     assert state.get_file("renamed.pdf")["bibcode"] == "B1"
     assert state.identify_profile is not None
     assert state.identify_profile["orcid"] == "0000"
@@ -383,7 +479,7 @@ def test_registry_migrates_sidecar_and_exports_lossless_metadata(
 
 
 def test_migrate_sidecar_is_lossless_for_existing_registry(tmp_path: Path) -> None:
-    sidecar_path = tmp_path / ".adsapi-pdfs.json"
+    sidecar_path = tmp_path / ".adsfolio-pdfs.json"
     sidecar_path.write_text(
         json.dumps({"files": {"paper.pdf": {"bibcode": "B1"}}}),
         encoding="utf-8",
@@ -399,7 +495,7 @@ def test_open_registry_migrates_sidecar_when_registry_already_exists(
 ) -> None:
     registry = PdfRegistry(tmp_path)
     registry.close()
-    sidecar_path = tmp_path / ".adsapi-pdfs.json"
+    sidecar_path = tmp_path / ".adsfolio-pdfs.json"
     sidecar_path.write_text(
         json.dumps({"files": {"paper.pdf": {"bibcode": "B1"}}}),
         encoding="utf-8",
@@ -409,13 +505,13 @@ def test_open_registry_migrates_sidecar_when_registry_already_exists(
 
     assert state.get_file("paper.pdf")["bibcode"] == "B1"
     assert sidecar_path.exists()
-    assert not (tmp_path / ".adsapi-pdfs.json.migrated").exists()
+    assert not (tmp_path / ".adsfolio-pdfs.json.migrated").exists()
 
 
 def test_open_registry_preserves_existing_migrated_sidecar(tmp_path: Path) -> None:
-    migrated_path = tmp_path / ".adsapi-pdfs.json.migrated"
+    migrated_path = tmp_path / ".adsfolio-pdfs.json.migrated"
     migrated_path.write_text("previous migration", encoding="utf-8")
-    sidecar_path = tmp_path / ".adsapi-pdfs.json"
+    sidecar_path = tmp_path / ".adsfolio-pdfs.json"
     current_payload = json.dumps(
         {"files": {"paper.pdf": {"bibcode": "current migration"}}}
     )
@@ -745,3 +841,88 @@ def test_registry_state_rename_settings_malformed_json_returns_none(
         "{invalid-json",
     )
     assert state.rename_settings is None
+
+
+def _count_fixture(tmp_path: Path) -> PdfRegistry:
+    """Build four locations: a.pdf and b.pdf share content (so they share one
+    attachment), c.pdf is an unresolved arXiv file, and d.pdf is missing."""
+    registry = PdfRegistry(tmp_path)
+    rows = [
+        ("a.pdf", "d1", "resolved", {"bibcode": "B1", "title": ["Alpha"]}, "ads"),
+        ("b.pdf", "d1", "new", {}, "ads"),
+        ("c.pdf", "d2", "unresolved", {"title": ["Gamma"]}, "arxiv"),
+        ("d.pdf", "d3", "arxiv", {"title": ["Delta"]}, "arxiv"),
+    ]
+    for name, digest, status, metadata, source in rows:
+        registry.upsert_file(
+            root=tmp_path,
+            relative_path=name,
+            current_path=name,
+            sha256=digest,
+            size_bytes=1,
+            mtime_ns=1,
+            status=status,
+            metadata={**metadata, "source": source},
+        )
+    registry.catalog.mark_missing_locations(tmp_path, {"a.pdf", "b.pdf", "c.pdf"})
+    return registry
+
+
+@pytest.mark.parametrize(
+    "filters",
+    [
+        {},
+        {"resolved": True},
+        {"resolved": False},
+        {"status": "unresolved"},
+        {"search": "Alpha"},
+        {"search": "d1"},
+        {"include_missing": True},
+        {"include_missing": True, "resolved": False},
+        {"sha256": "d1"},
+        {"source": "arxiv"},
+        {"source": "arxiv", "include_missing": True},
+        {"duplicates_only": True},
+        {"duplicates_only": True, "include_missing": True},
+        {"duplicates_only": True, "resolved": True, "include_missing": True},
+    ],
+)
+def test_count_files_matching_agrees_with_query_files(
+    tmp_path: Path, filters: dict
+) -> None:
+    registry = _count_fixture(tmp_path)
+
+    assert registry.count_files_matching(**filters) == len(
+        registry.query_files(**filters)
+    )
+    registry.close()
+
+
+def test_count_files_matching_counts_in_sql_without_decoding_metadata(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    registry = _count_fixture(tmp_path)
+    monkeypatch.setattr(
+        registry.catalog,
+        "_record_from_row",
+        lambda row: pytest.fail("count decoded a record"),
+    )
+
+    assert registry.count_files_matching(resolved=True, include_missing=True) == 2
+    assert registry.count_files_matching(resolved=True) == 2
+    assert registry.count_files_matching(search="Gamma") == 1
+    assert registry.count_files_matching(search="Delta") == 0
+    assert registry.count_files_matching(search="Delta", include_missing=True) == 1
+    registry.close()
+
+
+def test_count_files_matching_still_loads_records_for_source_and_duplicates(
+    tmp_path: Path,
+) -> None:
+    registry = _count_fixture(tmp_path)
+
+    assert registry.count_files_matching(source="arxiv", include_missing=True) == 2
+    assert (
+        registry.count_files_matching(duplicates_only=True, include_missing=True) == 2
+    )
+    registry.close()

@@ -6,24 +6,28 @@ import logging
 import queue
 import threading
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 from pathlib import Path
 from sqlite3 import Error as SQLiteError
-from typing import Any, Callable, Iterable
+from typing import Any
 
 from ..config import ADSError
 from .cli_common import is_resolved_record
+from .doi_providers import DEFAULT_DOI_PROVIDERS, DoiProvider, ProviderError
+from .files import iter_pdf_paths
 from .identifier import PdfIdentifier
 from .identify_settings import (
     RECOMMENDED_IDENTIFY_STRATEGIES,
     IdentifySettings,
     IdentifyStrategy,
 )
+from .readiness import metadata_ready
 from .registry import CentralPdfRegistryState
 from .rename_settings import RenameSettings
 from .renamer import DEFAULT_SCHEME, PdfRenamer
 from .sidecar import Sidecar
-from .tracked_move import move_tracked_file
+from .tracked_move import move_tracked_file, resolved_file_directory
 from .upgrade import PdfUpgrader
 from .watch_session import WatchEvent, WatchOutcome, WatchState
 
@@ -120,10 +124,6 @@ class PdfWatcher:
         self.upgrader = upgrader
         self.logger = logging.getLogger(__name__)
 
-    def _iter_pdf_paths(self, directory: Path, recursive: bool) -> Iterable[Path]:
-        globber = directory.rglob if recursive else directory.glob
-        yield from globber("*.pdf")
-
     @staticmethod
     def _relative_path(root: Path, path: Path) -> str:
         try:
@@ -203,6 +203,7 @@ class PdfWatcher:
         apply: bool = True,
         journal_map: dict | None = None,
         strategies: tuple[IdentifyStrategy, ...] = RECOMMENDED_IDENTIFY_STRATEGIES,
+        providers: tuple[DoiProvider, ...] = DEFAULT_DOI_PROVIDERS,
         author_separator: str = "+",
         author_truncation_suffix: str = "+",
     ) -> dict | None:
@@ -214,6 +215,18 @@ class PdfWatcher:
         relative_path = self._relative_path(root, path)
 
         sha256 = self._ready_sha256(path)
+        target_directory = resolved_file_directory(root, path, output_unresolved)
+        rename_options = {
+            "template": scheme,
+            "dry_run": not apply,
+            "author_format": author_format,
+            "max_authors": max_authors,
+            "authors_when_truncated": authors_when_truncated,
+            "char_policy": char_policy,
+            "author_separator": author_separator,
+            "author_truncation_suffix": author_truncation_suffix,
+            "target_directory": target_directory,
+        }
         existing = sidecar.find_by_current_filename(relative_path)
         if existing is not None:
             _current_path, record = existing
@@ -222,10 +235,26 @@ class PdfWatcher:
                 refreshed["current_filename"] = relative_path
                 refreshed["sha256"] = sha256
                 if is_resolved_record(refreshed):
+                    target = self.renamer.rename_tracked_file(
+                        state=sidecar,
+                        source_path=path,
+                        metadata=refreshed,
+                        **rename_options,
+                    )
                     if apply:
-                        sidecar.upsert_file(relative_path, refreshed)
-                        sidecar.save()
-                    self.logger.info("Already tracked resolved PDF: %s", path)
+                        refreshed["current_filename"] = self._relative_path(
+                            root, target
+                        )
+                        if target == path:
+                            sidecar.upsert_file(_current_path, refreshed)
+                            sidecar.save()
+                    elif target != path:
+                        refreshed["planned_filename"] = self._relative_path(
+                            root, target
+                        )
+                        self.logger.info(
+                            "Dry-run resolved rename: %s -> %s", path, target
+                        )
                     return refreshed
 
         existing = sidecar.find_by_sha256(sha256)
@@ -236,6 +265,7 @@ class PdfWatcher:
                 [path],
                 journal_map=journal_map,
                 strategies=strategies,
+                providers=providers,
                 sha256_by_path={path: sha256},
             ).get(path)
         if record is None:
@@ -260,18 +290,13 @@ class PdfWatcher:
         if apply:
             sidecar.upsert_file(relative_path, stored_record)
             sidecar.save()
+        if not (is_resolved_record(stored_record) or metadata_ready(stored_record)):
+            return stored_record
         target = self.renamer.rename_tracked_file(
             state=sidecar,
             source_path=path,
             metadata=stored_record,
-            template=scheme,
-            dry_run=not apply,
-            author_format=author_format,
-            max_authors=max_authors,
-            authors_when_truncated=authors_when_truncated,
-            char_policy=char_policy,
-            author_separator=author_separator,
-            author_truncation_suffix=author_truncation_suffix,
+            **rename_options,
         )
         if apply:
             stored_record["current_filename"] = self._relative_path(root, target)
@@ -339,13 +364,14 @@ class PdfWatcher:
                 ),
                 apply=True,
                 strategies=identify_settings.strategies,
+                providers=identify_settings.providers,
             )
         except PdfNotReadyError as exc:
             return WatchOutcome(
                 event=replace(event, state=WatchState.DEFERRED),
                 message=str(exc),
             )
-        except (ADSError, OSError, SQLiteError, ValueError) as exc:
+        except (ADSError, ProviderError, OSError, SQLiteError, ValueError) as exc:
             return WatchOutcome(
                 event=replace(event, state=WatchState.FAILED),
                 message=str(exc),
@@ -395,14 +421,28 @@ class PdfWatcher:
         recursive: bool,
         last_facts: dict[str, tuple[int, int, int, int]],
     ) -> tuple[list[Path], set[str]]:
+        """Return changed PDFs and the relative paths seen in a complete scan.
+
+        Raises
+        ------
+        OSError
+            If a directory cannot be listed or a listed file cannot be examined
+            for a reason other than having disappeared. The scan is then
+            incomplete, so callers must not mark unseen files missing.
+        """
         changed: list[Path] = []
         seen_paths: set[str] = set()
         registry = getattr(sidecar, "registry", None)
-        for pdf_path in self._iter_pdf_paths(directory, recursive):
+        for pdf_path in iter_pdf_paths(directory, recursive):
             try:
-                facts = self._file_facts(pdf_path)
                 relative_path = self._relative_path(directory, pdf_path)
-            except OSError:
+                facts = self._file_facts(pdf_path)
+            except ValueError:
+                # A symbolic link to a file outside the watched root is not
+                # part of the library.
+                self.logger.debug("Ignoring PDF outside watched root: %s", pdf_path)
+                continue
+            except FileNotFoundError:
                 continue
             seen_paths.add(relative_path)
             existing = (
@@ -415,6 +455,24 @@ class PdfWatcher:
             if last_facts.get(relative_path) != facts:
                 changed.append(pdf_path)
         return changed, seen_paths
+
+    def _scan_or_none(
+        self,
+        directory: Path,
+        sidecar: Sidecar,
+        recursive: bool,
+        last_facts: dict[str, tuple[int, int, int, int]],
+    ) -> tuple[list[Path], set[str]] | None:
+        """Scan once, returning `None` and logging if the scan was incomplete."""
+        try:
+            return self._changed_pdf_paths(directory, sidecar, recursive, last_facts)
+        except OSError as exc:
+            self.logger.error(
+                "Incomplete scan of %s; keeping tracked files unchanged: %s",
+                directory,
+                exc,
+            )
+            return None
 
     def _process_changed_path(
         self,
@@ -444,7 +502,14 @@ class PdfWatcher:
         except PdfNotReadyError as exc:
             self.logger.info("Deferring PDF until it is ready: %s", exc)
             return
-        except (ADSError, OSError, RuntimeError, SQLiteError, ValueError) as exc:
+        except (
+            ADSError,
+            ProviderError,
+            OSError,
+            RuntimeError,
+            SQLiteError,
+            ValueError,
+        ) as exc:
             self.logger.error("Failed processing watched PDF %s: %s", path, exc)
             last_facts[relative_path] = facts
             return
@@ -471,19 +536,19 @@ class PdfWatcher:
         last_facts: dict[str, tuple[int, int, int, int]] = {}
 
         while True:
-            changed_paths, seen_paths = self._changed_pdf_paths(
-                directory, sidecar, recursive, last_facts
-            )
-            for pdf_path in changed_paths:
-                self._process_changed_path(
-                    directory, sidecar, pdf_path, handler, last_facts
-                )
+            scan = self._scan_or_none(directory, sidecar, recursive, last_facts)
+            if scan is not None:
+                changed_paths, seen_paths = scan
+                for pdf_path in changed_paths:
+                    self._process_changed_path(
+                        directory, sidecar, pdf_path, handler, last_facts
+                    )
 
-            registry = getattr(sidecar, "registry", None)
-            if registry is not None:
-                registry.catalog.mark_missing_locations(
-                    directory, seen_paths, recursive=recursive
-                )
+                registry = getattr(sidecar, "registry", None)
+                if registry is not None:
+                    registry.catalog.mark_missing_locations(
+                        directory, seen_paths, recursive=recursive
+                    )
 
             if auto_upgrade:
                 elapsed = time.time() - last_upgrade_check
@@ -562,16 +627,16 @@ class PdfWatcher:
             while True:
                 now = time.monotonic()
                 if now - last_reconciliation >= reconciliation_interval:
-                    changed_paths, seen_paths = self._changed_pdf_paths(
-                        directory, sidecar, recursive, last_facts
-                    )
-                    for pdf_path in changed_paths:
-                        enqueue(pdf_path)
-                    registry = getattr(sidecar, "registry", None)
-                    if registry is not None:
-                        registry.catalog.mark_missing_locations(
-                            directory, seen_paths, recursive=recursive
-                        )
+                    scan = self._scan_or_none(directory, sidecar, recursive, last_facts)
+                    if scan is not None:
+                        changed_paths, seen_paths = scan
+                        for pdf_path in changed_paths:
+                            enqueue(pdf_path)
+                        registry = getattr(sidecar, "registry", None)
+                        if registry is not None:
+                            registry.catalog.mark_missing_locations(
+                                directory, seen_paths, recursive=recursive
+                            )
                     last_reconciliation = now
                 try:
                     path = pending_paths.get(timeout=0.5)

@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Mapping, Sequence
+from concurrent.futures import CancelledError
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 import requests
 
+from .api.export import ExportAPI
 from .api.libraries import Library
 from .config import ADSError
 from .pdf.cli_common import is_resolved_record
@@ -20,6 +22,7 @@ __all__ = [
     "AdsLibraryService",
     "BibcodeSelection",
     "LibraryDestination",
+    "LibraryExportResult",
     "collect_identified_bibcodes",
 ]
 
@@ -90,6 +93,15 @@ class AddDocumentsResult:
 
     error: Exception | None = None
     """The exception that stopped processing, if any."""
+
+
+@dataclass(frozen=True)
+class LibraryExportResult:
+    """Complete remote bibliography, or an explicitly cancelled operation."""
+
+    text: str
+    bibcodes: tuple[str, ...]
+    cancelled: bool = False
 
 
 def _text_value(value: object) -> str:
@@ -218,6 +230,71 @@ class AdsLibraryService:
         """
         self._client = client
         self._destinations: tuple[LibraryDestination, ...] | None = None
+
+    def export_library(
+        self,
+        library_id: str,
+        format: str = "bibtex",
+        *,
+        cancelled: Callable[[], bool] | None = None,
+    ) -> LibraryExportResult:
+        """Read the complete remote library and export its bibliography.
+
+        Parameters
+        ----------
+        library_id : str
+            Accessible remote ADS library, including libraries with read permission.
+        format : str, optional
+            A format from `ExportAPI.BIBLIOGRAPHY_FORMATS`.
+        cancelled : callable, optional
+            Check for cancellation between network operations.
+
+        Returns
+        -------
+        LibraryExportResult
+            Full bibliography and sorted Bibcodes, an empty result for an empty
+            library, or a cancelled result without partial bibliography text.
+
+        Raises
+        ------
+        ADSError
+            If library pagination is incomplete or export records are missing.
+        ValueError
+            If the library identifier or format is invalid.
+        """
+        if not library_id.strip():
+            raise ValueError("An ADS library ID is required.")
+        if format not in ExportAPI.BIBLIOGRAPHY_FORMATS:
+            raise ValueError(f"Unsupported bibliography format: {format}")
+        try:
+            if cancelled is not None and cancelled():
+                raise CancelledError
+            library = self._client.libraries.get_library(library_id, rows=1)
+            documents: set[str] = set()
+            if cancelled is not None and cancelled():
+                raise CancelledError
+            for bibcode in self._client.libraries.iter_documents(library_id):
+                if cancelled is not None and cancelled():
+                    raise CancelledError
+                documents.add(bibcode)
+            if cancelled is not None and cancelled():
+                raise CancelledError
+            if len(documents) != library.num_documents:
+                raise ADSError(
+                    "ADS library contents are incomplete or changed during loading; "
+                    "refresh the library and try again."
+                )
+            bibcodes = tuple(sorted(documents))
+            if not bibcodes:
+                return LibraryExportResult(text="", bibcodes=())
+            text = self._client.export.export_complete(
+                bibcodes, format=format, cancelled=cancelled
+            )
+            if cancelled is not None and cancelled():
+                raise CancelledError
+            return LibraryExportResult(text=text, bibcodes=bibcodes)
+        except CancelledError:
+            return LibraryExportResult(text="", bibcodes=(), cancelled=True)
 
     def list_destinations(self) -> tuple[LibraryDestination, ...]:
         """Return ADS libraries in the order supplied by the API."""

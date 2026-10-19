@@ -3,10 +3,15 @@
 from __future__ import annotations
 
 import shutil
+from collections.abc import Mapping
 from pathlib import Path
-from typing import Any, Mapping, Protocol
+from typing import Any, Protocol
 
-__all__ = ["TrackedMoveRollbackError", "move_tracked_file"]
+__all__ = [
+    "TrackedMoveRollbackError",
+    "move_tracked_file",
+    "resolved_file_directory",
+]
 
 
 class TrackedMoveRollbackError(RuntimeError):
@@ -27,6 +32,43 @@ class TrackedFileState(Protocol):
     ) -> bool: ...
 
     def save(self) -> Path: ...
+
+
+def resolved_file_directory(
+    root: Path, source_path: Path, unresolved_directory: Path | None = None
+) -> Path:
+    """Choose the directory for a resolved PDF within one catalog root.
+
+    Parameters
+    ----------
+    root : `Path`
+        Library root owning the file's catalog location.
+    source_path : `Path`
+        Current PDF path.
+    unresolved_directory : `Path`, optional
+        Configured unresolved directory, relative to `root` when not absolute.
+        Defaults to ``<root>/unresolved``.
+
+    Returns
+    -------
+    Path
+        The library root for files below its unresolved subtree; otherwise
+        the source parent. An external directory or the root itself is not
+        treated as an unresolved subtree because its owning library is ambiguous.
+    """
+    root = Path(root).expanduser().resolve()
+    source = Path(source_path).expanduser().resolve()
+    unresolved = (
+        Path(unresolved_directory).expanduser()
+        if unresolved_directory is not None
+        else root / "unresolved"
+    )
+    if not unresolved.is_absolute():
+        unresolved = root / unresolved
+    unresolved = unresolved.resolve()
+    if root in unresolved.parents and unresolved in source.parents:
+        return root
+    return source.parent
 
 
 def _relative_to_root(root: Path, path: Path) -> str:
@@ -93,11 +135,11 @@ def move_tracked_file(
                 state.set_current_filename(rollback_key, source_relative)
                 if registry is None:
                     state.save()
-            except Exception as state_rollback_error:
+            except Exception as state_rollback_error:  # noqa: BLE001 - rollback must continue
                 rollback_errors.append(state_rollback_error)
         try:
             shutil.move(str(destination), str(source))
-        except Exception as rollback_error:
+        except Exception as rollback_error:  # noqa: BLE001 - report incomplete rollback
             rollback_errors.append(rollback_error)
         if rollback_errors:
             raise TrackedMoveRollbackError(

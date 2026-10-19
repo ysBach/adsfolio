@@ -1,5 +1,7 @@
 from types import SimpleNamespace
 
+import pytest
+
 from adsfolio.api.search import SearchResult
 from adsfolio.pdf.sidecar import Sidecar
 from adsfolio.pdf.upgrade import (
@@ -235,3 +237,28 @@ def test_batch_upgrade_prefetches_unique_bibcodes_once(tmp_path):
     assert len(results) == 2
     assert [result.status for result in results] == ["dry-run", "dry-run"]
     assert search.calls == [query]
+
+
+@pytest.mark.parametrize(
+    "raw_doc_doi",
+    [
+        "10.1000/ab(c)",
+        "https://doi.org/10.1000/ab(c)",
+        "doi:10.1000/ab(c)",
+    ],
+)
+def test_check_published_versions_batch_matches_doi_with_closing_paren(raw_doc_doi):
+    from adsfolio.pdf.upgrade_utils import _batch_query_docs_by_doi
+
+    target_doi = "10.1000/ab(c)"
+    query = 'doi:"10.1000/ab(c)"'
+    doc = {"bibcode": "2025ApJ...900..100X", "doi": [raw_doc_doi]}
+    search = _SearchStub({query: SearchResult(num_found=1, start=0, docs=[doc])})
+    client = SimpleNamespace(search=search)
+
+    docs_by_doi = _batch_query_docs_by_doi(client, [target_doi])
+
+    assert "10.1000/ab(c)" in docs_by_doi
+    assert docs_by_doi["10.1000/ab(c)"] == {"2025ApJ...900..100X": doc}
+    assert len(search.calls) == 1
+    assert search.calls[0] == query

@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Any, Mapping
+from typing import Any
 
-from .renamer import DEFAULT_SCHEME
+from .renamer import DEFAULT_NONBIBCODE_SCHEME, DEFAULT_SCHEME
 
 logger = logging.getLogger(__name__)
 
@@ -183,4 +184,4 @@ class RenameSettings:
         }
 
 
-__all__ = ["RenameSettings"]
+__all__ = ["DEFAULT_NONBIBCODE_SCHEME", "RenameSettings"]

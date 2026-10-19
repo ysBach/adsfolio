@@ -8,23 +8,30 @@ import os
 import re
 import shlex
 import signal
+import sqlite3
 import sys
 import threading
+from collections.abc import Callable
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 from dataclasses import replace
 from pathlib import Path
 from time import perf_counter
-from typing import Any, Callable, Literal
+from typing import Any, Literal
 
 import click
+import requests
 
-from ..config import ADSError, Config
+from ..api.search import escape_query_phrase
+from ..config import ADSError, AuthenticationError, Config
+from ..library_sync import AdsLibraryService, collect_identified_bibcodes
 from .cli_common import get_client as _get_client
 from .cli_common import handle_unresolved as _handle_unresolved
+from .cli_common import is_resolved_record
 from .cli_common import iter_pdf_paths as _iter_pdf_paths
 from .cli_common import validate_author_format as _validate_author_format
 from .cli_common import validate_char_policy as _validate_char_policy
 from .cli_upgrade import upgrade_command
+from .doi_providers import DoiProvider, ProviderError
 from .identifier import (
     PdfIdentifier,
     extract_first_page_text_pdf,
@@ -35,6 +42,7 @@ from .obsidian import ObsidianNoteWriter
 from .registry import PdfRegistry, merge_ads_metadata, open_registry_state
 from .renamer import DEFAULT_SCHEME, PdfRenamer
 from .sidecar import Sidecar
+from .tracked_move import resolved_file_directory
 from .upgrade import PdfUpgrader
 from .upgrade_utils import _normalize_doi
 from .watcher import PdfWatcher
@@ -147,10 +155,17 @@ def _report_ambiguous_ads_matches(documents: tuple[dict[str, Any], ...]) -> None
 
 
 def _parse_ads_identifier(value: str) -> tuple[str, str]:
-    """Classify a Bibcode, DOI, or journal-volume-page identifier."""
+    """
+    Classify a Bibcode, DOI, or journal-volume-page identifier.
+
+    Explicit complete DOI identifiers (including resolver URLs and paths with
+    balanced parentheses or trailing punctuation) are parsed literally without
+    heuristic stripping.
+    """
     candidate = re.sub(r"^doi\s*:\s*", "", value.strip(), flags=re.IGNORECASE)
-    if candidate.lower().startswith("10.") and "/" in candidate:
-        return "doi", _normalize_doi(candidate)
+    normalized_doi = _normalize_doi(candidate)
+    if normalized_doi.startswith("10.") and "/" in normalized_doi:
+        return "doi", normalized_doi
     coordinates = _JOURNAL_COORDINATES.fullmatch(candidate)
     if coordinates is not None:
         groups = coordinates.groupdict()
@@ -174,7 +189,8 @@ def _record_bibcodes(directory: Path) -> list[str]:
                     record.get("bibcode") or record["metadata"].get("bibcode") or ""
                 ).strip()
                 for record in state.registry.iter_files()
-                if str(
+                if is_resolved_record(record)
+                and str(
                     record.get("bibcode") or record["metadata"].get("bibcode") or ""
                 ).strip()
             )
@@ -272,6 +288,18 @@ def _clear_invalid_bibcode(
     is_flag=True,
     help="Fetch per-paper all/refereed/non-refereed citation metrics.",
 )
+@click.option(
+    "--rename-scope",
+    type=click.Choice(["global", "library"]),
+    default="library",
+    show_default=True,
+    help="Use global Rename settings or this library's settings with global fallback.",
+)
+@click.option(
+    "--output-unresolved",
+    type=click.Path(path_type=Path),
+    help="Override the saved unresolved directory when returning identified PDFs.",
+)
 @click.pass_context
 def refresh_ads_command(
     ctx: click.Context,
@@ -281,8 +309,11 @@ def refresh_ads_command(
     refresh_all: bool,
     relative_path: str | None,
     citation_metrics: bool,
+    rename_scope: str,
+    output_unresolved: Path | None,
 ) -> None:
-    """Refresh ADS metadata, abstracts, and citation metrics."""
+    """Refresh ADS metadata, rename PDFs, and return them from unresolved."""
+    directory = directory.expanduser().resolve()
     requested = [str(bibcode).strip() for bibcode in bibcodes if str(bibcode).strip()]
     if identifier_input is not None and (requested or refresh_all):
         raise click.UsageError(
@@ -315,14 +346,14 @@ def refresh_ads_command(
                 state.registry.upsert_ads_documents(values, source="refresh-ads")
 
             callback = cache_documents
-            if identifier_kind == "doi":
-                documents = pdf_identifier.query_docs_for_dois(
-                    [identifier_value],
-                    ads_documents_callback=callback,
+            if identifier_kind in {"doi", "query"}:
+                query = (
+                    f'doi:"{escape_query_phrase(identifier_value)}"'
+                    if identifier_kind == "doi"
+                    else identifier_value
                 )
-            elif identifier_kind == "query":
                 result = pdf_identifier.query_documents(
-                    identifier_value,
+                    query,
                     ads_documents_callback=callback,
                 )
                 if result.num_found > 1:
@@ -355,6 +386,7 @@ def refresh_ads_command(
             bibcode for bibcode, document in documents.items() if document is None
         ]
         refreshed = 0
+        rename_candidates: set[str] = set()
         progress_step = max(
             1,
             math.ceil(len(requested) / REFRESH_PROGRESS_UPDATE_COUNT),
@@ -374,12 +406,6 @@ def refresh_ads_command(
                     click.echo(f"Refresh ADS: {index}/{len(requested)}")
                 continue
             refreshed += 1
-            if citation_metrics:
-                metrics = client.metrics.citations([bibcode])
-                state.registry.set_ads_document_metrics(
-                    bibcode,
-                    _citation_metrics_payload(metrics),
-                )
             if relative_path is not None:
                 document = documents.get(bibcode)
                 if document is not None and not _refresh_file_metadata(
@@ -391,19 +417,96 @@ def refresh_ads_command(
                     raise click.UsageError(
                         f"No tracked file found at relative path: {relative_path}"
                     )
+                if document is not None:
+                    rename_candidates.add(relative_path)
             elif document := documents.get(bibcode):
                 actual_bibcode = str(document.get("bibcode") or bibcode)
-                _refresh_bibcode_metadata(
-                    state.registry, directory, actual_bibcode, document
+                matching_paths = {
+                    str(record["current_path"])
+                    for code in {bibcode, actual_bibcode}
+                    for record in state.registry.find_files_by_bibcode(directory, code)
+                }
+                rename_candidates.update(
+                    path
+                    for path in matching_paths
+                    if _refresh_file_metadata(state.registry, directory, path, document)
                 )
             if index % progress_step == 0 or index == len(requested):
                 click.echo(f"Refresh ADS: {index}/{len(requested)}")
-        detail = " and citation metrics" if citation_metrics else ""
-        click.echo(f"Refreshed ADS metadata{detail} for {refreshed} bibcode(s).")
+        settings = state.identify_settings or Config.load_identify_settings()
+        unresolved_directory = output_unresolved
+        if unresolved_directory is None and settings.output_unresolved:
+            unresolved_directory = Path(settings.output_unresolved)
+        rename_settings = Config.load_rename_settings()
+        if rename_scope == "library":
+            rename_settings = state.rename_settings or rename_settings
+        renamer = PdfRenamer(client=client)
+        renamed = 0
+        rename_skipped = 0
+        for current_path in sorted(rename_candidates):
+            source = state.directory / current_path
+            tracked = state.find_by_current_filename(current_path)
+            if tracked is None or not is_resolved_record(tracked[1]):
+                continue
+            if not source.is_file():
+                rename_skipped += 1
+                click.secho(
+                    f"ADS metadata updated; PDF missing, rename skipped: {source}",
+                    fg="yellow",
+                )
+                continue
+            target_directory = resolved_file_directory(
+                state.directory, source, unresolved_directory
+            )
+            try:
+                target = renamer.rename_tracked_file(
+                    state,
+                    source,
+                    tracked[1],
+                    dry_run=False,
+                    target_directory=target_directory,
+                    **rename_settings.to_mapping(),
+                )
+            except FileExistsError as exc:
+                rename_skipped += 1
+                click.secho(
+                    f"ADS metadata updated; rename skipped because destination exists: {exc}",
+                    fg="yellow",
+                )
+                continue
+            except (ADSError, OSError, ValueError, sqlite3.Error) as exc:
+                rename_skipped += 1
+                click.secho(
+                    f"ADS metadata updated; could not rename {source}: {exc}",
+                    fg="yellow",
+                )
+                continue
+            if target != source.resolve():
+                renamed += 1
+                click.echo(f"Renamed resolved PDF: {source} -> {target}")
+        click.echo(f"Refreshed ADS metadata for {refreshed} bibcode(s).")
+        click.echo(
+            f"Renamed or moved {renamed} PDF(s); skipped {rename_skipped} PDF(s)."
+        )
         if missing_documents:
             click.secho(
                 f"No ADS document found for {len(missing_documents)} bibcode(s).",
                 fg="yellow",
+            )
+        if citation_metrics:
+            # Optional metrics must not block renaming already refreshed PDFs.
+            metric_bibcodes = dict.fromkeys(
+                str(document.get("bibcode") or bibcode)
+                for bibcode, document in documents.items()
+                if document is not None
+            )
+            for bibcode in metric_bibcodes:
+                metrics = client.metrics.citations([bibcode])
+                state.registry.set_ads_document_metrics(
+                    bibcode, _citation_metrics_payload(metrics)
+                )
+            click.echo(
+                f"Refreshed citation metrics for {len(metric_bibcodes)} bibcode(s)."
             )
     finally:
         state.close()
@@ -443,12 +546,10 @@ def _parallel_map_paths(
                 progress.update(1)
             elif completed % text_step == 0 or completed == total:
                 click.echo(
-                    (
-                        f"{desc}: {completed}/{total} "
-                        f"({(completed / total) * 100:.1f}%, "
-                        f"elapsed {_format_elapsed(perf_counter() - started)}, "
-                        f"{completed / max(perf_counter() - started, 1e-9):.1f}/s)"
-                    )
+                    f"{desc}: {completed}/{total} "
+                    f"({(completed / total) * 100:.1f}%, "
+                    f"elapsed {_format_elapsed(perf_counter() - started)}, "
+                    f"{completed / max(perf_counter() - started, 1e-9):.1f}/s)"
                 )
         if progress is not None:
             progress.close()
@@ -469,12 +570,10 @@ def _parallel_map_paths(
                 progress.update(1)
             elif completed % text_step == 0 or completed == total:
                 click.echo(
-                    (
-                        f"{desc}: {completed}/{total} "
-                        f"({(completed / total) * 100:.1f}%, "
-                        f"elapsed {_format_elapsed(perf_counter() - started)}, "
-                        f"{completed / max(perf_counter() - started, 1e-9):.1f}/s)"
-                    )
+                    f"{desc}: {completed}/{total} "
+                    f"({(completed / total) * 100:.1f}%, "
+                    f"elapsed {_format_elapsed(perf_counter() - started)}, "
+                    f"{completed / max(perf_counter() - started, 1e-9):.1f}/s)"
                 )
     if progress is not None:
         progress.close()
@@ -536,12 +635,10 @@ def _parallel_extract_first_page_previews(
                 progress.update(1)
             elif completed % text_step == 0 or completed == total:
                 click.echo(
-                    (
-                        f"{desc}: {completed}/{total} "
-                        f"({(completed / total) * 100:.1f}%, "
-                        f"elapsed {_format_elapsed(perf_counter() - started)}, "
-                        f"{completed / max(perf_counter() - started, 1e-9):.1f}/s)"
-                    )
+                    f"{desc}: {completed}/{total} "
+                    f"({(completed / total) * 100:.1f}%, "
+                    f"elapsed {_format_elapsed(perf_counter() - started)}, "
+                    f"{completed / max(perf_counter() - started, 1e-9):.1f}/s)"
                 )
     if progress is not None:
         progress.close()
@@ -814,11 +911,9 @@ class _IdentifyProgressReporter:
         self._steps.pop(stage, None)
         desc, _ = self._meta(stage)
         click.echo(
-            (
-                f"{desc} completed in "
-                f"{_format_elapsed(perf_counter() - started)} "
-                f"({total}/{total})."
-            )
+            f"{desc} completed in "
+            f"{_format_elapsed(perf_counter() - started)} "
+            f"({total}/{total})."
         )
 
     def __call__(self, stage: str, done: int, total: int) -> None:
@@ -848,11 +943,9 @@ class _IdentifyProgressReporter:
                 desc, _ = self._meta(stage)
                 elapsed = perf_counter() - self._started.get(stage, perf_counter())
                 click.echo(
-                    (
-                        f"{desc}: {done}/{total} ({(done / total) * 100:.1f}%, "
-                        f"elapsed {_format_elapsed(elapsed)}, "
-                        f"{done / max(elapsed, 1e-9):.1f}/s)"
-                    )
+                    f"{desc}: {done}/{total} ({(done / total) * 100:.1f}%, "
+                    f"elapsed {_format_elapsed(elapsed)}, "
+                    f"{done / max(elapsed, 1e-9):.1f}/s)"
                 )
                 self._counts[stage] = done
 
@@ -1187,11 +1280,9 @@ def ocr_command(
             moved += 1
 
         click.echo(
-            (
-                "OCR precheck completed in "
-                f"{_format_elapsed(perf_counter() - started)} "
-                f"(likely non-OCR={len(candidates)}, total scanned={len(pdf_paths)})."
-            )
+            "OCR precheck completed in "
+            f"{_format_elapsed(perf_counter() - started)} "
+            f"(likely non-OCR={len(candidates)}, total scanned={len(pdf_paths)})."
         )
         if apply:
             click.echo(f"Routed likely non-OCR PDFs to: {output_dir}")
@@ -1289,7 +1380,11 @@ def ocr_command(
 @click.option(
     "--apply",
     is_flag=True,
-    help="Apply unresolved-file moves (otherwise dry-run for moves).",
+    help=(
+        "Apply file moves: unresolved PDFs to the configured directory, and "
+        "resolved PDFs from its in-library subtree back to the library root. "
+        "Otherwise preview moves only."
+    ),
 )
 @click.option(
     "--verbose-parser",
@@ -1326,6 +1421,13 @@ def ocr_command(
     is_flag=True,
     help="Disable reusable verbose logging for this run.",
 )
+@click.option(
+    "--provider",
+    "provider_ids",
+    multiple=True,
+    type=click.Choice([p.value for p in DoiProvider]),
+    help="Metadata provider priority; repeat in the desired order.",
+)
 @click.pass_context
 def identify_command(
     ctx: click.Context,
@@ -1343,6 +1445,7 @@ def identify_command(
     apply: bool,
     verbose_parser: bool,
     strategy_ids: tuple[str, ...],
+    provider_ids: tuple[str, ...],
     allow_ads: bool,
     ai_csv: Path | None,
     verbose: int,
@@ -1370,6 +1473,8 @@ def identify_command(
             else None
         ) or Config.load_identify_settings()
         overrides: dict[str, Any] = {}
+        if provider_ids:
+            overrides["providers"] = tuple(DoiProvider(p) for p in provider_ids)
         if recursive is not None:
             overrides["recursive"] = recursive
         if strategy_ids:
@@ -1422,8 +1527,15 @@ def identify_command(
             end_year=effective_end_year,
             retire_year=effective_end_year,
         )
+        client = None
+        if DoiProvider.ADS in settings.providers:
+            try:
+                client = _get_client(ctx)
+            except AuthenticationError:
+                if settings.providers == (DoiProvider.ADS,):
+                    raise
         run_identify(
-            _get_client(ctx),
+            client,
             directory,
             helpers=_identify_workflow_helpers(),
             recursive=settings.recursive,
@@ -1435,12 +1547,13 @@ def identify_command(
             apply=apply,
             verbose_parser=verbose_parser,
             strategies=settings.strategies,
+            providers=settings.providers,
             allow_ads=allow_ads,
             ai_csv=ai_csv,
             verbose=0 if quiet else int(settings.verbose) + verbose,
             profile=profile,
         )
-    except ADSError as exc:
+    except (ADSError, ProviderError) as exc:
         click.secho(f"Error: {exc}", fg="red", err=True)
         sys.exit(1)
 
@@ -1497,7 +1610,11 @@ def identify_command(
 @click.option(
     "--output-unresolved",
     type=click.Path(file_okay=False, path_type=Path),
-    help="Move unresolved PDFs here during --allow-ads (relative paths use DIRECTORY).",
+    help=(
+        "Unresolved folder; resolved files return from here to DIRECTORY. "
+        "Defaults to saved Identify settings or DIRECTORY/unresolved. "
+        "With --allow-ads, also move unresolved PDFs here."
+    ),
 )
 @click.option(
     "--allow-ads",
@@ -1524,16 +1641,23 @@ def rename_command(
     try:
         if authors_when_truncated > max_authors:
             raise click.UsageError("authors_when_truncated cannot exceed max_authors")
-        client = _get_client(ctx)
+        client = (
+            _get_client(ctx)
+            if allow_ads or author_format.startswith("ads_custom:")
+            else None
+        )
+        identify_settings = (
+            load_library_identify_settings(directory) or Config.load_identify_settings()
+        )
         resolved_output_unresolved = output_unresolved
-        if output_unresolved is not None and not output_unresolved.is_absolute():
-            resolved_output_unresolved = directory / output_unresolved
+        if resolved_output_unresolved is None and identify_settings.output_unresolved:
+            resolved_output_unresolved = Path(identify_settings.output_unresolved)
+        if resolved_output_unresolved is not None:
+            resolved_output_unresolved = resolved_output_unresolved.expanduser()
+            if not resolved_output_unresolved.is_absolute():
+                resolved_output_unresolved = directory / resolved_output_unresolved
         if allow_ads:
             click.echo("Identifying pending PDFs before rename...")
-            identify_settings = (
-                load_library_identify_settings(directory)
-                or Config.load_identify_settings()
-            )
             run_identify(
                 client,
                 directory,
@@ -1547,6 +1671,7 @@ def rename_command(
                 apply=apply,
                 verbose_parser=False,
                 strategies=identify_settings.strategies,
+                providers=identify_settings.providers,
                 allow_ads=True,
                 ai_csv=None,
                 verbose=0,
@@ -1571,7 +1696,10 @@ def rename_command(
             "author_separator": author_separator,
             "author_truncation_suffix": author_truncation_suffix,
         }
-        if unresolved_directory.is_dir():
+        if (
+            unresolved_directory.is_dir()
+            and sidecar.directory in unresolved_directory.parents
+        ):
             rename_options.update(
                 move_resolved_from=unresolved_directory,
                 move_resolved_to=sidecar.directory,
@@ -1812,7 +1940,16 @@ def watch_command(
                 raise click.UsageError(
                     "--output-unresolved must be inside the watched directory."
                 ) from exc
-        client = _get_client(ctx)
+        settings = (
+            load_library_identify_settings(directory) or Config.load_identify_settings()
+        )
+        client = None
+        if DoiProvider.ADS in settings.providers or auto_upgrade:
+            try:
+                client = _get_client(ctx)
+            except AuthenticationError:
+                if auto_upgrade or settings.providers == (DoiProvider.ADS,):
+                    raise
         sidecar = open_registry_state(directory)
         identifier = PdfIdentifier(client)
         renamer = PdfRenamer(client=client)
@@ -1832,6 +1969,8 @@ def watch_command(
                 author_truncation_suffix=author_truncation_suffix,
                 output_unresolved=output_unresolved,
                 apply=apply,
+                strategies=settings.strategies,
+                providers=settings.providers,
             )
             if record is not None:
                 destination = record.get("current_filename", pdf_path.name)
@@ -1914,30 +2053,84 @@ def push_library_command(
     apply: bool,
 ) -> None:
     """Push resolved bibcodes from sidecar to an ADS library."""
+    state = None
+    client = None
     try:
-        sidecar = open_registry_state(directory)
-        bibcodes = sorted(
-            {
-                str(record.get("bibcode", "")).strip()
-                for record in sidecar.files.values()
-                if str(record.get("bibcode", "")).strip()
-            }
-        )
+        state = open_registry_state(directory)
+        # Same eligibility as the GUI: resolved status, document identity, Bibcode.
+        selection = collect_identified_bibcodes(state.registry.iter_files())
+        bibcodes = sorted(selection.bibcodes)
         if not bibcodes:
             click.echo("No resolved bibcodes found in sidecar.")
             return
 
         click.echo(f"Prepared {len(bibcodes)} bibcodes for library {library_id}.")
+        if selection.ineligible_files:
+            click.echo(
+                f"Skipped {selection.ineligible_files} records without a resolved "
+                "ADS Bibcode."
+            )
+        if selection.local_duplicate_files:
+            click.echo(
+                f"Skipped {selection.local_duplicate_files} records repeating a "
+                "local Bibcode."
+            )
         if not apply:
             click.echo("Dry-run only. Re-run with --apply to update library.")
             return
 
         client = _get_client(ctx)
-        response = client.libraries.add_documents(library_id, bibcodes)
-        click.secho(f"Library update response: {response}", fg="green")
+        result = AdsLibraryService(client).add_documents(library_id, bibcodes)
+        if result.error is not None:
+            click.secho(
+                f"Error: ADS library update stopped: {result.error}",
+                fg="red",
+                err=True,
+            )
+            click.echo(
+                f"Acknowledged {len(result.acknowledged)}, "
+                f"rejected {len(result.failed)}, "
+                f"status unknown {len(result.status_unknown)}, "
+                f"not attempted {len(result.unattempted)} "
+                f"of {len(bibcodes)} bibcodes.",
+                err=True,
+            )
+            if result.status_unknown:
+                click.echo(
+                    "ADS may have accepted the interrupted request before the "
+                    "connection failed.",
+                    err=True,
+                )
+            click.echo(
+                "Re-run this command to submit the remaining bibcodes; "
+                "acknowledged bibcodes are submitted again.",
+                err=True,
+            )
+            sys.exit(1)
+        click.secho(
+            f"Library update complete: ADS acknowledged "
+            f"{len(result.acknowledged)} bibcodes for library {library_id}.",
+            fg="green",
+        )
+    except PermissionError as exc:
+        click.secho(f"Error: {exc} No bibcodes were submitted.", fg="red", err=True)
+        sys.exit(1)
     except ADSError as exc:
         click.secho(f"Error: {exc}", fg="red", err=True)
         sys.exit(1)
+    except requests.RequestException as exc:
+        click.secho(f"Error: ADS request failed: {exc}", fg="red", err=True)
+        click.echo(
+            "Earlier batches may already have been accepted; re-running submits "
+            "every eligible bibcode again.",
+            err=True,
+        )
+        sys.exit(1)
+    finally:
+        if client is not None:
+            client.close()
+        if state is not None:
+            state.close()
 
 
 @pdf.command("status")
