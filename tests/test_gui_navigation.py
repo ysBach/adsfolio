@@ -131,3 +131,84 @@ def test_detail_link_keeps_enter_and_escape_does_not_clear_find(
     assert opened
     qtbot.keyClick(link, Qt.Key_Escape)
     assert window.search.text() == "keep this query"
+
+
+@pytest.mark.parametrize("delta", [120, -120])
+@pytest.mark.parametrize("axis", ["horizontal", "vertical"])
+def test_shift_mouse_wheel_moves_one_tenth_of_native_page(
+    qtbot, delta: int, axis: str
+) -> None:
+    from PySide6.QtCore import QPoint, QPointF, Qt
+    from PySide6.QtGui import QStandardItem, QStandardItemModel, QWheelEvent
+    from PySide6.QtWidgets import QApplication, QTreeView
+
+    from adsfolio.gui.models import LibraryTableView
+
+    movements = []
+    for view_type in (QTreeView, LibraryTableView):
+        view = view_type()
+        qtbot.addWidget(view)
+        model = QStandardItemModel(view)
+        model.appendRow([QStandardItem("Column") for _ in range(30)])
+        view.setModel(model)
+        view.resize(500, 300)
+        view.show()
+        QApplication.processEvents()
+        scrollbar = view.horizontalScrollBar()
+        scrollbar.setValue(1000)
+        before = scrollbar.value()
+        angle = QPoint(delta, 0) if axis == "horizontal" else QPoint(0, delta)
+        event = QWheelEvent(
+            QPointF(20, 20),
+            QPointF(20, 20),
+            QPoint(),
+            angle,
+            Qt.NoButton,
+            Qt.ShiftModifier,
+            Qt.NoScrollPhase,
+            False,
+        )
+        QApplication.sendEvent(view.viewport(), event)
+        movements.append(abs(scrollbar.value() - before))
+    if axis == "horizontal":
+        assert movements[1] == pytest.approx(movements[0] / 10, abs=1)
+    else:
+        assert movements[1] == pytest.approx(49, abs=1)
+
+
+def test_regular_wheel_and_trackpad_keep_native_behavior(qtbot) -> None:
+    from PySide6.QtCore import QPoint, QPointF, Qt
+    from PySide6.QtGui import QStandardItem, QStandardItemModel, QWheelEvent
+    from PySide6.QtWidgets import QApplication, QTreeView
+
+    from adsfolio.gui.models import LibraryTableView
+
+    for pixels, angle, modifiers in (
+        (QPoint(), QPoint(120, 0), Qt.NoModifier),
+        (QPoint(20, 0), QPoint(20, 0), Qt.ShiftModifier),
+    ):
+        values = []
+        for view_type in (QTreeView, LibraryTableView):
+            view = view_type()
+            qtbot.addWidget(view)
+            model = QStandardItemModel(view)
+            model.appendRow([QStandardItem("Column") for _ in range(30)])
+            view.setModel(model)
+            view.resize(500, 300)
+            view.show()
+            QApplication.processEvents()
+            scrollbar = view.horizontalScrollBar()
+            scrollbar.setValue(1000)
+            event = QWheelEvent(
+                QPointF(20, 20),
+                QPointF(20, 20),
+                pixels,
+                angle,
+                Qt.NoButton,
+                modifiers,
+                Qt.NoScrollPhase,
+                False,
+            )
+            QApplication.sendEvent(view.viewport(), event)
+            values.append(scrollbar.value())
+        assert values[0] == values[1]

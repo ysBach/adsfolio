@@ -134,6 +134,10 @@ selected record, a manually entered identifier, all ADS records, or all citation
 splits. These actions contact ADS and apply the saved rename settings. A local
 Refresh does neither.
 
+Discrete **Shift + mouse wheel** scrolls the table horizontally at one tenth of
+Qt's normal page step. Trackpad scrolling and ordinary wheel scrolling retain
+their native behavior.
+
 Permanent cleanup remains separate: **File → Remove Missing Registry Records…**
 asks before removing missing catalog entries and never deletes files.
 Metadata rows in the right pane can be dragged to choose their display order. The

@@ -68,6 +68,7 @@ from .library import Column, FileQuery, LibraryView, ads_url, arxiv_url, build_c
 from .models import (
     FileTableModel,
     FirstAuthorDelegate,
+    LibraryTableView,
     LinkDelegate,
     ResolutionDelegate,
     RowHeightDelegate,
@@ -292,7 +293,7 @@ class MainWindow(QMainWindow):
         )
         self.model.rowsInserted.connect(lambda *_args: self._update_status())
         self.model.query_failed.connect(self.statusBar().showMessage)
-        self.table = QTreeView(self)
+        self.table = LibraryTableView(self)
         self.table.setModel(self.model)
         self.table.setRootIsDecorated(False)
         self.table.setUniformRowHeights(True)

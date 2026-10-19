@@ -6,13 +6,30 @@ import sqlite3
 from collections.abc import Sequence
 from typing import Any
 
-from PySide6.QtCore import QAbstractTableModel, QModelIndex, QPointF, QSize, Qt, Signal
-from PySide6.QtGui import QColor, QFont, QFontMetrics, QPainter, QPalette, QPolygonF
+from PySide6.QtCore import (
+    QAbstractTableModel,
+    QModelIndex,
+    QPoint,
+    QPointF,
+    QSize,
+    Qt,
+    Signal,
+)
+from PySide6.QtGui import (
+    QColor,
+    QFont,
+    QFontMetrics,
+    QPainter,
+    QPalette,
+    QPolygonF,
+    QWheelEvent,
+)
 from PySide6.QtWidgets import (
     QApplication,
     QStyle,
     QStyledItemDelegate,
     QStyleOptionViewItem,
+    QTreeView,
 )
 
 from ..pdf.cli_common import is_resolved_record
@@ -29,6 +46,49 @@ from .library import (
 )
 
 PAGE_SIZE = 500
+
+
+class LibraryTableView(QTreeView):
+    """Use smaller horizontal steps for Shift plus a discrete mouse wheel."""
+
+    def __init__(self, parent: Any = None) -> None:
+        super().__init__(parent)
+        self._shift_wheel_remainder = 0.0
+
+    def wheelEvent(self, event: QWheelEvent) -> None:
+        """Reduce discrete Shift-wheel movement to one tenth of a page."""
+        angle = event.angleDelta()
+        if (
+            event.modifiers() == Qt.ShiftModifier
+            and event.pixelDelta().isNull()
+            and not angle.isNull()
+        ):
+            delta = angle.x() or angle.y()
+            if delta * self._shift_wheel_remainder < 0:
+                self._shift_wheel_remainder = 0.0
+            scaled = delta / 10 + self._shift_wheel_remainder
+            step = int(scaled)
+            self._shift_wheel_remainder = scaled - step
+            if step == 0:
+                event.accept()
+                return
+            horizontal = QWheelEvent(
+                event.position(),
+                event.globalPosition(),
+                QPoint(),
+                QPoint(step, 0),
+                event.buttons(),
+                event.modifiers(),
+                event.phase(),
+                event.inverted(),
+                event.source(),
+                event.pointingDevice(),
+            )
+            super().wheelEvent(horizontal)
+            event.setAccepted(horizontal.isAccepted())
+            return
+        self._shift_wheel_remainder = 0.0
+        super().wheelEvent(event)
 
 
 class RowHeightDelegate(QStyledItemDelegate):

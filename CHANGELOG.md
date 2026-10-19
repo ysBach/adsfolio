@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Discrete Shift-wheel scrolling in the main table moves one tenth as far.
+
 - The macOS application menu uses ADSfolio when launched from source.
   About displays the GitHub copyright handle.
 
