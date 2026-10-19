@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Organize research PDFs with ADS, Crossref, DataCite, and your own references. A local desktop library for macOS, Windows, and Linux.">
+  <title>ADSfolio — Your research, together</title>
+  <link rel="icon" href="adsfolio.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header><a class="brand" href="./"><img src="adsfolio.svg" alt="" width="40" height="40">ADSfolio</a><nav aria-label="Main navigation"><a href="docs/">Guide</a><a href="https://github.com/ysBach/adsfolio">Source</a></nav></header>
+  <main>
+    <section class="hero">
+      <div><p class="eyebrow">A local library for research papers</p><h1>Less filing.<br>More reading.</h1><p class="lead">Identify PDFs, correct their metadata, and give them useful names. Bring ADS papers and references from other fields into one library.</p><a class="button" href="#download">Get ADSfolio</a><a class="secondary" href="docs/getting-started.html">Read the guide →</a></div>
+      <img class="hero-icon" src="adsfolio.svg" alt="A stack of papers under a blue magnifying glass" width="360" height="360">
+    </section>
+    <section class="features" aria-label="Features">
+      <article><span>01</span><h2>Find the paper</h2><p>Use ADS, Crossref, or DataCite. Choose the lookup order, or add your own references when a service has no match.</p></article>
+      <article><span>02</span><h2>Keep your edits</h2><p>Preserve metadata and file history. Preview renames and reconcile files that changed outside the application.</p></article>
+      <article><span>03</span><h2>Work locally</h2><p>Your catalog stays on your computer. Browse and edit without an ADS account. Online lookups contact the selected providers.</p></article>
+    </section>
+    <section id="download" class="download"><p class="eyebrow">macOS · Windows · Linux</p><h2>Choose your installation</h2><p>ADSfolio is preparing its first release. Release downloads become available after the native builds pass validation.</p><div class="downloads"><a class="button" href="https://github.com/ysBach/adsfolio/releases">Desktop releases</a><a class="secondary" href="docs/desktop.html">Platform requirements →</a></div><h3>macOS with Homebrew</h3><p>After the first stable release and Homebrew tap publication:</p><pre><code>brew install --cask ysBach/adsfolio/adsfolio</code></pre><h3>From source</h3><pre><code>git clone https://github.com/ysBach/adsfolio.git
+cd adsfolio
+uv sync --all-extras
+uv run adsfolio-gui</code></pre><p class="note">Desktop builds are currently unsigned. See the guide for OS requirements and installation limits.</p></section>
+  </main>
+  <footer><span>ADSfolio · BSD-3-Clause</span><p>An independent project using NASA ADS and DOI services. Not an official ADS application.</p><a href="https://github.com/ysBach/adsfolio/issues">Report a problem</a></footer>
+</body>
+</html>
