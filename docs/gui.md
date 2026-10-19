@@ -54,6 +54,10 @@ Use the update method for your installation:
   Its version label does not track individual source edits.
   A desktop installer or Homebrew upgrade replaces the source launcher.
 
+The **Local source launcher** explanation appears only when the source launcher
+sets `ADSFOLIO_SOURCE_LAUNCH=1`. Official desktop bundles show installation guidance
+for their operating system instead. The About copyright displays `@ysBach`.
+
 ## Library roots and missing PDFs
 
 For citations without ADS records or PDFs, use **File → Local References…**.

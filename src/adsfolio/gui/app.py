@@ -30,7 +30,8 @@ def run() -> int:
         level=logging.INFO,
         format="%(levelname)s %(name)s: %(message)s",
     )
-    app = QApplication(sys.argv)
+    # Cocoa builds its application menu from argv[0], before display names apply.
+    app = QApplication(["ADSfolio", *sys.argv[1:]])
     app.setApplicationVersion(__version__)
     app.setApplicationName("adsfolio")
     app.setApplicationDisplayName("ADSfolio")
@@ -41,7 +42,9 @@ def run() -> int:
         app.setWindowIcon(icon)
 
     window = MainWindow()
-    if os.environ.get("ADSFOLIO_SOURCE_LAUNCH") == "1":
+    if os.environ.get("ADSFOLIO_SOURCE_LAUNCH") == "1" and not getattr(
+        sys, "frozen", False
+    ):
         window.setWindowTitle("ADSfolio (Development)")
     window.show()
     QTimer.singleShot(0, window.check_updates_on_start)

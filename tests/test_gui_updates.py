@@ -220,7 +220,7 @@ def test_about_is_reusable_and_does_not_start_a_network_check(
     assert about.isVisible()
     assert __version__ in about.version_label.text()
     assert any(
-        "Copyright © 2026 Yoonsoo P. Bach" in label.text()
+        "Copyright © 2026 @ysBach" in label.text()
         for label in about.findChildren(QLabel)
     )
     assert window.about_action.menuRole() == QAction.AboutRole
@@ -451,3 +451,18 @@ def test_desktop_update_instructions_match_the_platform(
     qtbot.addWidget(dialog)
     assert dialog.installation == "Desktop application"
     assert ("brew upgrade" in dialog.installation_label.text()) is (system == "darwin")
+
+
+def test_official_bundle_never_shows_source_launcher_guidance(
+    qtbot, checker: UpdateChecker, monkeypatch
+) -> None:
+    import sys
+
+    monkeypatch.setenv("ADSFOLIO_SOURCE_LAUNCH", "1")
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    action = QAction()
+    action.setCheckable(True)
+    dialog = AboutDialog(checker, action)
+    qtbot.addWidget(dialog)
+    assert dialog.installation == "Desktop application"
+    assert "Local source launcher" not in dialog.installation_label.text()

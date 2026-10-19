@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- The macOS application menu uses ADSfolio when launched from source.
+  About displays the GitHub copyright handle.
+
 - About ADSfolio shows the version, copyright, license links, and installation type.
   App details can be copied for bug reports.
 - Help offers manual update checks and an optional check at startup.

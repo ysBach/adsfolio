@@ -59,11 +59,13 @@ class AboutDialog(QDialog):
         description = QLabel("Organize research PDFs and publication metadata.", self)
         description.setWordWrap(True)
         layout.addWidget(description)
-        copyright_label = QLabel("Copyright © 2026 Yoonsoo P. Bach", self)
+        copyright_label = QLabel("Copyright © 2026 @ysBach", self)
         copyright_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
         layout.addWidget(copyright_label)
 
-        source_launcher = os.environ.get("ADSFOLIO_SOURCE_LAUNCH") == "1"
+        source_launcher = os.environ.get(
+            "ADSFOLIO_SOURCE_LAUNCH"
+        ) == "1" and not getattr(sys, "frozen", False)
         if source_launcher:
             self.installation = "Local source launcher"
             installation_text = (
