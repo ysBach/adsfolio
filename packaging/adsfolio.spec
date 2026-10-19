@@ -80,20 +80,9 @@ cli = EXE(
     strip=False,
     upx=False,
 )
-legacy_cli = EXE(
-    pyz,
-    application_scripts,
-    [],
-    exclude_binaries=True,
-    name="adsfolio-cli",
-    console=True,
-    strip=False,
-    upx=False,
-)
 collection = COLLECT(
     gui,
     cli,
-    legacy_cli,
     analysis.binaries,
     analysis.datas,
     strip=False,
@@ -135,7 +124,6 @@ if options.with_smoke_test:
     smoke_collection = COLLECT(
         smoke,
         cli,
-        legacy_cli,
         analysis.binaries,
         analysis.datas,
         strip=False,
