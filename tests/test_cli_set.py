@@ -37,24 +37,21 @@ def test_set_command_interactive_saves_token_and_profile(monkeypatch, tmp_path):
         "adsfolio.cli.commands._refresh_publication_cache",
         lambda profile, token: tmp_path / "publications.json",
     )
-    monkeypatch.setattr("adsfolio.cli.commands.Config.get_user_setup", lambda: {})
+    monkeypatch.setattr("adsfolio.cli.commands.Config.get_user_setup", dict)
     monkeypatch.setattr("adsfolio.cli.commands._load_existing_token", lambda: "")
 
     runner = CliRunner()
     result = runner.invoke(
         main,
         ["set"],
-        input="\n".join(
-            [
-                "tok-123",
-                "0000-0002-1825-0097",
-                "Bach, Y. P.; Bach, Yoonsoo",
-                "LIB123;LIB456",
-                "2010",
-                "2030",
-            ]
-        )
-        + "\n",
+        input=(
+            "tok-123\n"
+            "0000-0002-1825-0097\n"
+            "Bach, Y. P.; Bach, Yoonsoo\n"
+            "LIB123;LIB456\n"
+            "2010\n"
+            "2030\n"
+        ),
     )
 
     assert result.exit_code == 0
@@ -130,7 +127,7 @@ def test_set_command_can_reuse_existing_token_and_profile(monkeypatch, tmp_path)
         "retire_year": 2030,
         "library_ids": ["LIB123"],
     }
-    assert "Found existing ADS API token" in result.output
+    assert "Found existing NASA ADS token" in result.output
     assert "Found existing ORCID" in result.output
     assert "Found existing query names" in result.output
     assert "Found existing library IDs" in result.output
@@ -156,7 +153,9 @@ def test_set_command_immediately_builds_and_reports_publication_cache(
         calls["token"] = token
         return cache
 
-    monkeypatch.setattr("adsfolio.cli.commands._refresh_publication_cache", fake_refresh)
+    monkeypatch.setattr(
+        "adsfolio.cli.commands._refresh_publication_cache", fake_refresh
+    )
 
     result = CliRunner().invoke(
         main,
@@ -251,3 +250,23 @@ def test_set_command_rejects_invalid_year_window():
     )
     assert result.exit_code == 1
     assert "debut year cannot be greater than retire year" in result.output
+
+
+def test_version_output_uses_application_name():
+    from adsfolio import __version__
+
+    result = CliRunner().invoke(main, ["--version"])
+    assert result.exit_code == 0
+    assert result.output.strip() == f"ADSfolio, version {__version__}"
+
+
+def test_gui_command_missing_dependencies_reports_adsfolio_hint(monkeypatch):
+    import sys
+
+    monkeypatch.setitem(sys.modules, "adsfolio.gui.app", None)
+    monkeypatch.setitem(sys.modules, "PySide6", None)
+
+    runner = CliRunner()
+    res = runner.invoke(main, ["gui"], prog_name="adsfolio")
+    assert res.exit_code == 1
+    assert "pip install 'adsfolio[gui]'" in res.output

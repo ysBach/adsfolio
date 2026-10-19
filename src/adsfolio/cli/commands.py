@@ -24,15 +24,30 @@ from ..pdf.prefetch import PublicationProfile, load_profile, query_publications
 from ..pubcache import cache_path
 from ..pubcache import clear as clear_publication_cache
 from ..pubcache import load_publications, save_publications
+from ..reference_cli import reference_group
+
+
+def _version_callback(ctx: click.Context, param: click.Parameter, value: bool) -> None:
+    if not value or ctx.resilient_parsing:
+        return
+    click.echo(f"ADSfolio, version {__version__}")
+    ctx.exit()
 
 
 @click.group()
-@click.version_option(version=__version__, prog_name="adsfolio")
-@click.option("--token", envvar="ADS_API_TOKEN", help="ADS API token")
+@click.option(
+    "--version",
+    is_flag=True,
+    callback=_version_callback,
+    expose_value=False,
+    is_eager=True,
+    help="Show the version and exit.",
+)
+@click.option("--token", envvar="ADS_API_TOKEN", help="NASA ADS token")
 @click.pass_context
 def main(ctx: click.Context, token: str | None = None) -> None:
     """
-    ADS API command-line tool.
+    ADSfolio research library tools.
 
     Comprehensive Python client for NASA ADS (Astrophysics Data System).
     """
@@ -103,12 +118,12 @@ def _select_token(token_value: str | None, existing_token: str) -> str:
         return explicit
 
     if existing_token:
-        click.echo(f"Found existing ADS API token: {_mask_token(existing_token)}")
+        click.echo(f"Found existing NASA ADS token: {_mask_token(existing_token)}")
         if click.confirm("Use existing API token?", default=True):
             return existing_token
 
     click.echo("Get your API token at: https://scixplorer.org/user/settings/token")
-    return click.prompt("ADS API token", hide_input=True).strip()
+    return click.prompt("NASA ADS token", hide_input=True).strip()
 
 
 def _normalize_names(raw_names: object) -> list[str]:
@@ -249,7 +264,7 @@ def _select_optional_year(
 
 
 @main.command("set")
-@click.option("--token", "token_value", help="ADS API token.")
+@click.option("--token", "token_value", help="NASA ADS token.")
 @click.option(
     "--orcid", default=None, help="ORCID identifier for publication prefetch."
 )
@@ -432,7 +447,7 @@ def cache_refresh(ctx: click.Context) -> None:
         )
     token = str(ctx.obj.get("token") or _load_existing_token()).strip()
     if not token:
-        raise click.ClickException("No ADS API token found. Run `adsfolio set` first.")
+        raise click.ClickException("No NASA ADS token found. Run `adsfolio set` first.")
     try:
         _refresh_publication_cache(profile, token)
     except ADSError as exc:
@@ -588,7 +603,6 @@ def export(
 @main.group()
 def library() -> None:
     """Manage ADS libraries."""
-    pass
 
 
 @library.command("list")
@@ -849,7 +863,6 @@ def library_watch(
 @main.group()
 def config() -> None:
     """Manage configuration."""
-    pass
 
 
 @config.command("set-token")
@@ -858,7 +871,7 @@ def config_token(token: str) -> None:
     """
     Save API token to config file.
 
-    This token will be used by default for all ADS API operations
+    This token will be used by default for all NASA ADS operations
     when no other token is provided via environment variable or arguments.
     """
     try:
@@ -906,6 +919,7 @@ def rate_limit() -> None:
 
 main.add_command(pdf_group)
 main.add_command(cv_group)
+main.add_command(reference_group)
 
 
 if __name__ == "__main__":

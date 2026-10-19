@@ -2,6 +2,7 @@ from click.testing import CliRunner
 
 from adsfolio import pubcache
 from adsfolio.cli.commands import main
+from adsfolio.user_profile import UserProfile
 
 
 def test_cache_commands_refresh_status_and_clear(monkeypatch, tmp_path):
@@ -9,8 +10,8 @@ def test_cache_commands_refresh_status_and_clear(monkeypatch, tmp_path):
     monkeypatch.setattr(pubcache, "cache_path", lambda: path)
     monkeypatch.setattr("adsfolio.cli.commands.cache_path", lambda: path)
     monkeypatch.setattr(
-        "adsfolio.cli.commands.Config.get_user_setup",
-        lambda: {"orcid": "0000", "end_year": 2026},
+        "adsfolio.cli.commands.Config.load_user_profile",
+        lambda: UserProfile(orcid="0000", last_publication_year=2026),
     )
     monkeypatch.setattr("adsfolio.cli.commands._load_existing_token", lambda: "token")
     monkeypatch.setattr(
