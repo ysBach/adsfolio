@@ -8,6 +8,7 @@ import json
 import os
 import re
 import sqlite3
+import unicodedata
 from collections.abc import Callable, Collection, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -308,11 +309,12 @@ class PdfCatalog:
             self._connection.execute(
                 """
                 UPDATE file_locations
-                SET size_bytes = ?, mtime_ns = ?, device = ?, inode = ?,
+                SET relative_path = ?, size_bytes = ?, mtime_ns = ?, device = ?, inode = ?,
                     current_version_id = ?, last_seen_at = ?, missing_at = NULL
                 WHERE id = ?
                 """,
                 (
+                    normalized_path,
                     size_bytes,
                     mtime_ns,
                     _sqlite_file_identity(device),
@@ -1630,7 +1632,7 @@ class PdfCatalog:
         relative_path: str,
         attachment_id: int,
     ) -> sqlite3.Row | None:
-        return self._connection.execute(
+        exact = self._connection.execute(
             """
             SELECT * FROM file_locations
             WHERE root_id = ? AND relative_path = ? AND attachment_id = ?
@@ -1639,6 +1641,47 @@ class PdfCatalog:
             """,
             (root_id, relative_path, attachment_id),
         ).fetchone()
+
+        if exact is not None and exact["missing_at"] is None:
+            return exact
+        spelling = unicodedata.normalize("NFC", relative_path)
+        if spelling.isascii():
+            return exact
+        root = self._connection.execute(
+            "SELECT canonical_path FROM library_roots WHERE id = ?", (root_id,)
+        ).fetchone()
+        if root is None:
+            return None
+        # Unicode spellings can name one file on macOS and distinct files on Linux.
+        base = Path(root[0])
+        path = base / relative_path
+        directory_names: dict[Path, set[str]] = {}
+
+        def has_exact_spelling(relative: str) -> bool:
+            parent = base
+            for part in PurePosixPath(relative).parts:
+                if parent not in directory_names:
+                    directory_names[parent] = set(os.listdir(parent))
+                if part not in directory_names[parent]:
+                    return False
+                parent = parent / part
+            return True
+
+        for row in self._connection.execute(
+            "SELECT * FROM file_locations WHERE root_id = ? AND attachment_id = ? AND missing_at IS NULL",
+            (root_id, attachment_id),
+        ):
+            if unicodedata.normalize("NFC", row["relative_path"]) != spelling:
+                continue
+            try:
+                if not (
+                    has_exact_spelling(row["relative_path"])
+                    and has_exact_spelling(relative_path)
+                ) and path.samefile(base / row["relative_path"]):
+                    return row
+            except OSError:
+                continue
+        return exact
 
     def _match_attachment(
         self,

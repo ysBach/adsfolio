@@ -715,3 +715,170 @@ def test_large_filesystem_identity_survives_reopen_and_move(
     assert all(row["device"] == identity and row["inode"] == identity for row in rows)
     assert all(row["metadata"]["title"] == "Preserved title" for row in rows)
     catalog.close()
+
+
+def test_unicode_alias_retains_location_and_content_history(
+    monkeypatch, tmp_path: Path
+) -> None:
+    import unicodedata
+
+    from adsfolio.pdf.files import sha256_file
+
+    catalog = _catalog(monkeypatch, tmp_path)
+    root = tmp_path / "library"
+    root.mkdir()
+    first_name = "Bockelée-Morvan.pdf"
+    second_name = unicodedata.normalize("NFD", first_name)
+    first = root / first_name
+    first.write_bytes(b"same PDF")
+    second = root / second_name
+    if not second.exists():
+        catalog.close()
+        pytest.skip("This filesystem keeps Unicode spellings distinct")
+    digest = sha256_file(first)
+    stat = first.stat()
+    before = catalog.observe_file(
+        root,
+        first_name,
+        sha256=digest,
+        size_bytes=stat.st_size,
+        mtime_ns=stat.st_mtime_ns,
+        device=stat.st_dev,
+        inode=stat.st_ino,
+        status="resolved",
+        metadata={"bibcode": "2017MNRAS.469S.443B", "title": ["Keep title"]},
+    )
+    versions = catalog.content_versions(before.attachment_id)
+    after = catalog.observe_file(
+        root,
+        second_name,
+        sha256=digest,
+        size_bytes=stat.st_size,
+        mtime_ns=stat.st_mtime_ns,
+        device=stat.st_dev,
+        inode=stat.st_ino,
+    )
+    assert after.attachment_id == before.attachment_id
+    assert after.location_id == before.location_id
+    assert catalog.content_versions(after.attachment_id) == versions
+    rows = catalog.query_files(root=root)
+    assert len(rows) == 1
+    assert rows[0]["relative_path"] == second_name
+    assert rows[0]["status"] == "resolved"
+    assert rows[0]["title"] == ["Keep title"]
+    catalog.close()
+
+
+def test_distinct_unicode_files_keep_separate_locations(
+    monkeypatch, tmp_path: Path
+) -> None:
+    import unicodedata
+
+    from adsfolio.pdf.files import sha256_file
+
+    catalog = _catalog(monkeypatch, tmp_path)
+    root = tmp_path / "library"
+    root.mkdir()
+    first = root / "é.pdf"
+    second = root / unicodedata.normalize("NFD", first.name)
+    first.write_bytes(b"first PDF")
+    if second.exists():
+        catalog.close()
+        pytest.skip("This filesystem treats Unicode spellings as the same filename")
+    second.write_bytes(b"second PDF")
+    for path in (first, second):
+        stat = path.stat()
+        catalog.observe_file(
+            root,
+            path.name,
+            sha256=sha256_file(path),
+            size_bytes=stat.st_size,
+            mtime_ns=stat.st_mtime_ns,
+            device=stat.st_dev,
+            inode=stat.st_ino,
+        )
+    rows = catalog.query_files(root=root)
+    assert len(rows) == 2
+    assert len({row["attachment_id"] for row in rows}) == 2
+    catalog.close()
+
+
+def test_unicode_hardlinks_retain_both_locations(monkeypatch, tmp_path: Path) -> None:
+    import unicodedata
+
+    from adsfolio.pdf.files import sha256_file
+
+    catalog = _catalog(monkeypatch, tmp_path)
+    root = tmp_path / "library"
+    root.mkdir()
+    first = root / "é.pdf"
+    second = root / unicodedata.normalize("NFD", first.name)
+    first.write_bytes(b"same PDF")
+    if second.exists():
+        catalog.close()
+        pytest.skip("This filesystem treats Unicode spellings as one filename")
+    try:
+        second.hardlink_to(first)
+    except OSError:
+        catalog.close()
+        pytest.skip("This filesystem does not support hardlinks")
+    for path in (first, second):
+        stat = path.stat()
+        catalog.observe_file(
+            root,
+            path.name,
+            sha256=sha256_file(path),
+            size_bytes=stat.st_size,
+            mtime_ns=stat.st_mtime_ns,
+            device=stat.st_dev,
+            inode=stat.st_ino,
+        )
+    assert len(catalog.query_files(root=root)) == 2
+    catalog.close()
+
+
+def test_unicode_active_alias_precedes_missing_exact_history(
+    monkeypatch, tmp_path: Path
+) -> None:
+    import unicodedata
+
+    from adsfolio.pdf.files import sha256_file
+
+    catalog = _catalog(monkeypatch, tmp_path)
+    root = tmp_path / "library"
+    root.mkdir()
+    first_name = "é.pdf"
+    alias = unicodedata.normalize("NFD", first_name)
+    path = root / first_name
+    path.write_bytes(b"PDF")
+    if not (root / alias).exists():
+        catalog.close()
+        pytest.skip("This filesystem keeps Unicode spellings distinct")
+    stat = path.stat()
+    before = catalog.observe_file(
+        root,
+        first_name,
+        sha256=sha256_file(path),
+        size_bytes=stat.st_size,
+        mtime_ns=stat.st_mtime_ns,
+        device=stat.st_dev,
+        inode=stat.st_ino,
+    )
+    with catalog._connection:
+        catalog._connection.execute(
+            "INSERT INTO file_locations (attachment_id, root_id, relative_path, size_bytes, mtime_ns, current_version_id, first_seen_at, last_seen_at, missing_at) SELECT attachment_id, root_id, ?, size_bytes, mtime_ns, current_version_id, first_seen_at, last_seen_at, ? FROM file_locations WHERE id = ?",
+            (alias, "2026-01-01T00:00:00Z", before.location_id),
+        )
+    after = catalog.observe_file(
+        root,
+        alias,
+        sha256=sha256_file(path),
+        size_bytes=stat.st_size,
+        mtime_ns=stat.st_mtime_ns,
+        device=stat.st_dev,
+        inode=stat.st_ino,
+    )
+    assert after.location_id == before.location_id
+    assert len(catalog.query_files(root=root)) == 1
+    assert len(catalog.query_files(root=root, include_missing=True)) == 2
+    catalog.close()

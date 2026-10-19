@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Equivalent Unicode filename spellings retain catalog identity when they refer
+  to one directory entry. Distinct files and hardlinks remain separate.
+
 - Discrete Shift-wheel scrolling in the main table moves one tenth as far.
 
 - The macOS application menu uses ADSfolio when launched from source.
