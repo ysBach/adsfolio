@@ -360,7 +360,7 @@ def test_ads_toolbar_reuses_selected_and_identifier_refresh(
     assert all(
         "Rename" in action.text()
         for action in window.ads_refresh_button.menu().actions()
-        if not action.isSeparator()
+        if not action.isSeparator() and action is not window.link_bibcodes_action
     )
 
 
@@ -1533,3 +1533,19 @@ def test_closing_window_cancels_deferred_library_queries(
     assert not window._watch_refresh_timer.isActive()
     assert not window._pending_watch_refresh_roots
     qtbot.wait(window.search_timer.interval() + 1)
+
+
+def test_stored_bibcode_action_uses_pending_metadata_only_lookup(
+    monkeypatch, qtbot, tmp_path
+) -> None:
+    root = tmp_path / "library"
+    root.mkdir()
+    (root / "paper.pdf").write_bytes(b"paper")
+    window, _controller, _saves = _window_factory(
+        monkeypatch, qtbot, GuiConfig(roots=[RootEntry(str(root))])
+    )
+    calls = []
+    monkeypatch.setattr(QMessageBox, "question", lambda *args: QMessageBox.Yes)
+    monkeypatch.setattr(window, "_start_ads_refresh", lambda *args: calls.append(args))
+    window.link_bibcodes_action.trigger()
+    assert calls == [("--all", "--no-rename", "--pending-only")]

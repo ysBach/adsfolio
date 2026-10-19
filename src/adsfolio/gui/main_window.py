@@ -51,6 +51,7 @@ from ..citations import CitationStyle, citation_preference_key
 from ..config import Config
 from ..pdf.annotation_merge import AnnotationMergeError, MissingDependencyError
 from ..pdf.identify_settings import IdentifySettings
+from ..pdf.readiness import stored_bibcode_matches_file
 from ..pdf.registry import CentralPdfRegistryState, LibraryRefresh, PdfRegistry
 from ..pdf.rename_settings import RenameSettings
 from ..pdf.watch_session import WatchEvent, WatchOutcome, WatchState
@@ -281,7 +282,7 @@ class MainWindow(QMainWindow):
         self.views_item.setData(0, Qt.UserRole + 1, "views")
         self.views_item.setToolTip(
             0,
-            "ADS groups use saved matches. PDFs without ADS matches can still have complete metadata.",
+            "ADS groups use saved lookup status. Needs ADS lookup can include bibcodes and complete non-ADS metadata.",
         )
         self.sidebar.addTopLevelItem(self.libraries_item)
         self.sidebar.addTopLevelItem(self.views_item)
@@ -403,12 +404,13 @@ class MainWindow(QMainWindow):
         self.ads_refresh_button.setText("ADS Refresh")
         self.ads_refresh_button.setPopupMode(QToolButton.InstantPopup)
         self.ads_refresh_button.setToolTip(
-            "Update ADS metadata and apply saved rename rules"
+            "Look up stored bibcodes, update ADS metadata, or apply saved rename rules"
         )
         ads_menu = QMenu(self.ads_refresh_button)
         ads_menu.addAction(self.refresh_selected_ads_action)
         ads_menu.addAction(self.update_selected_ads_action)
         ads_menu.addSeparator()
+        ads_menu.addAction(self.link_bibcodes_action)
         ads_menu.addAction(self.refresh_all_ads_action)
         ads_menu.addAction(self.refresh_all_citation_metrics_action)
         self.ads_refresh_button.setMenu(ads_menu)
@@ -477,6 +479,8 @@ class MainWindow(QMainWindow):
         self.update_selected_ads_action.triggered.connect(
             lambda: self._update_selected_from_ads("")
         )
+        self.link_bibcodes_action = QAction("Look Up Stored Bibcodes…", self)
+        self.link_bibcodes_action.triggered.connect(self._link_stored_bibcodes)
         self.refresh_all_ads_action = QAction(
             "Refresh and Rename All ADS Records…", self
         )
@@ -525,6 +529,7 @@ class MainWindow(QMainWindow):
         tools.addAction(self.cancel_job_action)
         tools.addSeparator()
         tools.addAction(self.refresh_selected_ads_action)
+        tools.addAction(self.link_bibcodes_action)
         tools.addAction(self.refresh_all_ads_action)
         tools.addAction(self.refresh_all_citation_metrics_action)
         tools.addAction(self.add_to_ads_library_action)
@@ -873,6 +878,7 @@ class MainWindow(QMainWindow):
             and not bool((record.get("metadata") or {}).get("_adsfolio_metadata_stale"))
         )
         self.update_selected_ads_action.setEnabled(available and record is not None)
+        self.link_bibcodes_action.setEnabled(available)
         self.refresh_all_ads_action.setEnabled(available)
         self.refresh_all_citation_metrics_action.setEnabled(available)
         if hasattr(self, "ads_refresh_button"):
@@ -2349,9 +2355,9 @@ class MainWindow(QMainWindow):
         self.view_explanation.setVisible(explains_ads_group)
         if explains_ads_group:
             self.view_explanation.setText(
-                "ADS matches: saved ADS matches. Changed PDFs need Identify again."
+                "ADS linked: the catalog has a saved ADS link. Changed PDFs need Identify again."
                 if self.current_view is LibraryView.RESOLVED
-                else "No ADS match: no saved ADS match. Metadata and bibcodes may still be available."
+                else "Needs ADS lookup: no completed ADS link. Bibcodes or complete local metadata may be present. Use Look Up Stored Bibcodes or Identify."
             )
         if self.current_root is None:
             self.status.setToolTip("")
@@ -2368,8 +2374,8 @@ class MainWindow(QMainWindow):
         if resolved is None or unresolved is None:
             return
         self.status.showMessage(
-            f"{loaded} loaded of {total} · {resolved} stored ADS matches · "
-            f"{unresolved} without stored ADS match"
+            f"{loaded} loaded of {total} · {resolved} ADS linked · "
+            f"{unresolved} need ADS lookup"
         )
         self.load_more_action.setEnabled(self.model.canFetchMore())
 
@@ -2575,19 +2581,49 @@ class MainWindow(QMainWindow):
                 self.table.setCurrentIndex(self.model.index(row, 0))
                 return
 
+    def _link_stored_bibcodes(self) -> None:
+        """Look up all known bibcodes without renaming or moving PDFs."""
+        if self.current_root is None:
+            return
+        records = [
+            record
+            for record in self.registries[str(self.current_root)].iter_files()
+            if record.get("status") != "resolved" and record.get("bibcode")
+        ]
+        count = sum(stored_bibcode_matches_file(record) for record in records)
+        skipped = len(records) - count
+        explanation = (
+            f" {skipped} other records need Identify because their saved metadata has no matching PDF digest."
+            if skipped
+            else ""
+        )
+        if (
+            QMessageBox.question(
+                self,
+                "Look Up Stored Bibcodes",
+                f"Look up stored bibcodes for {count} pending records? Cached ADS records are used first. "
+                "Existing metadata, locked fields, and history are retained. "
+                "PDFs are not renamed or moved." + explanation,
+            )
+            != QMessageBox.Yes
+        ):
+            return
+        self._start_ads_refresh("--all", "--no-rename", "--pending-only")
+
     def _refresh_all_ads(self) -> None:
         """Confirm a batched ADS document refresh without per-paper metrics."""
         if self.current_root is None:
             return
-        count = self.registries[str(self.current_root)].count_files_matching(
-            resolved=True
+        count = sum(
+            bool(record.get("bibcode"))
+            for record in self.registries[str(self.current_root)].iter_files()
         )
         if (
             QMessageBox.question(
                 self,
                 "Refresh all ADS records",
                 (
-                    f"Refresh ADS metadata for up to {count} resolved records and "
+                    f"Refresh ADS metadata for up to {count} records with bibcodes (including pending ADS lookups) and "
                     "rename their PDFs using saved settings?"
                 ),
             )
@@ -2600,8 +2636,9 @@ class MainWindow(QMainWindow):
         """Confirm explicit per-paper requests for citation splits."""
         if self.current_root is None:
             return
-        count = self.registries[str(self.current_root)].count_files_matching(
-            resolved=True
+        count = sum(
+            bool(record.get("bibcode"))
+            for record in self.registries[str(self.current_root)].iter_files()
         )
         if (
             QMessageBox.question(
@@ -2842,6 +2879,7 @@ class MainWindow(QMainWindow):
         self.identify_action.setEnabled(False)
         self.rename_action.setEnabled(False)
         self.refresh_selected_ads_action.setEnabled(False)
+        self.link_bibcodes_action.setEnabled(False)
         self.refresh_all_ads_action.setEnabled(False)
         self.refresh_all_citation_metrics_action.setEnabled(False)
         self.cancel_job_action.setEnabled(True)
@@ -2863,6 +2901,7 @@ class MainWindow(QMainWindow):
         self.identify_action.setEnabled(True)
         self.rename_action.setEnabled(True)
         self.refresh_selected_ads_action.setEnabled(True)
+        self.link_bibcodes_action.setEnabled(True)
         self.refresh_all_ads_action.setEnabled(True)
         self.refresh_all_citation_metrics_action.setEnabled(True)
         self.cancel_job_action.setEnabled(False)
@@ -2895,6 +2934,7 @@ class MainWindow(QMainWindow):
         self.identify_action.setEnabled(True)
         self.rename_action.setEnabled(True)
         self.refresh_selected_ads_action.setEnabled(True)
+        self.link_bibcodes_action.setEnabled(True)
         self.refresh_all_ads_action.setEnabled(True)
         self.refresh_all_citation_metrics_action.setEnabled(True)
         self.cancel_job_action.setEnabled(False)

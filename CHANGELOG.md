@@ -2,13 +2,15 @@
 
 ## Unreleased
 
-- Equivalent Unicode filename spellings retain catalog identity when they refer
-  to one directory entry. Distinct files and hardlinks remain separate.
-
-- Discrete Shift-wheel scrolling in the main table moves one tenth as far.
-
 - The macOS application menu uses ADSfolio when launched from source.
   About displays the GitHub copyright handle.
+- Discrete Shift-wheel scrolling in the main table moves one tenth as far.
+- ADS groups distinguish stored links from metadata readiness and PDF checks.
+  Pending bibcodes can be linked from cache or batched ADS queries without
+  changing existing metadata, filenames, or history.
+- Equivalent Unicode filename spellings retain catalog identity when they refer
+  to one directory entry. Distinct files and hardlinks remain separate.
+- The AI CSV prompt requires exact identifiers and forbids invented bibcodes.
 
 - About ADSfolio shows the version, copyright, license links, and installation type.
   App details can be copied for bug reports.

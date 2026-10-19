@@ -151,9 +151,24 @@ default. **Refresh/F5** scans the selected root using its current recursion sett
 3. Press **Refresh/F5**, select **All**, and clear the search field.
 
 The recursive scan restores nested locations marked missing and discovers new
-PDFs. Top-level scans leave nested records unchanged. **Unresolved** is
+PDFs. Top-level scans leave nested records unchanged. **Needs ADS lookup** is
 a status filter, not a listing of the `unresolved/` directory. See the
 [GUI guide](../gui.md) for the distinction between root scope and Identify settings.
+
+### A stored bibcode appears under Needs ADS lookup
+
+A saved bibcode and a linked ADS record are separate catalog facts.
+Use **ADS Refresh → Look Up Stored Bibcodes…** to link pending records.
+The equivalent command is:
+
+```sh
+adsfolio pdf refresh-ads /path/to/library --all --no-rename --pending-only
+```
+
+The command uses cached ADS records first and queries missing records in batches.
+It fills empty fields while retaining metadata, locks, file paths, and history.
+A missing ADS result does not erase the stored bibcode.
+Files with stale metadata or mismatched digests need Identify instead.
 
 ### `pdf identify` warns about large query batch
 

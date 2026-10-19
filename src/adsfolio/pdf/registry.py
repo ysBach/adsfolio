@@ -19,7 +19,7 @@ from .catalog import (
 )
 from .files import sha256_file
 from .identify_settings import IdentifySettings
-from .readiness import METADATA_STALE_KEY
+from .readiness import METADATA_STALE_KEY, stored_bibcode_matches_file
 
 if TYPE_CHECKING:
     from .rename_settings import RenameSettings
@@ -334,7 +334,7 @@ class CentralPdfRegistry:
         return self.catalog.get_file(root, relative_path)
 
     def find_files_by_bibcode(self, root: Path, bibcode: str) -> list[dict[str, Any]]:
-        """Return current locations linked to one Bibcode."""
+        """Return unchanged current locations carrying one Bibcode."""
         return [
             record
             for record in self.catalog.query_files(root=root)
@@ -346,8 +346,10 @@ class CentralPdfRegistry:
                     and record["metadata"].get(METADATA_STALE_KEY)
                 )
             )
-            and record.get("document_id") is not None
-            and str(record.get("status") or "").strip() != "unresolved"
+            and (
+                record.get("status") == "resolved"
+                or stored_bibcode_matches_file(record)
+            )
         ]
 
     def find_file_by_current_path(

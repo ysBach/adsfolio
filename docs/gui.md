@@ -74,13 +74,15 @@ the watcher before changing it.  Changing the checkbox saves the scan scope
 but does not rescan the current catalog immediately. Press **Refresh** (**F5**)
 to scan the root with its updated **Include Subdirectories** setting.
 
-The sidebar groups records by **ADS matches** and **No ADS match**.
-These groups use the catalog's saved match status. They do not indicate whether
-metadata is complete or the current PDF still matches that record.
+The sidebar groups records by **ADS linked** and **Needs ADS lookup**.
+These groups use the catalog's saved link status. A stored bibcode can exist
+before the app links the file to its ADS record. Complete non-ADS metadata can
+also appear under **Needs ADS lookup**. Metadata readiness is a separate state.
+An ADS link alone does not prove that the PDF contains the correct paper.
 
 The table and detail pane check for changed PDFs before displaying verification.
-A stored bibcode can remain visible before Identify verifies the current PDF.
-Status tooltips explain changed files, pending verification, and metadata readiness.
+A stored bibcode can remain visible after a PDF changes.
+Status tooltips explain changed files, ADS links, and metadata readiness.
 External references can be ready for renaming without an ADS link.
 
 **All PDFs** includes current catalog locations. Queries exclude missing locations.
@@ -129,10 +131,16 @@ Selection, search, and sort settings are retained when the originating view is
 still active. Watcher writes pause during the scan. **File → Reconcile File
 Facts…** runs the same scan.
 
-The toolbar **ADS Refresh ▾** menu provides refresh and rename actions for the
-selected record, a manually entered identifier, all ADS records, or all citation
-splits. These actions contact ADS and apply the saved rename settings. A local
-Refresh does neither.
+The toolbar **ADS Refresh ▾ → Look Up Stored Bibcodes…** repairs pending ADS
+links. It uses cached records first and queries uncached bibcodes in batches.
+It fills empty metadata fields and retains existing values, locks, and history.
+PDFs stay in place. Files with stale metadata, missing digests, or digest mismatches
+need Identify instead. No ADS token is needed when all required records are cached.
+
+Other ADS Refresh actions refresh and rename the selected record, a manually
+entered identifier, all stored bibcodes, or citation splits. They use saved Rename
+settings. **Refresh and Rename All ADS Records…** also includes eligible pending
+bibcodes. A local **Refresh/F5** reconciles file facts without querying ADS.
 
 Discrete **Shift + mouse wheel** scrolls the table horizontally at one tenth of
 Qt's normal page step. Trackpad scrolling and ordinary wheel scrolling retain
@@ -310,6 +318,14 @@ non-obvious Identify and Rename row has a visible **?** button as well as a
 tooltip and accessible description. Rename's filename-template help lists all
 supported fields and explains truncation, sanitization, and automatic `.pdf`.
 
+For difficult files, Identify writes `unresolved.csv` and a prompt to the job log.
+The CSV contains relative paths and first-page text. Review that text before
+sharing it with an external AI service. Ask for exact identifiers only.
+Save the response as CSV, then choose **AI CSV (this run)** in Identify.
+The current importer verifies bibcodes and DOIs with ADS. It does not apply
+AI-written title or author fields directly. DOI lookup through Crossref and
+DataCite, and ADS title matching, remain available through normal Identify.
+
 Enable **Apply file moves** to return successfully identified files from the
 unresolved subtree to the library root. Identify keeps their filenames. Rename
 and **Identify & Rename** watcher actions also apply the configured filename
@@ -320,7 +336,7 @@ directory** must be off. Previously identified files in that scanned subtree
 are returned too, without repeating their ADS lookup. AI CSV matches are
 handled in the same run.
 
-**Update from ADS** and ADS refresh rename successfully updated PDFs using the
+**Update from ADS** and the ADS refresh actions labeled **Rename** rename updated PDFs using the
 effective Rename settings. Files in the unresolved subtree also return to the
 root in the same move. Other PDFs are renamed within their current directory.
 Filenames use the refreshed metadata, including any locally locked fields.
@@ -563,11 +579,10 @@ previously held drag handles and edit or lock buttons.
 The saved row order, hidden fields, fonts, and metadata locks remain active.
 The abstract keeps its **Show more / Show less** control.
 
-The sidebar uses **ADS matches** and **No ADS match** for saved catalog states.
-A PDF without an ADS match can still have a bibcode or complete metadata.
-These groups do not classify all non-ADS papers as unidentified.
-A changed PDF can retain its saved match until Identify checks it again.
-The amber triangle means that the PDF needs a new check.
+The sidebar uses **ADS linked** and **Needs ADS lookup** for saved link states.
+A pending link can still have a bibcode or complete metadata. Use
+**ADS Refresh → Look Up Stored Bibcodes…** to repair eligible pending links.
+The amber triangle means that the PDF changed and needs Identify again.
 
 Right-click a main-table column heading to open **Appearance…** or change visible columns.
 The sidebar uses less indentation. Hover over a truncated library name to see its full path.

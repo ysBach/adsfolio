@@ -1262,7 +1262,7 @@ def test_toolbar_exposes_identify_and_rename_actions(
 
 @pytest.mark.parametrize(
     "raw_status,display_status",
-    [("resolved", "ADS verified"), ("unresolved", "Not ADS verified")],
+    [("resolved", "ADS record linked"), ("unresolved", "No ADS link")],
 )
 def test_detail_status_display_preserves_metadata_and_edit_semantics(
     application: QApplication,

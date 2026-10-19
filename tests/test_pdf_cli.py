@@ -424,9 +424,10 @@ def test_identify_writes_unresolved_csv_and_ai_prompt(tmp_path, monkeypatch):
     assert result.exit_code == 0
     assert "Generated unresolved filename list:" in result.output
     assert "Use any AI tool you prefer." in result.output
-    assert "Analyze the attached CSV with columns including" in result.output
-    assert "Goal:" in result.output
-    assert "Output CSV with columns:" in result.output
+    assert "Never construct or guess a bibcode" in result.output
+    assert (
+        "relative_path,ads_bibcode,doi,title,author,year,parse_notes" in result.output
+    )
 
     unresolved_csv = tmp_path / "unresolved.csv"
     assert unresolved_csv.exists()

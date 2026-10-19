@@ -40,6 +40,19 @@ def _is_valid_year(val: Any) -> bool:
     return False
 
 
+def stored_bibcode_matches_file(record: Mapping[str, Any]) -> bool:
+    """Return whether a saved bibcode belongs to the current catalog digest."""
+    metadata = record.get("metadata")
+    if not isinstance(metadata, Mapping):
+        return False
+    if not (record.get("bibcode") or metadata.get("bibcode")):
+        return False
+    if record.get(METADATA_STALE_KEY) or metadata.get(METADATA_STALE_KEY):
+        return False
+    expected = metadata.get(METADATA_SHA256_KEY) or metadata.get("sha256")
+    return bool(expected and expected == record.get("sha256"))
+
+
 def metadata_ready(record: Mapping[str, Any]) -> bool:
     """Return whether current metadata can name this PDF.
 

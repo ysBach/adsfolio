@@ -29,7 +29,11 @@ def verification_stale(record: dict[str, Any]) -> bool:
     """
     raw_metadata = record.get("metadata")
     metadata = raw_metadata if isinstance(raw_metadata, dict) else {}
-    expected_sha = record.get(METADATA_SHA256_KEY) or metadata.get(METADATA_SHA256_KEY)
+    expected_sha = (
+        record.get(METADATA_SHA256_KEY)
+        or metadata.get(METADATA_SHA256_KEY)
+        or metadata.get("sha256")
+    )
     return bool(
         record.get(METADATA_STALE_KEY)
         or metadata.get(METADATA_STALE_KEY)
@@ -51,8 +55,8 @@ class LibraryView(str, Enum):
         """Name each catalog view without claiming current PDF verification."""
         return {
             self.ALL: "All PDFs",
-            self.RESOLVED: "ADS matches",
-            self.UNRESOLVED: "No ADS match",
+            self.RESOLVED: "ADS linked",
+            self.UNRESOLVED: "Needs ADS lookup",
             self.ARXIV_ONLY: "arXiv",
             self.DUPLICATES: "Duplicates",
         }[self]
@@ -62,10 +66,10 @@ class LibraryView(str, Enum):
         """Explain the stored-status filter separately from current indicators."""
         if self in {self.RESOLVED, self.UNRESOLVED}:
             return (
-                "Filters stored catalog ADS-match status, not current PDF verification. "
-                "Changed PDFs can remain in ADS matches until identified again. "
-                "Table and detail indicators separately account for metadata staleness "
-                "and readiness."
+                "Groups use the saved ADS lookup status. Needs ADS lookup can include "
+                "bibcodes awaiting lookup and complete non-ADS metadata. "
+                "A linked ADS record does not prove the PDF content matches. "
+                "Changed PDFs need identification again."
             )
         return self.label
 

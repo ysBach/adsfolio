@@ -402,15 +402,15 @@ class FileTableModel(QAbstractTableModel):
                 if verification_stale(record):
                     return STALE_VERIFICATION_TOOLTIP
                 if is_resolved_record(record):
-                    return "ADS verified"
+                    return "ADS record linked"
                 if metadata_ready(record):
-                    return "Metadata ready for renaming. No verified ADS link."
+                    return "Metadata ready for renaming. No completed ADS lookup."
                 if record.get("bibcode"):
                     return (
-                        "Bibcode present, but this PDF is not verified. "
-                        "Run Identify to check the match. Existing metadata is retained."
+                        "Bibcode present. ADS lookup is pending. "
+                        "Run Identify to check it in a batch. Existing metadata is retained."
                     )
-                return "No verified publication match. Run Identify or enter metadata."
+                return "No completed ADS lookup. Run Identify or enter metadata."
         if role in (Qt.ToolTipRole, Qt.AccessibleTextRole) and column.key in {
             "bibcode",
             "arxiv",

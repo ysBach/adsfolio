@@ -55,15 +55,15 @@ def test_resolution_marker_has_accessible_state(tmp_path) -> None:
     resolved = model.index(1, status_index)
     attention = model.index(0, status_index)
     assert resolved.data(Qt.DisplayRole) == ""
-    assert resolved.data(Qt.ToolTipRole) == "ADS verified"
-    assert resolved.data(Qt.AccessibleTextRole) == "ADS verified"
+    assert resolved.data(Qt.ToolTipRole) == "ADS record linked"
+    assert resolved.data(Qt.AccessibleTextRole) == "ADS record linked"
     assert attention.data(Qt.DisplayRole) == ""
     assert attention.data(Qt.ToolTipRole) == (
-        "Bibcode present, but this PDF is not verified. "
-        "Run Identify to check the match. Existing metadata is retained."
+        "Bibcode present. ADS lookup is pending. "
+        "Run Identify to check it in a batch. Existing metadata is retained."
     )
     assert attention.data(Qt.AccessibleTextRole) == (
-        "Bibcode present, but this PDF is not verified. "
-        "Run Identify to check the match. Existing metadata is retained."
+        "Bibcode present. ADS lookup is pending. "
+        "Run Identify to check it in a batch. Existing metadata is retained."
     )
     registry.close()

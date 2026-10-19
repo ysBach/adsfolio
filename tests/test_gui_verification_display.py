@@ -79,6 +79,7 @@ def test_table_link_modifiers_select_without_opening(
         ({}, False),
         ({"metadata": {METADATA_SHA256_KEY: "current"}}, False),
         ({"metadata": {METADATA_SHA256_KEY: "previous"}}, True),
+        ({"metadata": {"sha256": "previous"}}, True),
         ({METADATA_SHA256_KEY: "previous"}, True),
         ({"metadata": {METADATA_STALE_KEY: True}}, True),
         ({METADATA_STALE_KEY: True}, True),
@@ -107,7 +108,9 @@ def test_verification_displays_agree_without_changing_record(
         i for i, definition in enumerate(COLUMNS) if definition.key == "status"
     )
     index = model.index(0, column)
-    expected_tooltip = STALE_VERIFICATION_TOOLTIP if expected_stale else "ADS verified"
+    expected_tooltip = (
+        STALE_VERIFICATION_TOOLTIP if expected_stale else "ADS record linked"
+    )
     assert index.data(Qt.ToolTipRole) == expected_tooltip
     assert index.data(Qt.AccessibleTextRole) == expected_tooltip
     image = QImage(24, 24, QImage.Format_ARGB32)
@@ -134,7 +137,7 @@ def test_verification_displays_agree_without_changing_record(
     pane.set_record(record, tmp_path)
     row = pane._row_widgets["status"]
     assert row.value.text() == (
-        "Not ADS verified" if expected_stale else "ADS verified"
+        "PDF changed" if expected_stale else "ADS record linked"
     )
     assert expected_tooltip in row.value.toolTip()
     assert row.value._copy_text == "resolved"
@@ -161,7 +164,7 @@ def test_fresh_manual_metadata_keeps_readiness_marker(qtbot) -> None:
     index = model.index(0, column)
     assert (
         index.data(Qt.ToolTipRole)
-        == "Metadata ready for renaming. No verified ADS link."
+        == "Metadata ready for renaming. No completed ADS lookup."
     )
     image = QImage(24, 24, QImage.Format_ARGB32)
     image.fill(Qt.white)
@@ -208,14 +211,14 @@ def test_stored_match_sidebar_and_counts_explain_current_verification(
         for index in range(window.views_item.childCount())
         if window.views_item.child(index).data(0, Qt.UserRole + 1) == "resolved"
     )
-    assert matched.text(0) == "ADS matches (1)"
-    assert "not current PDF verification" in matched.toolTip(0)
-    assert "Changed PDFs can remain" in matched.toolTip(0)
-    assert LibraryView.UNRESOLVED.label == "No ADS match"
+    assert matched.text(0) == "ADS linked (1)"
+    assert "does not prove the PDF content matches" in matched.toolTip(0)
+    assert "Changed PDFs need identification again" in matched.toolTip(0)
+    assert LibraryView.UNRESOLVED.label == "Needs ADS lookup"
     assert FileQuery(view=LibraryView.RESOLVED).to_filters() == {"resolved": True}
     window._update_status()
-    assert "1 stored ADS matches" in window.status.currentMessage()
-    assert "0 without stored ADS match" in window.status.currentMessage()
-    assert "not current PDF verification" in window.status.toolTip()
+    assert "1 ADS linked" in window.status.currentMessage()
+    assert "0 need ADS lookup" in window.status.currentMessage()
+    assert "does not prove the PDF content matches" in window.status.toolTip()
     assert {"resolved": True} in filters_seen
     assert {"resolved": False} in filters_seen

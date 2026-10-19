@@ -738,7 +738,7 @@ class MetadataRow(QWidget):
             self._render_dois(value)
             return
         display_value = (
-            {"resolved": "ADS verified", "unresolved": "Not ADS verified"}.get(
+            {"resolved": "ADS record linked", "unresolved": "No ADS link"}.get(
                 value, value
             )
             if self.key == "status" and isinstance(value, str)
@@ -1478,20 +1478,20 @@ class DetailPane(QWidget):
             show_lock=self._show_lock_buttons and not self._compact_rows,
         )
         if key == "status" and verification_stale(self._record or {}):
-            row.value.setText("Not ADS verified")
+            row.value.setText("PDF changed")
             row.value.setToolTip(
                 f"{STALE_VERIFICATION_TOOLTIP} Click to copy the stored status."
             )
             row.value.setAccessibleDescription(STALE_VERIFICATION_TOOLTIP)
         elif key == "status" and value in ("resolved", "unresolved"):
             explanation = (
-                "ADS verified: this PDF has a verified ADS publication match."
+                "ADS record linked. This does not verify the PDF contents."
                 if value == "resolved"
                 else (
-                    "Metadata is available, but this PDF has no verified ADS publication match. "
+                    "Metadata is available. ADS lookup is pending. "
                     "Existing metadata is retained."
                     if self._metadata
-                    else "This PDF has no verified ADS publication match."
+                    else "ADS lookup is pending. Run Identify to check known identifiers in batches."
                 )
             )
             row.value.setToolTip(f"{explanation} Click to copy the stored status.")
