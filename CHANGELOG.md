@@ -1,6 +1,9 @@
 # Changelog
 
-## Unreleased
+## 0.1.0 (2026-10-19)
+
+- Closing the library window cancels pending search and watcher refresh timers
+  before closing the catalog.
 
 - The Python namespace, commands, application identifiers, and storage directories
   now use `adsfolio`. Earlier data is copied safely and reserved keys are migrated

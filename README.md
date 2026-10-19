@@ -10,7 +10,7 @@ The distribution, Python imports, and commands use `adsfolio`. Earlier settings
 and catalog data are copied into ADSfolio storage on first use. The source data
 remains intact. Close the earlier application before starting ADSfolio.
 See the [desktop installation guide](docs/desktop.md) and
-[maintainer release guide](docs/releasing.md).
+[maintainer release guide](docs/maintaining.md#publishing-releases).
 
 ## Useful Info
 - https://ui.adsabs.harvard.edu/help/search/comprehensive-solr-term-list

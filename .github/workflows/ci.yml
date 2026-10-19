@@ -39,7 +39,7 @@ jobs:
           python-version: "3.13"
       - run: uv sync --locked
       # Keep the blocking rule set explicit; broader lint debt is tracked in
-      # docs/release-readiness.md. isort owns import ordering.
+      # docs/maintaining.md. isort owns import ordering.
       - run: uv run --no-sync ruff check --select E4,E7,E9,F src tests packaging scripts
       - run: uv run --no-sync ruff format --check src tests packaging scripts
       - run: uv run --no-sync isort --check-only src tests packaging scripts
@@ -76,8 +76,6 @@ jobs:
         run: |
           "$GITHUB_WORKSPACE/.venv/bin/adsfolio" --version
           "$GITHUB_WORKSPACE/.venv/bin/adsfolio" reference --help
-          "$GITHUB_WORKSPACE/.venv/bin/adsfolio" reference --help
-          "$GITHUB_WORKSPACE/.venv/bin/adsfolio" pdf identify --help
           "$GITHUB_WORKSPACE/.venv/bin/adsfolio" pdf identify --help
           "$GITHUB_WORKSPACE/.venv/bin/python" - <<'PY'
           import subprocess

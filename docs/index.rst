@@ -12,12 +12,10 @@ and connected bibliographic discovery services.
    getting-started
    cv
    cli-tutorials/index
-   developer-notes
-   release-readiness
+   maintaining
    cli
    gui
    local-references
    desktop
-   releasing
    api/index
    query-to-document-example

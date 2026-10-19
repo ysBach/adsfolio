@@ -164,4 +164,4 @@ The cask selects the ARM64 or Intel archive, checks its SHA-256 digest, installs
 `ADSfolio.app`, and adds the `adsfolio` CLI. It requires macOS 15 or later.
 Uninstalling the cask retains configuration and catalog data. Homebrew does not
 remove the need for code signing or OS acceptance testing. See
-[Publishing releases](releasing.md) for tap setup and updates.
+[Publishing releases](maintaining.md#publishing-releases) for tap setup and updates.
