@@ -133,18 +133,154 @@ def test_detail_link_keeps_enter_and_escape_does_not_clear_find(
     assert window.search.text() == "keep this query"
 
 
-@pytest.mark.parametrize("delta", [120, -120])
-@pytest.mark.parametrize("axis", ["horizontal", "vertical"])
-def test_shift_mouse_wheel_moves_one_tenth_of_native_page(
-    qtbot, delta: int, axis: str
-) -> None:
+@pytest.fixture
+def scrolling_table(qtbot):
+    from PySide6.QtGui import QStandardItem, QStandardItemModel
+    from PySide6.QtWidgets import QApplication
+
+    from adsfolio.gui.models import LibraryTableView
+
+    view = LibraryTableView()
+    qtbot.addWidget(view)
+    model = QStandardItemModel(view)
+    for _ in range(30):
+        model.appendRow([QStandardItem("Column") for _ in range(30)])
+    view.setModel(model)
+    view.resize(500, 300)
+    view.show()
+    QApplication.processEvents()
+    view.horizontalScrollBar().setValue(1000)
+    view.verticalScrollBar().setValue(10)
+    return view
+
+
+def send_wheel(
+    view,
+    *,
+    angle=(0, 0),
+    pixels=(0, 0),
+    target="viewport",
+    phase=None,
+    inverted=False,
+    modifiers=None,
+    device=None,
+):
     from PySide6.QtCore import QPoint, QPointF, Qt
-    from PySide6.QtGui import QStandardItem, QStandardItemModel, QWheelEvent
+    from PySide6.QtGui import QWheelEvent
+    from PySide6.QtWidgets import QApplication
+
+    receivers = {
+        "viewport": view.viewport(),
+        "header": view.header().viewport(),
+        "horizontal_bar": view.horizontalScrollBar(),
+        "vertical_bar": view.verticalScrollBar(),
+    }
+    from PySide6.QtGui import QPointingDevice
+
+    event = QWheelEvent(
+        QPointF(20, 20),
+        QPointF(20, 20),
+        QPoint(*pixels),
+        QPoint(*angle),
+        Qt.NoButton,
+        Qt.ShiftModifier if modifiers is None else modifiers,
+        Qt.NoScrollPhase if phase is None else phase,
+        inverted,
+        Qt.MouseEventNotSynthesized,
+        device or QPointingDevice.primaryPointingDevice(),
+    )
+    QApplication.sendEvent(receivers[target], event)
+    return event
+
+
+@pytest.mark.parametrize("delta", [120, -120, 240, -240])
+@pytest.mark.parametrize("axis", ["horizontal", "vertical"])
+@pytest.mark.parametrize(
+    "target", ["viewport", "header", "horizontal_bar", "vertical_bar"]
+)
+def test_shift_mouse_wheel_moves_one_tenth_page(scrolling_table, delta, axis, target):
+    view = scrolling_table
+    horizontal, vertical = view.horizontalScrollBar(), view.verticalScrollBar()
+    before = horizontal.value()
+    vertical_before = vertical.value()
+    angle = (delta, 0) if axis == "horizontal" else (0, delta)
+    # Cocoa includes estimated pixels even for a discrete mouse wheel.
+    pixels = (2, 0) if axis == "horizontal" else (0, 2)
+    send_wheel(view, angle=angle, pixels=pixels, target=target)
+    direction = (1 if delta > 0 else -1) * (-1 if horizontal.invertedControls() else 1)
+    assert horizontal.value() - before == direction * (horizontal.pageStep() // 10)
+    assert vertical.value() == vertical_before
+
+
+@pytest.mark.parametrize(
+    "pixels",
+    [(20, 0), (-20, 0), (0, 20), (0, -20), (20, 1), (1, 20), (-20, 1), (1, -20)],
+)
+@pytest.mark.parametrize("inverted", [True, False])
+def test_shift_trackpad_uses_one_tenth_of_pixels(scrolling_table, pixels, inverted):
+    from PySide6.QtCore import Qt
+
+    view = scrolling_table
+    scrollbar = view.horizontalScrollBar()
+    before = scrollbar.value()
+    vertical_before = view.verticalScrollBar().value()
+    send_wheel(
+        view, pixels=pixels, angle=(120, 0), phase=Qt.ScrollUpdate, inverted=inverted
+    )
+    delta = pixels[0] if abs(pixels[0]) > abs(pixels[1]) else pixels[1]
+    expected = delta // 10
+    if scrollbar.invertedControls():
+        expected = -expected
+    assert scrollbar.value() - before == expected
+    assert view.verticalScrollBar().value() == vertical_before
+
+
+def test_small_trackpad_deltas_accumulate_and_reverse_without_delay(scrolling_table):
+    from PySide6.QtCore import Qt
+
+    scrollbar = scrolling_table.horizontalScrollBar()
+    before = scrollbar.value()
+    for _ in range(10):
+        send_wheel(scrolling_table, pixels=(1, 0), phase=Qt.ScrollUpdate)
+    assert abs(scrollbar.value() - before) == 1
+    for _ in range(9):
+        send_wheel(scrolling_table, pixels=(1, 0), phase=Qt.ScrollUpdate)
+    before_reverse = scrollbar.value()
+    for _ in range(10):
+        send_wheel(scrolling_table, pixels=(-1, 0), phase=Qt.ScrollMomentum)
+    assert abs(scrollbar.value() - before_reverse) == 1
+    assert scrollbar.value() == before
+
+
+def test_trackpad_end_and_scrollbar_edges_discard_partial_steps(scrolling_table):
+    from PySide6.QtCore import Qt
+
+    scrollbar = scrolling_table.horizontalScrollBar()
+    for _ in range(9):
+        send_wheel(scrolling_table, pixels=(1, 0), phase=Qt.ScrollUpdate)
+    send_wheel(scrolling_table, phase=Qt.ScrollEnd)
+    before = scrollbar.value()
+    send_wheel(scrolling_table, pixels=(1, 0), phase=Qt.ScrollBegin)
+    assert scrollbar.value() == before
+    scrollbar.setValue(scrollbar.minimum())
+    for _ in range(10):
+        send_wheel(scrolling_table, pixels=(1, 0), phase=Qt.ScrollUpdate)
+    for _ in range(10):
+        send_wheel(scrolling_table, pixels=(-1, 0), phase=Qt.ScrollUpdate)
+    assert scrollbar.value() == scrollbar.minimum() + 1
+
+
+@pytest.mark.parametrize(
+    "angle,pixels", [((120, 0), (0, 0)), ((0, 120), (0, 0)), ((40, 0), (20, 0))]
+)
+def test_unmodified_wheel_keeps_native_behavior(qtbot, angle, pixels):
+    from PySide6.QtCore import Qt
+    from PySide6.QtGui import QStandardItem, QStandardItemModel
     from PySide6.QtWidgets import QApplication, QTreeView
 
     from adsfolio.gui.models import LibraryTableView
 
-    movements = []
+    values = []
     for view_type in (QTreeView, LibraryTableView):
         view = view_type()
         qtbot.addWidget(view)
@@ -154,61 +290,53 @@ def test_shift_mouse_wheel_moves_one_tenth_of_native_page(
         view.resize(500, 300)
         view.show()
         QApplication.processEvents()
-        scrollbar = view.horizontalScrollBar()
-        scrollbar.setValue(1000)
-        before = scrollbar.value()
-        angle = QPoint(delta, 0) if axis == "horizontal" else QPoint(0, delta)
-        event = QWheelEvent(
-            QPointF(20, 20),
-            QPointF(20, 20),
-            QPoint(),
-            angle,
-            Qt.NoButton,
-            Qt.ShiftModifier,
-            Qt.NoScrollPhase,
-            False,
+        view.horizontalScrollBar().setValue(1000)
+        send_wheel(view, angle=angle, pixels=pixels, modifiers=Qt.NoModifier)
+        values.append(
+            (view.horizontalScrollBar().value(), view.verticalScrollBar().value())
         )
-        QApplication.sendEvent(view.viewport(), event)
-        movements.append(abs(scrollbar.value() - before))
-    if axis == "horizontal":
-        assert movements[1] == pytest.approx(movements[0] / 10, abs=1)
-    else:
-        assert movements[1] == pytest.approx(49, abs=1)
+    assert values[0] == values[1]
 
 
-def test_regular_wheel_and_trackpad_keep_native_behavior(qtbot) -> None:
-    from PySide6.QtCore import QPoint, QPointF, Qt
-    from PySide6.QtGui import QStandardItem, QStandardItemModel, QWheelEvent
-    from PySide6.QtWidgets import QApplication, QTreeView
+def test_cocoa_mouse_wheel_keeps_notch_step_with_shared_pixel_device(
+    scrolling_table, monkeypatch
+):
+    from PySide6.QtGui import QInputDevice, QPointingDevice
 
-    from adsfolio.gui.models import LibraryTableView
+    from adsfolio.gui import models
 
-    for pixels, angle, modifiers in (
-        (QPoint(), QPoint(120, 0), Qt.NoModifier),
-        (QPoint(20, 0), QPoint(20, 0), Qt.ShiftModifier),
-    ):
-        values = []
-        for view_type in (QTreeView, LibraryTableView):
-            view = view_type()
-            qtbot.addWidget(view)
-            model = QStandardItemModel(view)
-            model.appendRow([QStandardItem("Column") for _ in range(30)])
-            view.setModel(model)
-            view.resize(500, 300)
-            view.show()
-            QApplication.processEvents()
-            scrollbar = view.horizontalScrollBar()
-            scrollbar.setValue(1000)
-            event = QWheelEvent(
-                QPointF(20, 20),
-                QPointF(20, 20),
-                pixels,
-                angle,
-                Qt.NoButton,
-                modifiers,
-                Qt.NoScrollPhase,
-                False,
-            )
-            QApplication.sendEvent(view.viewport(), event)
-            values.append(scrollbar.value())
-        assert values[0] == values[1]
+    monkeypatch.setattr(models.sys, "platform", "darwin")
+    device = QPointingDevice(
+        "Shared pointer",
+        1,
+        QInputDevice.DeviceType.Mouse,
+        QPointingDevice.PointerType.Generic,
+        QInputDevice.Capability.PixelScroll,
+        1,
+        3,
+    )
+    scrollbar = scrolling_table.horizontalScrollBar()
+    before = scrollbar.value()
+    send_wheel(scrolling_table, angle=(0, 120), pixels=(0, 2), device=device)
+    assert abs(scrollbar.value() - before) == scrollbar.pageStep() // 10
+
+
+def test_shift_wheel_keeps_native_horizontal_direction(qtbot, scrolling_table):
+    from PySide6.QtWidgets import QTreeView
+
+    native = QTreeView()
+    qtbot.addWidget(native)
+    native.setModel(scrolling_table.model())
+    native.resize(scrolling_table.size())
+    native.show()
+    from PySide6.QtWidgets import QApplication
+
+    QApplication.processEvents()
+    native.horizontalScrollBar().setValue(1000)
+    before_native = native.horizontalScrollBar().value()
+    before_scaled = scrolling_table.horizontalScrollBar().value()
+    send_wheel(native, angle=(120, 0))
+    send_wheel(scrolling_table, angle=(120, 0))
+    native_delta = native.horizontalScrollBar().value() - before_native
+    scaled_delta = scrolling_table.horizontalScrollBar().value() - before_scaled
+    assert scaled_delta == pytest.approx(native_delta / 10, abs=1)

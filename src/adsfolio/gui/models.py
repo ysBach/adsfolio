@@ -3,13 +3,15 @@
 from __future__ import annotations
 
 import sqlite3
+import sys
 from collections.abc import Sequence
 from typing import Any
 
 from PySide6.QtCore import (
     QAbstractTableModel,
+    QEvent,
     QModelIndex,
-    QPoint,
+    QObject,
     QPointF,
     QSize,
     Qt,
@@ -19,6 +21,7 @@ from PySide6.QtGui import (
     QColor,
     QFont,
     QFontMetrics,
+    QInputDevice,
     QPainter,
     QPalette,
     QPolygonF,
@@ -49,46 +52,77 @@ PAGE_SIZE = 500
 
 
 class LibraryTableView(QTreeView):
-    """Use smaller horizontal steps for Shift plus a discrete mouse wheel."""
+    """Scroll horizontally in smaller steps while Shift is held."""
 
     def __init__(self, parent: Any = None) -> None:
         super().__init__(parent)
-        self._shift_wheel_remainder = 0.0
+        self._shift_wheel_remainder = 0
+        for widget in (
+            self.header().viewport(),
+            self.horizontalScrollBar(),
+            self.verticalScrollBar(),
+        ):
+            widget.installEventFilter(self)
+
+    def eventFilter(self, watched: QObject, event: QEvent) -> bool:
+        """Apply the same Shift-wheel speed over the header and scrollbars."""
+        if event.type() == QEvent.Wheel and event.modifiers() & Qt.ShiftModifier:
+            self.wheelEvent(event)
+            return True
+        return super().eventFilter(watched, event)
 
     def wheelEvent(self, event: QWheelEvent) -> None:
-        """Reduce discrete Shift-wheel movement to one tenth of a page."""
-        angle = event.angleDelta()
-        if (
-            event.modifiers() == Qt.ShiftModifier
-            and event.pixelDelta().isNull()
-            and not angle.isNull()
-        ):
-            delta = angle.x() or angle.y()
-            if delta * self._shift_wheel_remainder < 0:
-                self._shift_wheel_remainder = 0.0
-            scaled = delta / 10 + self._shift_wheel_remainder
-            step = int(scaled)
-            self._shift_wheel_remainder = scaled - step
-            if step == 0:
-                event.accept()
-                return
-            horizontal = QWheelEvent(
-                event.position(),
-                event.globalPosition(),
-                QPoint(),
-                QPoint(step, 0),
-                event.buttons(),
-                event.modifiers(),
-                event.phase(),
-                event.inverted(),
-                event.source(),
-                event.pointingDevice(),
-            )
-            super().wheelEvent(horizontal)
-            event.setAccepted(horizontal.isAccepted())
+        """Use one tenth of a wheel page or trackpad pixel displacement."""
+        if not event.modifiers() & Qt.ShiftModifier:
+            self._shift_wheel_remainder = 0
+            super().wheelEvent(event)
             return
-        self._shift_wheel_remainder = 0.0
-        super().wheelEvent(event)
+        if event.phase() == Qt.ScrollBegin:
+            self._shift_wheel_remainder = 0
+        scrollbar = self.horizontalScrollBar()
+        pixels = event.pixelDelta()
+        angle = event.angleDelta()
+        precise = (
+            event.phase() != Qt.NoScrollPhase
+            or event.source() == Qt.MouseEventSynthesizedBySystem
+            or (
+                sys.platform != "darwin"
+                and event.pointingDevice().capabilities()
+                & QInputDevice.Capability.PixelScroll
+            )
+        )
+        # Cocoa also supplies estimated pixel deltas for ordinary mouse wheels.
+        if not pixels.isNull() and (precise or angle.isNull()):
+            delta = pixels.x() if abs(pixels.x()) > abs(pixels.y()) else pixels.y()
+            distance = delta * 120
+        else:
+            page = scrollbar.pageStep()
+            delta = angle.x() if abs(angle.x()) > abs(angle.y()) else angle.y()
+            distance = max(-120 * page, min(120 * page, delta * page))
+        if scrollbar.invertedControls():
+            distance = -distance
+        if (
+            scrollbar.value() == scrollbar.minimum()
+            and distance < 0
+            or scrollbar.value() == scrollbar.maximum()
+            and distance > 0
+        ):
+            self._shift_wheel_remainder = 0
+            event.accept()
+            return
+        if distance * self._shift_wheel_remainder < 0:
+            self._shift_wheel_remainder = 0
+        scaled = distance + self._shift_wheel_remainder
+        # 120 angle units per notch and a factor of ten keep subpixel sums exact.
+        step = abs(scaled) // 1200
+        if scaled < 0:
+            step = -step
+        self._shift_wheel_remainder = scaled - step * 1200
+        before = scrollbar.value()
+        scrollbar.setValue(before + step)
+        if scrollbar.value() != before + step or event.phase() == Qt.ScrollEnd:
+            self._shift_wheel_remainder = 0
+        event.accept()
 
 
 class RowHeightDelegate(QStyledItemDelegate):
