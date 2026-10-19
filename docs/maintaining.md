@@ -114,8 +114,12 @@ aliases. Keep internal executable entry points out of recursive discovery.
 
 ## Deferred design
 
-Annotation merging and unified TOML configuration are proposals, not features in
-0.1.0. Future work must preserve these requirements:
+The development version includes annotation review that saves a separate PDF.
+It does not consolidate catalog records or delete duplicates. See the
+[annotation workflow](gui.md) for supported types and limits.
+
+Catalog consolidation and unified TOML configuration remain future work.
+They must preserve these requirements:
 
 - Establish work identity from exact bibliographic identifiers. Title similarity
   and ADS result order must not authorize a merge. Preserve all identifiers.

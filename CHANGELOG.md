@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.2.0 (2026-10-19)
+
+- Successful rename and identification notices use **OK** to acknowledge completion.
+
+- Compact Details rows use field context menus and a resizable label column.
+  Inline button preferences remain available outside compact mode.
+- Libraries, Details, the job log, Find, Identify, and Rename have menu shortcuts.
+  Column menus link directly to Appearance.
+- Shorter ADS group labels include explanations of saved match status.
+
+- A macOS source launcher can replace the installed app while retaining a backup.
+  Reopening the app runs the checkout with its local environment.
+- First-library guidance, vector icons, and gesture hints clarify common actions.
+- Changed PDFs use a distinct warning marker until verification succeeds.
+- Annotation review shows source and target PDFs side by side and saves a new copy.
+  Originals remain unchanged. Unsupported annotations require an explicit decision.
+
+- macOS builds include verified drag-to-install DMGs alongside ZIP archives.
+- The README and website explain desktop setup and batch identification first.
+- Verification views explain why a stored bibcode can need a new PDF check.
+- Bibcode, arXiv, and filename cells open on double-click by default, so a click
+  only selects the row. Appearance > Applications offers a persisted single-click
+  option.
+
 ## 0.1.0 (2026-10-19)
 
 - Windows file identifiers retain their full precision in the catalog.
