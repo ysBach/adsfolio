@@ -101,7 +101,11 @@ def test_pane_opens_configured_browser_only_after_double_click(
     pane.show()
     QApplication.processEvents()
     link = pane._row_widgets["links"].link_label
-    point = QPoint(10, link.height() // 2)
+    point = QPoint(
+        link.contentsRect().left()
+        + link.fontMetrics().horizontalAdvance("Classic ADS") // 2,
+        link.contentsRect().top() + link.fontMetrics().height() // 2,
+    )
     QTest.mouseClick(link, Qt.LeftButton, pos=point)
     assert opened == []
     QTest.mouseDClick(link, Qt.LeftButton, pos=point)
