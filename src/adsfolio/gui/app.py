@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib.resources as ir
 import logging
+import os
 import sys
 
 from PySide6.QtGui import QIcon
@@ -37,6 +38,8 @@ def run() -> int:
         app.setWindowIcon(icon)
 
     window = MainWindow()
+    if os.environ.get("ADSFOLIO_SOURCE_LAUNCH") == "1":
+        window.setWindowTitle("ADSfolio (Development)")
     window.show()
     return app.exec()
 

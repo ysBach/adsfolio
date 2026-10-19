@@ -7,8 +7,7 @@ PDF opening uses a system PDF viewer. OCR software is not bundled.
 
 ## Launch and setup
 
-Version 0.1.0 provides ZIP archives for macOS. DMG downloads are prepared for
-the next release. Use the ZIP instructions for the current release.
+Version 0.2.0 provides DMG and ZIP downloads for macOS.
 
 1. Download the package for your operating system and processor.
 2. On macOS, open the DMG and drag `ADSfolio.app` onto Applications.
@@ -130,12 +129,12 @@ application does not migrate or delete them. Prereleases are listed on the
 The workflow produces macOS DMG and ZIP files, a Windows ZIP, and a Linux tar.gz.
 DMGs contain the application and an Applications shortcut. Each image is verified
 and mounted read-only during the build. DMGs do not provide code signing or notarization.
-Version 0.1.0 has ZIP downloads only. DMGs enter the next release. macOS
+Version 0.1.0 has ZIP downloads only. Version 0.2.0 adds DMGs. macOS
 archives use `ditto`. Linux archives use `tar` to preserve required symbolic
 links. Ordinary ZIP creation can lose these links. See
 [PyInstaller's distribution notes](https://pyinstaller.org/en/stable/common-issues-and-pitfalls.html#requirements-imposed-by-symbolic-links-in-frozen-application).
 
-Version 0.1.0 ships unsigned bundles. macOS Developer ID signing/notarization and
+Version 0.2.0 ships unsigned bundles. macOS Developer ID signing/notarization and
 Windows publisher signing require release credentials and are not configured.
 Downloaded builds may trigger operating-system security prompts. There is no
 automatic updater or system installer. Native signing and broader installation and upgrade acceptance remain future work.
@@ -171,3 +170,30 @@ The cask selects the ARM64 or Intel archive, checks its SHA-256 digest, installs
 Uninstalling the cask retains configuration and catalog data. Homebrew does not
 remove the need for code signing or OS acceptance testing. See
 [Publishing releases](maintaining.md#publishing-releases) for tap setup and updates.
+
+## Run the latest local source on macOS
+
+A packaged app contains a fixed copy of the code. Editing a checkout does not
+update that copy. A source launcher runs your checkout when you open the app.
+
+1. Quit ADSfolio before switching launchers.
+2. In the checkout, run `uv sync --all-extras` to prepare its local `.venv`.
+3. Run `uv run --no-sync python scripts/install_source_app.py`.
+4. Open `/Applications/ADSfolio.app`. Its window title shows **ADSfolio (Development)**.
+
+The installer backs up the previous app under
+`~/Library/Application Support/ADSfolio Backups/`. It prints the exact path.
+The launcher uses the existing ADSfolio configuration, metadata, and history.
+It does not copy or delete library data. Do not run both apps against the same
+watched folders at once.
+
+After editing source files, quit the app completely and reopen it.
+Closing a window alone may not exit the application. Changes to dependencies
+require another `uv sync --all-extras`. Startup does not synchronize dependencies.
+Keep the checkout and its `.venv` at the same paths.
+
+Startup errors appear in `~/Library/Logs/ADSfolio/source-launch.log`.
+To restore the packaged app, quit ADSfolio. Move the source launcher out of
+Applications, then move the backed-up `ADSfolio.app` into Applications.
+A Homebrew upgrade can replace the source launcher with a packaged release.
+Run the installer again if you want to return to the source launcher.
