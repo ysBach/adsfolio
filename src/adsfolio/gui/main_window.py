@@ -581,6 +581,8 @@ class MainWindow(QMainWindow):
         watch_on_start: bool = False,
         auto_process_new_pdfs: bool = False,
     ) -> None:
+        if "\0" in str(path):
+            raise ValueError("Library root contains a null character")
         path = path.expanduser().resolve()
         key = str(path)
         if key not in self.registries:
