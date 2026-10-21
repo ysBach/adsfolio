@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field, fields, replace
 from pathlib import Path
 from typing import Any, Literal
 
-SUPPORTED_OUTPUT_FORMATS = ("latex", "markdown")
+from .template import TEMPLATE_PRESETS, CVTemplate
+
+SUPPORTED_OUTPUT_FORMATS = ("latex", "markdown", "template")
 SUPPORTED_STYLES = ("compact", "detailed", "bibcode-first")
 SUPPORTED_LATEX_LIST_ENVS = ("itemize", "enumerate")
 
@@ -48,7 +50,7 @@ class CVConfig:
     first_author_prefix: str
     me_target: str
     me_display: str
-    output_format: Literal["latex", "markdown"]
+    output_format: Literal["latex", "markdown", "template"]
     style: str
     n_max_authors: int
     n_min_authors: int
@@ -64,6 +66,7 @@ class CVConfig:
     latex_list_env: str
     latex_left_margin: str
     latex_item_sep: str
+    template: CVTemplate = field(default_factory=CVTemplate)
 
     @property
     def output_path(self) -> Path:
@@ -193,7 +196,9 @@ def _section_map(raw: dict[str, Any]) -> dict[str, dict[str, Any]]:
     status_cfg = _as_mapping(raw.get("status"), "status")
     output_cfg = _as_mapping(raw.get("output"), "output")
     latex_cfg = _as_mapping(output_cfg.get("latex"), "output.latex")
+    template_cfg = _as_mapping(raw.get("template"), "template")
     return {
+        "template": template_cfg,
         "author": author_cfg,
         "format": format_cfg,
         "markers": marker_cfg,
@@ -210,13 +215,55 @@ def _validate_query(author_cfg: dict[str, Any]) -> str:
     return query
 
 
+_TEMPLATE_EXTENSIONS = {"latex": ".tex", "html": ".html", "none": ".txt"}
+
+
 def _default_output_filename(
-    format_cfg: dict[str, Any], output_cfg: dict[str, Any]
+    format_cfg: dict[str, Any],
+    output_cfg: dict[str, Any],
+    template_cfg: dict[str, Any] | None = None,
 ) -> str:
-    default_name = (
-        "publ.tex" if str(format_cfg.get("output", "latex")) == "latex" else "publ.md"
-    )
+    output = str(format_cfg.get("output", "latex"))
+    if output == "template":
+        template_cfg = template_cfg or {}
+        preset = TEMPLATE_PRESETS.get(str(template_cfg.get("preset", "")))
+        if preset is not None:
+            default_name = preset.filename
+        else:
+            escape = str(template_cfg.get("escape", "none"))
+            default_name = "publ" + _TEMPLATE_EXTENSIONS.get(escape, ".txt")
+    else:
+        default_name = "publ.tex" if output == "latex" else "publ.md"
     return str(output_cfg.get("filename", default_name))
+
+
+def load_template(template_cfg: dict[str, Any]) -> tuple[CVTemplate, str | None]:
+    """Build a `CVTemplate` from the ``template`` YAML section.
+
+    A ``preset`` key fills every part from `TEMPLATE_PRESETS`. Explicit keys
+    then replace the preset's parts.
+
+    Returns
+    -------
+    tuple[CVTemplate, str or None]
+        The template and the preset name, or `None` without a preset.
+    """
+    preset_name = template_cfg.get("preset")
+    template = CVTemplate()
+    if preset_name not in (None, ""):
+        preset_name = str(preset_name)
+        if preset_name not in TEMPLATE_PRESETS:
+            choices = ", ".join(TEMPLATE_PRESETS)
+            raise ValueError(f"template.preset must be one of: {choices}.")
+        template = TEMPLATE_PRESETS[preset_name].template
+    else:
+        preset_name = None
+    overrides = {
+        part.name: str(template_cfg[part.name])
+        for part in fields(CVTemplate)
+        if template_cfg.get(part.name) is not None
+    }
+    return replace(template, **overrides), preset_name
 
 
 def _author_fields(author_cfg: dict[str, Any], query: str) -> dict[str, Any]:
@@ -244,7 +291,10 @@ def _author_fields(author_cfg: dict[str, Any], query: str) -> dict[str, Any]:
     }
 
 
-def _format_fields(format_cfg: dict[str, Any]) -> dict[str, Any]:
+def _format_fields(
+    format_cfg: dict[str, Any], preset_name: str | None = None
+) -> dict[str, Any]:
+    preset = TEMPLATE_PRESETS.get(preset_name or "")
     return {
         "output_format": _as_choice(
             format_cfg.get("output"),
@@ -269,8 +319,12 @@ def _format_fields(format_cfg: dict[str, Any]) -> dict[str, Any]:
             "format.n_min_authors",
         ),
         "n_me": _as_int(format_cfg.get("n_me"), 6, "format.n_me"),
-        "author_sep": str(format_cfg.get("author_sep", "; ")),
-        "me_fmt": str(format_cfg.get("me_fmt", DEFAULT_ME_FMT)),
+        "author_sep": str(
+            format_cfg.get("author_sep", preset.author_sep if preset else "; ")
+        ),
+        "me_fmt": str(
+            format_cfg.get("me_fmt", preset.me_fmt if preset else DEFAULT_ME_FMT)
+        ),
         "author_format": normalize_author_format(
             str(format_cfg.get("author_format", "cv_default"))
         ),
@@ -282,10 +336,13 @@ def _output_fields(
     output_cfg: dict[str, Any],
     latex_cfg: dict[str, Any],
     config_path: Path,
+    template_cfg: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     return {
         "output_dir": _resolve_output_dir(output_cfg.get("dir"), config_path),
-        "output_filename": _default_output_filename(format_cfg, output_cfg),
+        "output_filename": _default_output_filename(
+            format_cfg, output_cfg, template_cfg
+        ),
         "journal_legend": _as_bool(output_cfg.get("journal_legend"), True),
         "latex_list_env": _as_choice(
             latex_cfg.get("list_env"),
@@ -309,15 +366,20 @@ def _build_cv_config(
     status_cfg = sections["status"]
     output_cfg = sections["output"]
     latex_cfg = sections["latex"]
+    template_cfg = sections["template"]
+    template, preset_name = load_template(template_cfg)
     author_fields = _author_fields(author_cfg, query)
-    format_fields = _format_fields(format_cfg)
-    output_fields = _output_fields(format_cfg, output_cfg, latex_cfg, config_path)
+    format_fields = _format_fields(format_cfg, preset_name)
+    output_fields = _output_fields(
+        format_cfg, output_cfg, latex_cfg, config_path, template_cfg
+    )
     return CVConfig(
         **author_fields,
         **format_fields,
         markers=_load_markers(marker_cfg),
         status={str(key): str(value) for key, value in status_cfg.items()},
         **output_fields,
+        template=template,
     )
 
 

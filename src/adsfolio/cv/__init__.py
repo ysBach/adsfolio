@@ -15,7 +15,27 @@ from .query import (
 )
 from .render_factory import create_renderer
 
-__all__ = ["CVConfig", "generate_cv", "load_config"]
+__all__ = ["CVConfig", "generate_cv", "load_config", "render_cv"]
+
+
+def render_cv(docs: list[dict], cfg: CVConfig) -> str:
+    """Render already-fetched ADS documents without network access.
+
+    Parameters
+    ----------
+    docs : list of dict
+        ADS search documents with the fields in ``query.CV_FIELDS``.
+    cfg : `CVConfig`
+        Output format, style, template, and author settings.
+
+    Returns
+    -------
+    str
+        The rendered publication list.
+    """
+    first_docs, co_docs = classify_publications(docs, cfg.first_author_prefix)
+    renderer = create_renderer(cfg.output_format, cfg.style)
+    return renderer.render_document(first_docs, co_docs, cfg)
 
 
 def generate_cv(
@@ -23,7 +43,7 @@ def generate_cv(
     cfg: CVConfig,
     *,
     output_path: Path | None = None,
-    output_format: Literal["latex", "markdown"] | None = None,
+    output_format: Literal["latex", "markdown", "template"] | None = None,
     style: str | None = None,
     write_output: bool = True,
 ) -> str:
@@ -36,9 +56,7 @@ def generate_cv(
 
     docs = fetch_publications(client, effective_cfg)
     docs = apply_author_format_overrides(docs, client, effective_cfg)
-    first_docs, co_docs = classify_publications(docs, effective_cfg.first_author_prefix)
-    renderer = create_renderer(effective_cfg.output_format, effective_cfg.style)
-    rendered = renderer.render_document(first_docs, co_docs, effective_cfg)
+    rendered = render_cv(docs, effective_cfg)
 
     target_path = output_path or effective_cfg.output_path
     if write_output:
