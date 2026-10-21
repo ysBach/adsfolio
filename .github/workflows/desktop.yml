@@ -24,8 +24,8 @@ jobs:
     outputs:
       prerelease: ${{ steps.version-check.outputs.prerelease }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v6
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v7
         with:
           enable-cache: true
       - name: Install dependencies
@@ -81,8 +81,8 @@ jobs:
       run:
         shell: bash
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v6
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v7
         with:
           enable-cache: true
       - name: Install Python and build dependencies
@@ -163,7 +163,7 @@ jobs:
           Path('adsfolio-${{ matrix.platform }}.sha256').write_text(output, newline='\n')
           print(output)
           "
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: adsfolio-${{ matrix.platform }}
           path: |
@@ -178,8 +178,8 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v6
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v7
         with:
           enable-cache: true
           python-version: "3.13"
@@ -208,7 +208,7 @@ jobs:
           Path('adsfolio-packages.sha256').write_text(output, newline='\n')
           print(output)
           "
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: python-distributions
           path: |
@@ -222,8 +222,8 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v7
         with:
           path: release-artifacts
       - name: Stage release assets, check duplicates, and verify checksums
@@ -311,8 +311,8 @@ jobs:
       id-token: write
       contents: read
     steps:
-      - uses: astral-sh/setup-uv@v6
-      - uses: actions/download-artifact@v4
+      - uses: astral-sh/setup-uv@v7
+      - uses: actions/download-artifact@v7
         with:
           name: python-distributions
           path: dist

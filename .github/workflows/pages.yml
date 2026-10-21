@@ -21,16 +21,18 @@ jobs:
     env:
       QT_QPA_PLATFORM: offscreen
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v6
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v7
         with:
           python-version: "3.13"
       - run: sudo apt-get update && sudo apt-get install -y libegl1 libopengl0
       - run: uv sync --locked --extra gui --group docs
       - run: uv run --no-sync python scripts/build_site.py
-      - uses: actions/upload-pages-artifact@v3
+      - uses: actions/upload-pages-artifact@v5
         with:
           path: _site
+          # v4+ omits dotfiles by default; keep .nojekyll and Sphinx metadata.
+          include-hidden-files: true
   deploy:
     if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && vars.PUBLISH_PAGES == 'true'
     needs: build
@@ -42,5 +44,5 @@ jobs:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
-      - uses: actions/deploy-pages@v4
+      - uses: actions/deploy-pages@v5
         id: deployment
