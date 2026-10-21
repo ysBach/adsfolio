@@ -4,6 +4,23 @@ Install a [desktop download](https://github.com/ysBach/adsfolio/releases/latest)
 Python is included. See [desktop installation](desktop.md) for platform limits
 and unsigned-app approval.
 
+## Watch the first run
+
+<video controls muted playsinline preload="metadata" width="100%"
+  poster="_static/welcome.png">
+  <source src="_static/tutorial/first-run.mp4" type="video/mp4">
+</video>
+
+The 28-second video shows these steps with fictional sample papers:
+
+1. A new installation opens with three setup steps.
+2. **Add PDF Folder…** selects a folder of papers.
+3. ADSfolio asks whether to include subfolders.
+4. **OK** in the Identify prompt finds publication details.
+5. The library lists papers and their details.
+
+It ends with the optional token and profile windows and **Software Update**.
+
 ## Add your existing folders
 
 1. Open ADSfolio. A new installation shows **Welcome to ADSfolio** with three
@@ -12,6 +29,10 @@ and unsigned-app approval.
 3. Select your PDF folder.
 4. If the folder has subfolders, choose **Include Subfolders** or
    **This Folder Only**. You can change this later with **Include Subdirectories**.
+
+![Welcome page with three setup steps](_static/welcome.png)
+
+![Question that asks whether to include subfolders](_static/tutorial/subfolder-question.png)
 
 Adding a root records file locations. It does not move your PDFs.
 The identification prompt opens next. Choose **OK** to start, or **Cancel** to
@@ -25,6 +46,13 @@ Start with one folder before processing a large collection.
 2. Read the lookup scope and choose **OK**.
 3. Enter an ADS token if setup appears.
 4. Review the results and job log.
+
+![Identify prompt that explains the lookup before it starts](_static/tutorial/identify-prompt.png)
+
+The token window opens only when ADS needs a token. **Test Token** sends one
+search request to ADS and shows whether ADS accepts the token.
+
+![NASA ADS token window with Save, Test Token, and Cancel](_static/tutorial/token-dialog.png)
 
 Select **Advanced options…** to change evidence sources or DOI provider order.
 The lookup keeps filenames and file locations. Locked fields and history stay
@@ -45,6 +73,8 @@ OpenAlex and PubMed lookup are not supported.
 A bibcode identifies a publication. It does not prove that the current PDF
 matches that publication. Stored citation fields can remain available while
 file verification is pending. Inspect the status tooltip for the reason.
+
+![Library window with sample papers and the details of one paper](_static/app-overview.png)
 
 1. Select a paper and inspect its metadata.
 2. Correct fields when necessary.

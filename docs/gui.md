@@ -22,6 +22,8 @@ token in a file that only your user account can read. Saving makes no network
 request. **Test Token** sends one search request to ADS and reports whether ADS
 accepted the pasted token, or the active token when the field is empty.
 
+![NASA ADS token window](_static/tutorial/token-dialog.png)
+
 Identification supports ADS, Crossref, and DataCite in that default order.
 Reorder or disable providers in the Identify dialog. Crossref and DataCite
 look up exact DOIs without an ADS token. Title matching uses ADS.
@@ -45,6 +47,8 @@ same window and checks the latest stable GitHub release in the background.
 
 Software Update shows the installed and available versions and the changelog
 entries between them. It offers these buttons:
+
+![Software Update window with sample release notes](_static/tutorial/software-update.png)
 
 - **Install** (desktop downloads) downloads the release for your system from
   GitHub. It verifies the file against the release's `SHA256SUMS.txt`, saves it
@@ -231,6 +235,8 @@ define the publications fetched for profile matching. The years do not reject
 PDFs by their publication year. Saving the profile does not make a network
 request. Use **Tools → Identify → Advanced options… → Refresh publication cache** when you want to
 rebuild the cache.
+
+![Publication profile window with ORCID, author names, and years](_static/tutorial/profile-dialog.png)
 
 ## Custom citation styles
 

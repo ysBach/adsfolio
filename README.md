@@ -58,6 +58,8 @@ establish that the app can open. Windows can also show publisher warnings.
 
 *Welcome page of a new installation. Version 0.4.0 shown.*
 
+[Watch the 28-second first-run video](https://ysbach.github.io/adsfolio/docs/getting-started.html#watch-the-first-run).
+
 1. Open ADSfolio. Choose **Add PDF Folder…** on the welcome page and select your
    PDF folder. If it has subfolders, choose **Include Subfolders** or
    **This Folder Only**.

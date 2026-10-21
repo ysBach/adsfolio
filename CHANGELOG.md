@@ -6,10 +6,17 @@
 
 - **README screenshots.** Before: the README showed a version 0.2.1 screenshot
   without the welcome page or the round toolbar buttons. Now: the README shows
-  the version 0.4.0 library window and the welcome page.
-  `uv run python scripts/capture_app_overview.py` makes both images again from
-  fictional sample data. The script uses a temporary home folder, so it does not
-  read or change your settings, token, or library.
+  the version 0.4.0 library window and the welcome page, and links to the
+  first-run video.
+- **Tutorial media.** Before: the guides had no screenshots or video. Now:
+  "Start with your PDF library" opens with a 28-second first-run video. The guide
+  also shows the welcome page, the subfolder question, the Identify prompt, the
+  token window, and the library window. The application guide shows the token,
+  profile, and **Software Update** windows.
+- **Media script.** `uv run python scripts/capture_docs_media.py` makes all
+  images and the video again from fictional sample data. The script uses a
+  temporary home folder, so it does not read or change your settings, token,
+  or library. The video needs `ffmpeg`. Use `--no-video` without it.
 
 ## 0.4.0 (2026-10-21)
 
