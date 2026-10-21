@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+### Documentation
+
+- **README screenshots.** Before: the README showed a version 0.2.1 screenshot
+  without the welcome page or the round toolbar buttons. Now: the README shows
+  the version 0.4.0 library window and the welcome page.
+  `uv run python scripts/capture_app_overview.py` makes both images again from
+  fictional sample data. The script uses a temporary home folder, so it does not
+  read or change your settings, token, or library.
+
 ## 0.4.0 (2026-10-21)
 
 ### New

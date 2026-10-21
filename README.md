@@ -18,7 +18,7 @@ speed claim applies to every collection. Start with one folder to check results.
 
 ![ADSfolio library window](docs/_static/app-overview.png)
 
-*Application screenshot with illustrative sample data. Version 0.2.1 shown.*
+*Application screenshot with illustrative sample data. Version 0.4.0 shown.*
 
 [Website](https://ysbach.github.io/adsfolio/) · [First-library tutorial](docs/getting-started.md) · [Application guide](docs/gui.md)
 
@@ -53,6 +53,10 @@ option. Approve it only if you trust the release. Installation alone does not
 establish that the app can open. Windows can also show publisher warnings.
 
 ### Start using your library
+
+![ADSfolio welcome page with three setup steps](docs/_static/welcome.png)
+
+*Welcome page of a new installation. Version 0.4.0 shown.*
 
 1. Open ADSfolio. Choose **Add PDF Folder…** on the welcome page and select your
    PDF folder. If it has subfolders, choose **Include Subfolders** or
