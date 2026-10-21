@@ -38,7 +38,8 @@ and installation type. On macOS, **About ADSfolio** appears in the application m
 **Copy App Details** copies version and system information for a bug report.
 It does not copy your library data or paths.
 
-**App Update** in the toolbar opens **Software Update**. A blue dot on the button
+**App Update** in the toolbar opens **Software Update**. The round GitHub button
+next to it opens the project page. A blue dot on **App Update**
 means a newer stable release is available. **Help → Check for Updates…** opens the
 same window and checks the latest stable GitHub release in the background.
 

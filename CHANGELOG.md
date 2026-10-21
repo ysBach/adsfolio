@@ -8,6 +8,9 @@
   a startup notice. Now: a round **App Update** button in the toolbar opens
   **Software Update**.
   A blue dot on the button shows that a new version is available.
+- **GitHub button.** Before: the main window had no link to the project page.
+  Now: a round GitHub button next to **App Update** opens
+  `https://github.com/ysBach/adsfolio` in your browser.
 - **Software Update window.** Before: **View Update** opened the GitHub release
   page. Now: the window shows the installed version, the available version, and
   the changelog between them.

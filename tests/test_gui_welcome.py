@@ -78,3 +78,16 @@ def test_welcome_hides_once_a_library_exists(qtbot, tmp_path: Path):
     window = make_window(qtbot)
     assert window.welcome.isHidden()
     assert not window.splitter.isHidden()
+
+
+def test_github_button_opens_the_repository(qtbot, monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        "adsfolio.gui.main_window.open_url",
+        lambda url, application=None: calls.append(url) or True,
+    )
+    window = make_window(qtbot)
+    assert window.github_button.toolTip() == "Open ADSfolio on GitHub"
+    assert window.github_button.accessibleName() == "Open ADSfolio on GitHub"
+    window.github_button.click()
+    assert calls == ["https://github.com/ysBach/adsfolio"]

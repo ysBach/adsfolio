@@ -65,7 +65,7 @@ from .citation_styles import CitationStylesDialog
 from .config import RootEntry, load_config, save_config
 from .detail_pane import DetailPane
 from .dialogs import IdentifyDialog, RenameDialog, UserProfileDialog
-from .icons import vector_icon
+from .icons import RoundIconButton
 from .jobs import CommandJob, cli_argv
 from .library import (
     Column,
@@ -90,7 +90,13 @@ from .references_dialog import ReferencesDialog
 from .refresh_job import LibraryRefreshJob
 from .token_dialog import TokenDialog
 from .update_dialog import UpdateButton, UpdateDialog, quiet_progress_bar
-from .updates import Release, UpdateChecker, UpdateDownloader, installation_kind
+from .updates import (
+    REPOSITORY_URL,
+    Release,
+    UpdateChecker,
+    UpdateDownloader,
+    installation_kind,
+)
 from .watch import LibraryWatchController, WatchFailure
 from .welcome import WelcomePanel
 
@@ -436,12 +442,21 @@ class MainWindow(QMainWindow):
         ads_menu.addAction(self.refresh_all_citation_metrics_action)
         self.ads_refresh_button.setMenu(ads_menu)
         toolbar.addWidget(self.ads_refresh_button)
-        self.update_button = UpdateButton(self)
+        # Round icon buttons sit together at the toolbar's end with a small gap.
+        round_buttons = QWidget(self)
+        round_layout = QHBoxLayout(round_buttons)
+        round_layout.setContentsMargins(6, 0, 4, 0)
+        round_layout.setSpacing(6)
         # "App Update" avoids confusion with the ADS metadata update actions.
-        self.update_button.setText("App Update")
-        self.update_button.setIcon(vector_icon("download", self.update_button))
+        self.update_button = UpdateButton(round_buttons)
         self.update_button.clicked.connect(lambda: self._show_update_dialog())
-        toolbar.addWidget(self.update_button)
+        round_layout.addWidget(self.update_button)
+        self.github_button = RoundIconButton(
+            "github", "Open ADSfolio on GitHub", round_buttons
+        )
+        self.github_button.clicked.connect(self._open_github)
+        round_layout.addWidget(self.github_button)
+        toolbar.addWidget(round_buttons)
         self.update_checker.changed.connect(self._sync_update_button)
         self._sync_update_button()
         self._sync_refresh_actions()
@@ -653,6 +668,13 @@ class MainWindow(QMainWindow):
 
     def _check_for_updates(self) -> None:
         self._show_update_dialog(check=True)
+
+    def _open_github(self) -> None:
+        """Open the project repository in the configured browser."""
+        if not open_url(REPOSITORY_URL, application=self.config.web_browser_command):
+            self.status.showMessage(
+                f"Could not open the browser. Open this address: {REPOSITORY_URL}"
+            )
 
     def _update_is_new(self) -> bool:
         """Return whether an available update has not been skipped."""

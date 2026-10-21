@@ -18,11 +18,11 @@ from PySide6.QtWidgets import (
     QPushButton,
     QStyleFactory,
     QTextBrowser,
-    QToolButton,
     QVBoxLayout,
     QWidget,
 )
 
+from .icons import RoundIconButton
 from .osint import open_path, open_url, reveal_in_file_manager
 from .updates import (
     HOMEBREW_COMMAND,
@@ -51,28 +51,12 @@ def quiet_progress_bar(parent: QWidget) -> QProgressBar:
     return bar
 
 
-class UpdateButton(QToolButton):
-    """Round icon button that draws a blue dot while an update is available.
-
-    The button follows a compact circular style: a thin outline, an icon, and
-    no visible text. The text remains the accessible name and tooltip.
-    """
-
-    DIAMETER = 28
+class UpdateButton(RoundIconButton):
+    """Round download button that draws a blue dot while an update is available."""
 
     def __init__(self, parent: QWidget | None = None) -> None:
-        super().__init__(parent)
+        super().__init__("download", "App Update", parent)
         self._dot_visible = False
-        self.setToolButtonStyle(Qt.ToolButtonIconOnly)
-        self.setFixedSize(self.DIAMETER, self.DIAMETER)
-        self.setAutoRaise(False)
-        radius = self.DIAMETER // 2
-        self.setStyleSheet(
-            "QToolButton { border: 1px solid palette(mid); "
-            f"border-radius: {radius}px; background: palette(base); padding: 0; }}"
-            "QToolButton:hover { background: palette(alternate-base); }"
-            "QToolButton:pressed { background: palette(midlight); }"
-        )
 
     @property
     def dot_visible(self) -> bool:

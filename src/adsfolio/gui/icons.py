@@ -7,7 +7,7 @@ from typing import Any
 from PySide6.QtCore import QByteArray, QEvent, QObject, QRectF, QSize, Qt
 from PySide6.QtGui import QIcon, QPainter, QPalette, QPixmap
 from PySide6.QtSvg import QSvgRenderer
-from PySide6.QtWidgets import QLabel, QWidget
+from PySide6.QtWidgets import QLabel, QToolButton, QWidget
 
 ICON_SIZE = QSize(16, 16)
 
@@ -27,6 +27,11 @@ _PATHS = {
     "folder": '<path d="M3 7V5a2 2 0 0 1 2-2h5l2 3h7a2 2 0 0 1 2 2v2'
     'M3 7h5l2 3h11l-3 11H3z"/>',
     "download": '<path d="M12 3v12M7 10l5 5 5-5M5 21h14"/>',
+    # GitHub mark in outline form (Lucide "github", ISC license).
+    "github": '<path d="M15 22v-4a4.8 4.8 0 0 0-1-3.5c3 0 6-2 6-5.5.08-1.25-.27-2.48'
+    "-1-3.5.28-1.15.28-2.35 0-3.5 0 0-1 0-3 1.5-2.64-.5-5.36-.5-8 0C6 2 5 2 5 2"
+    "c-.3 1.15-.3 2.35 0 3.5A5.403 5.403 0 0 0 4 9c0 3.5 3 5.5 6 5.5-.39.49-.68"
+    '1.05-.85 1.65-.17.6-.22 1.23-.15 1.85v4"/><path d="M9 18c-4.51 2-5-2-7-2"/>',
     "close": '<path d="m6 6 12 12M18 6 6 18"/>',
     "info": '<circle cx="12" cy="12" r="9"/><path d="M12 11v6M12 7h.01"/>',
     "warning": '<path d="m12 3 10 18H2zM12 9v5M12 17h.01"/>',
@@ -122,3 +127,31 @@ class VectorIconLabel(QLabel):
             self._cached_icon = vector_icon(self._name, self, QPalette.WindowText)
             self._icon_key = key
         self._cached_icon.paint(painter, rect, Qt.AlignCenter, mode)
+
+
+class RoundIconButton(QToolButton):
+    """Circular icon-only button with a thin outline.
+
+    The `label` is the tooltip and accessible name, because the button shows
+    no text.
+    """
+
+    DIAMETER = 28
+
+    def __init__(
+        self, icon_name: str, label: str, parent: QWidget | None = None
+    ) -> None:
+        super().__init__(parent)
+        self.setText(label)
+        self.setToolTip(label)
+        self.setAccessibleName(label)
+        self.setIcon(vector_icon(icon_name, self))
+        self.setToolButtonStyle(Qt.ToolButtonIconOnly)
+        self.setFixedSize(self.DIAMETER, self.DIAMETER)
+        radius = self.DIAMETER // 2
+        self.setStyleSheet(
+            "QToolButton { border: 1px solid palette(mid); "
+            f"border-radius: {radius}px; background: palette(base); padding: 0; }}"
+            "QToolButton:hover { background: palette(alternate-base); }"
+            "QToolButton:pressed { background: palette(midlight); }"
+        )
