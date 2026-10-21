@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.3.0 (2026-10-21)
 
 - The macOS application menu uses ADSfolio when launched from source.
   About displays the GitHub copyright handle.
