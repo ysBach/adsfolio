@@ -23,7 +23,7 @@ from PySide6.QtWidgets import QApplication, QHeaderView, QInputDialog, QToolBar
 
 from adsfolio.citations import CitationStyle
 from adsfolio.config import Config
-from adsfolio.gui.config import GuiConfig
+from adsfolio.gui.config import GuiConfig, RootEntry
 from adsfolio.gui.detail_pane import DetailPane
 from adsfolio.gui.library import COLUMNS, FileQuery
 from adsfolio.gui.main_window import MainWindow
@@ -1221,7 +1221,13 @@ def test_main_window_applies_default_splitter_sizes_only_when_unset(
 ) -> None:
     """First launch uses DEFAULT_SPLITTER_SIZES while saved splitter_sizes win."""
     monkeypatch.setattr(Config, "get_config_dir", classmethod(lambda cls: tmp_path))
-    monkeypatch.setattr("adsfolio.gui.main_window.load_config", lambda: GuiConfig())
+    # A library makes the three panes visible instead of the welcome guide.
+    library = tmp_path / "library"
+    library.mkdir()
+    monkeypatch.setattr(
+        "adsfolio.gui.main_window.load_config",
+        lambda: GuiConfig(roots=[RootEntry(str(library))]),
+    )
     monkeypatch.setattr("adsfolio.gui.main_window.save_config", lambda config: None)
     first_window = MainWindow()
     first_window.show()
@@ -1233,7 +1239,9 @@ def test_main_window_applies_default_splitter_sizes_only_when_unset(
     custom_sizes = [310, 520, 450]
     monkeypatch.setattr(
         "adsfolio.gui.main_window.load_config",
-        lambda: GuiConfig(splitter_sizes=list(custom_sizes)),
+        lambda: GuiConfig(
+            roots=[RootEntry(str(library))], splitter_sizes=list(custom_sizes)
+        ),
     )
     second_window = MainWindow()
     second_window.show()

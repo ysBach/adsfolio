@@ -127,6 +127,7 @@ def _set_current_root(
     """Install a normalized fake registry as the current library root."""
     normalized = root.resolve()
     window.current_root = root
+    window._sync_welcome()
     if registry is not None:
         window.registries[str(normalized)] = registry
     window._sync_ads_library_action()

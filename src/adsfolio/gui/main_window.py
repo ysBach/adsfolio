@@ -36,10 +36,8 @@ from PySide6.QtWidgets import (
     QMenu,
     QMessageBox,
     QPlainTextEdit,
-    QProgressBar,
     QPushButton,
     QSplitter,
-    QStyleFactory,
     QToolBar,
     QToolButton,
     QTreeView,
@@ -67,6 +65,7 @@ from .citation_styles import CitationStylesDialog
 from .config import RootEntry, load_config, save_config
 from .detail_pane import DetailPane
 from .dialogs import IdentifyDialog, RenameDialog, UserProfileDialog
+from .icons import vector_icon
 from .jobs import CommandJob, cli_argv
 from .library import (
     Column,
@@ -90,8 +89,10 @@ from .osint import open_path, open_url, reveal_in_file_manager
 from .references_dialog import ReferencesDialog
 from .refresh_job import LibraryRefreshJob
 from .token_dialog import TokenDialog
-from .updates import Release, UpdateChecker
+from .update_dialog import UpdateButton, UpdateDialog, quiet_progress_bar
+from .updates import Release, UpdateChecker, UpdateDownloader, installation_kind
 from .watch import LibraryWatchController, WatchFailure
+from .welcome import WelcomePanel
 
 logger = logging.getLogger(__name__)
 
@@ -249,7 +250,9 @@ class MainWindow(QMainWindow):
         )
         self.update_checker = UpdateChecker(self)
         self.update_checker.finished.connect(self._update_check_finished)
+        self.update_downloader = UpdateDownloader(self)
         self._about_dialog: AboutDialog | None = None
+        self._update_dialog: UpdateDialog | None = None
         self.job: Any | None = None
         self._ads_library_dialog: AdsLibraryDialog | None = None
         self._ads_library_export_dialog: ExportAdsLibraryDialog | None = None
@@ -277,6 +280,7 @@ class MainWindow(QMainWindow):
         self._build_ui()
         self._connect_watch_controller()
         self._restore_config()
+        self._sync_welcome()
         QTimer.singleShot(0, self._start_configured_watchers)
 
     def _build_ui(self) -> None:
@@ -372,14 +376,12 @@ class MainWindow(QMainWindow):
         guidance_layout.addWidget(self.check_papers_button)
         self.lookup_guidance.hide()
         central_layout.addWidget(self.lookup_guidance)
-        self.start_library_button = QPushButton(
-            "Add a PDF folder to start your library…", central
-        )
-        self.start_library_button.setToolTip(
-            "Select a PDF folder, then choose OK to identify its papers."
-        )
-        self.start_library_button.clicked.connect(self._add_root)
-        central_layout.addWidget(self.start_library_button)
+        self.welcome = WelcomePanel(central)
+        self.welcome.add_folder_requested.connect(self._add_root)
+        self.welcome.token_requested.connect(self._edit_token)
+        self.welcome.profile_requested.connect(self._edit_user_profile)
+        self.start_library_button = self.welcome.add_folder_button
+        central_layout.addWidget(self.welcome, 1)
         central_layout.addWidget(splitter, 1)
         self.setCentralWidget(central)
         self.splitter = splitter
@@ -408,13 +410,7 @@ class MainWindow(QMainWindow):
         self.log_dock.hide()
         self._last_link_activation: tuple[str, float] | None = None
         self.status = self.statusBar()
-        self.job_progress = QProgressBar(self)
-        # The native macOS style animates indeterminate bars with a shared
-        # AppKit indicator that keeps redrawing after the bar is hidden.
-        # Fusion animates only while the bar is visible.
-        progress_style = QStyleFactory.create("Fusion")
-        progress_style.setParent(self.job_progress)
-        self.job_progress.setStyle(progress_style)
+        self.job_progress = quiet_progress_bar(self)
         self.job_progress.setRange(0, 0)
         self.job_progress.setTextVisible(False)
         self.job_progress.setFixedWidth(96)
@@ -440,6 +436,14 @@ class MainWindow(QMainWindow):
         ads_menu.addAction(self.refresh_all_citation_metrics_action)
         self.ads_refresh_button.setMenu(ads_menu)
         toolbar.addWidget(self.ads_refresh_button)
+        self.update_button = UpdateButton(self)
+        # "App Update" avoids confusion with the ADS metadata update actions.
+        self.update_button.setText("App Update")
+        self.update_button.setIcon(vector_icon("download", self.update_button))
+        self.update_button.clicked.connect(lambda: self._show_update_dialog())
+        toolbar.addWidget(self.update_button)
+        self.update_checker.changed.connect(self._sync_update_button)
+        self._sync_update_button()
         self._sync_refresh_actions()
         self._apply_table_appearance()
 
@@ -486,7 +490,7 @@ class MainWindow(QMainWindow):
             file_menu.addAction(action)
         tools = self.menuBar().addMenu("Tools")
         self.token_action = QAction("NASA ADS Token…", self)
-        self.token_action.triggered.connect(lambda: TokenDialog(self).exec())
+        self.token_action.triggered.connect(self._edit_token)
         tools.addAction(self.token_action)
         self.profile_action = QAction("My Publication Profile…", self)
         self.citation_styles_action = QAction("Custom Citation Styles…", self)
@@ -648,8 +652,67 @@ class MainWindow(QMainWindow):
         self._about_dialog.activateWindow()
 
     def _check_for_updates(self) -> None:
-        self._show_about()
-        self.update_checker.check()
+        self._show_update_dialog(check=True)
+
+    def _update_is_new(self) -> bool:
+        """Return whether an available update has not been skipped."""
+        release = self.update_checker.latest
+        return (
+            release is not None
+            and self.update_checker.update_available
+            and str(release.version) != self.config.skipped_update_version
+        )
+
+    def _sync_update_button(self) -> None:
+        release = self.update_checker.latest
+        dot = self._update_is_new()
+        self.update_button.set_dot_visible(dot)
+        if dot and release is not None:
+            tip = f"Update available: ADSfolio {release.version}"
+        elif self.update_checker.busy:
+            tip = "Checking for updates…"
+        else:
+            tip = "Check for ADSfolio updates"
+        self.update_button.setToolTip(tip)
+        self.update_button.setAccessibleName(tip)
+
+    def _show_update_dialog(self, *, check: bool = False) -> None:
+        """Open the update window, checking first when no result exists."""
+        if self._update_dialog is None:
+            self._update_dialog = UpdateDialog(
+                self.update_checker,
+                self.update_downloader,
+                installation_kind(),
+                self,
+                browser_command=self.config.web_browser_command,
+            )
+            self._update_dialog.skip_requested.connect(self._skip_update)
+        dialog = self._update_dialog
+        dialog.browser_command = self.config.web_browser_command
+        dialog.skipped_version = self.config.skipped_update_version
+        if check or (
+            self.update_checker.latest is None and not self.update_checker.busy
+        ):
+            self.update_checker.check()
+        dialog.sync_state()
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
+
+    def _skip_update(self, version: str) -> None:
+        self.config.skipped_update_version = version
+        self.notice_bar.dismiss("application-update")
+        self._sync_update_button()
+        try:
+            save_config(self.config)
+        except OSError as exc:
+            self.notice_bar.enqueue(
+                Notice(
+                    "update-preference",
+                    f"Could not save the skipped version: {exc}",
+                    severity="error",
+                )
+            )
 
     def _set_automatic_updates(self, enabled: bool) -> None:
         self.config.check_updates_automatically = enabled
@@ -668,7 +731,7 @@ class MainWindow(QMainWindow):
         release = self.update_checker.latest
         if release is not None:
             self.notice_bar.dismiss("application-update")
-        if release is not None and self.update_checker.update_available:
+        if release is not None and self._update_is_new():
             self.notice_bar.enqueue(
                 Notice(
                     "application-update",
@@ -896,6 +959,8 @@ class MainWindow(QMainWindow):
         )
         self.check_papers_button.setEnabled(available)
         self.identify_action.setEnabled(available)
+        self.rename_action.setEnabled(available)
+        self.remove_action.setEnabled(self.current_root is not None)
         self.refresh_action.setEnabled(available)
         self.reconcile_file_facts_action.setEnabled(available)
         self.remove_missing_action.setEnabled(available)
@@ -1284,7 +1349,7 @@ class MainWindow(QMainWindow):
 
     def _handle_notice_action(self, payload: object) -> None:
         if isinstance(payload, Release):
-            self._show_about()
+            self._show_update_dialog()
             return
         if not isinstance(payload, WatchEvent) or not self._is_current_watch_event(
             payload
@@ -2296,11 +2361,57 @@ class MainWindow(QMainWindow):
 
     def _add_root(self) -> None:
         selected = QFileDialog.getExistingDirectory(self, "Add Library Root")
-        if selected:
-            self._register_root(Path(selected))
-            self._select_root(Path(selected))
-            if self.model.total:
-                self._guide_identification()
+        if not selected:
+            return
+        path = Path(selected)
+        recursive = False
+        if str(path.expanduser().resolve()) not in self.registries:
+            choice = self._ask_include_subfolders(path)
+            if choice is None:
+                return
+            recursive = choice
+        self._register_root(path, recursive=recursive)
+        self._select_root(path)
+        if self.model.total:
+            self._guide_identification()
+
+    def _ask_include_subfolders(self, path: Path) -> bool | None:
+        """Ask whether a new library includes subfolders.
+
+        Returns
+        -------
+        bool or `None`
+            `True` to include subfolders, `False` for this folder only, or
+            `None` when the user cancels. A folder without visible subfolders
+            returns `False` without asking.
+        """
+        try:
+            has_subfolders = any(
+                entry.is_dir() and not entry.name.startswith(".")
+                for entry in path.iterdir()
+            )
+        except OSError:
+            has_subfolders = False
+        if not has_subfolders:
+            return False
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Question)
+        box.setWindowTitle("Include Subfolders?")
+        box.setText(f"Include PDFs in the subfolders of {path.name or path}?")
+        box.setInformativeText(
+            "You can change this later with Include Subdirectories on the library."
+        )
+        include = box.addButton("Include Subfolders", QMessageBox.YesRole)
+        only = box.addButton("This Folder Only", QMessageBox.NoRole)
+        box.addButton(QMessageBox.Cancel)
+        box.setDefaultButton(only)
+        box.exec()
+        clicked = box.clickedButton()
+        if clicked is include:
+            return True
+        if clicked is only:
+            return False
+        return None
 
     def _remove_root(self, root: Path | None = None) -> None:
         root = root or self.current_root
@@ -2378,7 +2489,7 @@ class MainWindow(QMainWindow):
             self._update_status()
 
     def _update_status(self) -> None:
-        self.start_library_button.setVisible(self.current_root is None)
+        self._sync_welcome()
         explains_ads_group = self.current_root is not None and self.current_view in {
             LibraryView.RESOLVED,
             LibraryView.UNRESOLVED,
@@ -2657,6 +2768,30 @@ class MainWindow(QMainWindow):
         )
         if dialog.exec() == QDialog.Accepted:
             self.status.showMessage("Publication profile saved", 5000)
+        self._sync_welcome()
+
+    def _edit_token(self) -> None:
+        """Open the ADS token dialog and refresh the welcome status."""
+        TokenDialog(self).exec()
+        self._sync_welcome()
+
+    def _sync_welcome(self) -> None:
+        """Show the welcome guide instead of empty panes when no library exists."""
+        empty = self.current_root is None
+        self.welcome.setVisible(empty)
+        self.splitter.setVisible(not empty)
+        if not empty:
+            return
+        try:
+            profile = Config.load_user_profile()
+            profile_saved = bool(profile.orcid or profile.author_names)
+        except (OSError, ValueError):
+            profile_saved = False
+        try:
+            source = Config.token_source()
+        except OSError:
+            source = None
+        self.welcome.set_status(token_source=source, profile_saved=profile_saved)
 
     def _refresh_selected_ads(self) -> None:
         """Refresh and rename one selected record from ADS metadata."""
@@ -3241,8 +3376,11 @@ class MainWindow(QMainWindow):
             return
         self._close_requested = True
         self.update_checker.cancel()
+        self.update_downloader.cancel()
         if self._about_dialog is not None:
             self._about_dialog.close()
+        if self._update_dialog is not None:
+            self._update_dialog.close()
         self.search_timer.stop()
         self._watch_refresh_timer.stop()
         self._pending_watch_refresh_roots.clear()

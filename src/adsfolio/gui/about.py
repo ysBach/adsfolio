@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-import os
 import platform
-import sys
 from pathlib import Path
 
 from PySide6.QtCore import Qt, qVersion
@@ -23,7 +21,14 @@ from PySide6.QtWidgets import (
 
 from .. import __version__
 from .osint import open_url
-from .updates import RELEASES_URL, REPOSITORY_URL, UpdateChecker
+from .updates import (
+    HOMEBREW_COMMAND,
+    RELEASES_URL,
+    REPOSITORY_URL,
+    InstallationKind,
+    UpdateChecker,
+    installation_kind,
+)
 
 
 class AboutDialog(QDialog):
@@ -63,28 +68,22 @@ class AboutDialog(QDialog):
         copyright_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
         layout.addWidget(copyright_label)
 
-        source_launcher = os.environ.get(
-            "ADSFOLIO_SOURCE_LAUNCH"
-        ) == "1" and not getattr(sys, "frozen", False)
-        if source_launcher:
-            self.installation = "Local source launcher"
+        kind = installation_kind()
+        self.installation = kind.value
+        if kind is InstallationKind.SOURCE:
             installation_text = (
                 "Local source launcher. Restart ADSfolio to load source edits. "
                 "Update this checkout to use newer source code. "
                 "The version label does not track individual source edits. "
                 "A desktop installer or Homebrew upgrade replaces this source launcher."
             )
-        elif getattr(sys, "frozen", False):
-            self.installation = "Desktop application"
+        elif kind is InstallationKind.HOMEBREW:
+            installation_text = f"Homebrew application. Update with {HOMEBREW_COMMAND}."
+        elif kind is InstallationKind.DESKTOP:
             installation_text = (
                 "Desktop application. Install a release for your operating system."
             )
-            if sys.platform == "darwin":
-                installation_text += (
-                    " If installed with Homebrew, use brew upgrade --cask adsfolio."
-                )
         else:
-            self.installation = "Python installation"
             installation_text = (
                 "Python installation. Update the package or source checkout, "
                 "then restart ADSfolio."
@@ -92,7 +91,7 @@ class AboutDialog(QDialog):
         self.installation_label = QLabel(installation_text, self)
         self.installation_label.setWordWrap(True)
         layout.addWidget(self.installation_label)
-        if source_launcher:
+        if kind is InstallationKind.SOURCE:
             source_path = QLabel(str(Path(__file__).resolve().parents[3]), self)
             source_path.setWordWrap(True)
             source_path.setTextInteractionFlags(Qt.TextSelectableByMouse)

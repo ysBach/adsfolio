@@ -35,6 +35,38 @@ __all__ = [
 ]
 
 
+def make_private_directory(path: Path) -> None:
+    """Create `path` if needed and make it accessible only to its owner.
+
+    POSIX permission bits do not apply on Windows, where the directory is only
+    created.
+    """
+    path.mkdir(parents=True, exist_ok=True, mode=0o700)
+    if os.name != "nt" and path.stat().st_mode & 0o077:
+        path.chmod(0o700)
+
+
+def write_private_text(path: Path, text: str) -> None:
+    """Atomically replace `path` with `text` that only its owner can read.
+
+    The temporary file is created with mode ``0o600``, so the text is never
+    readable by other users, even before the final rename.
+    """
+    make_private_directory(path.parent)
+    tmp_path = path.with_name(f"{path.name}.tmp")
+    try:
+        descriptor = os.open(tmp_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        # A stale temporary file keeps its old mode when it is reopened.
+        if os.name != "nt":
+            os.fchmod(descriptor, 0o600)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            handle.write(text)
+        os.replace(tmp_path, path)
+    except OSError:
+        tmp_path.unlink(missing_ok=True)
+        raise
+
+
 class ADSError(Exception):
     """Base exception for NASA ADS errors."""
 
@@ -148,17 +180,9 @@ class Config:
         AuthenticationError
             If no token can be found or created.
         """
-        # Check environment variable first
-        token = os.environ.get(cls.ENV_VAR)
-        if token and token.strip():
-            return token.strip()
-
-        # Check file locations
-        for path in cls.get_token_paths():
-            if path.exists():
-                token = path.read_text().strip()
-                if token:
-                    return token
+        found = cls._find_token()
+        if found is not None:
+            return found[0]
 
         if not prompt or sys.stdin is None or not sys.stdin.isatty():
             raise AuthenticationError(
@@ -166,6 +190,31 @@ class Config:
                 "Tools → NASA ADS Token…; in a terminal, run adsfolio set."
             )
         return cls._prompt_for_token()
+
+    @classmethod
+    def _find_token(cls) -> tuple[str, str] | None:
+        """Return the first nonempty token and a description of its source."""
+        token = os.environ.get(cls.ENV_VAR)
+        if token and token.strip():
+            return token.strip(), f"the {cls.ENV_VAR} environment variable"
+        for path in cls.get_token_paths():
+            if path.exists():
+                token = path.read_text().strip()
+                if token:
+                    return token, str(path.absolute())
+        return None
+
+    @classmethod
+    def token_source(cls) -> str | None:
+        """Describe where the active token comes from, or `None` without one.
+
+        Returns
+        -------
+        str or `None`
+            The environment variable name or the absolute token file path.
+        """
+        found = cls._find_token()
+        return None if found is None else found[1]
 
     @classmethod
     def save_token(cls, token: str) -> Path:
@@ -182,11 +231,8 @@ class Config:
         Path
             Path where token was saved.
         """
-        config_dir = cls.get_config_dir()
-        config_dir.mkdir(parents=True, exist_ok=True)
-        token_path = config_dir / "token"
-        token_path.write_text(token.strip())
-        token_path.chmod(0o600)
+        token_path = cls.get_config_dir() / "token"
+        write_private_text(token_path, token.strip())
         return token_path
 
     @classmethod
@@ -349,18 +395,9 @@ class Config:
     def _save_setup_mapping(cls, payload: dict[str, Any]) -> Path:
         """Atomically persist one setup mapping."""
         path = cls.get_setup_path()
-        path.parent.mkdir(parents=True, exist_ok=True)
-        tmp_path = path.with_name(f"{path.name}.tmp")
-        try:
-            tmp_path.write_text(
-                json.dumps(payload, indent=2, ensure_ascii=False) + "\n",
-                encoding="utf-8",
-            )
-            os.replace(tmp_path, path)
-            path.chmod(0o600)
-        except OSError:
-            tmp_path.unlink(missing_ok=True)
-            raise
+        write_private_text(
+            path, json.dumps(payload, indent=2, ensure_ascii=False) + "\n"
+        )
         return path
 
     @classmethod

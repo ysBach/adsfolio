@@ -54,8 +54,9 @@ establish that the app can open. Windows can also show publisher warnings.
 
 ### Start using your library
 
-1. Open ADSfolio. Choose **File → Add Library Root…** and select your PDF folder.
-   To include nested folders, enable **Include Subdirectories** on the root.
+1. Open ADSfolio. Choose **Add PDF Folder…** on the welcome page and select your
+   PDF folder. If it has subfolders, choose **Include Subfolders** or
+   **This Folder Only**.
 2. Select a PDF to inspect or edit its metadata. Double-click a row to open it
    in your system PDF viewer.
 3. Choose **OK** in the **Identify** prompt to look up publication metadata.

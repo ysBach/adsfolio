@@ -16,6 +16,12 @@ uv run adsfolio-gui
 Startup does not require an ADS token. You can browse and edit local libraries
 offline. ADS operations request a token when needed.
 
+**Tools → NASA ADS Token…** shows where the active token comes from: the
+`ADS_API_TOKEN` environment variable or a token file path. **Save** stores the
+token in a file that only your user account can read. Saving makes no network
+request. **Test Token** sends one search request to ADS and reports whether ADS
+accepted the pasted token, or the active token when the field is empty.
+
 Identification supports ADS, Crossref, and DataCite in that default order.
 Reorder or disable providers in the Identify dialog. Crossref and DataCite
 look up exact DOIs without an ADS token. Title matching uses ADS.
@@ -32,9 +38,28 @@ and installation type. On macOS, **About ADSfolio** appears in the application m
 **Copy App Details** copies version and system information for a bug report.
 It does not copy your library data or paths.
 
-**Help → Check for Updates…** checks the latest stable GitHub release.
-The check runs in the background. The About window shows the result, including
-connection errors. **View Update** opens the release page with platform downloads.
+**App Update** in the toolbar opens **Software Update**. A blue dot on the button
+means a newer stable release is available. **Help → Check for Updates…** opens the
+same window and checks the latest stable GitHub release in the background.
+
+Software Update shows the installed and available versions and the changelog
+entries between them. It offers these buttons:
+
+- **Install** (desktop downloads) downloads the release for your system from
+  GitHub. It verifies the file against the release's `SHA256SUMS.txt`, saves it
+  in your Downloads folder, then opens the disk image on macOS or shows the
+  archive in your file manager. Nothing is replaced automatically. Quit
+  ADSfolio before replacing the application. **Cancel** stops a download and
+  removes the partial file.
+- **Copy Command** (Homebrew installations) copies `brew upgrade --cask adsfolio`.
+- **Skip This Version** hides the dot and startup notice for that release.
+  A newer release appears again.
+
+The checksum detects damaged or incomplete downloads. It comes from the same
+GitHub release, so it does not prove who published the file. On macOS, files
+that ADSfolio downloads do not receive the quarantine flag that browsers add,
+so Gatekeeper may not prompt as it would for a browser download.
+Python and source installations show update instructions instead of **Install**.
 
 ADSfolio also checks once at startup by default. Disable this in
 **Help → Automatically Check for Updates**, or use the checkbox in About.
@@ -65,11 +90,14 @@ That window imports BibTeX, accepts manual entries, links optional PDFs, and
 exports ADS and external references together. It is independent of the selected
 PDF root. See [References outside ADS](local-references.md) for the complete flow.
 
-Add a root from **File → Add Library Root…**.  Registration discovers PDFs
-immediately.  New roots use a non-recursive scan by default, so only PDFs
-directly in the selected directory are discovered.  To include nested
-directories, right-click the root under **LIBRARIES** and enable **Include
-Subdirectories**.  The checkbox is disabled while that root is watched. Stop
+Add a root from **File → Add Library Root…**, or from **Add PDF Folder…** on the
+welcome page that appears while no library exists. The welcome page also offers
+the optional ADS token and publication profile, and lists the services that
+ADSfolio contacts. Registration discovers PDFs immediately. When the selected
+folder has subfolders, ADSfolio asks **Include Subfolders** or **This Folder
+Only** (the default). A folder without subfolders is added without a question.
+To change the scope later, right-click the root under **LIBRARIES** and toggle
+**Include Subdirectories**.  The checkbox is disabled while that root is watched. Stop
 the watcher before changing it.  Changing the checkbox saves the scan scope
 but does not rescan the current catalog immediately. Press **Refresh** (**F5**)
 to scan the root with its updated **Include Subdirectories** setting.
@@ -195,7 +223,9 @@ per paper. It confirms the number of individual requests before starting. No ADS
 request occurs simply from selecting a row.
 
 **Tools → My Publication Profile…** stores your ORCID, ADS author-name forms,
-first/last publication years, and optional ADS library IDs. These global fields
+first/last publication years, and optional ADS library IDs. The ORCID field
+accepts an iD or an `https://orcid.org/` link and checks the iD's check digit
+before saving. These global fields
 define the publications fetched for profile matching. The years do not reject
 PDFs by their publication year. Saving the profile does not make a network
 request. Use **Tools → Identify → Advanced options… → Refresh publication cache** when you want to

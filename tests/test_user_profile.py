@@ -1,6 +1,6 @@
 import pytest
 
-from adsfolio.user_profile import UserProfile
+from adsfolio.user_profile import UserProfile, normalize_orcid
 
 
 def test_user_profile_normalizes_canonical_and_legacy_fields():
@@ -67,3 +67,30 @@ def test_user_profile_builds_prefetch_profile():
     assert profile.debut_year == 2010
     assert profile.end_year == 2030
     assert profile.library_ids == ["LIB1"]
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("", ""),
+        ("  0000-0002-1825-0097 ", "0000-0002-1825-0097"),
+        ("https://orcid.org/0000-0002-1694-233x", "0000-0002-1694-233X"),
+        ("orcid.org/0000-0001-5109-3700", "0000-0001-5109-3700"),
+    ],
+)
+def test_normalize_orcid_accepts_ids_and_profile_urls(value, expected):
+    assert normalize_orcid(value) == expected
+
+
+@pytest.mark.parametrize(
+    ("value", "message"),
+    [
+        ("0000-0002-1825-0098", "check digit"),
+        ("0000-0002-1825-009", "must look like"),
+        ("0000000218250097", "must look like"),
+        ("https://example.org/0000-0002-1825-0097", "must look like"),
+    ],
+)
+def test_normalize_orcid_rejects_malformed_or_mistyped_ids(value, message):
+    with pytest.raises(ValueError, match=message):
+        normalize_orcid(value)

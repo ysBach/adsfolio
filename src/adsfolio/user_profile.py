@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
@@ -183,4 +184,42 @@ class UserProfile:
         )
 
 
-__all__ = ["UserProfile"]
+_ORCID = re.compile(r"\d{4}-\d{4}-\d{4}-\d{3}[\dX]")
+_ORCID_URL_PREFIXES = ("https://orcid.org/", "http://orcid.org/", "orcid.org/")
+
+
+def normalize_orcid(value: str) -> str:
+    """Return a checked ORCID iD, or an empty string for an empty value.
+
+    A pasted ``https://orcid.org/`` URL is reduced to the iD. The last
+    character is the ISO 7064 MOD 11-2 check digit defined by ORCID.
+
+    Raises
+    ------
+    ValueError
+        If the value does not have the ORCID form or its check digit fails.
+    """
+    text = value.strip()
+    for prefix in _ORCID_URL_PREFIXES:
+        if text.lower().startswith(prefix):
+            text = text[len(prefix) :]
+            break
+    text = text.upper()
+    if not text:
+        return ""
+    if not _ORCID.fullmatch(text):
+        raise ValueError(
+            f"ORCID iD {value.strip()!r} must look like 0000-0002-1825-0097."
+        )
+    total = 0
+    for digit in text[:-1].replace("-", ""):
+        total = (total + int(digit)) * 2
+    check = (12 - total % 11) % 11
+    if text[-1] != ("X" if check == 10 else str(check)):
+        raise ValueError(
+            f"ORCID iD {text} has an invalid check digit. Copy it again from orcid.org."
+        )
+    return text
+
+
+__all__ = ["UserProfile", "normalize_orcid"]

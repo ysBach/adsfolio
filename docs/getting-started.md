@@ -6,15 +6,16 @@ and unsigned-app approval.
 
 ## Add your existing folders
 
-1. Open ADSfolio.
-2. Choose **File → Add Library Root…**.
+1. Open ADSfolio. A new installation shows **Welcome to ADSfolio** with three
+   steps. Only the PDF folder is required.
+2. Choose **Add PDF Folder…** (or **File → Add Library Root…**).
 3. Select your PDF folder.
-4. Enable **Include Subdirectories** if your papers use nested folders.
-5. Press **Refresh** or **F5** to scan the selected root.
+4. If the folder has subfolders, choose **Include Subfolders** or
+   **This Folder Only**. You can change this later with **Include Subdirectories**.
 
 Adding a root records file locations. It does not move your PDFs.
 The identification prompt opens next. Choose **OK** to start, or **Cancel** to
-browse first and adjust the subfolder setting.
+browse first.
 You can browse your library without an ADS account.
 Start with one folder before processing a large collection.
 

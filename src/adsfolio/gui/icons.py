@@ -26,6 +26,7 @@ _PATHS = {
     'a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-5"/>',
     "folder": '<path d="M3 7V5a2 2 0 0 1 2-2h5l2 3h7a2 2 0 0 1 2 2v2'
     'M3 7h5l2 3h11l-3 11H3z"/>',
+    "download": '<path d="M12 3v12M7 10l5 5 5-5M5 21h14"/>',
     "close": '<path d="m6 6 12 12M18 6 6 18"/>',
     "info": '<circle cx="12" cy="12" r="9"/><path d="M12 11v6M12 7h.01"/>',
     "warning": '<path d="m12 3 10 18H2zM12 9v5M12 17h.01"/>',

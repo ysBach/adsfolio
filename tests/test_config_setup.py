@@ -2,6 +2,8 @@ import json
 import os
 from pathlib import Path
 
+import pytest
+
 from adsfolio.config import Config
 from adsfolio.pdf.identify_settings import IdentifySettings
 from adsfolio.pdf.rename_settings import RenameSettings
@@ -241,3 +243,33 @@ def test_rename_save_preserves_unknown_keys_and_legacy_fallback(monkeypatch, tmp
     assert raw["custom_tool"] == {"setting": 42}
     assert raw["user_profile"]["orcid"] == "0000"
     assert raw["rename"]["template"] == "{bibcode}"
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits")
+def test_token_and_profile_are_private_from_creation(monkeypatch) -> None:
+    previous = os.umask(0)
+    try:
+        config_dir = Config.get_config_dir()
+        config_dir.mkdir(parents=True)
+        config_dir.chmod(0o755)
+        stale = config_dir / "token.tmp"
+        stale.write_text("old")
+        stale.chmod(0o644)
+        modes: list[int] = []
+        real_replace = os.replace
+
+        def record(source, destination) -> None:
+            modes.append(Path(source).stat().st_mode & 0o777)
+            real_replace(source, destination)
+
+        monkeypatch.setattr("adsfolio.config.os.replace", record)
+        token_path = Config.save_token(" secret ")
+        setup_path = Config.save_user_setup("0000-0002-1825-0097")
+    finally:
+        os.umask(previous)
+    assert modes == [0o600, 0o600]
+    assert token_path.read_text() == "secret"
+    assert token_path.stat().st_mode & 0o777 == 0o600
+    assert setup_path.stat().st_mode & 0o777 == 0o600
+    assert config_dir.stat().st_mode & 0o777 == 0o700
+    assert not stale.exists()

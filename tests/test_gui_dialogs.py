@@ -179,7 +179,7 @@ def test_user_profile_dialog_loads_normalizes_and_saves_profile(application):
     calls = []
     dialog = UserProfileDialog(
         UserProfile(
-            orcid="0000",
+            orcid="https://orcid.org/0000-0002-1694-233x",
             author_names=("Bach, Y. P.",),
             first_publication_year=2010,
             last_publication_year=2030,
@@ -194,7 +194,7 @@ def test_user_profile_dialog_loads_normalizes_and_saves_profile(application):
 
     assert calls == [
         UserProfile(
-            orcid="0000",
+            orcid="0000-0002-1694-233X",
             author_names=("Bach, Y. P.", "Bach, Yoonsoo"),
             first_publication_year=2010,
             last_publication_year=2030,
@@ -202,6 +202,23 @@ def test_user_profile_dialog_loads_normalizes_and_saves_profile(application):
         )
     ]
     assert dialog.result() == QDialog.Accepted
+
+
+def test_user_profile_dialog_rejects_invalid_orcid(application, monkeypatch):
+    calls = []
+    messages = []
+    monkeypatch.setattr(
+        "adsfolio.gui.dialogs.QMessageBox.critical",
+        lambda parent, title, text: messages.append(text),
+    )
+    dialog = UserProfileDialog(UserProfile(), save_profile=calls.append)
+    dialog.orcid.setText("0000-0002-1825-0098")
+
+    dialog.accept()
+
+    assert calls == []
+    assert "check digit" in messages[0]
+    assert dialog.result() != QDialog.Accepted
 
 
 def test_user_profile_dialog_cancel_does_not_save(application):

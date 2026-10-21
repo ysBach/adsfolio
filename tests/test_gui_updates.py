@@ -74,6 +74,12 @@ class FakeNetwork:
         return self.reply
 
 
+@pytest.fixture(autouse=True)
+def no_homebrew(monkeypatch) -> None:
+    """Classify installations without the host's Homebrew records."""
+    monkeypatch.setattr("adsfolio.gui.updates._CASKROOMS", ())
+
+
 @pytest.fixture
 def checker(qtbot) -> UpdateChecker:
     return UpdateChecker()
@@ -237,13 +243,15 @@ def test_manual_check_joins_startup_check_and_shows_result(window: MainWindow) -
     window.update_checker._network = network
     window.check_updates_on_start()
     window.check_updates_action.trigger()
-    about = window._about_dialog
-    assert about is not None
-    assert not about.check_button.isEnabled()
+    dialog = window._update_dialog
+    assert dialog is not None
+    assert not dialog.check_button.isEnabled()
     assert len(network.requests) == 1
     reply.finished.emit()
-    assert about.check_button.isEnabled()
-    assert "newer than the latest" in about.update_status.text()
+    assert dialog.check_button.isEnabled()
+    assert "newer than the latest" in dialog.install_note.text()
+    assert not dialog.install_button.isVisible()
+    assert not window.update_button.dot_visible
     assert window.notice_bar.queued_keys() == ()
 
 
@@ -262,8 +270,9 @@ def test_startup_update_notice_keeps_library_view_and_selection(
     assert window.current_query == query
     assert window.table.selectionModel().selectedIndexes() == selection
     window.notice_bar.action_button.click()
-    assert window._about_dialog is not None
-    assert window._about_dialog.isVisible()
+    assert window._update_dialog is not None
+    assert window._update_dialog.isVisible()
+    assert window._about_dialog is None
 
 
 def test_automatic_failure_is_silent_and_manual_check_can_retry(
@@ -275,12 +284,12 @@ def test_automatic_failure_is_silent_and_manual_check_can_retry(
     window.check_updates_on_start()
     reply.finished.emit()
     assert window.notice_bar.queued_keys() == ()
-    assert window._about_dialog is None
+    assert window._update_dialog is None
     window.check_updates_action.trigger()
-    assert window._about_dialog is not None
+    assert window._update_dialog is not None
     assert len(network.requests) == 2
     reply.finished.emit()
-    assert "Could not check" in window._about_dialog.update_status.text()
+    assert "Could not check" in window._update_dialog.available_label.text()
 
 
 def test_update_preference_persists_and_controls_next_start(window: MainWindow) -> None:
@@ -318,8 +327,8 @@ def test_close_cancels_request_and_about(window: MainWindow) -> None:
     window.check_updates_action.trigger()
     window.close()
     assert reply.aborted
-    assert window._about_dialog is not None
-    assert not window._about_dialog.isVisible()
+    assert window._update_dialog is not None
+    assert not window._update_dialog.isVisible()
     window.check_updates_on_start()
     assert not window.update_checker.busy
 
@@ -450,7 +459,24 @@ def test_desktop_update_instructions_match_the_platform(
     dialog = AboutDialog(checker, action)
     qtbot.addWidget(dialog)
     assert dialog.installation == "Desktop application"
-    assert ("brew upgrade" in dialog.installation_label.text()) is (system == "darwin")
+    assert "brew upgrade" not in dialog.installation_label.text()
+
+
+def test_homebrew_bundle_shows_the_brew_command(
+    qtbot, checker: UpdateChecker, monkeypatch, tmp_path: Path
+) -> None:
+    import sys
+
+    monkeypatch.delenv("ADSFOLIO_SOURCE_LAUNCH", raising=False)
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setattr(sys, "platform", "darwin")
+    monkeypatch.setattr("adsfolio.gui.updates._CASKROOMS", (tmp_path,))
+    action = QAction()
+    action.setCheckable(True)
+    dialog = AboutDialog(checker, action)
+    qtbot.addWidget(dialog)
+    assert dialog.installation == "Homebrew application"
+    assert "brew upgrade --cask adsfolio" in dialog.installation_label.text()
 
 
 def test_official_bundle_never_shows_source_launcher_guidance(

@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from ..citations import CitationStyle, CitationStyleError, initial_citation_styles
-from ..config import Config
+from ..config import Config, make_private_directory
 
 logger = logging.getLogger(__name__)
 
@@ -72,6 +72,7 @@ class GuiConfig:
     sidebar_visible: bool = True
     detail_visible: bool = True
     check_updates_automatically: bool = True
+    skipped_update_version: str | None = None
     show_edit_buttons: bool = True
     show_lock_buttons: bool = True
     filename_click_action: str = "open"
@@ -398,6 +399,7 @@ def _from_mapping(payload: Mapping[str, Any]) -> GuiConfig:
         check_updates_automatically=_as_bool(
             payload.get("check_updates_automatically"), True
         ),
+        skipped_update_version=_as_string(payload.get("skipped_update_version")),
         show_edit_buttons=_as_bool(payload.get("show_edit_buttons"), True),
         show_lock_buttons=_as_bool(payload.get("show_lock_buttons"), True),
         filename_click_action=filename_click_action or "open",
@@ -450,7 +452,8 @@ def save_config(config: GuiConfig) -> Path:
         The path of the saved configuration.
     """
     path = config_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
+    # The folder also holds the ADS token, profile, and library catalog.
+    make_private_directory(path.parent)
     tmp_path = path.with_name(f"{path.name}.tmp")
     payload = asdict(config)
     text = json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=False) + "\n"

@@ -47,7 +47,7 @@ from ..pdf.identify_settings import (
 from ..pdf.registry import open_registry_state
 from ..pdf.rename_settings import RenameSettings
 from ..pdf.renamer import PdfRenamer
-from ..user_profile import UserProfile
+from ..user_profile import UserProfile, normalize_orcid
 from .jobs import CommandJob, cli_argv
 
 
@@ -223,7 +223,7 @@ class UserProfileDialog(QDialog):
     def selected_profile(self) -> UserProfile:
         """Return the normalized profile shown in the dialog."""
         return UserProfile(
-            orcid=self.orcid.text().strip(),
+            orcid=normalize_orcid(self.orcid.text()),
             author_names=self._unique_lines(self.author_names.toPlainText()),
             first_publication_year=self.first_year.value() or None,
             last_publication_year=self.last_year.value() or None,

@@ -1938,3 +1938,60 @@ def test_guided_cli_steps_preserve_cached_metadata_and_content_history(
     )
     assert window._selected_record()["location_id"] == before["location_id"]
     assert list(root.glob("*.pdf")) == [root / "paper.pdf"]
+
+
+@pytest.mark.parametrize(("choice", "recursive"), [(True, True), (False, False)])
+def test_adding_folder_with_subfolders_uses_the_chosen_scope(
+    monkeypatch, qtbot, tmp_path, choice, recursive
+):
+    from PySide6.QtWidgets import QFileDialog
+
+    root = tmp_path / "nested-library"
+    (root / "2024").mkdir(parents=True)
+    (root / "2024" / "paper.pdf").write_bytes(b"paper")
+    window, _, _ = _window_factory(monkeypatch, qtbot, GuiConfig())
+    monkeypatch.setattr(QFileDialog, "getExistingDirectory", lambda *args: str(root))
+    asked = []
+    monkeypatch.setattr(
+        window, "_ask_include_subfolders", lambda path: asked.append(path) or choice
+    )
+    monkeypatch.setattr(window, "_guide_identification", lambda: None)
+    window._add_root()
+    assert asked == [root]
+    assert window.root_entries[str(root.resolve())].recursive is recursive
+    assert (window.model.total > 0) is recursive
+
+
+def test_cancelling_the_subfolder_question_adds_nothing(monkeypatch, qtbot, tmp_path):
+    from PySide6.QtWidgets import QFileDialog
+
+    root = tmp_path / "nested-library"
+    (root / "sub").mkdir(parents=True)
+    window, _, _ = _window_factory(monkeypatch, qtbot, GuiConfig())
+    monkeypatch.setattr(QFileDialog, "getExistingDirectory", lambda *args: str(root))
+    monkeypatch.setattr(window, "_ask_include_subfolders", lambda path: None)
+    window._add_root()
+    assert window.registries == {}
+
+
+def test_folder_without_subfolders_is_added_without_asking(qtbot, tmp_path):
+    from adsfolio.gui.main_window import MainWindow
+
+    root = tmp_path / "flat"
+    root.mkdir()
+    (root / ".hidden").mkdir()
+    window = MainWindow()
+    qtbot.addWidget(window)
+    assert window._ask_include_subfolders(root) is False
+
+
+def test_library_actions_are_disabled_without_a_library(monkeypatch, qtbot):
+    window, _, _ = _window_factory(monkeypatch, qtbot, GuiConfig())
+    assert window.current_root is None
+    for action in (
+        window.rename_action,
+        window.identify_action,
+        window.refresh_action,
+        window.remove_action,
+    ):
+        assert not action.isEnabled(), action.text()

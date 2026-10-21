@@ -1,5 +1,48 @@
 # Changelog
 
+## Unreleased
+
+### New
+
+- **App Update button.** Before: update results showed only in **About** and in
+  a startup notice. Now: a round **App Update** button in the toolbar opens
+  **Software Update**.
+  A blue dot on the button shows that a new version is available.
+- **Software Update window.** Before: **View Update** opened the GitHub release
+  page. Now: the window shows the installed version, the available version, and
+  the changelog between them.
+  - **Install** downloads the file for your system, checks its SHA-256 checksum,
+    and opens it. ADSfolio does not replace the application.
+  - **Skip This Version** hides the dot and the startup notice for that version.
+- **Welcome page.** Before: a new installation showed empty panes and one
+  button. Now: **Welcome to ADSfolio** shows three steps: add a PDF folder, add
+  an ADS token (optional), and set a profile (optional). The page also lists the
+  services that ADSfolio contacts.
+- **Subfolder question.** Before: adding a folder with subfolders added only the
+  top folder, with no message. Now: ADSfolio asks **Include Subfolders** or
+  **This Folder Only**.
+- **Test Token.** Before: **Save** stored the token with no check. Now:
+  **Test Token** sends one search to ADS and shows "ADS accepted the token." or
+  "ADS rejected the token." The dialog also shows the token source, for example
+  `ADS_API_TOKEN` or a file path.
+
+### Safer
+
+- **Private token and profile files.** Before: other users on the computer could
+  read `token` and `setup.json` for a short time during each save (mode `0644`
+  with the usual umask). Now: ADSfolio creates both files with mode `0600`.
+  When ADSfolio saves settings, it sets the settings folder to mode `0700`.
+- **ORCID check.** Before: the profile saved `0000-0002-1825-0098`, which has a
+  wrong check digit. Now: **Save** shows "invalid check digit" and keeps the
+  dialog open. If you paste `https://orcid.org/0000-0002-1825-0097`, ADSfolio
+  saves `0000-0002-1825-0097`.
+
+### Fixed
+
+- **Actions without a library.** Before: **Rename** and **Remove Root** were
+  enabled when no library existed, and a click did nothing. Now: both stay
+  disabled until you add a library.
+
 ## 0.3.0 (2026-10-21)
 
 - The macOS application menu uses ADSfolio when launched from source.

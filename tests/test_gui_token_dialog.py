@@ -5,6 +5,8 @@ from __future__ import annotations
 import sys
 
 import pytest
+from PySide6.QtCore import QObject, Signal
+from PySide6.QtNetwork import QNetworkReply, QNetworkRequest
 from PySide6.QtWidgets import QDialog, QLineEdit
 
 from adsfolio.config import AuthenticationError, Config
@@ -90,3 +92,104 @@ def test_blank_environment_token_falls_back_to_file(monkeypatch) -> None:
     Config.save_token("saved-token")
     monkeypatch.setenv(Config.ENV_VAR, "  ")
     assert Config.get_token(prompt=False) == "saved-token"
+
+
+class FakeReply(QObject):
+    finished = Signal()
+
+    def __init__(self, status: int | None, error=None) -> None:
+        super().__init__()
+        self.status = status
+        self.network_error = QNetworkReply.NoError if error is None else error
+        self.aborted = False
+
+    def attribute(self, attribute):
+        return self.status
+
+    def error(self):
+        return self.network_error
+
+    def errorString(self) -> str:
+        return "Host not found"
+
+    def abort(self) -> None:
+        self.aborted = True
+
+
+class FakeNetwork:
+    def __init__(self, reply: FakeReply) -> None:
+        self.reply = reply
+        self.requests: list[QNetworkRequest] = []
+
+    def get(self, request: QNetworkRequest) -> FakeReply:
+        self.requests.append(request)
+        return self.reply
+
+
+def test_dialog_shows_where_the_active_token_comes_from(
+    qtbot, tmp_path, monkeypatch
+) -> None:
+    dialog = TokenDialog()
+    qtbot.addWidget(dialog)
+    assert "No token is saved" in dialog.source_label.text()
+    Config.save_token("saved")
+    assert Config.token_source() == str(tmp_path / "token")
+    monkeypatch.setenv(Config.ENV_VAR, "from-env")
+    dialog = TokenDialog()
+    qtbot.addWidget(dialog)
+    assert Config.ENV_VAR in dialog.source_label.text()
+
+
+@pytest.mark.parametrize(
+    ("status", "error", "message"),
+    [
+        (200, None, "ADS accepted the token."),
+        (401, QNetworkReply.AuthenticationRequiredError, "ADS rejected"),
+        (429, QNetworkReply.UnknownContentError, "rate limit"),
+        (None, QNetworkReply.HostNotFoundError, "Could not reach ADS"),
+    ],
+)
+def test_test_token_sends_one_ads_search_with_the_pasted_token(
+    qtbot, status, error, message
+) -> None:
+    dialog = TokenDialog()
+    qtbot.addWidget(dialog)
+    reply = FakeReply(status, error)
+    network = FakeNetwork(reply)
+    dialog._network = network
+    dialog.token.setText(" pasted ")
+    dialog.test_button.click()
+    dialog.test_button.click()
+    assert len(network.requests) == 1
+    request = network.requests[0]
+    assert request.url().toString().startswith(f"{Config.API_BASE}/search/query?")
+    assert request.rawHeader("Authorization").data() == b"Bearer pasted"
+    assert request.attribute(QNetworkRequest.RedirectPolicyAttribute) == (
+        QNetworkRequest.SameOriginRedirectPolicy
+    )
+    assert not dialog.test_button.isEnabled()
+    reply.finished.emit()
+    assert message in dialog.test_status.text()
+    assert dialog.test_button.isEnabled()
+    assert not (Config.get_config_dir() / "token").exists()
+
+
+def test_test_token_without_any_token_asks_for_one(qtbot) -> None:
+    dialog = TokenDialog()
+    qtbot.addWidget(dialog)
+    network = FakeNetwork(FakeReply(200))
+    dialog._network = network
+    dialog.test_button.click()
+    assert network.requests == []
+    assert "Paste a token" in dialog.test_status.text()
+
+
+def test_closing_aborts_a_running_token_test(qtbot) -> None:
+    dialog = TokenDialog()
+    qtbot.addWidget(dialog)
+    reply = FakeReply(200)
+    dialog._network = FakeNetwork(reply)
+    dialog.token.setText("pasted")
+    dialog.test_button.click()
+    dialog.reject()
+    assert reply.aborted
