@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import stat
 import threading
 import uuid
 from collections.abc import Callable
@@ -198,14 +199,19 @@ class _LibraryWatchWorker(QObject):
         for path in iter_pdf_paths(self.root, self._recursive):
             if path.name.startswith("."):
                 continue
-            if not path.resolve().is_relative_to(self.root):
-                # A symbolic link to a file outside the root is not part of
-                # the library, as in PdfWatcher._changed_pdf_paths.
-                continue
             try:
-                snapshot = FileSnapshot.from_path(path)
+                file_stat = path.lstat()
+                if stat.S_ISLNK(file_stat.st_mode):
+                    # A symbolic link to a file outside the root is not part
+                    # of the library, as in PdfWatcher._changed_pdf_paths.
+                    # Other entries need no resolve(): the root is resolved
+                    # and iter_pdf_paths never enters symlinked directories.
+                    if not path.resolve().is_relative_to(self.root):
+                        continue
+                    file_stat = path.stat()
             except FileNotFoundError:
                 continue
+            snapshot = FileSnapshot.from_stat(path, file_stat)
             if snapshot.device == 0 or snapshot.inode == 0:
                 raise RuntimeError("stable filesystem identity unavailable")
             snapshots.append(snapshot)

@@ -17,6 +17,9 @@
 - Equivalent Unicode filename spellings retain catalog identity when they refer
   to one directory entry. Distinct files and hardlinks remain separate.
 - The AI CSV prompt requires exact identifiers and forbids invented bibcodes.
+- The window stays idle after a job finishes. On macOS, the native job progress
+  bar kept redrawing while hidden. Watched-folder checks examine each PDF with
+  fewer filesystem calls.
 
 - About ADSfolio shows the version, copyright, license links, and installation type.
   App details can be copied for bug reports.

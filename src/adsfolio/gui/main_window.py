@@ -39,6 +39,7 @@ from PySide6.QtWidgets import (
     QProgressBar,
     QPushButton,
     QSplitter,
+    QStyleFactory,
     QToolBar,
     QToolButton,
     QTreeView,
@@ -408,6 +409,12 @@ class MainWindow(QMainWindow):
         self._last_link_activation: tuple[str, float] | None = None
         self.status = self.statusBar()
         self.job_progress = QProgressBar(self)
+        # The native macOS style animates indeterminate bars with a shared
+        # AppKit indicator that keeps redrawing after the bar is hidden.
+        # Fusion animates only while the bar is visible.
+        progress_style = QStyleFactory.create("Fusion")
+        progress_style.setParent(self.job_progress)
+        self.job_progress.setStyle(progress_style)
         self.job_progress.setRange(0, 0)
         self.job_progress.setTextVisible(False)
         self.job_progress.setFixedWidth(96)

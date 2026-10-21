@@ -451,7 +451,7 @@ def test_scan_failure_is_reported_and_not_reconciled(monkeypatch, tmp_path):
     def deny(path):
         raise PermissionError("denied")
 
-    monkeypatch.setattr(watch_module.FileSnapshot, "from_path", staticmethod(deny))
+    monkeypatch.setattr(watch_module.Path, "lstat", deny)
 
     worker._reconcile()
 
