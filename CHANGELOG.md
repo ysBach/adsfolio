@@ -1,5 +1,25 @@
 # Changelog
 
+## Unreleased
+
+### Documentation
+
+- **Documentation menu.** Before: the website listed 11 pages in one flat menu,
+  and the CLI tutorials were separate from "CLI and Python workflows". Now: the
+  menu has four groups: Desktop app, CLI and Python, API reference, and
+  Project. "CLI and Python workflows" lists Tutorials 1 to 7 in order. The
+  query-to-document example is Tutorial 7. API reference holds the Python API,
+  the CLI reference, and the CV settings reference. All page addresses stay
+  the same.
+
+### Fixed
+
+- **Release checksums.** Before: a release could omit `adsfolio-packages.sha256`,
+  and `SHA256SUMS.txt` then had no lines for the wheel and the sdist. Version
+  0.5.0 had this problem. Now: the release workflow downloads the release
+  package files and stops if a checksum file is missing. The 0.5.0 release now
+  has the missing file and the complete `SHA256SUMS.txt`.
+
 ## 0.5.0 (2026-10-22)
 
 ### New

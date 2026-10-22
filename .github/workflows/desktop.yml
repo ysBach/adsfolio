@@ -210,7 +210,9 @@ jobs:
           "
       - uses: actions/upload-artifact@v6
         with:
-          name: python-distributions
+          # The reusable checks workflow also uploads "python-distributions"
+          # (without checksums) in this run, so this name must differ.
+          name: release-python-distributions
           path: |
             dist/*
           if-no-files-found: error
@@ -225,7 +227,12 @@ jobs:
       - uses: actions/checkout@v5
       - uses: actions/download-artifact@v7
         with:
+          pattern: adsfolio-*
           path: release-artifacts
+      - uses: actions/download-artifact@v7
+        with:
+          name: release-python-distributions
+          path: release-artifacts/release-python-distributions
       - name: Stage release assets, check duplicates, and verify checksums
         run: |
           python3 - <<'PY'
@@ -247,6 +254,16 @@ jobs:
                       sys.exit(f"Error: Duplicate asset filename detected: {name} (from {file_path} and {seen[name]})")
                   seen[name] = file_path
                   shutil.copy2(file_path, dest / name)
+
+          expected = [
+              "adsfolio-packages.sha256",
+              *(f"adsfolio-{p}.sha256" for p in (
+                  "linux-x86_64", "macos-arm64", "macos-x86_64", "windows-x86_64"
+              )),
+          ]
+          missing = [name for name in expected if not (dest / name).is_file()]
+          if missing:
+              sys.exit(f"Error: missing checksum files: {', '.join(missing)}")
 
           # Combine all .sha256 files into SHA256SUMS.txt
           sha_lines = [
