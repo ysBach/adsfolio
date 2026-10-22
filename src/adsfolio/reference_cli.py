@@ -11,8 +11,9 @@ from typing import TextIO
 
 import click
 
+from .config import Config
 from .pdf.catalog import PdfCatalog
-from .references import LocalReferences, parse_bibtex
+from .references import CitationKeyError, LocalReferences, parse_bibtex
 
 
 @contextmanager
@@ -21,12 +22,31 @@ def _open_library(ctx: click.Context) -> Iterator[LocalReferences]:
     catalog = None
     try:
         catalog = PdfCatalog(ctx.obj.get("reference_catalog"))
-        yield LocalReferences(catalog)
+        yield LocalReferences(catalog, Config.load_key_policy())
+    except CitationKeyError as exc:
+        raise click.ClickException(_key_problem_report(exc)) from exc
     except (ValueError, OSError, sqlite3.Error) as exc:
         raise click.ClickException(str(exc)) from exc
     finally:
         if catalog is not None:
             catalog.close()
+
+
+def _key_problem_report(error: CitationKeyError) -> str:
+    """List the papers that need a key, and the command that sets one."""
+    lines = [str(error)]
+
+    def describe(document_id: int) -> str:
+        fields = error.references[document_id]["fields"]
+        title = fields.get("title", "Untitled")
+        return f"  {document_id}: {fields.get('year', '?')} {title}"
+
+    for document_id in error.assignment.missing:
+        lines.append(describe(document_id) + "  (no key)")
+    for key, ids in sorted(error.assignment.clashes.items()):
+        lines.extend(describe(document_id) + f"  (shares {key})" for document_id in ids)
+    lines.append("Set a key with: adsfolio reference set-key ID KEY")
+    return "\n".join(lines)
 
 
 def _parse_fields(values: tuple[str, ...]) -> dict[str, str]:
@@ -215,6 +235,22 @@ def export_references(
             ) as stream:
                 stream.write(text)
             click.echo(f"Exported bibliography to {output}.", err=True)
+
+
+@reference_group.command("set-key")
+@click.argument("document_id", type=int)
+@click.argument("key", default="")
+@click.pass_context
+def set_reference_key(ctx: click.Context, document_id: int, key: str) -> None:
+    """Set the citation key of one reference. Leave KEY out to remove it.
+
+    The key wins over the key style in the settings. To see reference IDs,
+    run ``adsfolio reference list``.
+    """
+    with _open_library(ctx) as library:
+        library.set_cite_key(document_id, key)
+        current = library.get(document_id)["cite_key"]
+    click.echo(f"Reference {document_id} uses the key {current or '(none)'}.")
 
 
 @reference_group.command("attach")

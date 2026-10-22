@@ -57,10 +57,16 @@ from ..pdf.registry import CentralPdfRegistryState, LibraryRefresh, PdfRegistry
 from ..pdf.rename_settings import RenameSettings
 from ..pdf.watch_session import WatchEvent, WatchOutcome, WatchState
 from ..pdf.watcher import WatchIdentifyPolicy
+from ..references import LocalReferences
 from .about import AboutDialog
 from .ads_library_dialog import AdsLibraryDialog
 from .ads_library_export_dialog import ExportAdsLibraryDialog
 from .appearance import AppearanceDialog
+from .bibtex_export import (
+    document_ids_of,
+    export_bibtex_asking_keys,
+    save_bibtex_file,
+)
 from .citation_styles import CitationStylesDialog
 from .config import RootEntry, load_config, save_config
 from .cv_dialog import CVDialog
@@ -524,6 +530,14 @@ class MainWindow(QMainWindow):
         self.export_selected_action.triggered.connect(
             lambda: self._export_selected_papers()
         )
+        self.export_bibtex_action = QAction("Export Selected as BibTeX…", self)
+        self.export_bibtex_action.setToolTip(
+            "Write the selected papers to a .bib file, ADS papers and papers "
+            "outside ADS together, with the citation keys from Settings"
+        )
+        self.export_bibtex_action.triggered.connect(
+            lambda: self._save_records_bibtex(self._selected_records())
+        )
         self.citation_styles_action = QAction("Custom Citation Styles…", self)
         self.identify_action = QAction("Identify…", self)
         self.identify_action.setShortcut("Ctrl+Shift+I")
@@ -583,6 +597,7 @@ class MainWindow(QMainWindow):
         tools.addAction(self.profile_action)
         tools.addAction(self.cv_action)
         tools.addAction(self.export_selected_action)
+        tools.addAction(self.export_bibtex_action)
         tools.addAction(self.citation_styles_action)
         tools.addSeparator()
         tools.addAction(self.merge_annotations_action)
@@ -1587,10 +1602,11 @@ class MainWindow(QMainWindow):
     def _sync_export_action(self) -> None:
         """Enable Export Selected Papers only while rows are selected."""
         if hasattr(self, "export_selected_action"):
-            self.export_selected_action.setEnabled(
-                self.current_root is not None
-                and bool(self.table.selectionModel().selectedRows())
+            enabled = self.current_root is not None and bool(
+                self.table.selectionModel().selectedRows()
             )
+            self.export_selected_action.setEnabled(enabled)
+            self.export_bibtex_action.setEnabled(enabled)
 
     def _open_index(self, index: QModelIndex) -> None:
         if QApplication.keyboardModifiers() != Qt.NoModifier:
@@ -1891,6 +1907,29 @@ class MainWindow(QMainWindow):
             "Export Selected Papers…" if count > 1 else "Export Paper as List…",
             lambda: self._export_selected_papers(records),
         )
+        with_details = document_ids_of(records)
+        for label, handler in (
+            ("Copy BibTeX", self._copy_records_bibtex),
+            ("Export BibTeX…", self._save_records_bibtex),
+        ):
+            action = menu.addAction(
+                label
+                if count == 1
+                else f"{label.removesuffix('…')} of {count} Papers"
+                + ("…" if label.endswith("…") else ""),
+                lambda handler=handler: handler(records),
+            )
+            action.setEnabled(bool(with_details))
+            if not with_details:
+                action.setToolTip(
+                    "Identify the PDF first, or use Update and Rename Selected "
+                    "by Identifier… with its DOI or arXiv ID."
+                )
+            elif len(with_details) < count:
+                action.setToolTip(
+                    f"{count - len(with_details)} selected PDFs have no paper "
+                    "details yet and are left out."
+                )
         menu.addSeparator()
         menu.addAction(self.appearance_action)
         menu.exec(self.table.viewport().mapToGlobal(position))
@@ -1967,6 +2006,45 @@ class MainWindow(QMainWindow):
         """Restore the declaration order of table columns."""
         self.config.table_column_order = [column.key for column in self.columns]
         self._apply_table_layout()
+
+    def _records_bibtex(self, records: Sequence[dict[str, Any]]) -> str | None:
+        """Return BibTeX for table records, asking for citation keys if needed."""
+        ids = document_ids_of(records)
+        if not ids or self.current_root is None:
+            self.status.showMessage(
+                "The selected PDFs have no paper details yet. Identify them first.",
+                8000,
+            )
+            return None
+        catalog = self.registries[str(self.current_root)].catalog
+        service = LocalReferences(catalog, Config.load_key_policy())
+        try:
+            return export_bibtex_asking_keys(self, service, ids)
+        except (ValueError, sqlite3.Error) as exc:
+            QMessageBox.warning(self, "BibTeX export", str(exc))
+            return None
+
+    def _copy_records_bibtex(self, records: Sequence[dict[str, Any]]) -> None:
+        """Copy the BibTeX of the selected papers to the clipboard."""
+        text = self._records_bibtex(records)
+        if text is not None:
+            self._copy_text(text)
+            self.status.showMessage(
+                f"Copied BibTeX for {len(document_ids_of(records))} papers.", 5000
+            )
+
+    def _save_records_bibtex(self, records: Sequence[dict[str, Any]]) -> None:
+        """Write the BibTeX of the selected papers to a .bib file."""
+        text = self._records_bibtex(records)
+        if text is None:
+            return
+        try:
+            filename = save_bibtex_file(self, text, "Export BibTeX")
+        except OSError as exc:
+            QMessageBox.warning(self, "BibTeX export", str(exc))
+            return
+        if filename:
+            self.status.showMessage(f"Exported BibTeX to {filename}.", 8000)
 
     def _copy_text(self, text: str) -> None:
         QApplication.clipboard().setText(text)

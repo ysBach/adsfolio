@@ -8,7 +8,7 @@ from functools import partial
 from pathlib import Path
 from typing import Any
 
-from PySide6.QtCore import QIODevice, QSaveFile, Qt, Signal
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -28,8 +28,10 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from ..config import Config
 from ..pdf.catalog import PdfCatalog
 from ..references import LocalReferences, parse_bibtex
+from .bibtex_export import export_bibtex_asking_keys, save_bibtex_file
 
 _REFERENCE_ERRORS = (ValueError, OSError, sqlite3.Error)
 _EDITOR_FIELDS = (
@@ -249,7 +251,7 @@ class ReferencesDialog(QDialog):
         super().__init__(parent)
         self._owns_catalog = catalog is None
         self._catalog = catalog if catalog is not None else PdfCatalog()
-        self._service = LocalReferences(self._catalog)
+        self._service = LocalReferences(self._catalog, Config.load_key_policy())
         self._catalog_closed = False
         self.setWindowTitle("Local References")
         layout = QVBoxLayout(self)
@@ -390,9 +392,12 @@ class ReferencesDialog(QDialog):
         if not selected:
             return
         try:
-            text = self._service.export_bibtex(selected)
+            text = export_bibtex_asking_keys(self, self._service, selected)
         except _REFERENCE_ERRORS as error:
             self.status_label.setText(str(error))
+            return
+        self.refresh(selected)
+        if text is None:
             return
         QApplication.clipboard().setText(text)
         self.status_label.setText(f"Copied {len(selected)} reference(s).")
@@ -403,30 +408,20 @@ class ReferencesDialog(QDialog):
         if not selected:
             return
         try:
-            text = self._service.export_bibtex(selected)
-        except _REFERENCE_ERRORS as error:
+            text = export_bibtex_asking_keys(self, self._service, selected)
+            self.refresh(selected)
+            filename = (
+                None
+                if text is None
+                else save_bibtex_file(self, text, "Export selected references")
+            )
+        except (*_REFERENCE_ERRORS, OSError) as error:
             self.status_label.setText(str(error))
             return
-        filename, _ = QFileDialog.getSaveFileName(
-            self, "Export selected references", "references.bib", "BibTeX (*.bib)"
-        )
-        if not filename:
-            return
-        output = QSaveFile(filename)
-        payload = text.encode("utf-8")
-        if not output.open(QIODevice.WriteOnly):
-            self.status_label.setText(output.errorString())
-            return
-        if output.write(payload) != len(payload):
-            self.status_label.setText(output.errorString())
-            output.cancelWriting()
-            return
-        if not output.commit():
-            self.status_label.setText(output.errorString())
-            return
-        self.status_label.setText(
-            f"Exported {len(selected)} reference(s) to {filename}."
-        )
+        if filename:
+            self.status_label.setText(
+                f"Exported {len(selected)} reference(s) to {filename}."
+            )
 
     def _release_catalog(self) -> None:
         """Close only catalog connections created by this dialog."""

@@ -21,8 +21,10 @@ from bibtexparser.bparser import BibTexParser
 from bibtexparser.bwriter import BibTexWriter
 from pyparsing import ParseBaseException
 
+from .citekeys import KeyAssignment, KeyPolicy, assign_keys, citation_key
 from .formatting import html_to_latex
 from .pdf.catalog import (
+    CITE_KEY_METADATA_KEY,
     LOCKED_METADATA_FIELDS_KEY,
     REFERENCE_FIELD_MAP,
     REFERENCE_METADATA_KEY,
@@ -126,8 +128,51 @@ def parse_bibtex(text: str) -> list[dict[str, Any]]:
     return result
 
 
-def _reference_from_document(document: Mapping[str, Any]) -> dict[str, Any]:
-    """Adapt stored ADS metadata while preserving explicit local BibTeX fields."""
+class CitationKeyError(ValueError):
+    """Export stopped because papers have no key or share a key.
+
+    Attributes
+    ----------
+    assignment : `KeyAssignment`
+        Keys found, papers without a key, and shared keys.
+    references : dict
+        The selected references by document ID, for display.
+    """
+
+    def __init__(
+        self, assignment: KeyAssignment, references: Mapping[int, Mapping[str, Any]]
+    ) -> None:
+        self.assignment = assignment
+        self.references = dict(references)
+        parts = []
+        if assignment.missing:
+            parts.append(f"{len(assignment.missing)} without a citation key")
+        if assignment.clashes:
+            shared = ", ".join(sorted(assignment.clashes))
+            parts.append(f"duplicate citation keys ({shared})")
+        super().__init__(
+            "Selected references need citation keys: "
+            + "; ".join(parts)
+            + ". Type a key for each one before export."
+        )
+
+
+def _own_key(metadata: Mapping[str, Any]) -> str:
+    """Return the key that the user typed or imported, or ``""``."""
+    reference = metadata.get(REFERENCE_METADATA_KEY)
+    if isinstance(reference, Mapping) and reference.get("cite_key"):
+        return str(reference["cite_key"])
+    return str(metadata.get(CITE_KEY_METADATA_KEY) or "")
+
+
+def _reference_from_document(
+    document: Mapping[str, Any], policy: KeyPolicy | None = None
+) -> dict[str, Any]:
+    """Adapt stored ADS metadata while preserving explicit local BibTeX fields.
+
+    The citation key is the paper's own key, or else the key that `policy`
+    makes. It is ``""`` when neither gives one.
+    """
     metadata = document["metadata"]
     reference = metadata.get(REFERENCE_METADATA_KEY)
     if reference is not None:
@@ -152,7 +197,11 @@ def _reference_from_document(document: Mapping[str, Any]) -> dict[str, Any]:
     return {
         "id": document["id"],
         "bibcode": document["bibcode"],
-        "cite_key": document["bibcode"] or f"reference{document['id']}",
+        "cite_key": citation_key(
+            {**metadata, "bibcode": document["bibcode"]},
+            policy or KeyPolicy(),
+            own_key=_own_key(metadata),
+        ),
         "entry_type": "article" if fields.get("journal") else "misc",
         "fields": fields,
         "source": "ads",
@@ -218,8 +267,9 @@ class LocalReferences:
     IDs; no operation merges records or contacts ADS automatically.
     """
 
-    def __init__(self, catalog: PdfCatalog) -> None:
+    def __init__(self, catalog: PdfCatalog, policy: KeyPolicy | None = None) -> None:
         self.catalog = catalog
+        self.policy = policy or KeyPolicy()
 
     def list(self) -> list[dict[str, Any]]:
         """Return references and their known PDF locations, including missing files."""
@@ -228,7 +278,7 @@ class LocalReferences:
             attachments.setdefault(record["document_id"], []).append(record)
         return [
             {
-                **_reference_from_document(document),
+                **_reference_from_document(document, self.policy),
                 "attachments": attachments.get(document["id"], []),
             }
             for document in self.catalog.list_documents()
@@ -240,7 +290,7 @@ class LocalReferences:
         if document is None:
             raise ValueError(f"Unknown reference ID: {document_id}")
         return {
-            **_reference_from_document(document),
+            **_reference_from_document(document, self.policy),
             "attachments": self.catalog.query_files(
                 document_id=document_id, include_missing=True
             ),
@@ -307,7 +357,7 @@ class LocalReferences:
         document = self.catalog.get_document(document_id)
         if document is None:
             raise ValueError(f"Unknown reference ID: {document_id}")
-        reference = _reference_from_document(document)
+        reference = _reference_from_document(document, self.policy)
         validated = _validated_entry(
             reference["cite_key"] if cite_key is None else cite_key,
             reference["entry_type"] if entry_type is None else entry_type,
@@ -330,6 +380,30 @@ class LocalReferences:
             ]
         )
         return self.get(document_id)
+
+    def set_cite_key(self, document_id: int, key: str) -> None:
+        """Save the citation key that the user typed for one reference.
+
+        A local reference stores the key in its BibTeX entry. Another paper
+        stores it as its own key, which wins over the key style. An empty key
+        removes the own key of a paper that is not a local reference.
+
+        Raises
+        ------
+        ValueError
+            If the reference is unknown, or the key holds characters that
+            BibTeX rejects.
+        """
+        document = self.catalog.get_document(document_id)
+        if document is None:
+            raise ValueError(f"Unknown reference ID: {document_id}")
+        key = key.strip()
+        if REFERENCE_METADATA_KEY in document["metadata"]:
+            self.update(document_id, cite_key=key)
+            return
+        if key:
+            _validated_entry(key, "misc", {})
+        self.catalog.set_document_cite_key(document_id, key)
 
     def export_bibtex(self, document_ids: Sequence[int]) -> str:
         """Export selected records offline, including required crossref parents.
@@ -370,11 +444,12 @@ class LocalReferences:
         for document_id in document_ids:
             include(document_id)
         ordered = list(selected.values())
+        assignment = assign_keys(
+            ((item["id"], {}, item["cite_key"]) for item in ordered), self.policy
+        )
+        if not assignment.complete:
+            raise CitationKeyError(assignment, selected)
         positions = {item["cite_key"]: index for index, item in enumerate(ordered)}
-        if len(positions) != len(ordered):
-            raise ValueError(
-                "Selected references have duplicate citation keys; edit the keys before export"
-            )
         pending_children = [0] * len(ordered)
         for item in ordered:
             parent = item["fields"].get("crossref")

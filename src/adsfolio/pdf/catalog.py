@@ -45,6 +45,8 @@ CATALOG_SCHEMA_VERSION = 3
 LEGACY_REGISTRY_FILENAME = ".adsfolio-pdfs.sqlite"
 LOCKED_METADATA_FIELDS_KEY = "_adsfolio_locked_fields"
 REFERENCE_METADATA_KEY = "_adsfolio_reference"
+# A citation key that the user typed for a paper that is not a local reference.
+CITE_KEY_METADATA_KEY = "_adsfolio_cite_key"
 REFERENCE_FIELD_MAP = {
     "title": "title",
     "author": "author",
@@ -391,6 +393,37 @@ class PdfCatalog:
             "bibcode": row["bibcode"],
             "metadata": json.loads(row["metadata_json"]),
         }
+
+    def set_document_cite_key(self, document_id: int, key: str) -> None:
+        """Save or clear the typed citation key of one document.
+
+        Parameters
+        ----------
+        document_id : `int`
+            Catalog document ID.
+        key : `str`
+            The key. An empty string removes the typed key.
+
+        Raises
+        ------
+        ValueError
+            If `document_id` is unknown.
+        """
+        with self._connection:
+            row = self._connection.execute(
+                "SELECT metadata_json FROM documents WHERE id = ?", (document_id,)
+            ).fetchone()
+            if row is None:
+                raise ValueError(f"Unknown reference ID: {document_id}")
+            metadata = json.loads(row["metadata_json"] or "{}")
+            if key:
+                metadata[CITE_KEY_METADATA_KEY] = key
+            else:
+                metadata.pop(CITE_KEY_METADATA_KEY, None)
+            self._connection.execute(
+                "UPDATE documents SET metadata_json = ?, updated_at = ? WHERE id = ?",
+                (self._encode_json(metadata), self._utc_timestamp(), document_id),
+            )
 
     def list_documents(self) -> list[dict[str, Any]]:
         """Return canonical documents, including references without PDFs."""
