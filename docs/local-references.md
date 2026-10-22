@@ -1,4 +1,4 @@
-# Local references
+# My paper is not on ADS
 
 Open **File → Local References…** to add a reference that ADS does not index.
 You can save a citation without a PDF, DOI, or ADS token.

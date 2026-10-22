@@ -11,7 +11,7 @@ Usage::
 
 Outputs, relative to ``docs/_static``:
 
-- ``app-overview.png`` and ``welcome.png`` (README and website)
+- ``app-overview.png`` (README, website) and ``welcome.png`` (website, docs)
 - ``tutorial/*.png`` (dialog screenshots for the guides)
 - ``tutorial/first-run.mp4`` and ``tutorial/workflows.mp4`` (captioned
   walkthroughs; need ``ffmpeg``)

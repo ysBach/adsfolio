@@ -4,7 +4,7 @@ This tutorial covers `adsfolio export` output formats and BibTeX workflows.
 
 For references outside ADS, use `adsfolio reference import` and `adsfolio reference
 export`. These local commands can combine imported citations and cataloged ADS
-documents in one bibliography. See [Local references](../local-references.md).
+documents in one bibliography. See [My paper is not on ADS](../local-references.md).
 
 ## 0) Start with `--help`
 

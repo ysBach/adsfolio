@@ -108,7 +108,7 @@ file verification is pending. Inspect the status tooltip for the reason.
 
 You can rename papers with sufficient metadata without an ADS bibcode.
 Use **File → Local References…** for manual entries or BibTeX imports.
-See [Local references](local-references.md).
+See [My paper is not on ADS](local-references.md).
 
 ## Keep the library current
 

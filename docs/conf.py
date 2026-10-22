@@ -103,6 +103,9 @@ html_theme = "sphinx_rtd_theme"
 # the Python API page.
 html_theme_options = {"navigation_depth": 1, "titles_only": True}
 html_static_path = ["_static"]
+# Fold the menu groups; "Desktop app" and the current page's group stay open.
+html_js_files = ["nav-groups.js"]
+html_css_files = ["nav-groups.css"]
 html_logo = "_static/adsfolio.svg"
 html_favicon = "_static/adsfolio.svg"
 

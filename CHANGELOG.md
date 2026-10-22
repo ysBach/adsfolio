@@ -7,8 +7,15 @@
 - **Page names.** Before: the first pages were "Start with your PDF library",
   "Three everyday workflows", "Application guide", and "References outside
   ADS". Now: they are "Getting started", "Daily workflows", "App GUI guide",
-  and "Local references". "Local references" matches the app menu item
+  and "My paper is not on ADS". That page starts with the app menu item
   **File → Local References…**.
+- **Short README.** Before: the README had 122 lines and repeated the install,
+  first-use, and update steps from the docs. Now: it has 47 lines with the
+  three install commands, the daily workflows, and links to the docs. It has no
+  version numbers, so a release needs no README edits.
+- **Foldable menu.** Before: the documentation menu showed all four groups
+  open. Now: only "Desktop app" and the group of the current page start open.
+  Click a group name to fold or unfold it. The browser remembers your choice.
 - **Install steps.** Before: "Installation and desktop builds" mixed app
   installation with 150 lines of build details for maintainers. Now: "Getting
   started" opens with a short Install section. The build details are in

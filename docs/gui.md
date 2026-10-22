@@ -117,7 +117,7 @@ and press **F5**.
 For citations without ADS records or PDFs, use **File → Local References…**.
 That window imports BibTeX, accepts manual entries, links optional PDFs, and
 exports ADS and external references together. It is independent of the selected
-PDF root. See [Local references](local-references.md) for the complete flow.
+PDF root. See [My paper is not on ADS](local-references.md) for the complete flow.
 
 The sidebar groups records by **ADS linked** and **Needs ADS lookup**.
 These groups use the catalog's saved link status. A stored bibcode can exist
