@@ -34,19 +34,9 @@ for example `\cite{2024DEMO....1....1R}`.
 
 ![Export ADS Library window with BibTeX selected](_static/tutorial/export-ads-library.png)
 
-The export is a snapshot. Export again after you add papers. To keep the file
-current automatically, run the library watcher in a terminal:
-
-```bash
-adsfolio library list                      # find the library ID
-adsfolio library watch LIBRARY_ID -o references.bib -n 0 -t 60
-```
-
-`-n 0` repeats until you stop it, and `-t 60` checks the library every 60
-seconds. The watcher writes `references.bib` when it starts and again each
-time the library changes. Point `-o` at a folder that your LaTeX project reads, for example a
-folder that you sync with Overleaf. See
-[Tutorial 3: library workflows](cli-tutorials/03-library-workflows.md).
+The export is a snapshot. Export again after you add papers. To update the
+file automatically while you write, use the command-line library watcher. See
+[Tutorial 3, step 4](cli-tutorials/03-library-workflows.md#4-watch-library-and-auto-refresh-bibtex).
 
 ## Watch a folder and rename new papers
 
@@ -68,8 +58,8 @@ Renames use the saved settings from the **Rename** window. Set the filename
 template there first, and check it with **Preview**. The watcher processes
 only PDFs that arrive after watching starts. Existing PDFs stay unchanged. A ``●``
 beside the library name shows an active watcher. See
-[Watching library roots](gui.md#watching-library-roots) for details. In a
-terminal, `adsfolio pdf watch` does the same work.
+[Watching library roots](gui.md#watching-library-roots) for details. For the
+command line, see [Tutorial 4, step 4](cli-tutorials/04-pdf-workflows.md#4-watch-a-folder-for-new-pdfs).
 
 ## Make your CV from your publications
 
@@ -99,8 +89,9 @@ This entry template makes one LaTeX line per paper:
 \item {authors} ({year}) ``{title},'' \textit{{venue}}. \href{{url}}{\texttt{{bibcode}}}
 ```
 
-The settings live in `cv.yaml`. `adsfolio cv generate` reads the same file, so
-a script can make the CV again. See the [CV reference](cv.md) for every option.
+The window keeps its settings in `cv.yaml`. See the [CV reference](cv.md) for
+every option, and [Tutorial 6](cli-tutorials/06-cv-workflows.md) to make the CV
+from a script.
 
 ### A list of any papers, without ADS
 

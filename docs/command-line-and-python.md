@@ -31,6 +31,7 @@ git clone https://github.com/ysBach/adsfolio.git
 cd adsfolio
 uv sync --all-extras
 uv run adsfolio --help
+uv run adsfolio-gui      # the desktop app from this checkout
 ```
 
 `uv sync` creates the project's `.venv`. Do not synchronize a shared environment.

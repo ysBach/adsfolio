@@ -69,6 +69,10 @@ Notes:
 
 - `--num-iter 0` means run indefinitely.
 - To stop the watch, press `Ctrl+C`.
+- The watcher writes the output file when it starts and again each time the
+  library changes.
+- Point `--output` at a folder that your LaTeX project reads, for example a
+  folder that you sync with Overleaf.
 
 ## 5) Add style and extra BibTeX content during watch
 

@@ -9,6 +9,11 @@
   ADS". Now: they are "Getting started", "Daily workflows", "App GUI guide",
   and "My paper is not on ADS". That page starts with the app menu item
   **File → Local References…**.
+- **App pages without terminal commands.** Before: "My paper is not on ADS",
+  "Daily workflows", and the App GUI guide mixed app steps with CLI commands.
+  Now: these pages describe the app. "My paper is not on ADS" starts with two
+  cases: a PDF with a DOI, and a paper without a DOI or a PDF. The CLI commands
+  are in Tutorial 2 (step 8), Tutorial 3, Tutorial 4, and "CLI and Python".
 - **Short README.** Before: the README had 122 lines and repeated the install,
   first-use, and update steps from the docs. Now: it has 47 lines with the
   three install commands, the daily workflows, and links to the docs. It has no

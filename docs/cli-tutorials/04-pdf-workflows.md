@@ -164,6 +164,18 @@ Personal identity and publication-year bounds are global profile data. You confi
 them with `adsfolio set` or **Tools → My Publication Profile…**. They are not
 library-scoped Identify behavior.
 
+For a paper that ADS does not index, choose DOI providers and their order. This
+example does not use ADS or need an ADS token:
+
+```bash
+adsfolio pdf identify /path/to/papers --provider crossref --provider datacite
+adsfolio pdf rename /path/to/papers
+```
+
+DOI lookup fills missing metadata and records its provider and file digest.
+Existing metadata, manual edits, and catalog history remain intact. See
+[My paper is not on ADS](../local-references.md) for the desktop steps.
+
 The default Identify scope is `global`. For values stored with the current library,
 use `--settings-scope library`. Explicit options override the selected settings for
 one run without mutating them:

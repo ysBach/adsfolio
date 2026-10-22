@@ -2,9 +2,7 @@
 
 This tutorial covers `adsfolio export` output formats and BibTeX workflows.
 
-For references outside ADS, use `adsfolio reference import` and `adsfolio reference
-export`. These local commands can combine imported citations and cataloged ADS
-documents in one bibliography. See [My paper is not on ADS](../local-references.md).
+For references outside ADS, see [step 8](#8-references-outside-ads).
 
 ## 0) Start with `--help`
 
@@ -85,6 +83,65 @@ adsfolio export '2024A&A...684A..80B' --journal iso4
 adsfolio search "author:Einstein" --rows 5
 adsfolio export <bibcode1> <bibcode2> --output refs.bib
 ```
+
+## 8) References outside ADS
+
+`adsfolio reference` keeps references that ADS does not index, such as a book,
+a thesis, or a Google Scholar citation. It can export them together with
+cataloged ADS documents in one bibliography. The commands use the same central
+catalog as the desktop app. They do not contact ADS or need a token. For the
+desktop steps, see [My paper is not on ADS](../local-references.md).
+
+```bash
+# Inspect parsed entries without saving references.
+adsfolio reference import scholar.bib --preview
+
+# Import BibTeX; the command prints each new local ID and citation key.
+adsfolio reference import scholar.bib --source google-scholar
+
+# Save a manual reference without a PDF.
+adsfolio reference add --key Smith2025Report --type techreport \
+  --field 'title=Observing log' --field 'author=Smith, A.' \
+  --field 'year=2025' --field 'institution=Example Observatory'
+
+# Inspect local IDs and complete metadata.
+adsfolio reference list --json
+```
+
+Later commands use the IDs that `reference list` prints. Here `12` and `19` are
+example local IDs, not ADS bibcodes or citation keys.
+
+```bash
+# Change one field; other fields remain intact.
+adsfolio reference edit 12 --field 'title=Corrected observing log'
+
+# Link an existing PDF without moving it.
+adsfolio reference attach 12 /path/to/report.pdf
+
+# Export ADS and external references together, in the requested order.
+adsfolio reference export 12 19 -o manuscript.bib
+
+# Export the entire local bibliography.
+adsfolio reference export --all -o references.bib
+```
+
+- Omit `-o` to write BibTeX to standard output.
+- `reference import -` reads BibTeX from standard input.
+- `reference edit 12 --remove-field url` removes a field.
+- An explicit `--key` changes a citation key. Then update your LaTeX citations
+  yourself.
+
+For experiments, use a separate catalog:
+
+```bash
+adsfolio reference --catalog ./scratch.sqlite import scholar.bib
+adsfolio reference --catalog ./scratch.sqlite export --all -o scratch.bib
+```
+
+`adsfolio pdf export` backs up file-oriented state. It does not restore local
+reference identities, even when a reference has a PDF, and it does not include
+standalone references. For a portable bibliography copy, use
+`adsfolio reference export --all -o references.bib`.
 
 ## Next
 

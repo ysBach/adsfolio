@@ -3,14 +3,8 @@
 [Install ADSfolio](getting-started.md#install), then open it from your applications.
 The download includes Python and the application dependencies.
 ADSfolio provides a graphical desktop application to browse, catalog,
-and organize scientific PDF libraries.
-
-For a development checkout, run:
-
-```sh
-uv sync --all-extras
-uv run adsfolio-gui
-```
+and organize scientific PDF libraries. To run it from a source checkout, see
+[CLI and Python](command-line-and-python.md#from-source).
 
 Startup does not require an ADS token. You can browse and edit local libraries
 offline. ADS operations request a token when needed.
@@ -312,8 +306,8 @@ First-authored and Co-authored sections** controls the two sections. Disable it
 for one list in the original order.
 
 ADS lookups need a token. The window stores its settings in `cv.yaml` in the
-ADSfolio configuration folder. `adsfolio cv generate` reads the same file, so
-a terminal or script can repeat the run. **Save Settings As…** copies the
+ADSfolio configuration folder. A script can repeat the run with the same file:
+see [Tutorial 6](cli-tutorials/06-cv-workflows.md). **Save Settings As…** copies the
 settings to another file. See the [CV reference](cv.md) for every template
 placeholder.
 
