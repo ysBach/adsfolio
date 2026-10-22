@@ -7,7 +7,7 @@ orphan: true
 This tutorial track walks through the `adsfolio` CLI from first run to practical
 workflows, and ends with a Python script.
 
-Follow them in this order. The [CLI and Python workflows](../command-line-and-python.md#tutorials) page lists them in the sidebar too.
+Follow them in this order. The menu lists them under CLI and Python.
 
 - [Tutorial 1: Setup and first search](01-setup-and-search.md)
 - [Tutorial 2: Export and BibTeX](02-export-and-bibtex.md)

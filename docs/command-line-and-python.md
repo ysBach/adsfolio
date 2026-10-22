@@ -112,14 +112,10 @@ bibliography workflow.
 
 Follow the tutorials in order. Each one builds on the previous one.
 
-```{toctree}
-:maxdepth: 1
-
-cli-tutorials/01-setup-and-search
-cli-tutorials/02-export-and-bibtex
-cli-tutorials/03-library-workflows
-cli-tutorials/04-pdf-workflows
-cli-tutorials/05-operations-and-troubleshooting
-cli-tutorials/06-cv-workflows
-query-to-document-example
-```
+1. [Setup and first search](cli-tutorials/01-setup-and-search.md)
+2. [Export and BibTeX](cli-tutorials/02-export-and-bibtex.md)
+3. [Library workflows](cli-tutorials/03-library-workflows.md)
+4. [PDF workflows](cli-tutorials/04-pdf-workflows.md)
+5. [Operations and troubleshooting](cli-tutorials/05-operations-and-troubleshooting.md)
+6. [CV workflows](cli-tutorials/06-cv-workflows.md)
+7. [From an ADS query to a document with Python](query-to-document-example.md)

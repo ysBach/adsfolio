@@ -97,6 +97,11 @@ exclude_patterns = [
 myst_heading_anchors = 3
 
 html_theme = "sphinx_rtd_theme"
+# Show the same menu on every page: top-level page titles only, so nothing
+# expands or collapses on navigation. Section headings move to the "On this
+# page" list that add_page_contents() inserts; API module pages are listed on
+# the Python API page.
+html_theme_options = {"navigation_depth": 1, "titles_only": True}
 html_static_path = ["_static"]
 html_logo = "_static/adsfolio.svg"
 html_favicon = "_static/adsfolio.svg"
@@ -120,6 +125,36 @@ def expand_type_aliases(app: Sphinx, doctree: nodes.document) -> None:
             reference["reftarget"] = target
 
 
+PAGE_CONTENTS = "```{contents} On this page\n:local:\n:depth: 1\n```\n"
+
+
+def add_page_contents(app: Sphinx, docname: str, source: list[str]) -> None:
+    """Insert an "On this page" list after the title of multi-section pages.
+
+    The menu lists page titles only, so pages with two or more ``##``
+    sections get their own section list. Generated API pages are skipped.
+    """
+    if docname.startswith("api/"):
+        return
+    text = source[0]
+    lines = text.splitlines(keepends=True)
+    fence = False
+    sections = 0
+    title = None
+    for index, line in enumerate(lines):
+        if line.startswith(("```", "~~~")):
+            fence = not fence
+        elif not fence and line.startswith("# ") and title is None:
+            title = index
+        elif not fence and line.startswith("## "):
+            sections += 1
+    if title is None or sections < 2:
+        return
+    lines.insert(title + 1, "\n" + PAGE_CONTENTS)
+    source[0] = "".join(lines)
+
+
 def setup(app: Sphinx) -> None:
     """Register reference normalization after autodoc has generated each page."""
     app.connect("doctree-read", expand_type_aliases)
+    app.connect("source-read", add_page_contents)

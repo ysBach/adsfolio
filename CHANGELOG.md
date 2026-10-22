@@ -11,6 +11,10 @@
   query-to-document example is Tutorial 7. API reference holds the Python API,
   the CLI reference, and the CV settings reference. All page addresses stay
   the same.
+- **Stable menu.** Before: opening a page expanded its sections in the menu,
+  so the menu changed on "CLI and Python workflows". Now: every page shows the
+  same 17 menu items. Pages with several sections start with an "On this page"
+  list.
 
 ### Fixed
 

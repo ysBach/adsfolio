@@ -28,6 +28,13 @@ Where to start:
    :caption: CLI and Python
 
    command-line-and-python
+   cli-tutorials/01-setup-and-search
+   cli-tutorials/02-export-and-bibtex
+   cli-tutorials/03-library-workflows
+   cli-tutorials/04-pdf-workflows
+   cli-tutorials/05-operations-and-troubleshooting
+   cli-tutorials/06-cv-workflows
+   query-to-document-example
 
 .. toctree::
    :maxdepth: 1
