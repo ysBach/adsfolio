@@ -1995,3 +1995,9 @@ def test_library_actions_are_disabled_without_a_library(monkeypatch, qtbot):
         window.remove_action,
     ):
         assert not action.isEnabled(), action.text()
+
+
+def test_watch_menu_label_shows_its_ampersand(monkeypatch, qtbot):
+    window, _, _ = _window_factory(monkeypatch, qtbot, GuiConfig())
+    # Qt hides a single "&" as a shortcut marker; the label must escape it.
+    assert window.auto_process_action.iconText() == "Automatically Identify & Rename"

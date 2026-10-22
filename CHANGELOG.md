@@ -2,6 +2,27 @@
 
 ## Unreleased
 
+### New
+
+- **CV Generator.** Before: CV lists needed `adsfolio cv` in a terminal. Now:
+  **Tools → CV Generator…** fills your query, ORCID iD, and name from your
+  profile. It shows a live preview and saves the CV file.
+- **CV templates for any text format.** Before: CV output was LaTeX or Markdown
+  in three fixed styles. Now: `format.output: template` uses your own header,
+  section, entry, and footer text. Presets start from LaTeX, Markdown, HTML, or
+  plain text. Example: the entry `<li>{authors} ({year}). {title}</li>` with
+  `me_fmt: <b>{}</b>` gives `<li><b>Doe, J.</b> and Roe, A. (2025). Title</li>`.
+- **Workflows guide.** Before: the BibTeX export, folder watching, and CV
+  features were only in the long application guide. Now: "Three everyday
+  workflows" shows each one with steps, screenshots, and a video. The README
+  and the website link to it.
+
+### Fixed
+
+- **Watch menu label.** Before: the menu showed "Automatically Identify Rename"
+  without the ampersand. Some systems underlined the R. Now: the menu
+  shows "Automatically Identify & Rename".
+
 ### Documentation
 
 - **README screenshots.** Before: the README showed a version 0.2.1 screenshot

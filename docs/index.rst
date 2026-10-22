@@ -10,6 +10,7 @@ and connected bibliographic discovery services.
    :caption: Contents
 
    getting-started
+   workflows
    cv
    command-line-and-python
    cli-tutorials/index

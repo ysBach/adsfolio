@@ -541,7 +541,7 @@ class MainWindow(QMainWindow):
         self.export_ads_library_action = QAction("Export ADS Library…", self)
         self.watch_current_action = QAction("Watch Current Library", self)
         self.watch_on_start_action = QAction("Autowatch at Start", self)
-        self.auto_process_action = QAction("Automatically Identify & Rename", self)
+        self.auto_process_action = QAction("Automatically Identify && Rename", self)
         for action in (
             self.watch_current_action,
             self.watch_on_start_action,
@@ -1749,7 +1749,7 @@ class MainWindow(QMainWindow):
         watch_on_start.triggered.connect(
             lambda checked: self._set_root_watch_policy(root, "watch_on_start", checked)
         )
-        auto_process = menu.addAction("Automatically Identify & Rename")
+        auto_process = menu.addAction("Automatically Identify && Rename")
         auto_process.setCheckable(True)
         auto_process.setChecked(self.root_entries[str(root)].auto_process_new_pdfs)
         auto_process.triggered.connect(

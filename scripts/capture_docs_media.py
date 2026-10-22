@@ -13,7 +13,8 @@ Outputs, relative to ``docs/_static``:
 
 - ``app-overview.png`` and ``welcome.png`` (README and website)
 - ``tutorial/*.png`` (dialog screenshots for the guides)
-- ``tutorial/first-run.mp4`` (captioned walkthrough; needs ``ffmpeg``)
+- ``tutorial/first-run.mp4`` and ``tutorial/workflows.mp4`` (captioned
+  walkthroughs; need ``ffmpeg``)
 """
 
 from __future__ import annotations
@@ -122,7 +123,7 @@ class Recorder:
 
     def __init__(self, static: Path) -> None:
         self.static = static
-        self.frames: list[tuple[Any, str]] = []
+        self.videos: dict[str, list[tuple[Any, str]]] = {}
 
     def save(self, image: Any, name: str) -> None:
         """Save `image` under the static directory, or raise on failure."""
@@ -132,9 +133,9 @@ class Recorder:
             raise RuntimeError(f"Could not save {target}")
         logger.info("Saved %s", target)
 
-    def frame(self, image: Any, caption: str) -> None:
-        """Add one video frame with a caption band."""
-        self.frames.append((image, caption))
+    def frame(self, image: Any, caption: str, video: str = "first-run") -> None:
+        """Add one captioned frame to the named video."""
+        self.videos.setdefault(video, []).append((image, caption))
 
 
 def _check_size(pixmap: Any) -> Any:
@@ -143,19 +144,30 @@ def _check_size(pixmap: Any) -> Any:
     return pixmap
 
 
-def _composite(window: Any, dialog: Any | None = None, highlight: Any = None) -> Any:
-    """Draw `dialog` centered over a dimmed `window`, or ring `highlight`."""
+def _composite(
+    window: Any,
+    dialog: Any | None = None,
+    highlight: Any = None,
+    at: Any = None,
+) -> Any:
+    """Draw `dialog` over a dimmed `window`, or ring `highlight`.
+
+    `dialog` is centered unless `at` gives its top-left point in `window`.
+    """
     from PySide6.QtCore import QPoint, QRect, Qt
-    from PySide6.QtGui import QColor, QPainter, QPen
+    from PySide6.QtGui import QColor, QPainter, QPen, QPixmap
 
     image = _check_size(window.grab()).toImage()
     painter = QPainter(image)
     painter.setRenderHint(QPainter.Antialiasing)
     if dialog is not None:
         painter.fillRect(image.rect(), QColor(0, 0, 0, 70))
-        pixmap = dialog.grab()
-        x = (image.width() - pixmap.width()) // 2
-        y = max(60, (image.height() - pixmap.height()) // 3)
+        pixmap = dialog if isinstance(dialog, QPixmap) else dialog.grab()
+        if at is None:
+            x = (image.width() - pixmap.width()) // 2
+            y = max(60, (image.height() - pixmap.height()) // 3)
+        else:
+            x, y = at.x(), at.y()
         painter.setPen(QPen(QColor(0, 0, 0, 90), 1))
         painter.drawRect(QRect(x - 1, y - 1, pixmap.width() + 1, pixmap.height() + 1))
         painter.drawPixmap(QPoint(x, y), pixmap)
@@ -361,17 +373,131 @@ def capture(recorder: Recorder) -> None:
         "A blue dot on App Update means a new version is ready",
     )
     dialog.close()
+    _capture_workflows(application, recorder, window, root)
     window.close()
 
 
-def write_video(recorder: Recorder, output: Path) -> None:
+def _capture_workflows(
+    application: Any, recorder: Recorder, window: Any, root: Path
+) -> None:
+    """Save the BibTeX export, folder watching, and CV Generator views."""
+    from PySide6.QtCore import QObject, QPoint, Qt, Signal
+    from PySide6.QtWidgets import QMenu, QTabWidget
+
+    from adsfolio.gui import main_window as main_window_module
+    from adsfolio.gui.ads_library_export_dialog import ExportAdsLibraryDialog
+    from adsfolio.gui.ads_library_jobs import AdsLibraryOperation
+    from adsfolio.gui.cv_dialog import CVDialog
+    from adsfolio.library_sync import LibraryDestination
+
+    libraries = (
+        LibraryDestination(
+            id="demo-1",
+            name="Comet dust paper (2026)",
+            permission="owner",
+            public=False,
+            num_documents=42,
+        ),
+        LibraryDestination(
+            id="demo-2",
+            name="Group reading list",
+            permission="read",
+            public=False,
+            num_documents=118,
+        ),
+    )
+
+    class ListJob(QObject):
+        succeeded = Signal(object)
+        failed = Signal(object)
+        finished = Signal()
+
+        def __init__(self, request: Any, parent: Any = None) -> None:
+            super().__init__(parent)
+            self.request = request
+
+        def start(self) -> None:
+            if self.request.operation is AdsLibraryOperation.LIST:
+                self.succeeded.emit(libraries)
+            self.finished.emit()
+
+        def cancel(self) -> None:
+            pass
+
+    export = ExportAdsLibraryDialog(window, job_factory=ListJob)
+    export.show()
+    application.processEvents()
+    recorder.save(export.grab(), "tutorial/export-ads-library.png")
+    recorder.frame(
+        _composite(window, export),
+        "Export an ADS library as BibTeX for Overleaf or LaTeX",
+        video="workflows",
+    )
+    export.close()
+
+    # The root context menu, with automatic processing turned on.
+    entry = window.root_entries[str(root)]
+    entry.auto_process_new_pdfs = True
+    captured: list[QMenu] = []
+
+    class CapturedMenu(QMenu):
+        def exec(self, *_args: Any) -> None:
+            captured.append(self)
+
+    original_menu = main_window_module.QMenu
+    main_window_module.QMenu = CapturedMenu
+    try:
+        item = window.sidebar.topLevelItem(0).child(0)
+        rect = window.sidebar.visualItemRect(item)
+        window._sidebar_menu(rect.center())
+    finally:
+        main_window_module.QMenu = original_menu
+    menu = captured[-1]
+    menu.adjustSize()
+    menu.ensurePolished()
+    recorder.save(menu.grab(), "tutorial/watch-menu.png")
+    origin = window.sidebar.viewport().mapTo(window, rect.center() + QPoint(12, 6))
+    recorder.frame(
+        _composite(window, menu, at=origin),
+        "Watch a folder: new PDFs are identified and renamed",
+        video="workflows",
+    )
+
+    # A fictional profile; the window fills its fields from it.
+    from adsfolio.config import Config
+    from adsfolio.user_profile import UserProfile
+
+    Config.save_user_profile(UserProfile(author_names=("Okafor, Nia",)))
+    cv = CVDialog(window, settings_path=Path(os.environ["HOME"]) / "cv.yaml")
+    cv.format_choice.setCurrentIndex(cv.format_choice.count() - 1)
+    cv.preset.setCurrentIndex(cv.preset.findData("html"))
+    cv._apply_preset()
+    cv.findChildren(QTabWidget)[0].setCurrentIndex(1)
+    cv.resize(1180, 640)
+    cv.show()
+    application.processEvents()
+    cv._render_sample()
+    application.processEvents()
+    recorder.save(cv.grab(), "tutorial/cv-generator.png")
+    recorder.frame(
+        _composite(
+            window,
+            cv.grab().scaled(1180, 540, Qt.KeepAspectRatio, Qt.SmoothTransformation),
+        ),
+        "Make your CV in LaTeX, HTML, Markdown, or any text format",
+        video="workflows",
+    )
+    cv.hide()
+
+
+def write_video(frames: list[tuple[Any, str]], output: Path) -> None:
     """Encode the captioned frames with cross-fades into an H.264 MP4."""
     from PySide6.QtGui import QPainter
 
     ffmpeg = shutil.which("ffmpeg")
     if ffmpeg is None:
         raise RuntimeError("ffmpeg is required for the video; use --no-video")
-    images = [_with_caption(image, caption) for image, caption in recorder.frames]
+    images = [_with_caption(image, caption) for image, caption in frames]
     hold = round(HOLD_SECONDS * VIDEO_FPS)
     fade = round(FADE_SECONDS * VIDEO_FPS)
     with tempfile.TemporaryDirectory(prefix="adsfolio-frames-") as folder:
@@ -451,7 +577,8 @@ def main() -> None:
     recorder = Recorder(args.static)
     capture(recorder)
     if not args.no_video:
-        write_video(recorder, args.static / "tutorial/first-run.mp4")
+        for name, frames in recorder.videos.items():
+            write_video(frames, args.static / f"tutorial/{name}.mp4")
 
 
 if __name__ == "__main__":

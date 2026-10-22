@@ -22,6 +22,21 @@ speed claim applies to every collection. Start with one folder to check results.
 
 [Website](https://ysbach.github.io/adsfolio/) · [First-library tutorial](docs/getting-started.md) · [Application guide](docs/gui.md)
 
+## Three everyday workflows
+
+- **Keep a BibTeX file for your paper.** Add the papers you cite to a NASA ADS
+  library, then choose **Tools → Export ADS Library…** to save a `.bib` file for
+  LaTeX or Overleaf. `adsfolio library watch` keeps that file current while you
+  write.
+- **Watch a folder and rename new papers.** Right-click a library and choose
+  **Watch Current Library** and **Automatically Identify & Rename**. Each new PDF
+  gets publication details and a filename from your Rename template.
+- **Make your CV from your publications.** **Tools → CV Generator…** builds your
+  publication list from NASA ADS in LaTeX, HTML, Markdown, plain text, or your
+  own template. You choose how to highlight your name and how each entry looks.
+
+[See the three workflows with screenshots and a short video](https://ysbach.github.io/adsfolio/docs/workflows.html).
+
 ## Install the desktop app
 
 Download [ADSfolio 0.4.0](https://github.com/ysBach/adsfolio/releases/latest).
