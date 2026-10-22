@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from functools import partial
@@ -186,8 +186,14 @@ def run_identify(
     profile: PublicationProfile | None = None,
     prompt_for_ai_csv: bool = True,
     providers: tuple[DoiProvider, ...] = DEFAULT_DOI_PROVIDERS,
+    paths: Sequence[Path] | None = None,
 ) -> None:
-    """Identify PDFs and persist their ADS metadata."""
+    """Identify PDFs and persist their ADS metadata.
+
+    `paths`, when given, are the PDFs to identify in place of a scan of
+    `directory`. They must lie inside `directory`. The unresolved directory
+    is not skipped for them, because the user chose them.
+    """
     # Scan and catalog keys must share the same root spelling, including when
     # the supplied root is relative or traverses a symbolic link.
     directory = directory.expanduser().resolve()
@@ -240,8 +246,12 @@ def run_identify(
     unresolved_first_page_text_cache: dict[Path, str] = {}
     first_page_preview_cache: dict[Path, str] = {}
     scan_started = perf_counter()
-    scanned_paths = list(_iter_pdf_paths(directory, recursive))
-    if skip_unresolved_directory:
+    scanned_paths = (
+        list(_iter_pdf_paths(directory, recursive))
+        if paths is None
+        else [path.expanduser().resolve() for path in paths]
+    )
+    if skip_unresolved_directory and paths is None:
         scan_root = directory.resolve()
         unresolved_directory = (
             output_unresolved.resolve()

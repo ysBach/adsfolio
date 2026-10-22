@@ -160,6 +160,7 @@ def test_identify_command_delegates_to_identify_workflow(tmp_path, monkeypatch):
         "ai_csv": None,
         "verbose": 0,
         "profile": PublicationProfile(debut_year=2004, end_year=2026),
+        "paths": None,
     }
 
 

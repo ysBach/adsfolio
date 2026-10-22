@@ -283,6 +283,8 @@ class MainWindow(QMainWindow):
         # Extra refresh-ads argument lists run after the pending refresh.
         self._pending_ads_follow_ups: tuple[tuple[str, ...], ...] = ()
         self._ads_refresh_root: Path | None = None
+        # PDFs that the next Identify dialog targets; empty means the library.
+        self._identify_files: tuple[Path, ...] = ()
         self._local_refresh_context: _LibraryViewContext | None = None
         self._local_refresh_result: LibraryRefresh | None = None
         self._guided_identify_context: _LibraryViewContext | None = None
@@ -1892,6 +1894,16 @@ class MainWindow(QMainWindow):
                     f"{count - len(present)} selected papers have no {label}."
                 )
         menu.addSeparator()
+        identify = menu.addAction(
+            "Identify Selected PDF…"
+            if count == 1
+            else f"Identify {count} Selected PDFs…",
+            lambda: self._identify(paths),
+        )
+        identify.setToolTip(
+            "Identify only these PDFs, with the strategies and providers you choose"
+        )
+        identify.setEnabled(self.identify_action.isEnabled())
         if count == 1:
             menu.addAction(self.refresh_selected_ads_action)
             menu.addAction(self.update_selected_ads_action)
@@ -2916,11 +2928,13 @@ class MainWindow(QMainWindow):
         self.status.showMessage(f"Identifying papers: {root.name}")
         job.start()
 
-    def _identify(self) -> None:
+    def _identify(self, files: Sequence[Path] = ()) -> None:
+        """Open Identify for the library, or for `files` only when given."""
         if self.current_root is None:
             return
         self._refresh_selection_id = None
         root = self.current_root.resolve()
+        self._identify_files = tuple(files)
         self._request_foreground_dialog("identify", root)
 
     def _request_foreground_dialog(
@@ -2994,8 +3008,10 @@ class MainWindow(QMainWindow):
             library_settings,
             initial_scope=self.config.identify_scopes.get(str(root), "global"),
             save_settings=save_identify_settings,
+            files=self._identify_files,
             parent=self,
         )
+        self._identify_files = ()
         dialog.job_started.connect(self._watch_job)
         dialog.exec()
         if self.job is None:

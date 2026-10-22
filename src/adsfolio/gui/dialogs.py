@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -255,14 +255,23 @@ class IdentifyDialog(QDialog):
         *,
         initial_scope: str = "global",
         save_settings: Callable[[str, IdentifySettings], None] | None = None,
+        files: Sequence[Path] = (),
         parent: Any = None,
     ) -> None:
         super().__init__(parent)
         self.root = Path(root)
+        # Selected PDFs to identify in place of a scan of the whole library.
+        self.files = tuple(Path(file) for file in files)
         self._global_settings = global_settings or IdentifySettings()
         self._library_settings = library_settings
         self._save_settings = save_settings
-        self.setWindowTitle("Identify PDFs")
+        self.setWindowTitle(
+            "Identify PDFs"
+            if not self.files
+            else "Identify Selected PDF"
+            if len(self.files) == 1
+            else f"Identify {len(self.files)} Selected PDFs"
+        )
         form = QFormLayout(self)
         self.scope = QComboBox(self)
         self.scope.addItem("All libraries", "global")
@@ -630,6 +639,8 @@ class IdentifyDialog(QDialog):
             flags.append("--verbose-parser")
         if ai_csv := self.ai_csv.text().strip():
             flags.extend(("--ai-csv", ai_csv))
+        for file in self.files:
+            flags.extend(("--file", str(file)))
         return cli_argv("pdf", "identify", str(self.root), *flags)
 
     def _choose_output_directory(self) -> None:

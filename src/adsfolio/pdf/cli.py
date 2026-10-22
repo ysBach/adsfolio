@@ -275,6 +275,22 @@ def _refresh_file_metadata(
     return registry.update_file_status(root, relative_path, "resolved")
 
 
+def _files_inside(directory: Path, files: tuple[Path, ...]) -> list[Path]:
+    """Return `files` resolved, or raise when one is not a PDF in `directory`."""
+    root = directory.expanduser().resolve()
+    resolved = []
+    for file in files:
+        path = file.expanduser().resolve()
+        if path.suffix.lower() != ".pdf":
+            raise click.UsageError(f"Not a PDF: {file}")
+        try:
+            path.relative_to(root)
+        except ValueError:
+            raise click.UsageError(f"{file} is not inside {directory}") from None
+        resolved.append(path)
+    return list(dict.fromkeys(resolved))
+
+
 def _apply_external_metadata(
     registry: PdfRegistry,
     root: Path,
@@ -1605,6 +1621,16 @@ def ocr_command(
     type=click.Choice([p.value for p in DoiProvider]),
     help="Metadata provider priority; repeat in the desired order.",
 )
+@click.option(
+    "--file",
+    "file_paths",
+    multiple=True,
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    help=(
+        "Identify only this PDF inside DIRECTORY; repeat for more files. "
+        "Files in the unresolved directory are included."
+    ),
+)
 @click.pass_context
 def identify_command(
     ctx: click.Context,
@@ -1623,6 +1649,7 @@ def identify_command(
     verbose_parser: bool,
     strategy_ids: tuple[str, ...],
     provider_ids: tuple[str, ...],
+    file_paths: tuple[Path, ...],
     allow_ads: bool,
     ai_csv: Path | None,
     verbose: int,
@@ -1729,6 +1756,7 @@ def identify_command(
             ai_csv=ai_csv,
             verbose=0 if quiet else int(settings.verbose) + verbose,
             profile=profile,
+            paths=_files_inside(directory, file_paths) if file_paths else None,
         )
     except (ADSError, ProviderError) as exc:
         click.secho(f"Error: {exc}", fg="red", err=True)
