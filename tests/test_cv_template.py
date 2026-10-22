@@ -19,6 +19,18 @@ TRICKY_TITLE = "Dust &amp; Ice in H<sub>2</sub>O comet_tails"
 PLAIN_TITLE = "Dust & Ice in H2O comet_tails"
 
 
+@pytest.fixture(autouse=True)
+def _offline_journal_names(monkeypatch):
+    """Use fixed journal names; the real list comes from the network."""
+    monkeypatch.setattr(
+        "adsfolio.journal_utils._get_journal_map",
+        lambda: {
+            "A&A": {"full": "Astronomy and Astrophysics", "iso4": "Astron. Astrophys."},
+            "arXiv": {"full": "arXiv e-prints", "iso4": "arXiv e-prints"},
+        },
+    )
+
+
 def _cfg(template: CVTemplate, **overrides) -> CVConfig:
     values = {
         "query": 'author:"doe, jane"',
