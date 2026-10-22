@@ -1,6 +1,14 @@
 # Changelog
 
-## Unreleased
+## 0.5.1 (2026-10-22)
+
+### New
+
+- **PyPI package.** Before: the CLI and the Python client needed a source
+  checkout and `uv sync`. Now: `pip install adsfolio` installs them, and
+  `pip install "adsfolio[full,gui]"` adds the desktop application. PyPI has
+  the same wheel and sdist as the GitHub release. Python installations see
+  `pip install --upgrade adsfolio` in **About** and **Software Update**.
 
 ### Documentation
 
