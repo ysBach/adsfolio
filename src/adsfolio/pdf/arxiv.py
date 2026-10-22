@@ -8,7 +8,7 @@ from typing import Any
 
 from ..formatting import html_to_text
 
-__all__ = ["arxiv_id"]
+__all__ = ["arxiv_id", "normalize_arxiv_id"]
 
 _ARXIV_ID_PATTERN = re.compile(
     r"(?<![A-Za-z0-9])((?:\d{4}\.\d{4,5}|[A-Za-z][A-Za-z0-9-]*(?:\.[A-Za-z]{2})?/\d{7})(?:v\d+)?)(?![A-Za-z0-9])",
@@ -39,6 +39,18 @@ def _normalize_candidate(value: Any) -> str:
         return f"{identifier[:4]}.{identifier[4:]}"
     match = _ARXIV_ID_PATTERN.search(text)
     return match.group(1) if match else ""
+
+
+def normalize_arxiv_id(value: Any) -> str:
+    """Return the version-free arXiv identifier in `value`, or an empty string.
+
+    Accepts a bare identifier, an ``arXiv:`` label, an arXiv DOI
+    (``10.48550/arXiv.<id>``), or a legacy arXiv bibcode. Other DOIs give an
+    empty string. The result identifies the paper across versions, for example
+    ``2401.12345v2`` gives ``2401.12345``.
+    """
+    identifier = _normalize_candidate(value)
+    return re.sub(r"v\d+$", "", identifier, flags=re.IGNORECASE).lower()
 
 
 def arxiv_id(record: Mapping[str, Any]) -> str:

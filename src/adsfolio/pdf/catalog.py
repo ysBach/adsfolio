@@ -22,6 +22,7 @@ from ..data_migration import (
     migrate_catalog_keys,
     normalize_metadata,
 )
+from .arxiv import normalize_arxiv_id
 from .files import sha256_file
 from .readiness import (
     EXTERNAL_METADATA_KEY,
@@ -40,7 +41,7 @@ def _sqlite_file_identity(value: int | None) -> int | str | None:
 
 
 CATALOG_FILENAME = "pdf-library.sqlite"
-CATALOG_SCHEMA_VERSION = 2
+CATALOG_SCHEMA_VERSION = 3
 LEGACY_REGISTRY_FILENAME = ".adsfolio-pdfs.sqlite"
 LOCKED_METADATA_FIELDS_KEY = "_adsfolio_locked_fields"
 REFERENCE_METADATA_KEY = "_adsfolio_reference"
@@ -229,7 +230,9 @@ class PdfCatalog:
             existing_metadata,
             incoming_metadata,
         )
-        document_id = self._ensure_document(merged_metadata)
+        document_id = self._ensure_document(
+            merged_metadata, existing_id=attachment["document_id"]
+        )
         if document_id is None:
             document_id = attachment["document_id"]
         if (
@@ -245,12 +248,9 @@ class PdfCatalog:
         else:
             next_status = str(status or existing_status)
         if next_status == "resolved" and (
-            document_id is None
-            or (
-                REFERENCE_METADATA_KEY in merged_metadata
-                and not merged_metadata.get("bibcode")
-            )
+            document_id is None or not merged_metadata.get("bibcode")
         ):
+            # "resolved" means an ADS link; other documents stay unresolved.
             next_status = "unresolved"
         stale = content_changed or bool(existing_metadata.get(METADATA_STALE_KEY))
         fresh_ads = (
@@ -489,6 +489,7 @@ class PdfCatalog:
                     raise ValueError(
                         "ADS bibcode already belongs to another reference"
                     ) from exc
+                self._set_document_identity(document_id, metadata)
                 ids.append(document_id)
                 for row in self._connection.execute(
                     "SELECT id, metadata_json FROM attachments WHERE document_id = ?",
@@ -909,8 +910,14 @@ class PdfCatalog:
             else:
                 if managed:
                     document_id = record["document_id"]
-                elif "bibcode" in clean_metadata:
-                    document_id = self._ensure_document(clean_metadata)
+                elif "bibcode" in clean_metadata or not record.get("bibcode"):
+                    # A paper without an ADS link becomes a document once its
+                    # metadata is complete enough; see _ensure_document.
+                    document_id = self._ensure_document(
+                        clean_metadata, existing_id=record["document_id"]
+                    )
+                    if document_id is None and "bibcode" not in clean_metadata:
+                        document_id = record["document_id"]
                 else:
                     document_id = record["document_id"]
                 if managed and not clean_metadata.get("bibcode"):
@@ -918,7 +925,11 @@ class PdfCatalog:
                 elif "status" in metadata and metadata["status"] not in (None, ""):
                     status = str(metadata["status"])
                 elif "bibcode" in clean_metadata:
-                    status = "resolved" if document_id is not None else "unresolved"
+                    status = (
+                        "resolved"
+                        if document_id is not None and clean_metadata.get("bibcode")
+                        else "unresolved"
+                    )
                 else:
                     status = str(record["status"])
                 if status == "resolved" and document_id is None:
@@ -1572,6 +1583,19 @@ class PdfCatalog:
                 "missing_at",
                 "TEXT",
             )
+            # Version 3: documents are found by bibcode, then DOI, then arXiv
+            # ID, so papers that ADS does not index are documents too. The
+            # indexes are not unique: older catalogs can hold repeated DOIs.
+            added_identity = self._ensure_column("documents", "doi", "TEXT")
+            added_identity |= self._ensure_column("documents", "arxiv_id", "TEXT")
+            self._connection.executescript(
+                """
+                CREATE INDEX IF NOT EXISTS documents_doi ON documents(doi);
+                CREATE INDEX IF NOT EXISTS documents_arxiv_id ON documents(arxiv_id);
+                """
+            )
+            if added_identity or stored_version < 3:
+                self._backfill_document_identity()
             self._connection.execute(
                 """
                 INSERT INTO catalog_meta (key, value)
@@ -1581,8 +1605,14 @@ class PdfCatalog:
                 (str(CATALOG_SCHEMA_VERSION),),
             )
 
-    def _ensure_column(self, table: str, column: str, definition: str) -> None:
-        """Add one schema column when upgrading an older catalog."""
+    def _ensure_column(self, table: str, column: str, definition: str) -> bool:
+        """Add one schema column when upgrading an older catalog.
+
+        Returns
+        -------
+        bool
+            `True` when the column was added.
+        """
         columns = {
             str(row["name"])
             for row in self._connection.execute(f"PRAGMA table_info({table})")
@@ -1591,6 +1621,58 @@ class PdfCatalog:
             self._connection.execute(
                 f"ALTER TABLE {table} ADD COLUMN {column} {definition}"
             )
+            return True
+        return False
+
+    def _backfill_document_identity(self) -> None:
+        """Fill the DOI and arXiv columns of every document from its metadata."""
+        rows = self._connection.execute(
+            "SELECT id, metadata_json FROM documents"
+        ).fetchall()
+        for row in rows:
+            metadata = json.loads(row["metadata_json"] or "{}")
+            if isinstance(metadata, dict):
+                self._set_document_identity(int(row["id"]), metadata)
+
+    @classmethod
+    def canonical_doi(cls, value: Any) -> str:
+        """Return a DOI in comparable form: lowercase, without URL or prefix."""
+        text = cls._as_scalar(value) if not isinstance(value, str) else value
+        return re.sub(
+            r"^(?:https?://(?:dx\.)?doi\.org/|doi:\s*)",
+            "",
+            cls._normalize_doi(text or ""),
+        )
+
+    @classmethod
+    def document_identity(cls, metadata: Mapping[str, Any]) -> tuple[str, str, str]:
+        """Return the bibcode, canonical DOI, and arXiv ID of document metadata.
+
+        Missing identifiers are empty strings. The arXiv ID has no version.
+        """
+        bibcode = cls._as_scalar(metadata.get("bibcode")) or ""
+        doi = cls.canonical_doi(metadata.get("doi"))
+        arxiv = ""
+        for key in ("arxiv", "arxiv_id", "doi", "identifier"):
+            values = metadata.get(key)
+            for value in values if isinstance(values, list) else [values]:
+                arxiv = normalize_arxiv_id(value) if value else ""
+                if arxiv:
+                    break
+            if arxiv:
+                break
+        if not arxiv and bibcode:
+            arxiv = normalize_arxiv_id(bibcode)
+        return bibcode.strip(), doi, arxiv
+
+    def _set_document_identity(
+        self, document_id: int, metadata: Mapping[str, Any]
+    ) -> None:
+        _bibcode, doi, arxiv = self.document_identity(metadata)
+        self._connection.execute(
+            "UPDATE documents SET doi = ?, arxiv_id = ? WHERE id = ?",
+            (doi or None, arxiv or None, document_id),
+        )
 
     def _table_exists(self, table: str) -> bool:
         row = self._connection.execute(
@@ -1779,14 +1861,84 @@ class PdfCatalog:
             ),
         )
 
-    def _ensure_document(self, metadata: Mapping[str, Any]) -> int | None:
-        bibcode = self._as_scalar(metadata.get("bibcode"))
-        if not bibcode:
+    @staticmethod
+    def _describes_paper(metadata: Mapping[str, Any]) -> bool:
+        """Return whether metadata without a bibcode can stand as a document.
+
+        It needs a title and verified provenance: Crossref, DataCite, or arXiv
+        metadata, a local reference, or fields that the user entered or locked.
+        A DOI found in PDF text alone is not enough.
+        """
+        title = metadata.get("title")
+        has_title = (
+            bool(title.strip())
+            if isinstance(title, str)
+            else any(str(item).strip() for item in title or [])
+            if isinstance(title, list)
+            else False
+        )
+        return has_title and any(
+            metadata.get(key)
+            for key in (
+                EXTERNAL_METADATA_KEY,
+                REFERENCE_METADATA_KEY,
+                LOCKED_METADATA_FIELDS_KEY,
+            )
+        )
+
+    def _find_document(self, bibcode: str, doi: str, arxiv: str) -> sqlite3.Row | None:
+        """Find a document by bibcode, then DOI, then arXiv ID.
+
+        A DOI or arXiv match with a different bibcode is another paper.
+        """
+        if bibcode:
+            row = self._connection.execute(
+                "SELECT id, bibcode, metadata_json FROM documents WHERE bibcode = ?",
+                (bibcode,),
+            ).fetchone()
+            if row is not None:
+                return row
+        for column, value in (("doi", doi), ("arxiv_id", arxiv)):
+            if not value:
+                continue
+            row = self._connection.execute(
+                f"SELECT id, bibcode, metadata_json FROM documents "
+                f"WHERE {column} = ? AND (bibcode IS NULL OR bibcode = ?) "
+                "ORDER BY id LIMIT 1",
+                (value, bibcode or ""),
+            ).fetchone()
+            if row is not None:
+                return row
+        return None
+
+    def _ensure_document(
+        self, metadata: Mapping[str, Any], *, existing_id: int | None = None
+    ) -> int | None:
+        """Return the document for `metadata`, creating or updating it.
+
+        Documents are found by bibcode, then DOI, then arXiv ID. Without any
+        identifier, `existing_id` is updated when given. Metadata without a
+        bibcode creates a document only when ``_describes_paper`` accepts it.
+        A DOI-only document that later gains a bibcode keeps its row.
+
+        Returns
+        -------
+        int or None
+            The document ID, or `None` when the metadata identifies no paper.
+        """
+        bibcode, doi, arxiv = self.document_identity(metadata)
+        row = self._find_document(bibcode, doi, arxiv)
+        if row is None and existing_id is not None and not (doi or arxiv):
+            row = self._connection.execute(
+                "SELECT id, bibcode, metadata_json FROM documents WHERE id = ?",
+                (existing_id,),
+            ).fetchone()
+            # Reuse only a non-ADS document, or the same ADS paper. Clearing a
+            # bibcode therefore unlinks the file from its ADS document.
+            if row is not None and row["bibcode"] not in (None, bibcode):
+                row = None
+        if row is None and not (bibcode or self._describes_paper(metadata)):
             return None
-        row = self._connection.execute(
-            "SELECT id, metadata_json FROM documents WHERE bibcode = ?",
-            (bibcode,),
-        ).fetchone()
         now = self._utc_timestamp()
         if row is None:
             cursor = self._connection.execute(
@@ -1795,25 +1947,29 @@ class PdfCatalog:
                     bibcode, metadata_json, created_at, updated_at
                 ) VALUES (?, ?, ?, ?)
                 """,
-                (bibcode, self._encode_json(dict(metadata)), now, now),
+                (bibcode or None, self._encode_json(dict(metadata)), now, now),
             )
             if cursor.lastrowid is None:
                 raise RuntimeError("Catalog document insert did not return an id")
-            return int(cursor.lastrowid)
+            document_id = int(cursor.lastrowid)
+            self._set_document_identity(document_id, metadata)
+            return document_id
 
         existing = json.loads(row["metadata_json"] or "{}")
         if not isinstance(existing, dict):
             existing = {}
         merged = self._merge_metadata(existing, metadata)
+        document_id = int(row["id"])
         self._connection.execute(
             """
             UPDATE documents
-            SET metadata_json = ?, updated_at = ?
+            SET bibcode = COALESCE(bibcode, ?), metadata_json = ?, updated_at = ?
             WHERE id = ?
             """,
-            (self._encode_json(merged), now, int(row["id"])),
+            (bibcode or None, self._encode_json(merged), now, document_id),
         )
-        return int(row["id"])
+        self._set_document_identity(document_id, merged)
+        return document_id
 
     def _select_or_create_version(
         self,
