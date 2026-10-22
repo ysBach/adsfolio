@@ -1,4 +1,4 @@
-# Query-to-Document Example (Markdown First)
+# Tutorial 7: From an ADS query to a document with Python
 
 This guide shows how to:
 

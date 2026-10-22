@@ -1,5 +1,5 @@
-Python API Reference
-====================
+Python API
+==========
 
 This reference is generated from the current checkout. The GUI guide and CLI
 reference describe user workflows; the modules below expose the corresponding

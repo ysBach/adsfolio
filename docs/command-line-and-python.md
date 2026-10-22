@@ -3,6 +3,14 @@
 Use the [application guide](gui.md) for interactive library management.
 This page covers scripts and the Python client.
 
+Learning path:
+
+1. Install and configure ADS access on this page.
+2. Follow the [tutorials](#tutorials) in order: setup and search,
+   export and BibTeX, ADS libraries, PDFs, operations, CVs, and a Python script.
+3. Look up details in the [command-line reference](cli.rst) and the
+   [Python API](api/index.rst).
+
 ## Install from source
 
 Python 3.10 or newer is required. PyPI publication is not enabled for 0.1.0.
@@ -99,3 +107,19 @@ finally:
 See the [API reference](api/index.rst) for public modules and interfaces.
 The [query-to-document example](query-to-document-example.md) covers a complete
 bibliography workflow.
+
+## Tutorials
+
+Follow the tutorials in order. Each one builds on the previous one.
+
+```{toctree}
+:maxdepth: 1
+
+cli-tutorials/01-setup-and-search
+cli-tutorials/02-export-and-bibtex
+cli-tutorials/03-library-workflows
+cli-tutorials/04-pdf-workflows
+cli-tutorials/05-operations-and-troubleshooting
+cli-tutorials/06-cv-workflows
+query-to-document-example
+```

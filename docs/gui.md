@@ -1,4 +1,4 @@
-# Desktop GUI
+# Application guide
 
 ADSfolio provides a graphical desktop application for browsing, cataloging,
 and organizing scientific PDF libraries.

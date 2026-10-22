@@ -1,4 +1,4 @@
-# Standalone desktop builds
+# Installation and desktop builds
 
 The desktop bundle includes Python, PySide6/Qt, the CLI, and the `full`
 optional dependencies. Recipients do not need Python, pip, or uv.

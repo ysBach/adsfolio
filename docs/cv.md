@@ -1,4 +1,4 @@
-# CV Feature Reference (`adsfolio cv`)
+# CV settings reference (`cv.yaml`)
 
 `adsfolio cv` generates publication-list fragments for CV workflows from ADS query results.
 

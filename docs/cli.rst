@@ -1,5 +1,5 @@
-CLI Reference
-=============
+Command-line (CLI) reference
+============================
 
 PDF workflow state is stored in the central user catalog `pdf-library.sqlite`;
 use `adsfolio pdf export` for readable snapshots. Legacy per-root state is read
