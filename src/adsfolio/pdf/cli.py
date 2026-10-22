@@ -36,11 +36,12 @@ from .files import sha256_file
 from .identifier import (
     PdfIdentifier,
     extract_first_page_text_pdf,
+    fetch_external_identifier,
 )
 from .identify import IdentifyWorkflowHelpers, run_identify
 from .identify_settings import IdentifySettings, IdentifyStrategy
 from .obsidian import ObsidianNoteWriter
-from .readiness import stored_bibcode_matches_file
+from .readiness import metadata_ready, stored_bibcode_matches_file
 from .registry import (
     LOCKED_METADATA_FIELDS_KEY,
     PdfRegistry,
@@ -161,9 +162,18 @@ def _report_ambiguous_ads_matches(documents: tuple[dict[str, Any], ...]) -> None
     click.echo(f"ADS_MATCH_CANDIDATES_JSON:{json.dumps(candidates)}")
 
 
+_ARXIV_INPUT = re.compile(
+    r"^(?:arxiv:\s*)?(\d{4}\.\d{4,5}|[a-z][a-z-]*(?:\.[a-z]{2})?/\d{7})(?:v\d+)?$",
+    re.IGNORECASE,
+)
+
+
 def _parse_ads_identifier(value: str) -> tuple[str, str]:
     """
-    Classify a Bibcode, DOI, or journal-volume-page identifier.
+    Classify a Bibcode, DOI, arXiv ID, or journal-volume-page identifier.
+
+    An arXiv ID is returned without its version. A legacy arXiv bibcode such
+    as ``2024arXiv240112345B`` stays a bibcode.
 
     Explicit complete DOI identifiers (including resolver URLs and paths with
     balanced parentheses or trailing punctuation) are parsed literally without
@@ -173,6 +183,9 @@ def _parse_ads_identifier(value: str) -> tuple[str, str]:
     normalized_doi = _normalize_doi(candidate)
     if normalized_doi.startswith("10.") and "/" in normalized_doi:
         return "doi", normalized_doi
+    arxiv = _ARXIV_INPUT.fullmatch(candidate)
+    if arxiv is not None:
+        return "arxiv", arxiv.group(1).lower()
     coordinates = _JOURNAL_COORDINATES.fullmatch(candidate)
     if coordinates is not None:
         groups = coordinates.groupdict()
@@ -260,6 +273,41 @@ def _refresh_file_metadata(
     if not registry.replace_file_metadata(root, relative_path, merged):
         return False
     return registry.update_file_status(root, relative_path, "resolved")
+
+
+def _apply_external_metadata(
+    registry: PdfRegistry,
+    root: Path,
+    relative_path: str,
+    document: dict[str, Any],
+) -> bool:
+    """Apply Crossref or DataCite metadata to one file, keeping locked fields.
+
+    The file keeps no ADS bibcode and stays unresolved. Its metadata records
+    the provider and the file digest, so renaming can use it.
+    """
+    record = registry.find_file_by_relative_path(root, relative_path)
+    if record is None:
+        return False
+    metadata = record.get("metadata")
+    metadata = metadata if isinstance(metadata, dict) else {}
+    path = root / str(record["current_path"])
+    built = PdfIdentifier(None).build_record(
+        document, path, sha256=str(record.get("sha256") or "") or None
+    )
+    merged = merge_ads_metadata(metadata, built)
+    for key in (
+        "bibcode",
+        "_adsfolio_external_metadata",
+        "_adsfolio_metadata_sha256",
+        "identified_at",
+    ):
+        merged[key] = built.get(key, "")
+    merged.pop("_adsfolio_metadata_stale", None)
+    merged.pop("status", None)
+    if not registry.replace_file_metadata(root, relative_path, merged):
+        return False
+    return registry.update_file_status(root, relative_path, "unresolved")
 
 
 def _refresh_bibcode_metadata(
@@ -398,23 +446,45 @@ def refresh_ads_command(
             "--relative-path requires exactly one identifier and cannot be used with --all."
         )
 
-    client = None if pending_only else _get_client(ctx)
     state = open_registry_state(directory)
+    identify_settings = state.identify_settings or Config.load_identify_settings()
+    identifier_kind, identifier_value = (
+        _parse_ads_identifier(identifier_input)
+        if identifier_input is not None
+        else ("", "")
+    )
+    external_lookup = identifier_kind in {"doi", "arxiv"}
+    if pending_only or (
+        external_lookup and DoiProvider.ADS not in identify_settings.providers
+    ):
+        client = None
+    elif external_lookup:
+        try:
+            client = _get_client(ctx)
+        except AuthenticationError:
+            # Crossref and DataCite need no token.
+            LOGGER.info("No ADS token; looking up %s outside ADS.", identifier_value)
+            client = None
+    else:
+        client = _get_client(ctx)
+    external_document: dict[str, Any] | None = None
     try:
         pdf_identifier = PdfIdentifier(client)
         if identifier_input is not None:
-            identifier_kind, identifier_value = _parse_ads_identifier(identifier_input)
 
             def cache_documents(values: list[dict[str, Any]]) -> None:
                 state.registry.upsert_ads_documents(values, source="refresh-ads")
 
             callback = cache_documents
-            if identifier_kind in {"doi", "query"}:
-                query = (
-                    f'doi:"{escape_query_phrase(identifier_value)}"'
-                    if identifier_kind == "doi"
-                    else identifier_value
-                )
+            if identifier_kind in {"doi", "query", "arxiv"}:
+                if identifier_kind == "doi":
+                    query = f'doi:"{escape_query_phrase(identifier_value)}"'
+                elif identifier_kind == "arxiv":
+                    query = (
+                        f'identifier:"arXiv:{escape_query_phrase(identifier_value)}"'
+                    )
+                else:
+                    query = identifier_value
                 result = pdf_identifier.query_documents(
                     query,
                     ads_documents_callback=callback,
@@ -429,6 +499,12 @@ def refresh_ads_command(
                         else None
                     )
                 }
+                if external_lookup and documents[identifier_value] is None:
+                    external_document = fetch_external_identifier(
+                        identifier_kind,
+                        identifier_value,
+                        identify_settings.providers,
+                    )
             else:
                 documents = pdf_identifier.query_docs_for_bibcodes(
                     [identifier_value],
@@ -483,6 +559,18 @@ def refresh_ads_command(
                     str(record["current_path"])
                 )
         for index, bibcode in enumerate(requested, start=1):
+            if external_document is not None and relative_path is not None:
+                if not _apply_external_metadata(
+                    state.registry, directory, relative_path, external_document
+                ):
+                    raise click.UsageError(
+                        f"Metadata update skipped at {relative_path}; check file tracking and run Identify if the PDF changed."
+                    )
+                provider = external_document.get("provider", "external")
+                click.echo(f"Found {identifier_value} at {provider} (not in ADS).")
+                refreshed += 1
+                rename_candidates.add(relative_path)
+                continue
             if bibcode in missing_documents:
                 if identifier_input is None and rename:
                     _clear_invalid_bibcode(state.registry, directory, bibcode)
@@ -548,7 +636,9 @@ def refresh_ads_command(
         for current_path in sorted(rename_candidates) if rename else ():
             source = state.directory / current_path
             tracked = state.find_by_current_filename(current_path)
-            if tracked is None or not is_resolved_record(tracked[1]):
+            if tracked is None or not (
+                is_resolved_record(tracked[1]) or metadata_ready(tracked[1])
+            ):
                 continue
             if not source.is_file():
                 rename_skipped += 1

@@ -6,7 +6,7 @@ import os
 import re
 import unicodedata
 from collections import Counter
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -23,6 +23,7 @@ from ..config import AuthenticationError, RequestTooLongError
 from .doi_providers import (
     DEFAULT_DOI_PROVIDERS,
     DoiProvider,
+    ProviderError,
     fetch_crossref_doi,
     fetch_datacite_doi,
 )
@@ -38,6 +39,7 @@ BIBCODE_PATTERN = re.compile(
 )
 _ExtractedValue = TypeVar("_ExtractedValue")
 AdsDocumentsCallback = Callable[[list[dict[str, Any]]], None]
+_LOGGER = logging.getLogger(__name__)
 
 
 def _fetch_external_doi(provider: DoiProvider, doi: str) -> dict[str, Any] | None:
@@ -51,6 +53,48 @@ def _fetch_external_doi(provider: DoiProvider, doi: str) -> dict[str, Any] | Non
     return doc
 
 
+def fetch_external_identifier(
+    kind: str,
+    value: str,
+    providers: Iterable[DoiProvider],
+) -> dict[str, Any] | None:
+    """Look up a DOI or arXiv ID outside ADS, in the given provider order.
+
+    An arXiv ID is looked up through its DataCite DOI, ``10.48550/arXiv.<id>``.
+    ADS entries in `providers` are skipped. A provider error moves on to the
+    next provider.
+
+    Parameters
+    ----------
+    kind : `str`
+        ``"doi"`` or ``"arxiv"``.
+    value : `str`
+        The DOI, or the arXiv ID without its version.
+    providers : iterable of `DoiProvider`
+        Provider order, usually the saved Identify setting.
+
+    Returns
+    -------
+    dict or None
+        Document metadata with a ``provider`` key, or `None` when no provider
+        knows the identifier.
+    """
+    doi = value if kind == "doi" else f"10.48550/arXiv.{value}"
+    for provider in providers:
+        if provider is DoiProvider.ADS:
+            continue
+        try:
+            doc = _fetch_external_doi(provider, doi)
+        except (ValueError, ProviderError) as exc:
+            _LOGGER.warning("%s lookup failed for %s: %s", provider.value, doi, exc)
+            continue
+        if doc is not None:
+            if kind == "arxiv":
+                doc["arxiv"] = value
+            return doc
+    return None
+
+
 CachedCandidateLookup = Callable[[str, Any], tuple[bool, dict[str, Any] | None]]
 
 __all__ = [
@@ -59,6 +103,7 @@ __all__ = [
     "PdfIdentifier",
     "extract_doi_candidates_pdf",
     "extract_first_page_text_pdf",
+    "fetch_external_identifier",
 ]
 
 
