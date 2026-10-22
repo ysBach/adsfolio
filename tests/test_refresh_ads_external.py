@@ -182,6 +182,8 @@ def test_arxiv_id_outside_ads_uses_its_datacite_doi(library, providers, monkeypa
     assert record["metadata"]["title"] == ["An arXiv-only preprint"]
     assert record["_document"] is not None
     assert record["_document"]["arxiv_id"] == "2401.12345"
+    assert record["current_path"] != "scan.pdf"
+    assert (library / record["current_path"]).is_file()
 
 
 def test_unknown_identifier_leaves_the_file_unchanged(library, providers, monkeypatch):
@@ -208,3 +210,68 @@ def test_unknown_identifier_leaves_the_file_unchanged(library, providers, monkey
 )
 def test_identifier_classification(value, expected):
     assert _parse_ads_identifier(value) == expected
+
+
+def test_arxiv_lookup_without_datacite_says_why(library, providers, monkeypatch):
+    state = open_registry_state(library)
+    try:
+        state.set_identify_settings(
+            IdentifySettings(providers=(DoiProvider.ADS, DoiProvider.CROSSREF))
+        )
+        state.save()
+    finally:
+        state.close()
+    monkeypatch.setattr(
+        "adsfolio.pdf.cli._get_client",
+        lambda _ctx: SimpleNamespace(search=EmptySearch()),
+    )
+    result = _run(library, "2401.12345")
+    assert result.exit_code == 0, result.output
+    assert "need DataCite" in result.output
+    assert _only_record(library)["current_path"] == "scan.pdf"
+
+
+def test_paper_found_outside_ads_gains_its_bibcode_later(
+    library, providers, monkeypatch
+):
+    monkeypatch.setattr(
+        "adsfolio.pdf.cli._get_client",
+        lambda _ctx: SimpleNamespace(search=EmptySearch()),
+    )
+    assert _run(library, "10.5555/not.in.ads").exit_code == 0
+    before = _only_record(library)
+
+    class AdsHasItNow:
+        def query(self, *, q, fl, rows):
+            return SimpleNamespace(
+                num_found=1,
+                docs=[
+                    {
+                        **CROSSREF_DOC,
+                        "bibcode": "2021JEx.....3....7R",
+                        "bibstem": ["JEx"],
+                    }
+                ],
+            )
+
+    monkeypatch.setattr(
+        "adsfolio.pdf.cli._get_client",
+        lambda _ctx: SimpleNamespace(search=AdsHasItNow()),
+    )
+    result = CliRunner().invoke(
+        pdf,
+        [
+            "refresh-ads",
+            str(library),
+            "--identifier",
+            "10.5555/not.in.ads",
+            "--relative-path",
+            str(before["current_path"]),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    after = _only_record(library)
+    assert after["status"] == "resolved"
+    assert after["bibcode"] == "2021JEx.....3....7R"
+    assert after["_document"]["id"] == before["_document"]["id"]
+    assert after["_document"]["bibcode"] == "2021JEx.....3....7R"

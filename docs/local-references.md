@@ -33,6 +33,10 @@ arXiv DOI, `10.48550/arXiv.<ID>`. The PDF then receives the title, the authors,
 and the year, and ADSfolio renames it with your Rename settings. The status
 column still shows that ADS has no record.
 
+An arXiv ID needs **DataCite** in your metadata providers, because Crossref
+does not have arXiv DOIs. When ADS adds the paper later, choose **Update by
+Identifier…** again. The PDF then receives its bibcode.
+
 Check the identifier against the paper before you choose **OK**. ADSfolio uses
 the DOI as you type it, apart from lowercase letters. Remove sentence
 punctuation that you pasted with the DOI.

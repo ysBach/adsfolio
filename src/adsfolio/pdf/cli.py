@@ -521,6 +521,17 @@ def refresh_ads_command(
                         identifier_value,
                         identify_settings.providers,
                     )
+                    if (
+                        external_document is None
+                        and identifier_kind == "arxiv"
+                        and DoiProvider.DATACITE not in identify_settings.providers
+                    ):
+                        # DataCite registers arXiv DOIs; Crossref does not.
+                        click.secho(
+                            "arXiv IDs outside ADS need DataCite. Add DataCite "
+                            "to the metadata providers in Identify settings.",
+                            fg="yellow",
+                        )
             else:
                 documents = pdf_identifier.query_docs_for_bibcodes(
                     [identifier_value],
