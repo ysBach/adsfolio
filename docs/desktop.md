@@ -130,7 +130,7 @@ use `ditto`. Linux archives use `tar` to preserve required symbolic links.
 Ordinary ZIP creation can lose these links. See
 [PyInstaller's distribution notes](https://pyinstaller.org/en/stable/common-issues-and-pitfalls.html#requirements-imposed-by-symbolic-links-in-frozen-application).
 
-Version 0.5.1 ships unsigned bundles. macOS Developer ID signing/notarization and
+Version 0.6.0 ships unsigned bundles. macOS Developer ID signing/notarization and
 Windows publisher signing require release credentials and are not configured.
 Downloaded builds may trigger operating-system security prompts.
 
