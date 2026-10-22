@@ -63,6 +63,7 @@ from .ads_library_export_dialog import ExportAdsLibraryDialog
 from .appearance import AppearanceDialog
 from .citation_styles import CitationStylesDialog
 from .config import RootEntry, load_config, save_config
+from .cv_dialog import CVDialog
 from .detail_pane import DetailPane
 from .dialogs import IdentifyDialog, RenameDialog, UserProfileDialog
 from .icons import RoundIconButton
@@ -508,6 +509,11 @@ class MainWindow(QMainWindow):
         self.token_action.triggered.connect(self._edit_token)
         tools.addAction(self.token_action)
         self.profile_action = QAction("My Publication Profile…", self)
+        self.cv_action = QAction("CV Generator…", self)
+        self.cv_action.setToolTip(
+            "Make a publication list for your CV in LaTeX, HTML, Markdown, or text"
+        )
+        self.cv_action.triggered.connect(self._open_cv_generator)
         self.citation_styles_action = QAction("Custom Citation Styles…", self)
         self.identify_action = QAction("Identify…", self)
         self.identify_action.setShortcut("Ctrl+Shift+I")
@@ -565,6 +571,7 @@ class MainWindow(QMainWindow):
             )
         )
         tools.addAction(self.profile_action)
+        tools.addAction(self.cv_action)
         tools.addAction(self.citation_styles_action)
         tools.addSeparator()
         tools.addAction(self.merge_annotations_action)
@@ -2791,6 +2798,10 @@ class MainWindow(QMainWindow):
         if dialog.exec() == QDialog.Accepted:
             self.status.showMessage("Publication profile saved", 5000)
         self._sync_welcome()
+
+    def _open_cv_generator(self) -> None:
+        """Open the CV Generator, which saves its settings in cv.yaml."""
+        CVDialog(self).exec()
 
     def _edit_token(self) -> None:
         """Open the ADS token dialog and refresh the welcome status."""

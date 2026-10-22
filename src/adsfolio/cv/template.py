@@ -54,6 +54,7 @@ ENTRY_FIELDS = (
     "journal",
     "volume",
     "page",
+    "venue",
     "bibcode",
     "url",
     "doi",
@@ -77,6 +78,7 @@ FIELD_HELP = {
     "journal": "Journal name",
     "volume": "Volume",
     "page": "Page or article number",
+    "venue": "Journal, volume, and page, without empty parts",
     "bibcode": "ADS bibcode",
     "url": "ADS abstract page",
     "doi": "DOI",
@@ -133,8 +135,8 @@ TEMPLATE_PRESETS: dict[str, TemplatePreset] = {
         template=CVTemplate(
             header="% Publications of {me} from NASA ADS, {date}.",
             section="\\subsection*{{section} ({count})}\n\\begin{enumerate}",
-            entry="\\item {authors} ({year}) ``{title},'' \\textit{{journal}}, "
-            "{volume}, {page}. \\href{{url}}{\\texttt{{bibcode}}} {markers}",
+            entry="\\item {authors} ({year}) ``{title},'' \\textit{{venue}}. "
+            "\\href{{url}}{\\texttt{{bibcode}}} {markers}",
             section_end="\\end{enumerate}",
             escape="latex",
         ),
@@ -147,8 +149,8 @@ TEMPLATE_PRESETS: dict[str, TemplatePreset] = {
         template=CVTemplate(
             header="# Publications of {me}\n\nFrom NASA ADS, {date}.",
             section="\n## {section} ({count})\n",
-            entry="{index}. {authors} ({year}). *{title}*. {journal} {volume}, "
-            "{page}. [{bibcode}]({url}) {markers}",
+            entry="{index}. {authors} ({year}). *{title}*. {venue}. "
+            "[{bibcode}]({url}) {markers}",
             escape="none",
         ),
         me_fmt="**{}**",
@@ -160,8 +162,8 @@ TEMPLATE_PRESETS: dict[str, TemplatePreset] = {
         template=CVTemplate(
             header="<h1>Publications of {me}</h1>\n<p>From NASA ADS, {date}.</p>",
             section="<h2>{section} ({count})</h2>\n<ol>",
-            entry="<li>{authors} ({year}). <i>{title}</i>. {journal} {volume}, "
-            '{page}. <a href="{url}">{bibcode}</a> {markers}</li>',
+            entry="<li>{authors} ({year}). <i>{title}</i>. {venue}. "
+            '<a href="{url}">{bibcode}</a> {markers}</li>',
             section_end="</ol>",
             escape="html",
         ),
@@ -174,8 +176,7 @@ TEMPLATE_PRESETS: dict[str, TemplatePreset] = {
         template=CVTemplate(
             header="Publications of {me} (NASA ADS, {date})",
             section="\n{section} ({count})\n",
-            entry="[{index}] {authors} ({year}) {title}. {journal} {volume}, "
-            "{page}. {url}",
+            entry="[{index}] {authors} ({year}) {title}. {venue}. {url}",
             escape="none",
         ),
         me_fmt="*{}*",
@@ -281,14 +282,22 @@ def _entry_values(
     )
     url = ADSClient.abstract_url(bibcode)
     authors = _as_str_list(doc.get("author"))
+    volume = esc(str(get_first_item(doc, "volume") or ""))
+    page = esc(str(get_first_item(doc, "page") or ""))
+    if is_arxiv:
+        venue = page or journal
+    else:
+        numbers = ", ".join(part for part in (volume, page) if part)
+        venue = " ".join(part for part in (journal, numbers) if part)
     return {
         "index": str(index),
         "authors": _authors(doc, cfg, escape),
         "title": esc(str(get_first_item(doc, "title") or "(untitled)")).strip(),
         "year": esc(str(doc.get("year") or "")),
         "journal": journal,
-        "volume": esc(str(get_first_item(doc, "volume") or "")),
-        "page": esc(str(get_first_item(doc, "page") or "")),
+        "volume": volume,
+        "page": page,
+        "venue": venue,
         "bibcode": esc(bibcode),
         "url": html.escape(url) if escape == "html" else url,
         "doi": esc(str(get_first_item(doc, "doi") or "")),

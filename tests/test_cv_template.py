@@ -237,3 +237,17 @@ def test_builtin_formats_still_render_with_default_template():
         _cfg(CVTemplate()), output_format="markdown", me_fmt="**{}**", style="compact"
     )
     assert "## First-authored (1)" in render_cv(DOCS, cfg)
+
+
+def test_venue_joins_only_the_parts_that_exist():
+    arxiv = {
+        **_doc("2023arXiv230100001S", "Smith, John", title="Preprint"),
+        "bibstem": ["arXiv"],
+        "volume": "",
+        "page": ["arXiv:2301.00001"],
+    }
+    template = CVTemplate(entry="{venue}")
+    output = render_cv([DOCS[0], arxiv], _cfg(template, me_fmt="{}"))
+    assert "Astronomy and Astrophysics 684, A80" in output
+    assert "\narXiv:2301.00001" in output
+    assert " , " not in output

@@ -56,6 +56,7 @@ Publication lists and CLI
    adsfolio.cv.config_starter
    adsfolio.cv.query
    adsfolio.cv.renderer
+   adsfolio.cv.template
    adsfolio.cv.render_factory
    adsfolio.cv.render_legend
    adsfolio.cv.cli
@@ -108,6 +109,7 @@ standalone bundle setup.
    adsfolio.gui.updates
    adsfolio.gui.update_dialog
    adsfolio.gui.welcome
+   adsfolio.gui.cv_dialog
    adsfolio.gui.config
    adsfolio.gui.library
    adsfolio.gui.icons

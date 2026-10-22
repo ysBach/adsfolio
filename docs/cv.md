@@ -6,9 +6,15 @@ The command is config-driven via YAML (`cv.yaml`) and supports:
 
 - LaTeX output (primary)
 - Markdown output
+- user-defined templates for any text format: LaTeX, HTML, Markdown, plain
+  text, or another format you write
 - multiple rendering styles
 - marker categories by bibcode
 - status overrides for accepted/submitted preprints
+
+The desktop application has the same features in **Tools → CV Generator…**.
+See [CV Generator](gui.md#cv-generator). The window and the command share
+`cv.yaml` in the ADSfolio configuration folder.
 
 ## Command surface
 
@@ -72,7 +78,7 @@ Required field:
 
 | Field | Type | Description |
 | --- | --- | --- |
-| `output` | `latex` \| `markdown` | Renderer target |
+| `output` | `latex` \| `markdown` \| `template` | Renderer target |
 | `style` | `compact` \| `detailed` \| `bibcode-first` | Render style |
 | `n_max_authors` | int | Author list truncation threshold |
 | `n_min_authors` | int | Minimum shown before `et al.` |
@@ -80,6 +86,52 @@ Required field:
 | `author_sep` | string | Author separator |
 | `me_fmt` | string | `.format()` template for highlighted author |
 | `author_format` | string | `cv_default` or `ads_custom:<format>` |
+
+### `template`
+
+Used when `format.output` is `template`. Each part is text with `{name}`
+placeholders. Only the names below are replaced. Other braces stay as written,
+so LaTeX needs no doubled braces: `\textit{{title}}` becomes
+`\textit{Dust in comet atmospheres}`. A misspelled placeholder, such as
+`{titel}`, stays in the output unchanged.
+
+| Field | Description |
+| --- | --- |
+| `preset` | Optional starting point: `latex`, `markdown`, `html`, or `text` |
+| `header` | Once, at the top |
+| `section` | Before each section (First-authored, then Co-authored) |
+| `entry` | Once per publication |
+| `section_end` | After each section, for example `</ol>` |
+| `footer` | Once, at the end |
+| `escape` | `latex`, `html`, or `none`: how ADS text is escaped |
+
+A `preset` fills every part, `escape`, `format.me_fmt`, `format.author_sep`,
+and `output.filename`. Keys that you write replace the preset values.
+
+Placeholders:
+
+| Part | Placeholders |
+| --- | --- |
+| `header`, `footer` | `{me}`, `{date}`, `{total}`, `{first_count}`, `{co_count}` |
+| `section`, `section_end` | `{section}`, `{count}` |
+| `entry` | `{index}`, `{authors}`, `{title}`, `{year}`, `{journal}`, `{volume}`, `{page}`, `{venue}`, `{bibcode}`, `{url}`, `{doi}`, `{citations}`, `{n_authors}`, `{status}`, `{markers}` |
+
+`{venue}` joins journal, volume, and page and leaves out empty parts.
+`{authors}` applies `format.me_fmt` to your name, for example `<b>{}</b>` in
+HTML. ADSfolio escapes text from ADS for the `escape` target. It never changes
+text that you write: the template, `me_fmt`, `author_sep`, `status`, and marker
+symbols. With `escape: none`, ADS text is plain Unicode without markup.
+
+```yaml
+format:
+  output: template
+template:
+  preset: html
+  entry: '<li>{authors} ({year}). <a href="{url}">{title}</a>. {venue}.</li>'
+```
+
+Template output does not add the journal or marker legends. Write them in the
+`footer` if you need them.
 
 ### `markers`
 

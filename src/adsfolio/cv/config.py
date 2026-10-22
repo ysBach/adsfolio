@@ -383,13 +383,31 @@ def _build_cv_config(
     )
 
 
-def load_config(path: Path) -> CVConfig:
-    """Load ``cv.yaml`` from disk."""
-    config_path = path.expanduser().resolve()
-    raw = _load_yaml(config_path)
+def config_from_mapping(raw: dict[str, Any], config_path: Path) -> CVConfig:
+    """Validate a parsed ``cv.yaml`` mapping and build a `CVConfig`.
+
+    Parameters
+    ----------
+    raw : dict
+        The YAML content as a mapping.
+    config_path : `Path`
+        The YAML location. Relative ``output.dir`` values resolve against
+        its folder.
+
+    Raises
+    ------
+    ValueError
+        If a field has an invalid value or ``author.query`` is empty.
+    """
     sections = _section_map(raw)
     query = _validate_query(sections["author"])
     return _build_cv_config(sections, query, config_path)
+
+
+def load_config(path: Path) -> CVConfig:
+    """Load ``cv.yaml`` from disk."""
+    config_path = path.expanduser().resolve()
+    return config_from_mapping(_load_yaml(config_path), config_path)
 
 
 def _year_clause(start: int | None, end: int | None) -> str:

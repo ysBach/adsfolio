@@ -238,6 +238,31 @@ rebuild the cache.
 
 ![Publication profile window with ORCID, author names, and years](_static/tutorial/profile-dialog.png)
 
+## CV Generator
+
+**Tools → CV Generator…** makes a publication list for your CV from your NASA
+ADS records. It writes LaTeX, HTML, Markdown, plain text, or any other text
+format that you design.
+
+1. **Your publications:** the ADS query, ORCID iD, years, and your name.
+   **Fill from My Publication Profile** copies them from your profile.
+   ADSfolio highlights your name in each author list.
+2. **Format:** choose a built-in LaTeX or Markdown style, or **Custom
+   template**. For a template, choose a starting point (LaTeX, Markdown, HTML,
+   or Plain text), then edit the header, section, entry, and footer text.
+   **Highlight your name** sets the markup around your name, for example
+   `\textbf{{{}}}` in LaTeX or `<b>{}</b>` in HTML.
+3. **Preview:** **Sample papers** shows fictional papers and updates while you
+   type, with no network request. **Look Up in ADS** shows your real
+   publications.
+4. **Save CV** looks up your publications and writes the output file.
+
+ADS lookups need a token. The window stores its settings in `cv.yaml` in the
+ADSfolio configuration folder. `adsfolio cv generate` reads the same file, so
+a terminal or script can repeat the run. **Save Settings As…** copies the
+settings to another file. See the [CV reference](cv.md) for every template
+placeholder.
+
 ## Custom citation styles
 
 Custom citations are edited from the exact menu command
