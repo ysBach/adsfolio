@@ -1,10 +1,10 @@
-# Tutorial 3: Library Workflows
+# Tutorial 3: Library workflows
 
 This tutorial covers `adsfolio library` commands for listing, reading, and syncing a library BibTeX file.
 
 ## 0) Start with `--help`
 
-Inspect the library command group and subcommands first:
+First, inspect the library command group and its subcommands:
 
 ~~~bash
 adsfolio library --help
@@ -13,7 +13,7 @@ adsfolio library get --help
 adsfolio library watch --help
 ~~~
 
-Key library options to understand:
+Key library options:
 
 | Option | Meaning | When to use |
 | --- | --- | --- |
@@ -32,7 +32,7 @@ Key library options to understand:
 adsfolio library list
 ```
 
-JSON output:
+For JSON output:
 
 ```bash
 adsfolio library list --rows 50 --json
@@ -44,7 +44,7 @@ adsfolio library list --rows 50 --json
 adsfolio library get <library_id>
 ```
 
-Return raw bibcodes exactly as stored:
+To return the raw bibcodes exactly as stored:
 
 ```bash
 adsfolio library get <library_id> --raw
@@ -68,7 +68,7 @@ adsfolio library watch <library_id> \
 Notes:
 
 - `--num-iter 0` means run indefinitely.
-- Stop with `Ctrl+C`.
+- To stop the watch, press `Ctrl+C`.
 
 ## 5) Add style and extra BibTeX content during watch
 
@@ -91,4 +91,4 @@ adsfolio library watch <library_id> \
 
 ## Next
 
-Continue with [Tutorial 4: PDF Workflows](./04-pdf-workflows.md).
+Continue with [Tutorial 4: PDF workflows](./04-pdf-workflows.md).

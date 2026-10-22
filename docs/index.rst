@@ -21,7 +21,6 @@ Where to start:
    workflows
    gui
    local-references
-   desktop
 
 .. toctree::
    :maxdepth: 2
@@ -49,3 +48,4 @@ Where to start:
    :caption: Project
 
    maintaining
+   desktop

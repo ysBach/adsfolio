@@ -1,8 +1,32 @@
-# Start with your PDF library
+# Getting started
 
-Install a [desktop download](https://github.com/ysBach/adsfolio/releases/latest).
-Python is included. See [desktop installation](desktop.md) for platform limits
-and unsigned-app approval.
+## Install
+
+1. Download the file for your system from
+   [GitHub Releases](https://github.com/ysBach/adsfolio/releases/latest).
+2. Install it as the table shows.
+3. Open ADSfolio.
+
+| System | File | Install |
+| --- | --- | --- |
+| macOS 15 or later, Apple silicon | `adsfolio-macos-arm64.dmg` | Open the file and drag `ADSfolio.app` to Applications. |
+| macOS 15 or later, Intel | `adsfolio-macos-x86_64.dmg` | Open the file and drag `ADSfolio.app` to Applications. |
+| Windows x86-64 | `adsfolio-windows-x86_64.zip` | Extract the file and open `adsfolio.exe` in the `adsfolio` folder. |
+| Linux x86-64, glibc 2.39 or later | `adsfolio-linux-x86_64.tar.gz` | Extract the file and run `adsfolio` in the `adsfolio` folder. |
+
+On Windows and Linux, keep the extracted `adsfolio` folder together. The program
+needs all of its files.
+
+The app is not signed. The first time you open it, macOS can block it. Open
+**System Settings → Privacy & Security**. Choose **Open Anyway** only if you
+trust the download. Windows can show a publisher warning.
+
+With Homebrew on macOS, run `brew install --cask ysBach/adsfolio/adsfolio`.
+For the command line and Python, see [CLI and Python](command-line-and-python.md).
+
+The app includes Python. You need no ADS token to browse your PDFs. When a new
+version is available, **App Update** in the toolbar shows a blue dot. A new
+version keeps your library, settings, and token.
 
 ## Watch the first run
 
@@ -24,7 +48,7 @@ It ends with the optional token and profile windows and **Software Update**.
 ## Add your existing folders
 
 1. Open ADSfolio. A new installation shows **Welcome to ADSfolio** with three
-   steps. Only the PDF folder is required.
+   steps. Setup requires only the PDF folder.
 2. Choose **Add PDF Folder…** (or **File → Add Library Root…**).
 3. Select your PDF folder.
 4. If the folder has subfolders, choose **Include Subfolders** or
@@ -82,9 +106,9 @@ file verification is pending. Inspect the status tooltip for the reason.
 4. Review the filename preview.
 5. Apply the changes you accept.
 
-Papers with sufficient metadata can be renamed without an ADS bibcode.
+You can rename papers with sufficient metadata without an ADS bibcode.
 Use **File → Local References…** for manual entries or BibTeX imports.
-See [references outside ADS](local-references.md).
+See [Local references](local-references.md).
 
 ## Keep the library current
 
@@ -97,5 +121,5 @@ Replacing the application does not delete that catalog.
 Close the earlier application before first-use migration.
 Keep its original data until you check the migrated library.
 
-See the [application guide](gui.md) for settings and folder watching.
+See the [App GUI guide](gui.md) for settings and folder watching.
 See [CLI and Python workflows](command-line-and-python.md) for scripts and APIs.

@@ -1,5 +1,24 @@
 # Changelog
 
+## Unreleased
+
+### Documentation
+
+- **Page names.** Before: the first pages were "Start with your PDF library",
+  "Three everyday workflows", "Application guide", and "References outside
+  ADS". Now: they are "Getting started", "Daily workflows", "App GUI guide",
+  and "Local references". "Local references" matches the app menu item
+  **File → Local References…**.
+- **Install steps.** Before: "Installation and desktop builds" mixed app
+  installation with 150 lines of build details for maintainers. Now: "Getting
+  started" opens with a short Install section. The build details are in
+  "Building the desktop app" under Project.
+- **Plain language.** Before: the older pages had 104 hard findings from the
+  ASD-STE100 linter, mostly passive voice and long sentences. Now: they have
+  11. Each one is a word pair that names two different actions in context. No
+  list has more than five items, and procedures
+  use numbered steps.
+
 ## 0.5.1 (2026-10-22)
 
 ### New

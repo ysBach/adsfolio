@@ -4,17 +4,17 @@ This tutorial covers `adsfolio export` output formats and BibTeX workflows.
 
 For references outside ADS, use `adsfolio reference import` and `adsfolio reference
 export`. These local commands can combine imported citations and cataloged ADS
-documents in one bibliography. See [References outside ADS](../local-references.md).
+documents in one bibliography. See [Local references](../local-references.md).
 
 ## 0) Start with `--help`
 
-Check complete export options before running the examples:
+Before you run the examples, check the complete export options:
 
 ~~~bash
 adsfolio export --help
 ~~~
 
-Key export options to understand:
+Key export options:
 
 | Option | Meaning | When to use |
 | --- | --- | --- |
@@ -30,7 +30,7 @@ Key export options to understand:
 adsfolio export '2024A&A...684A..80B'
 ```
 
-Default format is `bibtex`.
+The default format is `bibtex`.
 
 ## 2) Export multiple bibcodes
 
@@ -88,4 +88,4 @@ adsfolio export <bibcode1> <bibcode2> --output refs.bib
 
 ## Next
 
-Continue with [Tutorial 3: Library Workflows](./03-library-workflows.md).
+Continue with [Tutorial 3: Library workflows](./03-library-workflows.md).

@@ -1,36 +1,13 @@
-# Installation and desktop builds
+# Building the desktop app
+
+This page is for maintainers. To install the app, see
+[Getting started](getting-started.md#install).
 
 The desktop bundle includes Python, PySide6/Qt, the CLI, and the `full`
 optional dependencies. Recipients do not need Python, pip, or uv.
 ADS queries still need an internet connection and the recipient's own API token.
-PDF opening uses a system PDF viewer. OCR software is not bundled.
-
-## Launch and setup
-
-Version 0.5.1 provides DMG and ZIP downloads for macOS.
-
-1. Download the package for your operating system and processor.
-2. On macOS, open the DMG and drag `ADSfolio.app` onto Applications.
-   Eject the image, then open ADSfolio from Applications. For a ZIP download, extract it and move `ADSfolio.app` to Applications. On Windows, extract the archive and open
-   `adsfolio.exe` inside the extracted `adsfolio` folder. On Linux, launch the
-   `adsfolio` executable inside the extracted `adsfolio` folder.
-3. Start browsing without a token. For ADS services, configure your token using
-   **Tools → NASA ADS Token…**. A token already supplied
-   through `ADS_API_TOKEN` or an existing supported token file is reused.
-4. Use **File → Add Library Root…** to choose a folder of PDFs. The existing
-   **Tools → My Publication Profile…** dialog configures publication matching.
-
-Keep the complete extracted folder together on Windows and Linux. Its helper
-executable and `_internal` directory are required. On macOS those files are
-inside the app. Replacing the app does not delete your configuration, cache,
-or central catalog. These use the ADSfolio per-user directories. Earlier data is
-copied on first use without deleting the source. Close the earlier application
-before migrating. The bundled GUI and Python installation share the new data.
-Do not run overlapping watchers against the same roots.
-
-The token is stored in the existing per-user token file, not in the application
-bundle or an operating-system keychain. `ADS_API_TOKEN` takes precedence over
-the saved token. A saved token is not verified by making a network request.
+The app opens PDFs with a system PDF viewer. The bundle does not include OCR
+software.
 
 ## Build on each target operating system
 
@@ -50,39 +27,50 @@ uv run --no-sync pyinstaller --noconfirm --clean packaging/adsfolio.spec
 | Windows | `dist/adsfolio/adsfolio.exe` | Windows Server 2022 runner, x86-64 |
 | Linux | `dist/adsfolio/adsfolio` | Ubuntu 24.04, x86-64 |
 
-These are build targets, not a claim that every corresponding desktop has
-been tested. Windows desktop acceptance and minimum OS versions require
-validation on those systems. Qt and Python can set a higher minimum OS
-version than the application itself. The Linux build is compiled against Ubuntu 24.04 and requires glibc 2.39 or
-newer alongside system desktop libraries. It will not run on older distributions
-with older glibc versions or musl-based distributions such as Alpine.
+These are build targets. They are not a claim that testing covered every
+corresponding desktop. Windows desktop acceptance and minimum OS versions
+require validation on those systems. Qt and Python can set a higher minimum OS
+version than the application itself.
+
+The Linux build compiles against Ubuntu 24.04. It requires glibc 2.39 or newer,
+and it also requires system desktop libraries. It will not run on older
+distributions with older glibc versions or musl-based distributions such as
+Alpine.
 
 WordNet is a build-time download for ISO4 abbreviation. The spec bundles this
 explicit corpus and the ISO4 lookup tables. It does not copy arbitrary NLTK
-data from the builder's home directory. No corpus download is needed at runtime.
+data from the builder's home directory. The app needs no corpus download at
+runtime.
 
-The checked-in GitHub Actions workflow builds each target independently and
-uploads archives on pull requests affecting the app, version tags, and manual
-runs. For version tags (`v*`), the workflow validates exact tag-to-version
-consistency, generates SHA-256 checksums, and publishes a GitHub Release
-containing the desktop bundles, Python packages, and checksums (marked as
-prerelease when the version tag is a prerelease or dev release). A green macOS run does
-not validate Windows or Linux. PyInstaller is not a cross-compiler. See its
+The checked-in GitHub Actions workflow builds each target independently. It
+uploads archives for pull requests that affect the app, for version tags, and
+for manual runs. For version tags (`v*`), the workflow does these steps:
+
+1. It checks that the tag and the package version match exactly.
+2. It generates SHA-256 checksums.
+3. It publishes a GitHub Release with the desktop bundles, Python packages, and
+   checksums.
+
+The workflow marks the release as a prerelease when the version tag is a
+prerelease or dev release. A green macOS run does not validate Windows or
+Linux. PyInstaller is not a cross-compiler. See its
 [platform notes](https://pyinstaller.org/en/stable/usage.html#supporting-multiple-platforms).
 
-On Linux, install the desktop libraries listed in the workflow when missing.
-Run from a terminal to see errors from the Qt platform loader.
+On Linux, install any missing desktop libraries that the workflow lists. To see
+errors from the Qt platform loader, run the app from a terminal.
 
 ## Bundle architecture and verification
 
-The `adsfolio` executable launches the GUI without a console on Windows.
-`adsfolio-cli` (or `adsfolio-cli.exe`) runs the same Click commands used by the
-Python package. Both executables share the analyzed Python modules and dynamic
-libraries. The GUI uses the console helper for Identify, Rename, and refresh
-jobs, preserving streamed output, cancellation, working directories, and
-argument boundaries without relying on an installed Python interpreter.
+The `adsfolio` executable starts the GUI without a console on Windows.
+`adsfolio-cli` (or `adsfolio-cli.exe`) runs the same Click commands that the
+Python package uses. Both executables share the analyzed Python modules and
+dynamic libraries.
 
-Identify normalizes the scan root before constructing catalog paths. Relative
+The GUI uses the console helper for Identify, Rename, and refresh jobs. This
+design preserves streamed output, cancellation, working directories, and
+argument boundaries. It does not rely on an installed Python interpreter.
+
+Identify normalizes the scan root before it constructs catalog paths. Relative
 roots and directory symlink aliases therefore use the same root as the catalog,
 including macOS's `/var` and `/private/var` aliases.
 
@@ -100,51 +88,63 @@ uv run --no-sync pyinstaller --noconfirm packaging/adsfolio.spec -- --with-smoke
 QT_QPA_PLATFORM=offscreen dist/adsfolio-smoke/adsfolio-smoke
 ```
 
-On Windows run `dist/adsfolio-smoke/adsfolio-smoke.exe`. The smoke executable uses
-temporary settings and checks first-launch cancellation, a visible Qt window,
-PDF engines, offline ISO4 data, and actual output from the bundled CLI helper.
-It makes no ADS requests. This checks the bundled modules and libraries.
-Manual native desktop testing still covers OS integration and security prompts.
-The macOS metadata check validates the actual `.app` executable and ensures the
-GUI is not marked as background-only. This is separate from the frozen Qt test:
-a working test executable cannot validate Finder's interpretation of the app.
+On Windows, run `dist/adsfolio-smoke/adsfolio-smoke.exe`. The smoke executable
+uses temporary settings. It checks these items:
 
-Before distributing a build, launch it from the desktop on a clean account,
-enter a token through the GUI, open a PDF, reveal it in the file manager, and
-run Identify plus a Rename preview in a disposable library. Test paths with
-spaces and non-ASCII characters. Do not use the presence of an executable or
-a successful `--help` as evidence that those desktop operations work.
+- first-launch cancellation
+- a visible Qt window
+- PDF engines
+- offline ISO4 data
+- actual output from the bundled CLI helper
 
-## Download and update
+The smoke executable makes no ADS requests. This checks the bundled modules and
+libraries. Manual tests on native desktops still cover OS integration and
+security prompts.
 
-After a release is published, download the archive for your platform from
-[GitHub Releases](https://github.com/ysBach/adsfolio/releases/latest). Compare its
-SHA-256 digest with the release checksums. Quit ADSfolio before replacing the
-application. Keep your catalog and configuration directories. Replacing the
-application does not migrate or delete them. Prereleases are listed on the
-[releases page](https://github.com/ysBach/adsfolio/releases).
+The macOS metadata check validates the actual `.app` executable. It also makes
+sure that the metadata does not mark the GUI as background-only. This check is
+separate from the frozen Qt test. A working test executable cannot validate how
+Finder interprets the app.
+
+Before you distribute a build, do these steps:
+
+1. Launch the build from the desktop on a clean account.
+2. Enter a token through the GUI.
+3. Open a PDF.
+4. Reveal the PDF in the file manager.
+5. In a disposable library, run Identify plus a Rename preview.
+
+Test paths with spaces and non-ASCII characters. Do not use the presence of an
+executable or a successful `--help` as evidence that those desktop operations
+work.
 
 ## Archives and release status
 
 The workflow produces macOS DMG and ZIP files, a Windows ZIP, and a Linux tar.gz.
-DMGs contain the application and an Applications shortcut. Each image is verified
-and mounted read-only during the build. DMGs do not provide code signing or notarization.
-Version 0.1.0 has ZIP downloads only. Version 0.2.1 adds DMGs. macOS
-archives use `ditto`. Linux archives use `tar` to preserve required symbolic
-links. Ordinary ZIP creation can lose these links. See
+DMGs contain the application and an Applications shortcut. During the build, the
+workflow verifies each image and mounts it read-only. DMGs do not provide code
+signing or notarization.
+
+Version 0.1.0 has ZIP downloads only. Version 0.2.0 adds DMGs. macOS archives
+use `ditto`. Linux archives use `tar` to preserve required symbolic links.
+Ordinary ZIP creation can lose these links. See
 [PyInstaller's distribution notes](https://pyinstaller.org/en/stable/common-issues-and-pitfalls.html#requirements-imposed-by-symbolic-links-in-frozen-application).
 
 Version 0.5.1 ships unsigned bundles. macOS Developer ID signing/notarization and
 Windows publisher signing require release credentials and are not configured.
-Downloaded builds may trigger operating-system security prompts. There is no
-automatic updater or system installer. Native signing and broader installation and upgrade acceptance remain future work.
+Downloaded builds may trigger operating-system security prompts.
+
+There is no automatic updater that replaces the app, and there is no system
+installer. The App Update button downloads a release, verifies its SHA-256
+checksum, and opens it. It replaces nothing automatically. Native signing and
+broader installation and upgrade acceptance remain future work.
 
 ### Status and manual acceptance
 
-The macOS bundle sets `LSBackgroundOnly` to `false` in `packaging/adsfolio.spec`
-(the console helper would otherwise make the app background-only), and
-`packaging/check_macos_bundle.py` checks the built app's metadata and
-executable paths. The smoke executable cannot catch this problem.
+The macOS bundle sets `LSBackgroundOnly` to `false` in `packaging/adsfolio.spec`.
+Without this setting, the console helper would make the app background-only.
+`packaging/check_macos_bundle.py` checks the built app's metadata and executable
+paths. The smoke executable cannot catch this problem.
 
 Release workflows require native tests and frozen runtime checks on all four
 build targets. These automated checks do not establish compatibility with every
@@ -152,24 +152,19 @@ desktop. Real ADS requests, PDF-viewer integration, Finder launch, and
 clean-machine installation require separate manual acceptance.
 
 The project license remains BSD-3-Clause. Bundled third-party components retain
-their own licenses. The `full` extra includes PyMuPDF. Dependency metadata and license notices accompany the bundles. PyMuPDF uses
-AGPL terms. The project license does not replace bundled component licenses.
-
+their own licenses. The `full` extra includes PyMuPDF. PyMuPDF uses AGPL terms.
+Dependency metadata and license notices accompany the bundles. The project
+license does not replace bundled component licenses.
 
 ## Homebrew on macOS
 
-After a stable release and tap publication:
-
-```sh
-brew install --cask ysBach/adsfolio/adsfolio
-brew upgrade --cask adsfolio
-```
+After a stable release, publish the cask to the tap with
+`scripts/publish_tap.py`. The release workflow generates the cask. See
+[Publishing releases](maintaining.md#publishing-releases).
 
 The cask selects the ARM64 or Intel archive, checks its SHA-256 digest, installs
 `ADSfolio.app`, and adds the `adsfolio` CLI. It requires macOS 15 or later.
-Uninstalling the cask retains configuration and catalog data. Homebrew does not
-remove the need for code signing or OS acceptance testing. See
-[Publishing releases](maintaining.md#publishing-releases) for tap setup and updates.
+Uninstalling the cask keeps configuration and catalog data.
 
 ## Run the latest local source on macOS
 
@@ -187,13 +182,20 @@ The launcher uses the existing ADSfolio configuration, metadata, and history.
 It does not copy or delete library data. Do not run both apps against the same
 watched folders at once.
 
-After editing source files, quit the app completely and reopen it.
-Closing a window alone may not exit the application. Changes to dependencies
-require another `uv sync --all-extras`. Startup does not synchronize dependencies.
-Keep the checkout and its `.venv` at the same paths.
+After you edit source files, quit the app completely. Then reopen it. Closing a
+window alone may not exit the application.
+
+After you change dependencies, run `uv sync --all-extras` again. Startup does
+not synchronize dependencies. Keep the checkout and its `.venv` at the same
+paths.
 
 Startup errors appear in `~/Library/Logs/ADSfolio/source-launch.log`.
-To restore the packaged app, quit ADSfolio. Move the source launcher out of
-Applications, then move the backed-up `ADSfolio.app` into Applications.
+
+To restore the packaged app:
+
+1. Quit ADSfolio.
+2. Move the source launcher from Applications to another folder.
+3. Move the backed-up `ADSfolio.app` into Applications.
+
 A Homebrew upgrade can replace the source launcher with a packaged release.
 Run the installer again if you want to return to the source launcher.

@@ -2,12 +2,17 @@
 
 `adsfolio cv` generates publication-list fragments for CV workflows from ADS query results.
 
-The command is config-driven via YAML (`cv.yaml`) and supports:
+A YAML file (`cv.yaml`) configures the command.
+
+Output formats:
 
 - LaTeX output (primary)
 - Markdown output
 - user-defined templates for any text format: LaTeX, HTML, Markdown, plain
   text, or another format you write
+
+Content options:
+
 - multiple rendering styles
 - marker categories by bibcode
 - status overrides for accepted/submitted preprints
@@ -33,12 +38,16 @@ adsfolio cv generate --config cv.yaml --author-format 'ads_custom:%3.2l'
 adsfolio cv generate --config cv.yaml --output out/publications.tex
 ```
 
-`--dry-run` still queries ADS and renders the result; it prints to stdout instead
-of writing a file. `--format` selects a renderer but does not rewrite an existing
-configured filename, so supply `--output out/publications.md` when switching a
-LaTeX configuration to Markdown. Relative `output.dir` paths are resolved against
-the YAML file's directory; an explicit CLI `--output` is relative to the current
-working directory.
+`--dry-run` still queries ADS and renders the result. It prints to stdout instead
+of writing a file.
+
+`--format` selects a renderer but does not rewrite an existing configured
+filename. Therefore, supply `--output out/publications.md` when you switch a
+LaTeX configuration to Markdown.
+
+`adsfolio cv` resolves relative `output.dir` paths against the YAML file's
+directory. An explicit CLI `--output` is relative to the current working
+directory.
 
 ORCID behavior:
 
@@ -89,8 +98,8 @@ Required field:
 
 ### `template`
 
-Used when `format.output` is `template`. Each part is text with `{name}`
-placeholders. Only the names below are replaced. Other braces stay as written,
+`adsfolio cv` uses this section when `format.output` is `template`. Each part is
+text with `{name}` placeholders. `adsfolio cv` replaces only the names below. Other braces stay as written,
 so LaTeX needs no doubled braces: `\textit{{title}}` becomes
 `\textit{Dust in comet atmospheres}`. A misspelled placeholder, such as
 `{titel}`, stays in the output unchanged.
@@ -103,8 +112,8 @@ so LaTeX needs no doubled braces: `\textit{{title}}` becomes
 | `entry` | Once per publication |
 | `section_end` | After each section, for example `</ol>` |
 | `footer` | Once, at the end |
-| `escape` | `latex`, `html`, or `none`: how ADS text is escaped |
-| `group` | `true` (default) for First-authored and Co-authored sections; `false` for one section, Publications, in the original order |
+| `escape` | `latex`, `html`, or `none`: how ADSfolio escapes ADS text |
+| `group` | `true` (default) for First-authored and Co-authored sections. `false` for one section, Publications, in the original order |
 
 A `preset` fills every part, `escape`, `format.me_fmt`, `format.author_sep`,
 and `output.filename`. Keys that you write replace the preset values.
@@ -175,10 +184,10 @@ status:
 
 ## ADS query build behavior
 
-At runtime, `adsfolio cv` constructs query as:
+At runtime, `adsfolio cv` builds the query as follows:
 
 1. include `orcid_pub:"<orcid>"` when `author.use_orcid` is true
-2. include `year:[start TO end]` when `debut_year`/`retire_year` are set
+2. include `year:[start TO end]` when you set `debut_year`/`retire_year`
 3. include `author.query`
 4. append `bibstem:(- <value>)` for each `author.exclude_bibstems` item
 
@@ -186,16 +195,18 @@ At runtime, `adsfolio cv` constructs query as:
 
 ### Classification
 
-Fetched ADS docs are split into:
+`adsfolio cv` splits fetched ADS docs into:
 
 - first-authored: `first_author` starts with `first_author_prefix`
 - co-authored: all remaining docs
 
 ### Marker and status application
 
-- marker symbols are appended for bibcodes listed under each marker category
-- status text is appended from `status[bibcode]` when present
-- non-peer-reviewed documents (`NOT REFEREED`, excluding arXiv) are tracked and marked
+`adsfolio cv`:
+
+- appends marker symbols for bibcodes listed under each marker category
+- appends status text from `status[bibcode]` when present
+- tracks and marks non-peer-reviewed documents (`NOT REFEREED`, excluding arXiv)
 
 ### Author formatting modes
 
@@ -204,7 +215,7 @@ Fetched ADS docs are split into:
 - `cv_default`:
   uses local `format_author_list_cv()` with `n_max_authors`, `n_min_authors`, `n_me`, `me_target`, and `me_fmt`.
 - `ads_custom:<format>`:
-  requests author formatting from ADS/SciX export custom format API (`/export/custom`), using the supplied format string.
+  requests author formatting from the ADS/SciX export API for custom formats (`/export/custom`), using the supplied format string.
 
 Reference for the custom format syntax:
 [SciX Help: Export Results](https://scixplorer.org/scixhelp/actions-scix/export).
@@ -222,8 +233,8 @@ Important details from the SciX custom-format reference:
 ### Journal handling
 
 - journal display uses `format_journal(..., fmt="full")`
-- `arXiv e-prints` is normalized to `arXiv`
-- optional bibstem-to-journal legend can be appended
+- `adsfolio cv` normalizes `arXiv e-prints` to `arXiv`
+- `adsfolio cv` can append an optional bibstem-to-journal legend
 
 ## Full example
 

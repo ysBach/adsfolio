@@ -1,6 +1,6 @@
 # CLI and Python workflows
 
-Use the [application guide](gui.md) for interactive library management.
+Use the [App GUI guide](gui.md) for interactive library management.
 This page covers scripts and the Python client.
 
 Learning path:
@@ -13,7 +13,7 @@ Learning path:
 
 ## Install
 
-Python 3.10 or newer is required. Version 0.5.1 and later are on PyPI:
+ADSfolio requires Python 3.10 or newer. Version 0.5.1 and later are on PyPI:
 
 ```sh
 pip install adsfolio            # CLI and Python client
@@ -123,9 +123,14 @@ bibliography workflow.
 
 Follow the tutorials in order. Each one builds on the previous one.
 
+ADS search and libraries:
+
 1. [Setup and first search](cli-tutorials/01-setup-and-search.md)
 2. [Export and BibTeX](cli-tutorials/02-export-and-bibtex.md)
 3. [Library workflows](cli-tutorials/03-library-workflows.md)
+
+PDFs, operations, and documents:
+
 4. [PDF workflows](cli-tutorials/04-pdf-workflows.md)
 5. [Operations and troubleshooting](cli-tutorials/05-operations-and-troubleshooting.md)
 6. [CV workflows](cli-tutorials/06-cv-workflows.md)

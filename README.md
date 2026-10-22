@@ -20,9 +20,9 @@ speed claim applies to every collection. Start with one folder to check results.
 
 *Application screenshot with illustrative sample data. Version 0.5.0 shown.*
 
-[Website](https://ysbach.github.io/adsfolio/) · [First-library tutorial](https://ysbach.github.io/adsfolio/docs/getting-started.html) · [Application guide](https://ysbach.github.io/adsfolio/docs/gui.html)
+[Website](https://ysbach.github.io/adsfolio/) · [Getting started](https://ysbach.github.io/adsfolio/docs/getting-started.html) · [Application guide](https://ysbach.github.io/adsfolio/docs/gui.html)
 
-## Three everyday workflows
+## Daily workflows
 
 - **Keep a BibTeX file for your paper.** Add the papers you cite to a NASA ADS
   library, then choose **Tools → Export ADS Library…** to save a `.bib` file for
@@ -35,7 +35,7 @@ speed claim applies to every collection. Start with one folder to check results.
   publication list from NASA ADS in LaTeX, HTML, Markdown, plain text, or your
   own template. You choose how to highlight your name and how each entry looks.
 
-[See the three workflows with screenshots and a short video](https://ysbach.github.io/adsfolio/docs/workflows.html).
+[See the daily workflows with screenshots and a short video](https://ysbach.github.io/adsfolio/docs/workflows.html).
 
 ## Install the desktop app
 
@@ -52,7 +52,7 @@ need a Python environment or an ADS token to browse your local library.
 | Linux x86-64 | Extract `adsfolio-linux-x86_64.tar.gz`, then run `adsfolio` inside the extracted folder. Requires glibc 2.39+ and system desktop libraries. |
 
 Keep the complete extracted folder together on Windows and Linux.
-See the [platform requirements](https://ysbach.github.io/adsfolio/docs/desktop.html) for details.
+See [Getting started](https://ysbach.github.io/adsfolio/docs/getting-started.html#install) for details.
 
 ### macOS with Homebrew
 
@@ -91,7 +91,7 @@ establish that the app can open. Windows can also show publisher warnings.
    This reconciles local files. Use the separate ADS refresh actions to update
    remote metadata. Permanent cleanup remains a separate operation.
 
-See the [interactive application guide](https://ysbach.github.io/adsfolio/docs/gui.html) for watching folders,
+See the [App GUI guide](https://ysbach.github.io/adsfolio/docs/gui.html) for watching folders,
 selection, metadata editing, notifications, and refresh options.
 
 ### Updates and existing libraries

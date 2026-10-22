@@ -1,10 +1,10 @@
-# Tutorial 5: Operations and Troubleshooting
+# Tutorial 5: Operations and troubleshooting
 
 This tutorial summarizes daily usage patterns and common CLI issues.
 
 ## 0) Start with `--help`
 
-Run these first whenever behavior is unclear or you need exact flag names:
+Run these commands first when behavior is unclear or when you need exact flag names:
 
 ~~~bash
 adsfolio --help
@@ -17,7 +17,7 @@ adsfolio pdf upgrade --help
 adsfolio cv --help
 ~~~
 
-High-value options to check first:
+Check these options first:
 
 | Command | Option | What it clarifies |
 | --- | --- | --- |
@@ -52,7 +52,7 @@ Refresh identify profile (ORCID/names/year window) and publication cache:
 adsfolio set
 ```
 
-`adsfolio set` is usually one-time setup. Re-run only when token/profile values change.
+`adsfolio set` is usually a one-time setup. Re-run it only when token/profile values change.
 
 ## 2) Daily command map
 
@@ -100,12 +100,12 @@ adsfolio set
 - Symptom: identify is slow even though you ran it recently.
 - Cause: resolved PDFs with unchanged content reuse catalog metadata. Unresolved
   or changed PDFs still need identification. Matching also uses the publication
-  cache and the library's cached ADS documents; these are separate from PDF
+  cache and the library's cached ADS documents. These are separate from PDF
   resolution status.
 - Fix:
   - run `adsfolio pdf status <dir> --recursive` to inspect the library's records
   - check the central `pdf-library.sqlite` under `Config.get_config_dir()`
-    (`~/Library/Application Support/adsfolio` on macOS); new libraries do not create
+    (`~/Library/Application Support/adsfolio` on macOS). New libraries do not create
     `.adsfolio-pdfs.sqlite` at the scan root
   - run `adsfolio cache status` and `adsfolio cache refresh` if the publication cache is missing
   - rerun `adsfolio pdf identify <dir> --recursive` to reconcile externally renamed
@@ -129,7 +129,7 @@ parenthesized submission dates but cannot reliably separate every title from
 its authors. Metadata DOI and metadata title strategies run before first-page
 titles in the default order.
 
-To correct a remaining unresolved file, select it and use **Update from ADS…**
+To fix a remaining unresolved file, select it. Then use **Update from ADS…**
 with a verified DOI or Bibcode. From the CLI:
 
 ```bash
@@ -145,10 +145,18 @@ uses DOI `10.1364/JOSA.24.000206` and Bibcode `1934JOSA...24..206W`.
 The GUI displays catalog records. A new root discovers only top-level PDFs by
 default. **Refresh/F5** scans the selected root using its current recursion setting.
 
-1. Right-click the root under **LIBRARIES** and turn off **Watch Current Library**
-   if checked.
-2. Reopen that context menu and enable **Include Subdirectories**.
-3. Press **Refresh/F5**, select **All**, and clear the search field.
+Change the root settings:
+
+1. Right-click the root under **LIBRARIES**.
+2. If **Watch Current Library** is checked, disable it.
+3. Reopen that context menu.
+4. Enable **Include Subdirectories**.
+
+Rescan and list the records:
+
+1. Press **Refresh/F5**.
+2. Select **All**.
+3. Clear the search field.
 
 The recursive scan restores nested locations marked missing and discovers new
 PDFs. Top-level scans leave nested records unchanged. **Needs ADS lookup** is
@@ -172,21 +180,22 @@ Files with stale metadata or mismatched digests need Identify instead.
 
 ### `pdf identify` warns about large query batch
 
-- Symptom: command asks to confirm ADS fallback queries for many unmatched files.
+- Symptom: command asks you to approve ADS fallback queries for many unmatched files.
 - Cause: cache/profile matching left many files unresolved.
-- Fix:
-  - use `adsfolio set` and confirm ORCID/year window
+- Fix, before you run identify:
+  - use `adsfolio set` and verify ORCID/year window
   - run `adsfolio pdf ocr` first if many files are scanned/non-OCR
+- Fix, when you run identify:
   - run identify and only approve fallback when needed
   - use unresolved AI roundtrip (`unresolved.csv` -> AI CSV -> `--ai-csv`)
   - rerun `adsfolio pdf identify <dir> --recursive --allow-ads` after improving OCR or supplying AI hints
-  - run `adsfolio pdf status <dir>` to confirm identified records
+  - run `adsfolio pdf status <dir>` to verify identified records
 
 ### CV init fails with PyYAML error
 
 - Symptom: `adsfolio cv init` exits with a PyYAML import error.
 - Fix: reinstall the package in the environment running the command. PyYAML is
-  a required dependency of the base package; the `full` extra is unnecessary.
+  a required dependency of the base package. The `full` extra is unnecessary.
 
 ### CV generate produces wrong author name
 
@@ -198,9 +207,9 @@ Files with stale metadata or mismatched digests need Identify instead.
 
 For destructive workflows, use this sequence:
 
-1. run dry-run command first
-2. inspect output
-3. rerun with `--apply`
+1. Run the dry-run command first.
+2. Inspect the output.
+3. Rerun with `--apply`.
 
 This is especially important for:
 

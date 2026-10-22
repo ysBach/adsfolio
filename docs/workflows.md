@@ -1,4 +1,4 @@
-# Three everyday workflows
+# Daily workflows
 
 ADSfolio helps with three tasks that researchers repeat often:
 
@@ -22,7 +22,7 @@ Collect the papers you cite in a NASA ADS library. Then export that library as
 BibTeX for LaTeX or Overleaf. ADS BibTeX uses the bibcode as the citation key,
 for example `\cite{2024DEMO....1....1R}`.
 
-1. Identify your PDFs. See [Start with your PDF library](getting-started.md).
+1. Identify your PDFs. See [Getting started](getting-started.md).
 2. Select papers, then choose **Tools → Add to ADS Library…**. Choose an
    existing ADS library or create one. ADSfolio adds papers to ADS libraries.
    It never removes papers from them.
@@ -65,8 +65,8 @@ the folder where your browser saves papers.
 ![Library menu with the three watch choices](_static/tutorial/watch-menu.png)
 
 Renames use the saved settings from the **Rename** window. Set the filename
-template there first, and check it with **Preview**. Only PDFs that arrive
-after watching starts are processed. Existing PDFs stay unchanged. A ``●``
+template there first, and check it with **Preview**. The watcher processes
+only PDFs that arrive after watching starts. Existing PDFs stay unchanged. A ``●``
 beside the library name shows an active watcher. See
 [Watching library roots](gui.md#watching-library-roots) for details. In a
 terminal, `adsfolio pdf watch` does the same work.

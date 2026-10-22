@@ -1,4 +1,4 @@
-# Tutorial 6: CV Workflows
+# Tutorial 6: CV workflows
 
 This tutorial covers `adsfolio cv`: initialize a config, generate publication lists, and select output styles.
 
@@ -137,13 +137,19 @@ output:
     item_sep: "6pt"
 ```
 
-Notes:
+Author settings:
 
-- `author.query` is required.
+- You must set `author.query`.
 - `author.use_orcid: true` plus `author.orcid` makes query execution ORCID-first.
+
+Supported values:
+
 - `output.latex.list_env` supports `itemize` or `enumerate`.
 - `format.style` supports `compact`, `detailed`, and `bibcode-first`.
 - `format.author_format` supports `cv_default` and `ads_custom:<format>`.
+
+Rendering rules:
+
 - If a publication has `NOT REFEREED` and is not arXiv, `adsfolio cv` marks it as non-peer-reviewed.
 - `me_fmt` uses Python `.format()`: keep doubled braces for literal LaTeX braces.
 
@@ -186,7 +192,7 @@ For `format.author_format` (or `--author-format`), use:
 - `cv_default`: built-in local author formatter (`format_author_list_cv`)
 - `ads_custom:<FORMAT>`: SciX/ADS custom formatter (`/export/custom`) for authors
 
-Reference syntax is documented in SciX Help:
+SciX Help documents the reference syntax:
 [Export Results](https://scixplorer.org/scixhelp/actions-scix/export).
 
 The custom format string follows a `printf`-like directive style. Useful author directives include:
@@ -196,7 +202,7 @@ The custom format string follows a `printf`-like directive style. Useful author 
 - `%G`: `lastname, f. m.` without ampersand styling
 - `%m` / `%M`: lastname-centric compact variants
 
-Truncation is supported for author-list directives:
+Author-list directives support truncation:
 
 - `%[n.m]l`
 - Example: `%3.2l` means if author count > 3, keep through author 2 then `et al.`
@@ -216,7 +222,7 @@ format:
 Important:
 
 - In `adsfolio cv`, `ads_custom` output replaces only the author string field.
-- Use author-focused directives for best results. Full-reference formats (with title/journal/year directives) will be inserted as the author segment.
+- Use author-focused directives for best results. `adsfolio cv` inserts full-reference formats (with title/journal/year directives) as the author segment.
 
 ## 5) Compare styles
 
@@ -230,7 +236,7 @@ Style intent:
 
 - `compact`: two-line compact item optimized for dense CV lists.
 - `detailed`: fuller line layout with explicit ADS link line.
-- `bibcode-first`: bibcode-centered item label format.
+- `bibcode-first`: item label format centered on the bibcode.
 
 ## 6) Output behavior
 
@@ -239,10 +245,10 @@ Style intent:
 - runs a single ADS query using your configured `author.query` plus `exclude_bibstems`
 - classifies documents into first-authored vs co-authored groups
 - renders either LaTeX or Markdown
-- writes one output file (unless `--dry-run` is set)
+- writes one output file (unless you set `--dry-run`)
 
-For LaTeX output with `journal_legend: true`, a bibstem-to-journal legend is appended at the end.
+For LaTeX output with `journal_legend: true`, `adsfolio cv generate` appends a bibstem-to-journal legend at the end.
 
 ## Next
 
-Return to [Operations and Troubleshooting](./05-operations-and-troubleshooting.md) for general CLI debugging patterns.
+Return to [Tutorial 5: Operations and troubleshooting](./05-operations-and-troubleshooting.md) for general CLI debugging patterns.

@@ -1,10 +1,10 @@
-# Tutorial 1: Setup and First Search
+# Tutorial 1: Setup and first search
 
-This tutorial gets you from install to your first useful `adsfolio search` commands.
+This tutorial takes you from install to your first useful `adsfolio search` commands.
 
 ## 0) Start with `--help`
 
-Run these first to view the full command interface before executing examples:
+Before you run the examples, run these commands to see the full command interface:
 
 ~~~bash
 adsfolio --help
@@ -16,7 +16,7 @@ adsfolio config show --help
 adsfolio rate-limit --help
 ~~~
 
-Key search options to understand:
+Key search options:
 
 | Option | Meaning | When to use |
 | --- | --- | --- |
@@ -25,17 +25,17 @@ Key search options to understand:
 | `--sort` / `-s` | Sort expression like `"citation_count desc"` | Prioritize highly cited or most recent results |
 | `--fq` | Extra filter query | Narrow by database, property, etc. without changing main query |
 | `--json` | Print machine-readable JSON output | Pipe to tools (`jq`, Python, shell scripts) |
-| `adsfolio --token` | Global option; put it before the subcommand (`adsfolio --token T search ...`). Not accepted after `search` | Temporary token switching without changing saved config |
+| `adsfolio --token` | Global option. Put it before the subcommand (`adsfolio --token T search ...`). Not accepted after `search` | Temporary token switching without changing saved config |
 
 ## 1) Install
 
-Requires Python 3.10 or newer.
+You need Python 3.10 or newer.
 
 ```bash
 pip install adsfolio
 ```
 
-If you also want all optional features (watchdog, annotation porting, ISO4):
+To also install all optional features (watchdog, annotation porting, ISO4), run:
 
 ```bash
 pip install 'adsfolio[full]'
@@ -45,22 +45,25 @@ pip install 'adsfolio[full]'
 
 Get your ADS token from [SciX settings](https://scixplorer.org/user/settings/token).
 
-Run interactive setup once (you usually do this only once unless values change):
+Run the interactive setup. You usually do this only once, unless values change:
 
 ```bash
 adsfolio set
 ```
 
-This stores:
+The setup stores these account and author values:
 
 - ADS token
 - ORCID (recommended)
 - optional full-name query terms (repeat `--query-name` flag or enter semicolon-separated names at the prompt)
+
+The setup also stores these prefetch values:
+
 - debut/end year window for prefetch (`retire_year` remains readable from legacy setup files)
 - optional ADS library IDs for prefetch bootstrap
 - optional expansion to references/citations of those library papers
 
-These fields are used to reduce ADS requests during `adsfolio pdf identify` runs.
+During `adsfolio pdf identify` runs, adsfolio uses these fields to reduce ADS requests.
 They do not limit normal search/export behavior.
 
 You can pass values non-interactively:
@@ -74,7 +77,7 @@ adsfolio set \
   --library-id ABC123XYZ
 ```
 
-Or use environment variable / token-only config:
+Alternatively, use an environment variable or the token-only config:
 
 ```bash
 export ADS_API_TOKEN=<your-token>
@@ -115,7 +118,7 @@ adsfolio search "author:Einstein year:1905" --json
 
 ## 7) Override token per command
 
-If you need to run a command with a different token:
+To run a command with a different token:
 
 ```bash
 adsfolio --token "<other-token>" search "author:Hubble" --rows 5
@@ -127,7 +130,7 @@ adsfolio --token "<other-token>" search "author:Hubble" --rows 5
 adsfolio rate-limit
 ```
 
-Shows current limit, remaining requests, and reset time from the last API response.
+This command shows the current limit, remaining requests, and reset time from the last API response.
 
 ## Next
 
