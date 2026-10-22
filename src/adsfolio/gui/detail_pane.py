@@ -966,7 +966,7 @@ class DetailPane(QWidget):
         buttons = QHBoxLayout(self._actions)
         buttons.setContentsMargins(4, 4, 4, 4)
         buttons.setSpacing(4)
-        update_button = QPushButton("Update by Identifier…", self._actions)
+        update_button = QPushButton("Update by ID…", self._actions)
         open_button = QPushButton("Open", self._actions)
         reveal_button = QPushButton("Reveal", self._actions)
         for button, icon_name, description in (

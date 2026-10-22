@@ -41,6 +41,7 @@ ADS services and BibTeX
    adsfolio.bibtex.io
    adsfolio.bibtex.sanitize
    adsfolio.references
+   adsfolio.citekeys
 
 Publication lists and CLI
 -------------------------

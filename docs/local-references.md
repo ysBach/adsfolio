@@ -20,7 +20,7 @@ choose. None of these steps needs an ADS token. For the command line, see
 Use this when one PDF in your library is not on ADS.
 
 1. In the main table, select the PDF.
-2. In the detail pane, choose **Update by Identifier…**. You can also
+2. In the detail pane, choose **Update by ID…**. You can also
    right-click the row, or use **ADS → Update and Rename Selected by
    Identifier…**.
 3. Type the DOI, for example `10.5555/jex.2019.12.34`, or the arXiv ID, for
@@ -34,8 +34,7 @@ and the year, and ADSfolio renames it with your Rename settings. The status
 column still shows that ADS has no record.
 
 An arXiv ID needs **DataCite** in your metadata providers, because Crossref
-does not have arXiv DOIs. When ADS adds the paper later, choose **Update by
-Identifier…** again. The PDF then receives its bibcode.
+does not have arXiv DOIs. When ADS adds the paper later, choose **Update by ID…** again. The PDF then receives its bibcode.
 
 Check the identifier against the paper before you choose **OK**. ADSfolio uses
 the DOI as you type it, apart from lowercase letters. Remove sentence

@@ -250,14 +250,14 @@ order places bibstem, volume, and page at the end, because the bibcode encodes
 that information. ADSfolio converts HTML display markup from ADS to plain text
 in the table, detail pane, and generated filenames.
 
-Use **Update by Identifier…** in the detail pane to enter or correct the
+Use **Update by ID…** in the detail pane to enter or correct the
 selected file's Bibcode, DOI, arXiv ID, or journal-volume-page coordinates. A DOI may be bare,
 `DOI:`-prefixed, or an HTTP(S) `doi.org` / `dx.doi.org` link. ADSfolio does not
 recognize other publisher URLs. ADSfolio uses a DOI exactly as typed (apart from
 lower-casing). As a result, it keeps trailing punctuation or parentheses that
 belong to the DOI. Remove any sentence punctuation that you pasted with the DOI.
 
-**Update by Identifier…** refreshes that file's unlocked ADS metadata,
+**Update by ID…** refreshes that file's unlocked ADS metadata,
 abstract, and citation counts. When it finds a unique matching ADS record, it
 marks the file resolved. When ADS has no DOI or arXiv match, Crossref and
 DataCite supply the metadata, and the file stays unresolved. See
@@ -517,7 +517,7 @@ and **Skip unresolved directory** must be off. Identify also returns previously
 identified files in that scanned subtree, without repeating their ADS lookup.
 Identify handles AI CSV matches in the same run.
 
-**Update by Identifier** and the ADS refresh actions labeled **Rename** rename
+**Update by ID** and the ADS refresh actions labeled **Rename** rename
 updated PDFs with the effective Rename settings. Files in the unresolved
 subtree also return to the root in the same move. These actions rename other
 PDFs within their current directory. Filenames use the refreshed metadata,

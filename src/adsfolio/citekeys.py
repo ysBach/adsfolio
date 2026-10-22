@@ -248,8 +248,9 @@ def assign_keys(
 
     Parameters
     ----------
-    papers : iterable of (id, record, own_key)
-        Each paper's ID, its metadata record, and its own key (or ``""``).
+    papers : iterable of tuple
+        One ``(id, record, own_key)`` tuple per paper: its ID, its metadata
+        record, and its own key (or ``""``).
     policy : `KeyPolicy`
         Key styles to apply.
 

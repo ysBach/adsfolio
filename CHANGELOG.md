@@ -6,7 +6,7 @@
 
 - **Type a DOI or an arXiv ID.** Before: **Update ADS…** asked ADS only. A DOI
   that ADS did not know left the PDF unchanged, and arXiv IDs were not
-  accepted. Now: **Update by Identifier…** asks Crossref and DataCite when ADS
+  accepted. Now: **Update by ID…** asks Crossref and DataCite when ADS
   has no match. `10.5555/jex.2019.12.34` renamed `scan_0042.pdf` to
   `RoeA+KimS_2019-Grain_Growth_in_Cold_Clouds.pdf`. An arXiv ID such as
   `2401.12345` uses its DataCite record. No ADS token is necessary.

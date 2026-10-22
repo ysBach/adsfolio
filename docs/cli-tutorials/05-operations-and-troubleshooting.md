@@ -129,8 +129,7 @@ parenthesized submission dates but cannot reliably separate every title from
 its authors. Metadata DOI and metadata title strategies run before first-page
 titles in the default order.
 
-To fix a remaining unresolved file, select it. Then use **Update by
-Identifier…** with a verified DOI, arXiv ID, or Bibcode. From the CLI:
+To fix a remaining unresolved file, select it. Then use **Update by ID…** with a verified DOI, arXiv ID, or Bibcode. From the CLI:
 
 ```bash
 adsfolio pdf refresh-ads <dir> --identifier 10.1051/0004-6361/201834764 \
