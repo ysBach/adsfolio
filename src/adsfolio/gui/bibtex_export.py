@@ -8,10 +8,13 @@ from typing import Any
 
 from PySide6.QtCore import QIODevice, QSaveFile, Qt
 from PySide6.QtWidgets import (
+    QComboBox,
     QDialog,
     QDialogButtonBox,
     QFileDialog,
+    QFormLayout,
     QLabel,
+    QLineEdit,
     QMessageBox,
     QTableWidget,
     QTableWidgetItem,
@@ -19,6 +22,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from ..citations import CITATION_FIELD_HELP
+from ..citekeys import KeyPolicy, KeyStyle, citation_key
 from ..references import CitationKeyError, LocalReferences
 
 _KEY_COLUMN = 3
@@ -121,6 +126,160 @@ class CitationKeyDialog(QDialog):
         self.buttons.button(QDialogButtonBox.StandardButton.Save).setEnabled(
             not problem
         )
+
+
+_EXAMPLE_PAPERS: tuple[Mapping[str, Any], ...] = (
+    {
+        "bibcode": "2020ApJ...900....1K",
+        "doi": ["10.3847/1538-4357/abcdef"],
+        "title": ["The Dust of Small Stars"],
+        "author": ["Kim, Sun"],
+        "year": "2020",
+    },
+    {
+        "doi": ["10.5555/example.2021"],
+        "title": ["On the Theory of Dust"],
+        "author": ["Roe, Alice"],
+        "year": "2021",
+    },
+)
+
+_STYLE_HELP = {
+    KeyStyle.BIBCODE: "The ADS bibcode, for example 2020ApJ...900....1K.",
+    KeyStyle.DOI: "The DOI, for example 10.5555/example.2021.",
+    KeyStyle.TEMPLATE: "Your template below, for example {first_author_initials}{year}.",
+    KeyStyle.SCHOLAR: (
+        "Surname, year, and the first title word that is not a short word "
+        "such as 'on' or 'the', for example roe2021theory."
+    ),
+    KeyStyle.MANUAL: "You type a key for each paper when you export it.",
+}
+
+
+class CitationKeySettingsDialog(QDialog):
+    """Choose the citation key style for ADS papers and for other papers.
+
+    A key that the user typed, or that came with an imported BibTeX entry,
+    always wins over these styles.
+
+    Parameters
+    ----------
+    parent : `QWidget` or `None`
+        Parent widget.
+    policy : `KeyPolicy`
+        The current styles.
+    samples : sequence of mapping, optional
+        Paper metadata for the preview. The default is two example papers.
+    """
+
+    def __init__(
+        self,
+        parent: QWidget | None,
+        policy: KeyPolicy,
+        samples: Sequence[Mapping[str, Any]] = (),
+    ) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Citation Keys")
+        self._samples = list(samples) or list(_EXAMPLE_PAPERS)
+        layout = QVBoxLayout(self)
+        intro = QLabel(
+            "Choose how BibTeX export makes citation keys. A key that you "
+            "typed, or that came with an imported BibTeX entry, always wins.",
+            self,
+        )
+        intro.setWordWrap(True)
+        layout.addWidget(intro)
+        form = QFormLayout()
+        self.ads_style = self._style_combo(policy.ads, include_bibcode=True)
+        self.ads_style.setToolTip("Key style for papers with an ADS bibcode")
+        self.other_style = self._style_combo(policy.other, include_bibcode=False)
+        self.other_style.setToolTip(
+            "Key style for papers without an ADS bibcode, such as papers that "
+            "ADSfolio found through Crossref or DataCite"
+        )
+        self.template = QLineEdit(policy.template, self)
+        self.template.setToolTip(CITATION_FIELD_HELP)
+        form.addRow("ADS papers:", self.ads_style)
+        form.addRow("Papers outside ADS:", self.other_style)
+        form.addRow("My template:", self.template)
+        layout.addLayout(form)
+        self.help_label = QLabel(self)
+        self.help_label.setWordWrap(True)
+        layout.addWidget(self.help_label)
+        self.preview = QLabel(self)
+        self.preview.setWordWrap(True)
+        self.preview.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse
+        )
+        self.preview.setToolTip("Keys for the selected papers, or for example papers")
+        layout.addWidget(self.preview)
+        self.buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Save
+            | QDialogButtonBox.StandardButton.Cancel,
+            self,
+        )
+        self.buttons.accepted.connect(self.accept)
+        self.buttons.rejected.connect(self.reject)
+        layout.addWidget(self.buttons)
+        for combo in (self.ads_style, self.other_style):
+            combo.currentIndexChanged.connect(lambda _index: self._update())
+        self.template.textChanged.connect(lambda _text: self._update())
+        self.resize(560, 0)
+        self._update()
+
+    def _style_combo(self, current: KeyStyle, *, include_bibcode: bool) -> QComboBox:
+        combo = QComboBox(self)
+        for style in KeyStyle:
+            if style is KeyStyle.BIBCODE and not include_bibcode:
+                continue
+            combo.addItem(style.label, style)
+            combo.setItemData(
+                combo.count() - 1, _STYLE_HELP[style], Qt.ItemDataRole.ToolTipRole
+            )
+        combo.setCurrentIndex(max(0, combo.findData(current)))
+        return combo
+
+    def policy(self) -> KeyPolicy:
+        """Return the chosen styles.
+
+        Raises
+        ------
+        ValueError
+            If the template is not valid.
+        """
+        return KeyPolicy(
+            ads=self.ads_style.currentData(),
+            other=self.other_style.currentData(),
+            template=self.template.text().strip(),
+        )
+
+    def _update(self) -> None:
+        uses_template = KeyStyle.TEMPLATE in (
+            self.ads_style.currentData(),
+            self.other_style.currentData(),
+        )
+        self.template.setEnabled(uses_template)
+        self.help_label.setText(
+            "ADS papers: "
+            + _STYLE_HELP[self.ads_style.currentData()]
+            + "\nPapers outside ADS: "
+            + _STYLE_HELP[self.other_style.currentData()]
+        )
+        save = self.buttons.button(QDialogButtonBox.StandardButton.Save)
+        try:
+            policy = self.policy()
+        except ValueError as exc:
+            self.preview.setText(str(exc))
+            save.setEnabled(False)
+            return
+        save.setEnabled(True)
+        lines = []
+        for sample in self._samples[:5]:
+            key = citation_key(sample, policy) or "(you type it at export)"
+            title = sample.get("title")
+            title = title[0] if isinstance(title, list) and title else title or ""
+            lines.append(f"{key}  —  {title}")
+        self.preview.setText("Preview:\n" + "\n".join(lines))
 
 
 def export_bibtex_asking_keys(

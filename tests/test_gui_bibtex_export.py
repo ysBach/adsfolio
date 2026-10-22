@@ -122,3 +122,41 @@ def test_key_dialog_saves_only_complete_unique_valid_keys(window):
 def test_rows_without_paper_details_are_reported(window):
     window._copy_records_bibtex([{"relative_path": "x.pdf", "document_id": None}])
     assert "Identify them first" in window.status.currentMessage()
+
+
+def test_key_settings_dialog_previews_and_returns_the_policy(qtbot):
+    from adsfolio.gui.bibtex_export import CitationKeySettingsDialog
+
+    dialog = CitationKeySettingsDialog(None, KeyPolicy())
+    qtbot.addWidget(dialog)
+    assert dialog.other_style.findData(KeyStyle.BIBCODE) == -1
+    assert "2020ApJ...900....1K" in dialog.preview.text()
+    assert "10.5555/example.2021" in dialog.preview.text()
+    assert not dialog.template.isEnabled()
+    dialog.other_style.setCurrentIndex(dialog.other_style.findData(KeyStyle.SCHOLAR))
+    assert "roe2021theory" in dialog.preview.text()
+    dialog.ads_style.setCurrentIndex(dialog.ads_style.findData(KeyStyle.TEMPLATE))
+    assert dialog.template.isEnabled()
+    assert "KimS2020" in dialog.preview.text()
+    dialog.template.setText("{no_such_field}")
+    save = dialog.buttons.button(QDialogButtonBox.StandardButton.Save)
+    assert not save.isEnabled()
+    dialog.template.setText("{year}{first_author_initials}")
+    assert save.isEnabled()
+    assert dialog.policy() == KeyPolicy(
+        ads=KeyStyle.TEMPLATE,
+        other=KeyStyle.SCHOLAR,
+        template="{year}{first_author_initials}",
+    )
+
+
+def test_key_settings_action_saves_the_policy(window, monkeypatch):
+    from adsfolio.gui.bibtex_export import CitationKeySettingsDialog
+
+    def choose(dialog: CitationKeySettingsDialog) -> int:
+        dialog.other_style.setCurrentIndex(dialog.other_style.findData(KeyStyle.MANUAL))
+        return QDialog.DialogCode.Accepted
+
+    monkeypatch.setattr(CitationKeySettingsDialog, "exec", choose)
+    window.citation_keys_action.trigger()
+    assert Config.load_key_policy().other is KeyStyle.MANUAL

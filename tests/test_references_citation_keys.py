@@ -146,3 +146,23 @@ def test_cli_export_lists_papers_without_keys_then_set_key_fixes_it(
     exported = runner.invoke(main, ["reference", "--catalog", path, "export", "--all"])
     assert exported.exit_code == 0, exported.output
     assert "{MyDust," in exported.output
+
+
+def test_cli_keys_shows_and_saves_the_styles(monkeypatch, tmp_path):
+    from click.testing import CliRunner
+
+    from adsfolio.cli.commands import main
+
+    monkeypatch.setattr(Config, "get_config_dir", classmethod(lambda cls: tmp_path))
+    runner = CliRunner()
+    shown = runner.invoke(main, ["reference", "keys"])
+    assert "ADS papers: bibcode" in shown.output
+    assert "Papers outside ADS: doi" in shown.output
+    saved = runner.invoke(main, ["reference", "keys", "--other", "scholar"])
+    assert saved.exit_code == 0, saved.output
+    assert Config.load_key_policy() == KeyPolicy(other=KeyStyle.SCHOLAR)
+    refused = runner.invoke(main, ["reference", "keys", "--other", "bibcode"])
+    assert refused.exit_code != 0
+    bad = runner.invoke(main, ["reference", "keys", "--template", "{nope}"])
+    assert bad.exit_code != 0
+    assert Config.load_key_policy() == KeyPolicy(other=KeyStyle.SCHOLAR)

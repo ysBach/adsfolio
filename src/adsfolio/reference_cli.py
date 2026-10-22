@@ -11,6 +11,7 @@ from typing import TextIO
 
 import click
 
+from .citekeys import KeyPolicy, KeyStyle
 from .config import Config
 from .pdf.catalog import PdfCatalog
 from .references import CitationKeyError, LocalReferences, parse_bibtex
@@ -235,6 +236,49 @@ def export_references(
             ) as stream:
                 stream.write(text)
             click.echo(f"Exported bibliography to {output}.", err=True)
+
+
+@reference_group.command("keys")
+@click.option(
+    "--ads",
+    "ads_style",
+    type=click.Choice([style.value for style in KeyStyle]),
+    help="Key style for papers with an ADS bibcode.",
+)
+@click.option(
+    "--other",
+    "other_style",
+    type=click.Choice([s.value for s in KeyStyle if s is not KeyStyle.BIBCODE]),
+    help="Key style for papers without an ADS bibcode.",
+)
+@click.option(
+    "--template",
+    help="Template for the 'template' style, such as '{first_author_initials}{year}'.",
+)
+def citation_keys(
+    ads_style: str | None, other_style: str | None, template: str | None
+) -> None:
+    """Show or set how BibTeX export makes citation keys.
+
+    Styles: bibcode (ADS papers only), doi, template, scholar (Google Scholar
+    style, such as roe2021theory), and manual (type each key with set-key).
+    A key that you set with set-key, or that came with imported BibTeX,
+    always wins. Without options, this shows the current styles.
+    """
+    policy = Config.load_key_policy()
+    if ads_style or other_style or template is not None:
+        try:
+            policy = KeyPolicy(
+                ads=KeyStyle(ads_style or policy.ads),
+                other=KeyStyle(other_style or policy.other),
+                template=policy.template if template is None else template,
+            )
+        except ValueError as exc:
+            raise click.ClickException(str(exc)) from exc
+        Config.save_key_policy(policy)
+    click.echo(f"ADS papers: {policy.ads.value}")
+    click.echo(f"Papers outside ADS: {policy.other.value}")
+    click.echo(f"Template: {policy.template}")
 
 
 @reference_group.command("set-key")

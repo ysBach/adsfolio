@@ -63,6 +63,7 @@ from .ads_library_dialog import AdsLibraryDialog
 from .ads_library_export_dialog import ExportAdsLibraryDialog
 from .appearance import AppearanceDialog
 from .bibtex_export import (
+    CitationKeySettingsDialog,
     document_ids_of,
     export_bibtex_asking_keys,
     save_bibtex_file,
@@ -538,6 +539,12 @@ class MainWindow(QMainWindow):
         self.export_bibtex_action.triggered.connect(
             lambda: self._save_records_bibtex(self._selected_records())
         )
+        self.citation_keys_action = QAction("Citation Keys…", self)
+        self.citation_keys_action.setToolTip(
+            "Choose how BibTeX export makes citation keys for ADS papers and "
+            "for papers outside ADS"
+        )
+        self.citation_keys_action.triggered.connect(self._edit_citation_keys)
         self.citation_styles_action = QAction("Custom Citation Styles…", self)
         self.identify_action = QAction("Identify…", self)
         self.identify_action.setShortcut("Ctrl+Shift+I")
@@ -598,6 +605,7 @@ class MainWindow(QMainWindow):
         tools.addAction(self.cv_action)
         tools.addAction(self.export_selected_action)
         tools.addAction(self.export_bibtex_action)
+        tools.addAction(self.citation_keys_action)
         tools.addAction(self.citation_styles_action)
         tools.addSeparator()
         tools.addAction(self.merge_annotations_action)
@@ -2006,6 +2014,19 @@ class MainWindow(QMainWindow):
         """Restore the declaration order of table columns."""
         self.config.table_column_order = [column.key for column in self.columns]
         self._apply_table_layout()
+
+    def _edit_citation_keys(self) -> None:
+        """Choose and save the citation key styles."""
+        samples = []
+        for record in self._selected_records()[:5]:
+            metadata = record.get("metadata")
+            if isinstance(metadata, dict) and metadata.get("title"):
+                samples.append({**metadata, "bibcode": record.get("bibcode")})
+        dialog = CitationKeySettingsDialog(self, Config.load_key_policy(), samples)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        Config.save_key_policy(dialog.policy())
+        self.status.showMessage("Saved the citation key styles.", 5000)
 
     def _records_bibtex(self, records: Sequence[dict[str, Any]]) -> str | None:
         """Return BibTeX for table records, asking for citation keys if needed."""
