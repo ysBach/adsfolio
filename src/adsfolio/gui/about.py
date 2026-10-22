@@ -85,8 +85,9 @@ class AboutDialog(QDialog):
             )
         else:
             installation_text = (
-                "Python installation. Update the package or source checkout, "
-                "then restart ADSfolio."
+                "Python installation. Update it, for example with "
+                "pip install --upgrade adsfolio, or update the source checkout. "
+                "Then restart ADSfolio."
             )
         self.installation_label = QLabel(installation_text, self)
         self.installation_label.setWordWrap(True)

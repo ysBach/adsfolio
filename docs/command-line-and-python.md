@@ -11,9 +11,20 @@ Learning path:
 3. Look up details in the [command-line reference](cli.rst) and the
    [Python API](api/index.rst).
 
-## Install from source
+## Install
 
-Python 3.10 or newer is required. PyPI publication is not enabled for 0.1.0.
+Python 3.10 or newer is required. Version 0.5.1 and later are on PyPI:
+
+```sh
+pip install adsfolio            # CLI and Python client
+pip install "adsfolio[full]"    # adds PyMuPDF text extraction and folder watching
+pip install "adsfolio[full,gui]"  # adds the desktop application
+```
+
+`uv tool install adsfolio` or `pipx install adsfolio` installs the CLI in its own
+environment.
+
+### From source
 
 ```sh
 git clone https://github.com/ysBach/adsfolio.git

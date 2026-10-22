@@ -4,7 +4,7 @@ A desktop application and Python toolkit for organizing research PDFs with NASA
 ADS / SciXplorer, Crossref, and DataCite metadata. ADSfolio is an independent
 project, not an official ADS application.
 
-![ADSfolio logo](docs/_static/adsfolio.png)
+![ADSfolio logo](https://raw.githubusercontent.com/ysBach/adsfolio/main/docs/_static/adsfolio.png)
 
 ## Start with the PDFs you already have
 
@@ -16,11 +16,11 @@ Identification checks saved results before online lookups. Lookup time depends o
 PDF text quality, cache coverage, provider limits, and your connection. No fixed
 speed claim applies to every collection. Start with one folder to check results.
 
-![ADSfolio library window](docs/_static/app-overview.png)
+![ADSfolio library window](https://raw.githubusercontent.com/ysBach/adsfolio/main/docs/_static/app-overview.png)
 
 *Application screenshot with illustrative sample data. Version 0.5.0 shown.*
 
-[Website](https://ysbach.github.io/adsfolio/) · [First-library tutorial](docs/getting-started.md) · [Application guide](docs/gui.md)
+[Website](https://ysbach.github.io/adsfolio/) · [First-library tutorial](https://ysbach.github.io/adsfolio/docs/getting-started.html) · [Application guide](https://ysbach.github.io/adsfolio/docs/gui.html)
 
 ## Three everyday workflows
 
@@ -39,7 +39,7 @@ speed claim applies to every collection. Start with one folder to check results.
 
 ## Install the desktop app
 
-Download [ADSfolio 0.5.0](https://github.com/ysBach/adsfolio/releases/latest).
+Download [ADSfolio 0.5.1](https://github.com/ysBach/adsfolio/releases/latest).
 macOS downloads include DMG installers and ZIP archives.
 Desktop downloads include Python and the application dependencies. You do not
 need a Python environment or an ADS token to browse your local library.
@@ -52,7 +52,7 @@ need a Python environment or an ADS token to browse your local library.
 | Linux x86-64 | Extract `adsfolio-linux-x86_64.tar.gz`, then run `adsfolio` inside the extracted folder. Requires glibc 2.39+ and system desktop libraries. |
 
 Keep the complete extracted folder together on Windows and Linux.
-See the [platform requirements](docs/desktop.md) for details.
+See the [platform requirements](https://ysbach.github.io/adsfolio/docs/desktop.html) for details.
 
 ### macOS with Homebrew
 
@@ -61,7 +61,7 @@ brew install --cask ysBach/adsfolio/adsfolio
 open -a ADSfolio
 ```
 
-**Version 0.5.0 is unsigned and not notarized.** macOS can block opening even
+**Version 0.5.1 is unsigned and not notarized.** macOS can block opening even
 when Homebrew installation succeeds. After attempting to open ADSfolio, review
 **System Settings → Privacy & Security → Open Anyway** if macOS offers that
 option. Approve it only if you trust the release. Installation alone does not
@@ -69,7 +69,7 @@ establish that the app can open. Windows can also show publisher warnings.
 
 ### Start using your library
 
-![ADSfolio welcome page with three setup steps](docs/_static/welcome.png)
+![ADSfolio welcome page with three setup steps](https://raw.githubusercontent.com/ysBach/adsfolio/main/docs/_static/welcome.png)
 
 *Welcome page of a new installation. Version 0.5.0 shown.*
 
@@ -91,7 +91,7 @@ establish that the app can open. Windows can also show publisher warnings.
    This reconciles local files. Use the separate ADS refresh actions to update
    remote metadata. Permanent cleanup remains a separate operation.
 
-See the [interactive application guide](docs/gui.md) for watching folders,
+See the [interactive application guide](https://ysbach.github.io/adsfolio/docs/gui.html) for watching folders,
 selection, metadata editing, notifications, and refresh options.
 
 ### Updates and existing libraries
@@ -108,9 +108,14 @@ rename settings remain active, so review them before resuming library work.
 ## CLI and Python
 
 ADSfolio also provides search, bibliography export, and scripted PDF workflows.
-See the [CLI and Python workflows](docs/command-line-and-python.md),
-[CLI tutorials](docs/cli-tutorials/index.md), and [API reference](docs/api/index.rst).
-PyPI publication is not enabled. Source installation requires Python 3.10 or newer.
+See the [CLI and Python workflows](https://ysbach.github.io/adsfolio/docs/command-line-and-python.html),
+[CLI tutorials](https://ysbach.github.io/adsfolio/docs/cli-tutorials/index.html), and [API reference](https://ysbach.github.io/adsfolio/docs/api/index.html).
+Version 0.5.1 and later are on PyPI and need Python 3.10 or newer:
+
+```sh
+pip install adsfolio                # CLI and Python client
+pip install "adsfolio[full,gui]"    # also the desktop application (adsfolio-gui)
+```
 
 ## License
 

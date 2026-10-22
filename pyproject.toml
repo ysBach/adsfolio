@@ -85,7 +85,7 @@ docs = [
 
 [project.urls]
 Homepage = "https://github.com/ysBach/adsfolio"
-Documentation = "https://github.com/ysBach/adsfolio#readme"
+Documentation = "https://ysbach.github.io/adsfolio/docs/"
 Repository = "https://github.com/ysBach/adsfolio"
 Issues = "https://github.com/ysBach/adsfolio/issues"
 

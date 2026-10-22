@@ -331,6 +331,7 @@ jobs:
       - uses: astral-sh/setup-uv@v7
       - uses: actions/download-artifact@v7
         with:
-          name: python-distributions
+          # The same files as the GitHub release and its SHA256SUMS.txt.
+          name: release-python-distributions
           path: dist
       - run: uv publish --trusted-publishing always dist/*.whl dist/*.tar.gz

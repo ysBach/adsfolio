@@ -308,8 +308,9 @@ class UpdateDialog(QDialog):
             )
         if self.kind is InstallationKind.PYTHON:
             return (
-                "This copy runs from a Python installation. Update the package or "
-                "checkout, then restart ADSfolio."
+                "This copy runs from a Python installation. Update it, for example "
+                "with pip install --upgrade adsfolio, or update the source checkout. "
+                "Then restart ADSfolio."
             )
         if self._asset() is None:
             return "This release has no download for this system. View the release page instead."
