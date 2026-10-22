@@ -86,6 +86,52 @@ adsfolio export <bibcode1> <bibcode2> --output refs.bib
 
 ## 8) References outside ADS
 
+### One PDF that ADS does not index
+
+Give the PDF its DOI or arXiv ID. When ADS has no match, ADSfolio asks
+Crossref and DataCite, then renames the PDF. No ADS token is necessary. The
+catalog must already track the PDF. If it does not, run `adsfolio pdf identify`
+on the library first.
+
+```bash
+adsfolio pdf refresh-ads ~/papers --identifier 10.5555/jex.2019.12.34 \
+  --relative-path scan_0042.pdf
+adsfolio pdf refresh-ads ~/papers --identifier arXiv:2401.12345 \
+  --relative-path preprint.pdf
+```
+
+To identify only some PDFs with the saved strategies, repeat `--file`:
+
+```bash
+adsfolio pdf identify ~/papers --file ~/papers/a.pdf --file ~/papers/b.pdf
+```
+
+### Citation keys
+
+Each BibTeX export uses the saved key styles. The defaults are the bibcode for
+ADS papers and the DOI for other papers.
+
+```bash
+# Show the styles.
+adsfolio reference keys
+# Use Google Scholar style keys, such as roe2019grain, for papers outside ADS.
+adsfolio reference keys --other scholar
+# Use a template for ADS papers.
+adsfolio reference keys --ads template --template '{first_author_initials}{year}'
+```
+
+The styles are `bibcode` (ADS papers only), `doi`, `template`, `scholar`, and
+`manual`. Export stops when a paper has no key or shares a key. The command
+lists those papers. Set a key for each one, then export again:
+
+```bash
+adsfolio reference set-key 12 Roe2019Grains
+```
+
+A key from `set-key`, or from imported BibTeX, always wins over the style.
+
+### Books, theses, and Google Scholar citations
+
 `adsfolio reference` keeps references that ADS does not index, such as a book,
 a thesis, or a Google Scholar citation. It can export them together with
 cataloged ADS documents in one bibliography. The commands use the same central

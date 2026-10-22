@@ -2,7 +2,40 @@
 
 ## Unreleased
 
+### Papers that are not on ADS
+
+- **Type a DOI or an arXiv ID.** Before: **Update ADS…** asked ADS only. A DOI
+  that ADS did not know left the PDF unchanged, and arXiv IDs were not
+  accepted. Now: **Update by Identifier…** asks Crossref and DataCite when ADS
+  has no match. `10.5555/jex.2019.12.34` renamed `scan_0042.pdf` to
+  `RoeA+KimS_2019-Grain_Growth_in_Cold_Clouds.pdf`. An arXiv ID such as
+  `2401.12345` uses its DataCite record. No ADS token is necessary.
+- **BibTeX from the main table.** Before: a PDF outside ADS had no BibTeX
+  export. Only **Local References…** exported BibTeX for chosen papers. Now:
+  right-click the selected rows and choose **Copy BibTeX** or **Export
+  BibTeX…**. ADS papers and other papers export together.
+- **Citation key styles.** Before: ADSfolio had no key choice. A paper without
+  a bibcode or a typed key got a key such as `reference12`. Now: **Tools →
+  Citation Keys…** sets one style for ADS papers and one for other papers. The styles are the bibcode, the DOI, your template,
+  Google Scholar style (`roe2019grain`), or a key that you type. The defaults
+  are the bibcode and the DOI. The CLI command is `adsfolio reference keys`.
+- **Missing or shared keys.** Before: two papers with the same key stopped the
+  export with an error message only. Now: ADSfolio lists the papers and asks
+  for a key for each one. It saves the keys for later exports. The CLI command
+  is `adsfolio reference set-key ID KEY`.
+- **Identify selected PDFs.** Before: Identify always scanned the whole
+  library. Now: right-click rows and choose **Identify Selected PDFs…**. The
+  CLI option is `adsfolio pdf identify DIRECTORY --file PATH`.
+- **One record per paper.** Before: a PDF with only Crossref metadata had no
+  catalog record, so it could not be exported. Now: it gets a record. Two PDFs
+  with the same DOI, in any spelling, share one record. The record gets the
+  bibcode when ADS adds the paper later.
+
 ### Documentation
+
+- **"My paper is not on ADS".** Before: the page started with a library-wide
+  Identify. Now: it starts with one PDF and a typed DOI or arXiv ID. It then
+  explains BibTeX export and the citation key styles.
 
 - **Page names.** Before: the first pages were "Start with your PDF library",
   "Three everyday workflows", "Application guide", and "References outside

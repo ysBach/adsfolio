@@ -519,6 +519,54 @@ def _capture_workflows(
     )
     export.hide()
 
+    # Citation key styles, previewed on the selected papers.
+    from adsfolio.citekeys import KeyPolicy, KeyStyle, scholar_key
+    from adsfolio.gui.bibtex_export import CitationKeyDialog, CitationKeySettingsDialog
+    from adsfolio.references import CitationKeyError, LocalReferences
+
+    samples = [
+        {**record["metadata"], "bibcode": record.get("bibcode")}
+        for record in window._selected_records()[:3]
+    ]
+    keys = CitationKeySettingsDialog(window, KeyPolicy(other=KeyStyle.SCHOLAR), samples)
+    keys.ads_style.setCurrentIndex(keys.ads_style.findData(KeyStyle.SCHOLAR))
+    keys.show()
+    application.processEvents()
+    recorder.save(keys.grab(), "tutorial/citation-keys.png")
+    keys.hide()
+
+    # Export stops and asks when papers have no key.
+    service = LocalReferences(
+        window.registries[str(window.current_root)].catalog,
+        KeyPolicy(ads=KeyStyle.MANUAL, other=KeyStyle.MANUAL),
+    )
+    try:
+        service.export_bibtex(
+            [
+                int(record["document_id"])
+                for record in window._selected_records()[:3]
+                if record.get("document_id") is not None
+            ]
+        )
+    except CitationKeyError as error:
+        needed = CitationKeyDialog(window, error)
+        fields = error.references[error.assignment.missing[0]]["fields"]
+        needed.table.item(0, 3).setText(
+            scholar_key(
+                {
+                    "author": fields.get("author", "").split(" and ")[:1],
+                    "year": fields.get("year", ""),
+                    "title": fields.get("title", ""),
+                }
+            )
+        )
+        needed.show()
+        application.processEvents()
+        recorder.save(needed.grab(), "tutorial/citation-keys-needed.png")
+        needed.hide()
+    else:
+        raise RuntimeError("The sample papers should need citation keys.")
+
     # A fictional profile; the window fills its fields from it.
     from adsfolio.config import Config
     from adsfolio.user_profile import UserProfile

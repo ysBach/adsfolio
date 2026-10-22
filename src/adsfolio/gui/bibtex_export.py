@@ -224,7 +224,7 @@ class CitationKeySettingsDialog(QDialog):
         for combo in (self.ads_style, self.other_style):
             combo.currentIndexChanged.connect(lambda _index: self._update())
         self.template.textChanged.connect(lambda _text: self._update())
-        self.resize(560, 0)
+        self.setMinimumWidth(560)
         self._update()
 
     def _style_combo(self, current: KeyStyle, *, include_bibcode: bool) -> QComboBox:
@@ -280,6 +280,22 @@ class CitationKeySettingsDialog(QDialog):
             title = title[0] if isinstance(title, list) and title else title or ""
             lines.append(f"{key}  —  {title}")
         self.preview.setText("Preview:\n" + "\n".join(lines))
+        self._fit_height()
+
+    def _fit_height(self) -> None:
+        """Grow the dialog so wrapped help and preview text stay visible."""
+        layout = self.layout()
+        layout.activate()
+        width = max(self.width(), self.minimumWidth())
+        needed = layout.totalHeightForWidth(width) if layout.hasHeightForWidth() else 0
+        needed = max(needed, layout.sizeHint().height())
+        if self.height() < needed:
+            self.resize(width, needed)
+
+    def showEvent(self, event: Any) -> None:  # noqa: N802 -- Qt override
+        """Fit the height once the dialog has its real width."""
+        super().showEvent(event)
+        self._fit_height()
 
 
 def export_bibtex_asking_keys(

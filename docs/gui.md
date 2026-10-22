@@ -136,11 +136,14 @@ Linux), then right-click. Each action covers every selected row:
 - **Open N PDFs** and **Reveal N Files** (one file manager window per folder).
 - **Copy N Bibcodes**, **Copy N DOIs**, and **Copy N Paths** copy one value per
   line. Each copy omits rows without the value, and the tooltip gives the count.
-- **Refresh N Selected ADS Records** refreshes each paper with a bibcode, one
-  after another. **Update and Rename Selected by Identifier…** needs one row,
-  because it asks for one identifier.
-- **Add to ADS Library…** adds the selected papers.
-- **Export Selected Papers…** writes them as a list (see below).
+- **Identify N Selected PDFs…** identifies only those files.
+  **Refresh N Selected ADS Records** refreshes each paper with a bibcode.
+  **Update and Rename Selected by Identifier…** needs one row, because it asks
+  for one identifier.
+- **Add to ADS Library…** adds the selected papers to an ADS library.
+- **Export Selected Papers…** writes them as a list (see below). **Copy BibTeX**
+  and **Export BibTeX…** write their BibTeX, for ADS papers and other papers.
+  See [Export BibTeX](local-references.md#export-bibtex).
 
 ![Context menu for three selected papers](_static/tutorial/selection-menu.png)
 
@@ -247,16 +250,18 @@ order places bibstem, volume, and page at the end, because the bibcode encodes
 that information. ADSfolio converts HTML display markup from ADS to plain text
 in the table, detail pane, and generated filenames.
 
-Use **Update from ADS…** in the detail pane to enter or correct the selected
-file's Bibcode, DOI, or journal-volume-page coordinates. A DOI may be bare,
+Use **Update by Identifier…** in the detail pane to enter or correct the
+selected file's Bibcode, DOI, arXiv ID, or journal-volume-page coordinates. A DOI may be bare,
 `DOI:`-prefixed, or an HTTP(S) `doi.org` / `dx.doi.org` link. ADSfolio does not
 recognize other publisher URLs. ADSfolio uses a DOI exactly as typed (apart from
 lower-casing). As a result, it keeps trailing punctuation or parentheses that
 belong to the DOI. Remove any sentence punctuation that you pasted with the DOI.
 
-**Update from ADS…** refreshes that file's unlocked ADS metadata, abstract, and
-citation counts. When it finds a unique matching ADS record, it marks the file
-resolved. It then renames the PDF with the selected global or library Rename
+**Update by Identifier…** refreshes that file's unlocked ADS metadata,
+abstract, and citation counts. When it finds a unique matching ADS record, it
+marks the file resolved. When ADS has no DOI or arXiv match, Crossref and
+DataCite supply the metadata, and the file stays unresolved. See
+[My paper is not on ADS](local-references.md#type-the-doi-or-arxiv-id). It then renames the PDF with the selected global or library Rename
 settings. If a Bibcode has no ADS match, the update clears the Bibcode. The
 local file remains tracked as unresolved.
 
@@ -512,7 +517,7 @@ and **Skip unresolved directory** must be off. Identify also returns previously
 identified files in that scanned subtree, without repeating their ADS lookup.
 Identify handles AI CSV matches in the same run.
 
-**Update from ADS** and the ADS refresh actions labeled **Rename** rename
+**Update by Identifier** and the ADS refresh actions labeled **Rename** rename
 updated PDFs with the effective Rename settings. Files in the unresolved
 subtree also return to the root in the same move. These actions rename other
 PDFs within their current directory. Filenames use the refreshed metadata,
