@@ -124,6 +124,20 @@ Double-click a bibcode, arXiv ID, or filename to open its destination by default
 Choose single-click activation in **View → Appearance… → Applications** if preferred.
 Use the context menu to reveal a file or copy an identifier.
 
+Select several rows with **⌘**-click or **Shift**-click (**Ctrl** on Windows and
+Linux), then right-click. Each action covers every selected row:
+
+- **Open N PDFs** and **Reveal N Files** (one file manager window per folder).
+- **Copy N Bibcodes**, **Copy N DOIs**, and **Copy N Paths** copy one value per
+  line. Rows without the value are left out, and the tooltip gives the count.
+- **Refresh N Selected ADS Records** refreshes each paper with a bibcode, one
+  after another. **Update and Rename Selected by Identifier…** needs one row,
+  because it asks for one identifier.
+- **Add to ADS Library…** adds the selected papers.
+- **Export Selected Papers…** writes them as a list (see below).
+
+![Context menu for three selected papers](_static/tutorial/selection-menu.png)
+
 Non-recursive discovery updates only top-level locations. Previously cataloged
 nested files remain unchanged, including their missing status. Enable
 **Include Subdirectories** and press **F5** to restore existing
@@ -254,14 +268,34 @@ format that you design.
    `\textbf{{{}}}` in LaTeX or `<b>{}</b>` in HTML.
 3. **Preview:** **Sample papers** shows fictional papers and updates while you
    type, with no network request. **Look Up in ADS** shows your real
-   publications.
+   publications. **Show as** displays the exact file text (**Source**), or the
+   text as a reader sees it (**Markdown** or **HTML**). LaTeX shows as source.
 4. **Save CV** looks up your publications and writes the output file.
+
+Hover over any control or label for an explanation. **Split into
+First-authored and Co-authored sections** controls the two sections. Turn it off
+for one list in the original order.
 
 ADS lookups need a token. The window stores its settings in `cv.yaml` in the
 ADSfolio configuration folder. `adsfolio cv generate` reads the same file, so
 a terminal or script can repeat the run. **Save Settings As…** copies the
 settings to another file. See the [CV reference](cv.md) for every template
 placeholder.
+
+### Export selected papers
+
+Select papers in the table, then choose **Export Selected Papers…** from the
+context menu or the **Tools** menu. The same window opens with the selected
+papers in the preview. It uses the details stored in this library, so it needs
+no ADS token and makes no network request. Papers without a bibcode are
+included; their link uses the DOI when one is stored.
+
+The first export starts from your CV template, or from the Markdown starting
+point, as one list without a header. **Save List** writes the file. These
+settings are kept in `cv-selection.yaml`, so they do not change your CV
+settings.
+
+![Export Selected Papers window with a rendered Markdown preview](_static/tutorial/export-selected.png)
 
 ## Custom citation styles
 

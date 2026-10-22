@@ -14,7 +14,7 @@ ADSfolio helps with three tasks that researchers repeat often:
   <source src="_static/tutorial/workflows.mp4" type="video/mp4">
 </video>
 
-The 10-second video shows the three windows with fictional sample data.
+The 17-second video shows these windows with fictional sample data.
 
 ## Keep a BibTeX file for your paper
 
@@ -101,3 +101,12 @@ This entry template makes one LaTeX line per paper:
 
 The settings live in `cv.yaml`. `adsfolio cv generate` reads the same file, so
 a script can make the CV again. See the [CV reference](cv.md) for every option.
+
+### A list of any papers, without ADS
+
+The same formats work for any papers in your library, for example a reading
+list or a reference list for a proposal. Select the rows (**⌘**-click or
+**Shift**-click), right-click, and choose **Export Selected Papers…**. ADSfolio
+uses the stored details and needs no ADS token.
+
+![Export Selected Papers window with a rendered Markdown preview](_static/tutorial/export-selected.png)

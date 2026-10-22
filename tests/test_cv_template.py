@@ -251,3 +251,45 @@ def test_venue_joins_only_the_parts_that_exist():
     assert "Astronomy and Astrophysics 684, A80" in output
     assert "\narXiv:2301.00001" in output
     assert " , " not in output
+
+
+def test_ungrouped_template_keeps_input_order_in_one_section():
+    template = CVTemplate(
+        section="== {section} ({count}) ==", entry="{index}. {title}", group=False
+    )
+    later = _doc("2022A&A...500A...1Z", "Zed, Q.", title="Third")
+    output = render_cv([DOCS[1], later, DOCS[0]], _cfg(template))
+    assert output.splitlines() == [
+        "== Publications (3) ==",
+        "1. Plain title",
+        "2. Third",
+        f"3. {PLAIN_TITLE}",
+    ]
+
+
+def test_records_without_bibcode_use_doi_link_and_publication_name():
+    local = {
+        "title": ["Local paper"],
+        "author": ["Doe, Jane"],
+        "first_author": ["Doe, Jane"],
+        "year": "2021",
+        "pub": "Journal of Examples",
+        "volume": "3",
+        "page": ["7"],
+        "doi": ["10.1000/xyz"],
+    }
+    template = CVTemplate(entry="{venue} | {url} | [{bibcode}]", group=False)
+    output = render_cv([local], _cfg(template))
+    assert output == "Journal of Examples 3, 7 | https://doi.org/10.1000/xyz | []\n"
+
+
+def test_yaml_group_false_is_read_as_a_boolean(tmp_path):
+    path = _write(
+        tmp_path / "cv.yaml",
+        {
+            "author": {"query": "q"},
+            "format": {"output": "template"},
+            "template": {"preset": "text", "group": False},
+        },
+    )
+    assert load_config(path).template.group is False

@@ -104,6 +104,7 @@ so LaTeX needs no doubled braces: `\textit{{title}}` becomes
 | `section_end` | After each section, for example `</ol>` |
 | `footer` | Once, at the end |
 | `escape` | `latex`, `html`, or `none`: how ADS text is escaped |
+| `group` | `true` (default) for First-authored and Co-authored sections; `false` for one section, Publications, in the original order |
 
 A `preset` fills every part, `escape`, `format.me_fmt`, `format.author_sep`,
 and `output.filename`. Keys that you write replace the preset values.

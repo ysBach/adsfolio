@@ -273,6 +273,8 @@ class MainWindow(QMainWindow):
         self._pending_ads_refresh: (
             tuple[Path, tuple[str, ...], int | None, str | None] | None
         ) = None
+        # Extra refresh-ads argument lists run after the pending refresh.
+        self._pending_ads_follow_ups: tuple[tuple[str, ...], ...] = ()
         self._ads_refresh_root: Path | None = None
         self._local_refresh_context: _LibraryViewContext | None = None
         self._local_refresh_result: LibraryRefresh | None = None
@@ -514,6 +516,14 @@ class MainWindow(QMainWindow):
             "Make a publication list for your CV in LaTeX, HTML, Markdown, or text"
         )
         self.cv_action.triggered.connect(self._open_cv_generator)
+        self.export_selected_action = QAction("Export Selected Papers…", self)
+        self.export_selected_action.setToolTip(
+            "Write the selected papers as a list in LaTeX, HTML, Markdown, or text, "
+            "from their stored details, without ADS"
+        )
+        self.export_selected_action.triggered.connect(
+            lambda: self._export_selected_papers()
+        )
         self.citation_styles_action = QAction("Custom Citation Styles…", self)
         self.identify_action = QAction("Identify…", self)
         self.identify_action.setShortcut("Ctrl+Shift+I")
@@ -572,6 +582,7 @@ class MainWindow(QMainWindow):
         )
         tools.addAction(self.profile_action)
         tools.addAction(self.cv_action)
+        tools.addAction(self.export_selected_action)
         tools.addAction(self.citation_styles_action)
         tools.addSeparator()
         tools.addAction(self.merge_annotations_action)
@@ -987,6 +998,7 @@ class MainWindow(QMainWindow):
             else None
         )
         self.check_papers_button.setEnabled(available)
+        self._sync_export_action()
         self.identify_action.setEnabled(available)
         self.rename_action.setEnabled(available)
         self.remove_action.setEnabled(self.current_root is not None)
@@ -1570,6 +1582,15 @@ class MainWindow(QMainWindow):
     def _sync_detail_and_selection_actions(self) -> None:
         """Synchronize the detail pane and actions after selection or model changes."""
         self._current_changed(self.table.currentIndex(), QModelIndex())
+        self._sync_export_action()
+
+    def _sync_export_action(self) -> None:
+        """Enable Export Selected Papers only while rows are selected."""
+        if hasattr(self, "export_selected_action"):
+            self.export_selected_action.setEnabled(
+                self.current_root is not None
+                and bool(self.table.selectionModel().selectedRows())
+            )
 
     def _open_index(self, index: QModelIndex) -> None:
         if QApplication.keyboardModifiers() != Qt.NoModifier:
@@ -1809,25 +1830,67 @@ class MainWindow(QMainWindow):
                 QItemSelectionModel.SelectionFlag.Select
                 | QItemSelectionModel.SelectionFlag.Rows,
             )
-        path = self.current_root / str(record.get("current_path") or "")
+        records = self._selected_records() or (deepcopy(record),)
+        count = len(records)
+        root = self.current_root
+        paths = [root / str(item.get("current_path") or "") for item in records]
         menu = QMenu(self)
-        menu.addAction("Open", lambda: self._open_pdf_record(record))
-        menu.addAction("Reveal in File Manager", lambda: reveal_in_file_manager(path))
         menu.addAction(
-            "Copy Bibcode", lambda: self._copy_text(str(record.get("bibcode") or ""))
+            "Open" if count == 1 else f"Open {count} PDFs",
+            lambda: [self._open_pdf_record(item) for item in records],
         )
         menu.addAction(
-            "Copy DOI", lambda: self._copy_text(str(record.get("doi") or ""))
+            "Reveal in File Manager" if count == 1 else f"Reveal {count} Files",
+            lambda: self._reveal_paths(paths),
         )
-        menu.addAction("Copy Path", lambda: self._copy_text(str(path)))
+        for label, values in (
+            ("Bibcode", [self._record_value(item, "bibcode") for item in records]),
+            ("DOI", [self._record_value(item, "doi") for item in records]),
+            ("Path", [str(path) for path in paths]),
+        ):
+            present = [value for value in values if value]
+            plural = "DOIs" if label == "DOI" else f"{label}s"
+            text = (
+                f"Copy {label}"
+                if count == 1
+                else f"Copy {len(present)} {plural}"
+                if present
+                else f"Copy {plural}"
+            )
+            action = menu.addAction(
+                text, lambda present=present: self._copy_text("\n".join(present))
+            )
+            action.setEnabled(bool(present))
+            if count > 1 and not present:
+                action.setToolTip(f"None of the selected papers has a {label}.")
+            elif count > 1 and len(present) < count:
+                action.setToolTip(
+                    f"{count - len(present)} selected papers have no {label}."
+                )
         menu.addSeparator()
-        menu.addAction(self.refresh_selected_ads_action)
-        menu.addAction(self.update_selected_ads_action)
+        if count == 1:
+            menu.addAction(self.refresh_selected_ads_action)
+            menu.addAction(self.update_selected_ads_action)
+        else:
+            refreshable = [
+                item for item in records if self._record_value(item, "bibcode")
+            ]
+            refresh = menu.addAction(
+                f"Refresh {len(refreshable)} Selected ADS Records",
+                lambda: self._refresh_records_ads(refreshable),
+            )
+            refresh.setEnabled(
+                bool(refreshable) and self.refresh_all_ads_action.isEnabled()
+            )
         menu.addSeparator()
         add_to_ads_library_action = menu.addAction(
             "Add to ADS Library…", self._add_to_ads_library
         )
         add_to_ads_library_action.setEnabled(self._can_add_to_ads_library())
+        menu.addAction(
+            "Export Selected Papers…" if count > 1 else "Export Paper as List…",
+            lambda: self._export_selected_papers(records),
+        )
         menu.addSeparator()
         menu.addAction(self.appearance_action)
         menu.exec(self.table.viewport().mapToGlobal(position))
@@ -1907,6 +1970,57 @@ class MainWindow(QMainWindow):
 
     def _copy_text(self, text: str) -> None:
         QApplication.clipboard().setText(text)
+
+    def _record_value(self, record: dict[str, Any], key: str) -> str:
+        """Return one scalar field from a record or its metadata."""
+        value = record.get(key)
+        if value in (None, "", []):
+            metadata = record.get("metadata")
+            value = metadata.get(key) if isinstance(metadata, dict) else None
+        return self._scalar_metadata_value(value) if value is not None else ""
+
+    def _reveal_paths(self, paths: Sequence[Path]) -> None:
+        """Reveal each distinct folder once, selecting its first file."""
+        seen: set[Path] = set()
+        for path in paths:
+            if path.parent not in seen:
+                seen.add(path.parent)
+                reveal_in_file_manager(path)
+
+    def _export_selected_papers(
+        self, records: Sequence[dict[str, Any]] | None = None
+    ) -> None:
+        """Export papers with a CV template from their stored metadata."""
+        selected = list(records if records is not None else self._selected_records())
+        if not selected:
+            self.status.showMessage("Select papers to export first.", 5000)
+            return
+        CVDialog(
+            self,
+            records=selected,
+            browser_command=self.config.web_browser_command,
+        ).exec()
+
+    def _refresh_records_ads(self, records: Sequence[dict[str, Any]]) -> None:
+        """Refresh several records from ADS, one CLI run per record, in order."""
+        commands = [
+            (
+                "--bibcode",
+                self._record_value(record, "bibcode"),
+                "--relative-path",
+                str(record["relative_path"]),
+                "--citation-metrics",
+            )
+            for record in records
+            if self._record_value(record, "bibcode")
+        ]
+        if not commands:
+            return
+        self._start_ads_refresh(
+            *commands[0],
+            selection_id=int(records[0]["location_id"]),
+            follow_ups=tuple(commands[1:]),
+        )
 
     def _load_next_page(self) -> None:
         """Load another page without materializing the whole registry."""
@@ -3013,8 +3127,13 @@ class MainWindow(QMainWindow):
         selection_id: int | None = None,
         ambiguous_relative_path: str | None = None,
         root: Path | None = None,
+        follow_ups: tuple[tuple[str, ...], ...] = (),
     ) -> None:
-        """Start the CLI-backed ADS refresh and rename for the selected root."""
+        """Start the CLI-backed ADS refresh and rename for the selected root.
+
+        Each argument list in `follow_ups` runs as another ``refresh-ads``
+        command after the first one succeeds.
+        """
         refresh_root = (
             root.expanduser().resolve()
             if root is not None
@@ -3036,13 +3155,14 @@ class MainWindow(QMainWindow):
             return
         rename_scope = self.config.rename_scopes.get(str(refresh_root), "global")
         output_unresolved = self._effective_unresolved_directory(refresh_root)
-        refresh_args = (
+        common = (
             "--rename-scope",
             rename_scope,
             "--output-unresolved",
             str(output_unresolved),
-            *args,
         )
+        refresh_args = (*common, *args)
+        self._pending_ads_follow_ups = tuple((*common, *extra) for extra in follow_ups)
         self._request_foreground_dialog(
             "ads_refresh",
             refresh_root,
@@ -3081,11 +3201,14 @@ class MainWindow(QMainWindow):
         ):
             self._resume_foreground_watch()
             return
+        follow_ups = self._pending_ads_follow_ups
+        self._pending_ads_follow_ups = ()
         self._launch_ads_refresh(
             pending_root,
             args,
             selection_id=selection_id,
             ambiguous_relative_path=ambiguous_relative_path,
+            follow_ups=follow_ups,
         )
 
     def _launch_ads_refresh(
@@ -3095,6 +3218,7 @@ class MainWindow(QMainWindow):
         *,
         selection_id: int | None,
         ambiguous_relative_path: str | None,
+        follow_ups: tuple[tuple[str, ...], ...] = (),
     ) -> None:
         """Launch one ADS refresh with its snapshotted root and arguments."""
         self._refresh_selection_id = selection_id
@@ -3109,6 +3233,10 @@ class MainWindow(QMainWindow):
             cli_argv("pdf", "refresh-ads", str(root), *args),
             parent=self,
             working_directory=root,
+            follow_up_argv=[
+                cli_argv("pdf", "refresh-ads", str(root), *extra)
+                for extra in follow_ups
+            ],
         )
         job.output.connect(self._capture_ads_match_candidates)
         self._watch_job(job)

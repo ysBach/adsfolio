@@ -566,3 +566,175 @@ def test_ads_library_dialog_parent_teardown_does_not_touch_deleted_action(
     window.close()
     window.deleteLater()
     QApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+
+
+def _menu_for_rows(window: MainWindow, monkeypatch, tmp_path: Path, rows: list[int]):
+    """Open the table context menu on the first of `rows` with all selected."""
+    import adsfolio.gui.main_window as main_window_module
+
+    menus: list[QMenu] = []
+
+    class NonBlockingMenu(QMenu):
+        def exec(self, *_args) -> None:
+            menus.append(self)
+
+    monkeypatch.setattr(main_window_module, "QMenu", NonBlockingMenu)
+    _select_rows(window, rows)
+    point = window.table.visualRect(window.model.index(rows[0], 0)).center()
+    window._table_menu(point)
+    return {action.text(): action for action in menus[-1].actions()}
+
+
+def _three_records(tmp_path: Path) -> list[dict[str, Any]]:
+    records = [_record(index) for index in range(3)]
+    records[1]["metadata"]["bibcode"] = ""
+    records[0]["metadata"]["doi"] = ["10.1/a"]
+    records[2]["metadata"]["doi"] = ["10.1/c"]
+    return records
+
+
+def test_context_menu_actions_cover_every_selected_row(
+    window: MainWindow, monkeypatch, tmp_path: Path
+):
+    root = _set_current_root(window, tmp_path / "library")
+    window.model._rows = _three_records(tmp_path)
+    window.show()
+    QApplication.processEvents()
+    actions = _menu_for_rows(window, monkeypatch, tmp_path, [0, 1, 2])
+    assert {"Open 3 PDFs", "Reveal 3 Files", "Copy 2 Bibcodes", "Copy 2 DOIs"} <= set(
+        actions
+    )
+    assert "Copy 3 Paths" in actions
+    assert "1 selected papers have no Bibcode." in actions["Copy 2 Bibcodes"].toolTip()
+    actions["Copy 2 Bibcodes"].trigger()
+    assert QApplication.clipboard().text() == "B0\nB2"
+    actions["Copy 3 Paths"].trigger()
+    assert QApplication.clipboard().text().splitlines() == [
+        str(root / f"paper-{index}.pdf") for index in range(3)
+    ]
+    opened = []
+    monkeypatch.setattr(
+        window, "_open_pdf_record", lambda record: opened.append(record)
+    )
+    actions["Open 3 PDFs"].trigger()
+    assert [record["location_id"] for record in opened] == [0, 1, 2]
+
+
+def test_single_row_menu_keeps_single_record_labels(
+    window: MainWindow, monkeypatch, tmp_path: Path
+):
+    _set_current_root(window, tmp_path / "library")
+    window.model._rows = _three_records(tmp_path)
+    window.show()
+    QApplication.processEvents()
+    actions = _menu_for_rows(window, monkeypatch, tmp_path, [0])
+    assert {"Open", "Copy Bibcode", "Copy DOI", "Export Paper as List…"} <= set(actions)
+    assert window.update_selected_ads_action.text() in actions
+
+
+def test_reveal_opens_each_folder_once(window: MainWindow, monkeypatch, tmp_path: Path):
+    revealed = []
+    monkeypatch.setattr(
+        "adsfolio.gui.main_window.reveal_in_file_manager", revealed.append
+    )
+    paths = [
+        tmp_path / "a" / "1.pdf",
+        tmp_path / "a" / "2.pdf",
+        tmp_path / "b" / "3.pdf",
+    ]
+    window._reveal_paths(paths)
+    assert revealed == [paths[0], paths[2]]
+
+
+def test_refreshing_several_rows_chains_one_command_per_bibcode(
+    window: MainWindow, monkeypatch, tmp_path: Path
+):
+    _set_current_root(window, tmp_path / "library")
+    window.model._rows = _three_records(tmp_path)
+    window.show()
+    QApplication.processEvents()
+    calls = []
+    monkeypatch.setattr(
+        window,
+        "_start_ads_refresh",
+        lambda *args, **kwargs: calls.append((args, kwargs)),
+    )
+    monkeypatch.setattr(window.refresh_all_ads_action, "isEnabled", lambda: True)
+    actions = _menu_for_rows(window, monkeypatch, tmp_path, [0, 1, 2])
+    actions["Refresh 2 Selected ADS Records"].trigger()
+    ((args, kwargs),) = calls
+    assert args == (
+        "--bibcode",
+        "B0",
+        "--relative-path",
+        "paper-0.pdf",
+        "--citation-metrics",
+    )
+    assert kwargs["follow_ups"] == (
+        ("--bibcode", "B2", "--relative-path", "paper-2.pdf", "--citation-metrics"),
+    )
+
+
+def test_follow_up_refreshes_run_in_the_same_job(
+    window: MainWindow, monkeypatch, tmp_path: Path
+):
+    created = []
+
+    class Job(QObject):
+        output = Signal(str)
+        failed = Signal(str)
+        finished = Signal(int)
+
+        def __init__(self, argv, **kwargs) -> None:
+            super().__init__(kwargs.get("parent"))
+            self.argv = argv
+            self.kwargs = kwargs
+            self.running = False
+            created.append(self)
+
+        def start(self) -> None:
+            pass
+
+        def cancel(self) -> None:
+            pass
+
+    monkeypatch.setattr("adsfolio.gui.main_window.CommandJob", Job)
+    root = tmp_path / "library"
+    window._launch_ads_refresh(
+        root,
+        ("--bibcode", "B0"),
+        selection_id=None,
+        ambiguous_relative_path=None,
+        follow_ups=(("--bibcode", "B2"),),
+    )
+    job = created[-1]
+    assert job.argv[-3:] == [str(root), "--bibcode", "B0"]
+    follow_up = job.kwargs["follow_up_argv"]
+    assert [command[-3:] for command in follow_up] == [[str(root), "--bibcode", "B2"]]
+
+
+def test_export_selected_papers_opens_the_list_window_with_all_rows(
+    window: MainWindow, monkeypatch, tmp_path: Path
+):
+    _set_current_root(window, tmp_path / "library")
+    window.model._rows = _three_records(tmp_path)
+    window.show()
+    QApplication.processEvents()
+    opened = []
+
+    class Dialog:
+        def __init__(self, parent, **kwargs) -> None:
+            opened.append(kwargs)
+
+        def exec(self) -> int:
+            return 0
+
+    monkeypatch.setattr("adsfolio.gui.main_window.CVDialog", Dialog)
+    _select_rows(window, [0, 2])
+    window._sync_detail_and_selection_actions()
+    assert window.export_selected_action.isEnabled()
+    window.export_selected_action.trigger()
+    assert [record["location_id"] for record in opened[-1]["records"]] == [0, 2]
+    _select_rows(window, [])
+    window._sync_detail_and_selection_actions()
+    assert not window.export_selected_action.isEnabled()

@@ -258,11 +258,12 @@ def load_template(template_cfg: dict[str, Any]) -> tuple[CVTemplate, str | None]
         template = TEMPLATE_PRESETS[preset_name].template
     else:
         preset_name = None
-    overrides = {
+    overrides: dict[str, Any] = {
         part.name: str(template_cfg[part.name])
         for part in fields(CVTemplate)
-        if template_cfg.get(part.name) is not None
+        if part.name != "group" and template_cfg.get(part.name) is not None
     }
+    overrides["group"] = _as_bool(template_cfg.get("group"), template.group)
     return replace(template, **overrides), preset_name
 
 

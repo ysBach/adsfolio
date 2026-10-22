@@ -33,7 +33,11 @@ def render_cv(docs: list[dict], cfg: CVConfig) -> str:
     str
         The rendered publication list.
     """
-    first_docs, co_docs = classify_publications(docs, cfg.first_author_prefix)
+    if cfg.output_format == "template" and not cfg.template.group:
+        # One ungrouped section keeps the input order.
+        first_docs, co_docs = [], list(docs)
+    else:
+        first_docs, co_docs = classify_publications(docs, cfg.first_author_prefix)
     renderer = create_renderer(cfg.output_format, cfg.style)
     return renderer.render_document(first_docs, co_docs, cfg)
 

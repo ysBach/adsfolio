@@ -88,6 +88,7 @@ FIELD_HELP = {
     "markers": "Marker symbols for this bibcode",
 }
 SECTION_LABELS = ("First-authored", "Co-authored")
+UNGROUPED_LABEL = "Publications"
 
 
 @dataclass(frozen=True)
@@ -103,6 +104,9 @@ class CVTemplate:
     escape : `str`
         ``"latex"``, ``"html"``, or ``"none"``. Selects how ADS values are
         escaped before they replace placeholders.
+    group : `bool`
+        `True` splits the list into First-authored and Co-authored sections.
+        `False` makes one section, named Publications, in the input order.
     """
 
     header: str = ""
@@ -111,6 +115,7 @@ class CVTemplate:
     section_end: str = ""
     footer: str = ""
     escape: str = "none"
+    group: bool = True
 
     def __post_init__(self) -> None:
         if self.escape not in TEMPLATE_ESCAPES:
@@ -251,15 +256,13 @@ def _entry_values(
     cfg: CVConfig,
     state: RenderState,
     index: int,
-) -> dict[str, str] | None:
+) -> dict[str, str]:
     from .query import get_first_item
     from .renderer import _bibstem_for_legend, _is_non_peer_reviewed, _marker_symbols
 
     escape = cfg.template.escape
     esc = _escaper(escape)
     bibcode = str(get_first_item(doc, "bibcode") or "").strip()
-    if not bibcode:
-        return None
     journal = format_journal(
         str(get_first_item(doc, "bibstem") or "").strip(),
         fmt="full",
@@ -268,9 +271,12 @@ def _entry_values(
     is_arxiv = journal.lower() == "arxiv e-prints"
     if is_arxiv:
         journal = "arXiv"
+    elif not journal:
+        # Records without an ADS journal code keep their publication name.
+        journal = esc(str(get_first_item(doc, "pub") or ""))
     elif escape == "html":
         journal = html.escape(journal)
-    bibstem = _bibstem_for_legend(dict(doc), bibcode)
+    bibstem = _bibstem_for_legend(dict(doc), bibcode) if bibcode else ""
     if bibstem and journal:
         state.bibstem_to_journal.setdefault(bibstem, journal)
     markers = _marker_symbols(
@@ -280,7 +286,13 @@ def _entry_values(
         state,
         escape == "latex",
     )
-    url = ADSClient.abstract_url(bibcode)
+    doi = str(get_first_item(doc, "doi") or "").strip()
+    if bibcode:
+        url = ADSClient.abstract_url(bibcode)
+    elif doi:
+        url = f"https://doi.org/{doi}"
+    else:
+        url = ""
     authors = _as_str_list(doc.get("author"))
     volume = esc(str(get_first_item(doc, "volume") or ""))
     page = esc(str(get_first_item(doc, "page") or ""))
@@ -300,7 +312,7 @@ def _entry_values(
         "venue": venue,
         "bibcode": esc(bibcode),
         "url": html.escape(url) if escape == "html" else url,
-        "doi": esc(str(get_first_item(doc, "doi") or "")),
+        "doi": esc(doi),
         "citations": str(doc.get("citation_count") or 0),
         "n_authors": str(doc.get("author_count") or len(authors)),
         "status": str(cfg.status.get(bibcode, "")).strip(),
@@ -339,17 +351,18 @@ def render_template_document(
     }
     state = RenderState()
     parts = [fill_template(template.header, summary)]
-    for label, docs in zip(SECTION_LABELS, (first_docs, co_docs), strict=True):
+    if template.group:
+        sections = tuple(zip(SECTION_LABELS, (first_docs, co_docs), strict=True))
+    else:
+        sections = ((UNGROUPED_LABEL, [*first_docs, *co_docs]),)
+    for label, docs in sections:
         parts.append(
             fill_template(template.section, {"section": label, "count": str(len(docs))})
         )
-        index = 0
-        for doc in docs:
-            values = _entry_values(doc, cfg, state, index + 1)
-            if values is None:
-                continue
-            index += 1
-            parts.append(fill_template(template.entry, values))
+        for index, doc in enumerate(docs, start=1):
+            parts.append(
+                fill_template(template.entry, _entry_values(doc, cfg, state, index))
+            )
         parts.append(
             fill_template(
                 template.section_end, {"section": label, "count": str(len(docs))}

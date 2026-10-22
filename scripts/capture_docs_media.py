@@ -463,6 +463,62 @@ def _capture_workflows(
         video="workflows",
     )
 
+    # Several selected papers: the menu acts on all of them.
+    from PySide6.QtCore import QItemSelectionModel
+
+    selection = window.table.selectionModel()
+    selection.clearSelection()
+    for row in range(window.model.rowCount() - 1):
+        selection.select(
+            window.model.index(row, 0),
+            QItemSelectionModel.SelectionFlag.Select
+            | QItemSelectionModel.SelectionFlag.Rows,
+        )
+    application.processEvents()
+    main_window_module.QMenu = CapturedMenu
+    try:
+        point = window.table.visualRect(window.model.index(1, 0)).center()
+        window._table_menu(point)
+    finally:
+        main_window_module.QMenu = original_menu
+    table_menu = captured[-1]
+    table_menu.adjustSize()
+    recorder.save(table_menu.grab(), "tutorial/selection-menu.png")
+    recorder.frame(
+        _composite(
+            window,
+            table_menu,
+            at=window.table.viewport().mapTo(window, point + QPoint(12, 6)),
+        ),
+        "Select several papers: each action covers all of them",
+        video="workflows",
+    )
+    export = CVDialog(
+        window,
+        settings_path=Path(os.environ["HOME"]) / "cv-selection.yaml",
+        records=window._selected_records(),
+    )
+    export.me_target.setText("Rivera, A.")
+    export.preset.setCurrentIndex(export.preset.findData("markdown"))
+    export._apply_preset()
+    export.resize(1180, 640)
+    export.show()
+    application.processEvents()
+    export._render_sample()
+    application.processEvents()
+    recorder.save(export.grab(), "tutorial/export-selected.png")
+    recorder.frame(
+        _composite(
+            window,
+            export.grab().scaled(
+                1180, 540, Qt.KeepAspectRatio, Qt.SmoothTransformation
+            ),
+        ),
+        "Export the selected papers as a list, without ADS",
+        video="workflows",
+    )
+    export.hide()
+
     # A fictional profile; the window fills its fields from it.
     from adsfolio.config import Config
     from adsfolio.user_profile import UserProfile

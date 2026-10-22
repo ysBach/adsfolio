@@ -6,7 +6,13 @@
 
 - **CV Generator.** Before: CV lists needed `adsfolio cv` in a terminal. Now:
   **Tools → CV Generator…** fills your query, ORCID iD, and name from your
-  profile. It shows a live preview and saves the CV file.
+  profile. It shows a live preview and saves the CV file. **Show as** shows the
+  preview as Markdown or HTML that a reader sees, or as source. Each control has
+  a tooltip.
+- **Export selected papers.** Before: a list of chosen papers needed an ADS
+  query. Now: select rows, right-click, and choose **Export Selected
+  Papers…**. ADSfolio writes them with a CV template from the stored details,
+  with no ADS request. A paper without a bibcode links to its DOI.
 - **CV templates for any text format.** Before: CV output was LaTeX or Markdown
   in three fixed styles. Now: `format.output: template` uses your own header,
   section, entry, and footer text. Presets start from LaTeX, Markdown, HTML, or
@@ -16,6 +22,17 @@
   features were only in the long application guide. Now: "Three everyday
   workflows" shows each one with steps, screenshots, and a video. The README
   and the website link to it.
+
+### Improved
+
+- **Actions on several rows.** Before: with three rows selected, **Copy
+  Bibcode** copied only the clicked row. Now: the menu says **Copy 3
+  Bibcodes** and copies one bibcode per line. **Open**, **Reveal**, **Copy
+  DOI**, **Copy Path**, and **Refresh ADS Records** also act on all selected
+  rows. Refresh skips rows without a bibcode.
+- **One-list CV templates.** Before: a template always split papers into
+  First-authored and Co-authored sections. Now: `template.group: false` makes
+  one Publications section in the original order.
 
 ### Fixed
 
