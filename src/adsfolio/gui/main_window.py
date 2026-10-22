@@ -2966,14 +2966,15 @@ class MainWindow(QMainWindow):
         )
 
     def _update_selected_from_ads(self, initial_bibcode: str) -> None:
-        """Ask for an ADS identifier, then refresh and rename the selected file."""
+        """Ask for an identifier, then refresh and rename the selected file."""
         record = self._selected_record()
         if record is None or self.current_root is None:
             return
         bibcode, accepted = QInputDialog.getText(
             self,
-            "Update from ADS",
-            "Bibcode, DOI, or journal-volume-page:",
+            "Update by identifier",
+            "Bibcode, DOI, arXiv ID, or journal-volume-page.\n"
+            "ADSfolio tries Crossref and DataCite when ADS has no DOI or arXiv ID:",
             text=initial_bibcode,
         )
         normalized = bibcode.strip()

@@ -102,9 +102,13 @@ def _only_record(library: Path) -> dict:
     try:
         records = list(state.registry.iter_files())
         assert len(records) == 1
-        document = state.registry.catalog.document_for_attachment(
-            records[0]["attachment_id"]
-        )
+        catalog = state.registry.catalog
+        document = catalog.document_for_attachment(records[0]["attachment_id"])
+        if document is not None:
+            row = catalog._connection.execute(
+                "SELECT doi, arxiv_id FROM documents WHERE id = ?", (document["id"],)
+            ).fetchone()
+            document.update(doi=row["doi"], arxiv_id=row["arxiv_id"])
         return {**records[0], "_document": document}
     finally:
         state.close()
@@ -128,6 +132,7 @@ def test_doi_outside_ads_updates_and_renames_the_file(library, providers, monkey
     assert record["current_path"] != "scan.pdf"
     assert (library / record["current_path"]).is_file()
     assert record["_document"] is not None and record["_document"]["bibcode"] is None
+    assert record["_document"]["doi"] == "10.5555/not.in.ads"
 
 
 def test_doi_lookup_works_without_an_ads_token(library, providers, monkeypatch):
@@ -176,6 +181,7 @@ def test_arxiv_id_outside_ads_uses_its_datacite_doi(library, providers, monkeypa
     record = _only_record(library)
     assert record["metadata"]["title"] == ["An arXiv-only preprint"]
     assert record["_document"] is not None
+    assert record["_document"]["arxiv_id"] == "2401.12345"
 
 
 def test_unknown_identifier_leaves_the_file_unchanged(library, providers, monkeypatch):
