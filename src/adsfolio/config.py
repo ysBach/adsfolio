@@ -11,6 +11,7 @@ Token is searched in order:
 from __future__ import annotations
 
 import json
+import logging
 import os
 import sys
 from collections.abc import Mapping
@@ -21,7 +22,10 @@ import platformdirs
 
 from .data_migration import copy_data_directory
 
+logger = logging.getLogger(__name__)
+
 if TYPE_CHECKING:
+    from .citekeys import KeyPolicy
     from .pdf.identify_settings import IdentifySettings
     from .pdf.rename_settings import RenameSettings
     from .user_profile import UserProfile
@@ -347,6 +351,27 @@ class Config:
             identify=cls.load_identify_settings(),
             rename=settings,
         )
+
+    @classmethod
+    def load_key_policy(cls) -> KeyPolicy:
+        """Load the citation key styles, or the defaults when unset or invalid."""
+        from .citekeys import KeyPolicy
+
+        payload = cls._load_setup_mapping().get("citation_keys")
+        try:
+            return KeyPolicy.from_mapping(
+                payload if isinstance(payload, Mapping) else None
+            )
+        except ValueError:
+            logger.warning("Ignoring invalid citation key settings; using defaults.")
+            return KeyPolicy()
+
+    @classmethod
+    def save_key_policy(cls, policy: KeyPolicy) -> Path:
+        """Atomically persist the citation key styles."""
+        payload = cls._load_setup_mapping()
+        payload["citation_keys"] = policy.to_mapping()
+        return cls._save_setup_mapping(payload)
 
     @classmethod
     def _save_setup_sections(
