@@ -1,5 +1,72 @@
 # Changelog
 
+## 0.6.1 (2026-10-23)
+
+### Merging PDF editions
+
+- **Find the other edition.** Before: a newly identified preprint or published
+  PDF had no merge prompt, and selected rows had no merge action. Now: the
+  watcher offers **Review Merge…** when stored identifiers link the editions.
+  If ADS has no shared identifier, you can choose the source explicitly.
+  Select two rows and choose **Merge Selected PDFs…** to start directly.
+- **Review annotations in one window.** Before: you had to navigate both PDFs
+  and place most annotations manually. Now: selecting an annotation opens the
+  relevant pages and shows matching passages side by side. Local text search
+  finds exact passages and the closest wording. Changed words, numbers, and
+  symbols remain visible for review. **Accept & Next**, target text search,
+  and **Undo decision** reduce navigation. Every placement still needs approval.
+  Matching needs no account, API key, network connection, or downloaded model.
+- **Keep the final merged PDF.** Before: the merged copy stayed outside the
+  catalog, and originals needed separate cleanup. Now: for library PDFs,
+  saving the verified copy inside an open library folder registers it with the
+  canonical PDF's metadata. After a complete save,
+  **Remove original PDFs…** lets you choose which inputs to move to Trash.
+  **Keep originals** is the default. Cleanup checks that the result and inputs
+  are unchanged, and retains catalog history. Sequential complete merges can
+  collect three or more originals and intermediate copies for one cleanup.
+- **Handle source links separately.** Before: hundreds of source hyperlinks
+  could obscure reader annotations. Now: reader marks appear first. You can
+  show source links or explicitly exclude them together. The target keeps its
+  own links. Before cleanup, the dialog reports waived annotations and explains
+  that other editions contribute annotations, not their pages or attachments.
+
+### Library workflows
+
+- **Choose an export format.** Before: separate menu actions hardcoded BibTeX
+  or a publication list. Now: **Export Selection As…** and **Export All As…**
+  let you choose either format. Export All includes every current PDF in the
+  library, including rows hidden by filters or not yet loaded in the table.
+- **Export ADS abstracts safely.** Before: literal braces in an abstract could
+  stop BibTeX export with a parser error. Now: export escapes those braces
+  safely. Other invalid fields produce a message that names the paper,
+  citation key, and fields to correct. Stored metadata stays unchanged.
+- **Reveal files from notices.** Before: an unresolved or failed file notice
+  gave no way to locate the PDF. Now: **Reveal in Finder** on macOS, or
+  **Reveal in File Manager** elsewhere, opens its current location. The notice
+  stays available after a rename, move, or change of selection.
+- **Enter details without a lookup.** Before: unresolved and failed PDFs
+  depended on another provider lookup. Now: **Enter Details…** saves local
+  title, author, year, journal, and DOI fields without changing the PDF's name
+  or location. Changed fields are locked against provider updates. Both warning
+  states offer this action.
+- **Identify from a bibliographic reference.** Before: manual lookup help did
+  not define the reference fields. Now: the app and CLI explain
+  `{authorLastName}-{year}-{bibstem}` and `{bibstem}-{volume}-{page}`, including
+  full journal names. These reference formats query ADS only. DOI and arXiv
+  lookups retain their existing provider choices.
+
+### Compatibility
+
+- **Retire earlier application formats.** Before: readers also searched for
+  sidecars, catalogs, and reserved metadata keys under the earlier application
+  name. Now: those compatibility readers are removed. Existing ADSfolio-named
+  files remain supported. Before upgrading from the earlier application, open
+  ADSfolio **0.6.0** once to convert its catalog and import its per-library files.
+  Version 0.6.1 still copies earlier data directories, but it no longer converts
+  their reserved keys. An unconverted catalog's manual locks, author text, and
+  local references are not honoured. Keep the original data until you verify
+  the converted library.
+
 ## 0.6.0 (2026-10-22)
 
 ### Papers that are not on ADS
