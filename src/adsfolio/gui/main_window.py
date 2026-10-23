@@ -49,13 +49,28 @@ from PySide6.QtWidgets import (
 
 from ..citations import CitationStyle, citation_preference_key
 from ..config import AuthenticationError, Config
-from ..pdf.annotation_merge import AnnotationMergeError, MissingDependencyError
+from ..pdf.annotation_merge import (
+    AnnotationMergeError,
+    MergeInput,
+    MergeReport,
+    MissingDependencyError,
+)
 from ..pdf.doi_providers import DOI_PROVIDER_LABELS, DoiProvider
+from ..pdf.files import sha256_file
 from ..pdf.identify_settings import IdentifySettings
-from ..pdf.readiness import metadata_ready, stored_bibcode_matches_file
-from ..pdf.registry import CentralPdfRegistryState, LibraryRefresh, PdfRegistry
+from ..pdf.readiness import (
+    METADATA_SHA256_KEY,
+    metadata_ready,
+    stored_bibcode_matches_file,
+)
+from ..pdf.registry import (
+    LOCKED_METADATA_FIELDS_KEY,
+    CentralPdfRegistryState,
+    LibraryRefresh,
+    PdfRegistry,
+)
 from ..pdf.rename_settings import RenameSettings
-from ..pdf.watch_session import WatchEvent, WatchOutcome, WatchState
+from ..pdf.watch_session import FileSnapshot, WatchEvent, WatchOutcome, WatchState
 from ..pdf.watcher import WatchIdentifyPolicy
 from ..references import LocalReferences
 from .about import AboutDialog
@@ -72,7 +87,18 @@ from .citation_styles import CitationStylesDialog
 from .config import RootEntry, load_config, save_config
 from .cv_dialog import CVDialog
 from .detail_pane import DetailPane
-from .dialogs import IdentifyDialog, RenameDialog, UserProfileDialog
+from .dialogs import (
+    IdentifyDialog,
+    ManualMetadataDialog,
+    RenameDialog,
+    UserProfileDialog,
+)
+from .edition_merge import (
+    EditionMergeDialog,
+    EditionMergeRequest,
+    edition_candidates,
+    edition_role,
+)
 from .icons import RoundIconButton
 from .jobs import CommandJob, cli_argv
 from .library import (
@@ -113,6 +139,7 @@ logger = logging.getLogger(__name__)
 _SettingsT = TypeVar("_SettingsT")
 DEFAULT_WINDOW_SIZE = (1280, 780)
 DEFAULT_SPLITTER_SIZES = [220, 700, 360]
+_MERGE_AUDIT_KEY = "_adsfolio_annotation_merge"
 
 
 class _SettingsPersistenceError(OSError):
@@ -277,6 +304,11 @@ class MainWindow(QMainWindow):
         self._pending_watch_refresh_roots: set[Path] = set()
         self._watch_refresh_selection_id: int | None = None
         self._pending_watch_dialog: tuple[str, Path] | None = None
+        self._manual_metadata_target: tuple[Path, Path, str | None] | None = None
+        self._edition_merge_target: EditionMergeRequest | None = None
+        self._pending_edition_merges: dict[str, EditionMergeRequest] = {}
+        self._merge_output_paths: set[Path] = set()
+        self._merge_inputs_by_sha256: dict[str, tuple[MergeInput, ...]] = {}
         self._pending_ads_refresh: (
             tuple[Path, tuple[str, ...], int | None, str | None] | None
         ) = None
@@ -368,7 +400,8 @@ class MainWindow(QMainWindow):
             lambda field: self.status.showMessage(f"Copied: {field}", 1500)
         )
         self.detail.metadata_changed.connect(self._save_detail_metadata)
-        self.detail.ads_update_requested.connect(self._update_selected_from_ads)
+        self.detail.ads_update_requested.connect(self._update_from_identifier)
+        self.detail.manual_metadata_requested.connect(self._enter_manual_metadata)
         self.detail.row_order_changed.connect(self._set_detail_row_order)
         splitter = QSplitter(Qt.Horizontal, self)
         splitter.addWidget(self.sidebar)
@@ -479,7 +512,9 @@ class MainWindow(QMainWindow):
         self.add_action = QAction("Add Library Root…", self)
         self.local_references_action = QAction("Local References…", self)
         self.merge_annotations_action = QAction("Merge Annotations…", self)
-        self.merge_annotations_action.triggered.connect(self._merge_annotations)
+        self.merge_annotations_action.triggered.connect(
+            lambda: self._merge_annotations()
+        )
         self.local_references_action.triggered.connect(self._open_local_references)
         self.remove_action = QAction("Remove Root", self)
         self.refresh_action = QAction("Refresh", self)
@@ -525,21 +560,19 @@ class MainWindow(QMainWindow):
             "Make a publication list for your CV in LaTeX, HTML, Markdown, or text"
         )
         self.cv_action.triggered.connect(self._open_cv_generator)
-        self.export_selected_action = QAction("Export Selected Papers…", self)
+        self.export_selected_action = QAction("Export Selection As…", self)
         self.export_selected_action.setToolTip(
-            "Write the selected papers as a list in LaTeX, HTML, Markdown, or text, "
-            "from their stored details, without ADS"
+            "Choose BibTeX or a publication list for the selected papers, "
+            "using their stored details without ADS"
         )
-        self.export_selected_action.triggered.connect(
-            lambda: self._export_selected_papers()
+        self.export_selected_action.triggered.connect(lambda: self._export_papers())
+        self.export_all_action = QAction("Export All As…", self)
+        self.export_all_action.setToolTip(
+            "Choose BibTeX or a publication list for every current PDF in this "
+            "library, including filtered and unloaded rows"
         )
-        self.export_bibtex_action = QAction("Export Selected as BibTeX…", self)
-        self.export_bibtex_action.setToolTip(
-            "Write the selected papers to a .bib file, ADS papers and papers "
-            "outside ADS together, with the citation keys from Settings"
-        )
-        self.export_bibtex_action.triggered.connect(
-            lambda: self._save_records_bibtex(self._selected_records())
+        self.export_all_action.triggered.connect(
+            lambda: self._export_papers(all_papers=True)
         )
         self.citation_keys_action = QAction("Citation Keys…", self)
         self.citation_keys_action.setToolTip(
@@ -560,7 +593,7 @@ class MainWindow(QMainWindow):
             "Update and Rename Selected by Identifier…", self
         )
         self.update_selected_ads_action.triggered.connect(
-            lambda: self._update_selected_from_ads("")
+            lambda: self._update_from_identifier("")
         )
         self.link_bibcodes_action = QAction("Look Up Stored Bibcodes…", self)
         self.link_bibcodes_action.triggered.connect(self._link_stored_bibcodes)
@@ -606,7 +639,7 @@ class MainWindow(QMainWindow):
         tools.addAction(self.profile_action)
         tools.addAction(self.cv_action)
         tools.addAction(self.export_selected_action)
-        tools.addAction(self.export_bibtex_action)
+        tools.addAction(self.export_all_action)
         tools.addAction(self.citation_keys_action)
         tools.addAction(self.citation_styles_action)
         tools.addSeparator()
@@ -956,6 +989,8 @@ class MainWindow(QMainWindow):
         self.watch_controller.failed.connect(self._handle_watch_failure)
         self.watch_controller.paused.connect(self._handle_watch_paused)
         self.notice_bar.action_requested.connect(self._handle_notice_action)
+        self.notice_bar.manual_entry_requested.connect(self._enter_manual_metadata)
+        self.notice_bar.reveal_requested.connect(self._reveal_notice_path)
         self.notice_bar.dismiss_requested.connect(self._handle_notice_dismiss)
         self.notice_bar.action_all_requested.connect(self._handle_notice_actions)
         self.notice_bar.dismiss_all_requested.connect(self._handle_notice_dismissals)
@@ -1014,6 +1049,8 @@ class MainWindow(QMainWindow):
             and self._pending_watch_dialog is None
             and self._pending_ads_refresh is None
             and self._local_refresh_context is None
+            and self._manual_metadata_target is None
+            and self._edition_merge_target is None
             and not self._close_requested
         )
         record = self._selected_record()
@@ -1285,6 +1322,10 @@ class MainWindow(QMainWindow):
             self._open_identify_dialog(root)
         elif kind == "guided_identify":
             self._launch_guided_identification(root)
+        elif kind == "manual_metadata":
+            self._open_manual_metadata(root)
+        elif kind == "edition_merge":
+            self._open_edition_merge(root)
         else:
             self._open_rename_dialog(root)
 
@@ -1301,6 +1342,8 @@ class MainWindow(QMainWindow):
                 action=NoticeAction.RETRY if current else None,
                 payload=event if current else failure,
                 root=failure.root,
+                manual_entry=current,
+                reveal_path=event.path if event is not None else None,
             )
         )
         self._sync_watch_actions()
@@ -1364,6 +1407,7 @@ class MainWindow(QMainWindow):
                 action=NoticeAction.IDENTIFY_RENAME,
                 payload=event,
                 root=event.root,
+                reveal_path=event.path,
             )
         )
 
@@ -1400,10 +1444,22 @@ class MainWindow(QMainWindow):
                         else "warning"
                     )
                 ),
-                action=(NoticeAction.RETRY if state is WatchState.FAILED else None),
-                payload=event,
+                action=(
+                    NoticeAction.RETRY
+                    if state is WatchState.FAILED
+                    else NoticeAction.IDENTIFY
+                    if state is WatchState.UNRESOLVED
+                    else None
+                ),
+                payload=(
+                    replace(event, path=destination)
+                    if state in {WatchState.UNRESOLVED, WatchState.FAILED}
+                    else event
+                ),
                 root=event.root,
                 details=str(destination),
+                manual_entry=state in {WatchState.UNRESOLVED, WatchState.FAILED},
+                reveal_path=destination,
             )
         )
         if state in {
@@ -1412,8 +1468,143 @@ class MainWindow(QMainWindow):
             WatchState.UNRESOLVED,
         }:
             self._schedule_watch_refresh(event.root)
+        if state in {WatchState.RESOLVED, WatchState.RENAMED}:
+            self._offer_edition_merge(event, destination)
+
+    def _offer_edition_merge(self, event: WatchEvent, destination: Path) -> None:
+        """Prompt for identifier-linked editions or an explicit preprint selection."""
+        for path in (event.path, destination):
+            if path in self._merge_output_paths:
+                self._merge_output_paths.discard(path)
+                return
+        root = event.root.expanduser().resolve()
+        registry = self.registries.get(str(root))
+        if registry is None:
+            return
+        try:
+            relative_path = destination.resolve().relative_to(root).as_posix()
+            arrival = registry.find_file_by_current_path(root, relative_path)
+            if arrival is None:
+                return
+            arrival = deepcopy(arrival)
+            bibcode = self._record_value(arrival, "bibcode")
+            if bibcode:
+                arrival["ads"] = registry.find_ads_document_by_bibcode(bibcode) or {}
+            records = registry.query_files()
+            candidates, linked = edition_candidates(arrival, records)
+            candidates = tuple(
+                record
+                for record in candidates
+                if (
+                    root / str(record.get("current_path") or record["relative_path"])
+                ).is_file()
+            )
+        except (OSError, ValueError, sqlite3.Error) as exc:
+            self.log.appendPlainText(
+                f"Could not check PDF editions for {destination}: {exc}"
+            )
+            return
+        if not candidates:
+            return
+        choices = (arrival, *(deepcopy(record) for record in candidates))
+        target_record = next(
+            (record for record in choices if edition_role(record) == "published"),
+            arrival,
+        )
+        request = EditionMergeRequest(
+            root=root,
+            records=choices,
+            target=root
+            / str(target_record.get("current_path") or target_record["relative_path"]),
+            choose_source=not linked or len(choices) != 2,
+            linked=linked,
+            event=event,
+        )
+        key = self._watch_notice_key(event)
+        self._pending_edition_merges[key] = request
+        message = (
+            f"{destination.name}: another edition shares its identifiers. Review annotation merging?"
+            if linked
+            else f"{destination.name}: ADS has not linked the editions. Choose an existing preprint or published PDF to review annotation merging."
+        )
+        self.notice_bar.enqueue(
+            Notice(
+                key,
+                message,
+                action=NoticeAction.MERGE_EDITIONS,
+                payload=request,
+                root=root,
+                reveal_path=destination,
+                details="\n".join(
+                    str(
+                        root
+                        / str(record.get("current_path") or record["relative_path"])
+                    )
+                    for record in choices
+                ),
+            )
+        )
+        QTimer.singleShot(0, self._review_next_edition_merge)
+
+    def _review_next_edition_merge(self) -> None:
+        """Show the next arrival's merge prompt when no other operation is active."""
+        if (
+            not self.isVisible()
+            or self._close_requested
+            or self.job is not None
+            or self._pending_watch_dialog is not None
+            or self._pending_ads_refresh is not None
+            or self._edition_merge_target is not None
+            or self._foreground_paused_root is not None
+            or QApplication.activeModalWidget() is not None
+        ):
+            return
+        while self._pending_edition_merges:
+            key = next(iter(self._pending_edition_merges))
+            request = self._pending_edition_merges.pop(key)
+            if (
+                request.event is not None
+                and self._is_current_watch_event(request.event)
+                and str(request.root) in self.registries
+            ):
+                self._edition_merge_target = request
+                self._request_foreground_dialog("edition_merge", request.root)
+                return
+
+    def _open_edition_merge(self, root: Path) -> None:
+        """Confirm the source and target, then review annotations with writes paused."""
+        request = self._edition_merge_target
+        try:
+            if request is None or request.root != root:
+                return
+            dialog = EditionMergeDialog(request, self)
+            if dialog.exec() != QDialog.Accepted:
+                return
+            target, source = dialog.target, dialog.source
+            if target is None or source is None:
+                return
+            report = self._review_annotation_pair(target, source)
+            if report is not None and report.complete and request.event is not None:
+                self.notice_bar.dismiss(self._watch_notice_key(request.event))
+        finally:
+            self._edition_merge_target = None
+            self._resume_foreground_watch()
+
+    def _reveal_notice_path(self, path: Path) -> None:
+        """Reveal the notice's file and report a failed launch in the status bar."""
+        if not reveal_in_file_manager(path):
+            self.status.showMessage(f"Could not reveal file: {path}")
 
     def _handle_notice_action(self, payload: object) -> None:
+        if isinstance(payload, EditionMergeRequest):
+            if payload.event is not None and self._is_current_watch_event(
+                payload.event
+            ):
+                self._pending_edition_merges[self._watch_notice_key(payload.event)] = (
+                    payload
+                )
+                self._review_next_edition_merge()
+            return
         if isinstance(payload, Release):
             self._show_update_dialog()
             return
@@ -1425,8 +1616,15 @@ class MainWindow(QMainWindow):
             self.watch_controller.retry(payload)
         elif payload.state is WatchState.DETECTED:
             self._process_watch_event(payload)
+        elif payload.state is WatchState.UNRESOLVED:
+            if self._update_from_identifier("", root=payload.root, path=payload.path):
+                self.notice_bar.dismiss(self._watch_notice_key(payload))
 
     def _handle_notice_dismiss(self, payload: object) -> None:
+        if isinstance(payload, EditionMergeRequest) and payload.event is not None:
+            self._pending_edition_merges.pop(
+                self._watch_notice_key(payload.event), None
+            )
         if (
             isinstance(payload, WatchEvent)
             and payload.state is WatchState.DETECTED
@@ -1610,13 +1808,13 @@ class MainWindow(QMainWindow):
         self._sync_export_action()
 
     def _sync_export_action(self) -> None:
-        """Enable Export Selected Papers only while rows are selected."""
+        """Enable export for the current library and its selected rows."""
         if hasattr(self, "export_selected_action"):
             enabled = self.current_root is not None and bool(
                 self.table.selectionModel().selectedRows()
             )
             self.export_selected_action.setEnabled(enabled)
-            self.export_bibtex_action.setEnabled(enabled)
+            self.export_all_action.setEnabled(self.current_root is not None)
 
     def _open_index(self, index: QModelIndex) -> None:
         if QApplication.keyboardModifiers() != Qt.NoModifier:
@@ -1633,9 +1831,53 @@ class MainWindow(QMainWindow):
                 return
         self._open_pdf_record(record)
 
-    def _merge_annotations(self) -> None:
-        """Choose a canonical target and a source PDF, then open the merge dialog."""
-        start = str(self.current_root) if self.current_root else ""
+    def _merge_annotations(
+        self,
+        records: Sequence[dict[str, Any]] | None = None,
+        *,
+        root: Path | None = None,
+    ) -> None:
+        """Review the two selected editions, or choose PDFs from file dialogs."""
+        root = root or self.current_root
+        selected = tuple(
+            deepcopy(record)
+            for record in (records if records is not None else self._selected_records())
+        )
+        if len(selected) == 2 and root is not None:
+            if (
+                self.job is not None
+                or self._pending_watch_dialog is not None
+                or self._pending_ads_refresh is not None
+                or self._foreground_paused_root is not None
+                or self._edition_merge_target is not None
+                or self._close_requested
+            ):
+                self.status.showMessage(
+                    "Wait for the current operation before merging PDFs."
+                )
+                return
+            target_record = next(
+                (record for record in selected if edition_role(record) == "published"),
+                selected[0],
+            )
+            _candidates, linked = edition_candidates(selected[0], selected)
+            self._edition_merge_target = EditionMergeRequest(
+                root=root,
+                records=selected,
+                target=root
+                / str(
+                    target_record.get("current_path") or target_record["relative_path"]
+                ),
+                linked=linked,
+            )
+            self._request_foreground_dialog("edition_merge", root)
+            return
+        if len(selected) > 2:
+            self.status.showMessage(
+                "Select exactly two PDFs to review annotation merging."
+            )
+            return
+        start = str(root) if root else ""
         target, _ = QFileDialog.getOpenFileName(
             self, "Choose the canonical (target) PDF", start, "PDF (*.pdf)"
         )
@@ -1649,14 +1891,150 @@ class MainWindow(QMainWindow):
         )
         if not source:
             return
+        self._review_annotation_pair(Path(target), Path(source))
+
+    def _review_annotation_pair(self, target: Path, source: Path) -> MergeReport | None:
+        """Open annotation review and remember outputs created by this application."""
         try:
+            if not target.is_file() or not source.is_file():
+                raise AnnotationMergeError(
+                    "A selected PDF is no longer available. Refresh the library and select the files again."
+                )
+            if target.samefile(source):
+                raise AnnotationMergeError("Choose two distinct PDF files.")
             from .annotation_merge import AnnotationMergeDialog
 
-            dialog = AnnotationMergeDialog(Path(target), Path(source), self)
-        except (MissingDependencyError, AnnotationMergeError, RuntimeError) as exc:
+            dialog = AnnotationMergeDialog(target, source, self)
+            dialog.copy_saved.connect(
+                lambda output: self._merge_output_paths.add(Path(output).resolve())
+            )
+            dialog.copy_saved.connect(
+                lambda _output: self._remember_annotation_merge(dialog.report)
+            )
+            dialog.originals_trashed.connect(self._record_trashed_merge_originals)
+            dialog.exec()
+            if dialog.report is not None:
+                self._merge_output_paths.add(Path(dialog.report.output_path).resolve())
+            return dialog.report
+        except (
+            MissingDependencyError,
+            AnnotationMergeError,
+            OSError,
+            RuntimeError,
+        ) as exc:
             QMessageBox.warning(self, "Cannot merge annotations", str(exc))
+            return None
+
+    def _remember_annotation_merge(self, report: MergeReport | None) -> None:
+        """Carry earlier inputs forward and register the saved merged PDF."""
+        if report is None or not report.verified or not report.output_sha256:
             return
-        dialog.exec()
+        direct_inputs = report.input_files
+        records = {}
+        for original in direct_inputs:
+            path = Path(original.path)
+            for key, registry in self.registries.items():
+                root = Path(key)
+                if path.is_relative_to(root):
+                    record = registry.find_file_by_current_path(
+                        root, path.relative_to(root).as_posix()
+                    )
+                    if record is not None:
+                        records[original.path] = record
+                        break
+        inputs: dict[str, MergeInput] = {}
+        for original in direct_inputs:
+            ancestors = self._merge_inputs_by_sha256.get(original.sha256, ())
+            record = records.get(original.path) or {}
+            audit = (record.get("metadata") or {}).get(_MERGE_AUDIT_KEY)
+            if (
+                not ancestors
+                and isinstance(audit, dict)
+                and audit.get("complete") is True
+                and audit.get("output_sha256") == original.sha256
+                and record.get("sha256") == original.sha256
+            ):
+                stored = audit.get("inputs")
+                if isinstance(stored, list):
+                    ancestors = tuple(
+                        MergeInput(value["path"], value["sha256"])
+                        for value in stored
+                        if isinstance(value, dict)
+                        and isinstance(value.get("path"), str)
+                        and Path(value["path"]).is_absolute()
+                        and isinstance(value.get("sha256"), str)
+                    )
+            for ancestor in ancestors:
+                inputs[ancestor.path] = ancestor
+            inputs[original.path] = original
+        report.input_files = tuple(inputs.values())
+        if report.complete:
+            self._merge_inputs_by_sha256[report.output_sha256] = report.input_files
+        output = Path(report.output_path).absolute()
+        canonical = records.get(direct_inputs[0].path) if direct_inputs else None
+        metadata = deepcopy((canonical or {}).get("metadata") or {})
+        if (
+            canonical
+            and direct_inputs
+            and canonical.get("sha256") == direct_inputs[0].sha256
+        ):
+            # Verified annotation copying preserves the canonical page content.
+            for key in (METADATA_SHA256_KEY, "sha256"):
+                if metadata.get(key) == direct_inputs[0].sha256:
+                    metadata[key] = report.output_sha256
+        metadata[_MERGE_AUDIT_KEY] = {
+            "complete": report.complete,
+            "output_sha256": report.output_sha256,
+            "inputs": [
+                {"path": original.path, "sha256": original.sha256}
+                for original in report.input_files
+            ],
+        }
+        try:
+            for key, registry in list(self.registries.items()):
+                root = Path(key)
+                if not output.is_relative_to(root):
+                    continue
+                relative = output.relative_to(root).as_posix()
+                stat = output.stat()
+                registry.upsert_file(
+                    root=root,
+                    relative_path=relative,
+                    current_path=relative,
+                    sha256=report.output_sha256,
+                    size_bytes=stat.st_size,
+                    mtime_ns=stat.st_mtime_ns,
+                    status=str((canonical or {}).get("status") or "unresolved"),
+                    metadata=metadata,
+                )
+                self.refresh(root)
+        except (OSError, RuntimeError, sqlite3.Error) as exc:
+            self.status.showMessage(
+                f"Merged PDF saved, but the library could not update: {exc}. Refresh local files after closing the review."
+            )
+
+    def _record_trashed_merge_originals(self, paths: tuple[Path, ...]) -> None:
+        """Hide trashed locations while retaining their catalog history."""
+        removed = {path.absolute() for path in paths if not path.exists()}
+        for key, registry in list(self.registries.items()):
+            root = Path(key)
+            relative = {
+                path.relative_to(root).as_posix()
+                for path in removed
+                if path.is_relative_to(root)
+            }
+            if not relative:
+                continue
+            seen = {
+                record["current_path"] for record in registry.iter_files()
+            } - relative
+            try:
+                registry.catalog.mark_missing_locations(root, seen)
+                self.refresh(root)
+            except (OSError, RuntimeError, sqlite3.Error) as exc:
+                self.status.showMessage(
+                    f"Original PDFs moved to Trash, but the library could not update: {exc}. Refresh local files."
+                )
 
     def _reset_link_activation(self) -> None:
         """Forget the last activated target when the table contents are replaced."""
@@ -1869,6 +2247,17 @@ class MainWindow(QMainWindow):
             "Reveal in File Manager" if count == 1 else f"Reveal {count} Files",
             lambda: self._reveal_paths(paths),
         )
+        if count > 1:
+            merge = menu.addAction(
+                "Merge Selected PDFs…",
+                lambda: self._merge_annotations(records, root=root),
+            )
+            merge.setEnabled(count == 2)
+            merge.setToolTip(
+                "Review source annotations on the published PDF and save a new copy."
+                if count == 2
+                else "Select exactly two PDF files."
+            )
         for label, values in (
             ("Bibcode", [self._record_value(item, "bibcode") for item in records]),
             ("DOI", [self._record_value(item, "doi") for item in records]),
@@ -1923,15 +2312,10 @@ class MainWindow(QMainWindow):
             "Add to ADS Library…", self._add_to_ads_library
         )
         add_to_ads_library_action.setEnabled(self._can_add_to_ads_library())
-        menu.addAction(
-            "Export Selected Papers…" if count > 1 else "Export Paper as List…",
-            lambda: self._export_selected_papers(records),
-        )
+        menu.addAction("Export Selection As…", lambda: self._export_papers(records))
+        menu.addAction(self.export_all_action)
         with_details = document_ids_of(records)
-        for label, handler in (
-            ("Copy BibTeX", self._copy_records_bibtex),
-            ("Export BibTeX…", self._save_records_bibtex),
-        ):
+        for label, handler in (("Copy BibTeX", self._copy_records_bibtex),):
             action = menu.addAction(
                 label
                 if count == 1
@@ -2097,6 +2481,52 @@ class MainWindow(QMainWindow):
             if path.parent not in seen:
                 seen.add(path.parent)
                 reveal_in_file_manager(path)
+
+    def _export_papers(
+        self,
+        records: Sequence[dict[str, Any]] | None = None,
+        *,
+        all_papers: bool = False,
+    ) -> None:
+        """Choose a format for selected PDFs or all current PDFs in this library."""
+        if self.current_root is None:
+            return
+        if all_papers:
+            query = self.model.query
+            try:
+                papers = self.registries[str(self.current_root)].query_files(
+                    order_by=query.order_by,
+                    descending=query.descending,
+                    secondary_order_by=query.secondary_order_by,
+                    tertiary_order_by=query.tertiary_order_by,
+                )
+            except sqlite3.Error as exc:
+                QMessageBox.warning(self, "Export papers", str(exc))
+                return
+        else:
+            papers = list(records if records is not None else self._selected_records())
+        if not papers:
+            self.status.showMessage(
+                "This library has no current PDFs to export."
+                if all_papers
+                else "Select papers to export first.",
+                5000,
+            )
+            return
+        export_format, accepted = QInputDialog.getItem(
+            self,
+            "Export All As" if all_papers else "Export Selection As",
+            "Format:",
+            ("BibTeX (*.bib)", "Publication list (LaTeX, HTML, Markdown, text)"),
+            0,
+            False,
+        )
+        if not accepted:
+            return
+        if export_format == "BibTeX (*.bib)":
+            self._save_records_bibtex(papers)
+        else:
+            self._export_selected_papers(papers)
 
     def _export_selected_papers(
         self, records: Sequence[dict[str, Any]] | None = None
@@ -2673,6 +3103,14 @@ class MainWindow(QMainWindow):
             return
         root = root.expanduser().resolve()
         key = str(root)
+        if (
+            self._manual_metadata_target is not None
+            and self._manual_metadata_target[0] == root
+        ):
+            self.status.showMessage(
+                "Close the paper details dialog before removing this library."
+            )
+            return
         if any(
             context is not None and context.root == root
             for context in (self._local_refresh_context, self._guided_identify_context)
@@ -2969,6 +3407,10 @@ class MainWindow(QMainWindow):
             self._open_identify_dialog(root)
         elif kind == "guided_identify":
             self._launch_guided_identification(root)
+        elif kind == "manual_metadata":
+            self._open_manual_metadata(root)
+        elif kind == "edition_merge":
+            self._open_edition_merge(root)
         else:
             self._open_rename_dialog(root)
 
@@ -3080,21 +3522,93 @@ class MainWindow(QMainWindow):
             selection_id=int(record["location_id"]),
         )
 
-    def _update_selected_from_ads(self, initial_bibcode: str) -> None:
-        """Ask for an identifier, then refresh and rename the selected file."""
-        record = self._selected_record()
-        if record is None or self.current_root is None:
-            return
+    def _update_from_identifier(
+        self,
+        initial_identifier: str,
+        *,
+        root: Path | None = None,
+        path: Path | None = None,
+    ) -> bool:
+        """Ask for an identifier to update and rename one PDF.
+
+        Parameters
+        ----------
+        initial_identifier
+            Identifier to show in the input field.
+        root
+            Library that owns the PDF. Default is the current library.
+        path
+            PDF path inside `root`. Default is the selected file.
+
+        Returns
+        -------
+        bool
+            `True` when the update starts or waits for the watcher to pause.
+        """
+        target_root = (
+            root.expanduser().resolve() if root is not None else self.current_root
+        )
+        if (
+            target_root is None
+            or str(target_root) not in self.registries
+            or self._close_requested
+        ):
+            return False
+        if (
+            self.job is not None
+            or self._pending_watch_dialog is not None
+            or self._pending_ads_refresh is not None
+            or self._local_refresh_context is not None
+        ):
+            self.status.showMessage(
+                "Wait for the current operation before identifying a PDF."
+            )
+            return False
+        if path is None:
+            record = self._selected_record()
+        else:
+            try:
+                relative_path = path.resolve().relative_to(target_root).as_posix()
+            except ValueError:
+                return False
+            record = self.registries[str(target_root)].find_file_by_current_path(
+                target_root, relative_path
+            )
+            if record is None or record.get("missing_at") or not path.is_file():
+                QMessageBox.information(
+                    self,
+                    "PDF unavailable",
+                    f"This PDF is no longer available at {path}. Refresh the library.",
+                )
+                return False
+        if record is None:
+            return False
         bibcode, accepted = QInputDialog.getText(
             self,
             "Update by identifier",
-            "Bibcode, DOI, arXiv ID, or journal-volume-page.\n"
-            "ADSfolio tries Crossref and DataCite when ADS has no DOI or arXiv ID:",
-            text=initial_bibcode,
+            f"PDF: {record['relative_path']}\n\n"
+            "Enter a Bibcode, DOI, arXiv ID, or one of these reference formats:\n\n"
+            "1. {authorLastName}-{year}-{bibstem}\n"
+            "   {authorLastName} = an author's last name\n"
+            "   {year} = the four-digit publication year\n"
+            "   {bibstem} = the ADS journal abbreviation\n"
+            "   Example: Last-2020-Natur (Natur means Nature)\n\n"
+            "2. {bibstem}-{volume}-{page}\n"
+            "   {volume} = the journal volume number\n"
+            "   {page} = the starting page or article number\n"
+            "   Example: Sci-123-45 (Sci means Science)\n\n"
+            "You can replace {bibstem} with the full journal name in either format.\n"
+            "Examples: Last-2020-Nature or Science-123-45\n"
+            "Separate fields with hyphens, underscores, or spaces.\n"
+            "These reference formats query ADS only; other sites are not searched.\n"
+            "If several papers match, select the correct one.\n\n"
+            "The update applies saved Rename settings to this PDF.\n"
+            "DOI and arXiv lookups can use Crossref or DataCite if ADS has no match.",
+            text=initial_identifier,
         )
         normalized = bibcode.strip()
         if not accepted or not normalized:
-            return
+            return False
         self._start_ads_refresh(
             "--identifier",
             normalized,
@@ -3102,7 +3616,120 @@ class MainWindow(QMainWindow):
             str(record["relative_path"]),
             selection_id=int(record["location_id"]),
             ambiguous_relative_path=str(record["relative_path"]),
+            root=target_root,
         )
+        return self.job is not None or self._pending_ads_refresh is not None
+
+    def _enter_manual_metadata(self, payload: object = None) -> None:
+        """Open local metadata entry for a warned or selected PDF."""
+        if (
+            self._close_requested
+            or self.job is not None
+            or self._pending_watch_dialog is not None
+            or self._pending_ads_refresh is not None
+            or self._manual_metadata_target is not None
+        ):
+            self.status.showMessage(
+                "Wait for the current operation before entering paper details."
+            )
+            return
+        if isinstance(payload, WatchEvent):
+            root = payload.root.expanduser().resolve()
+            path = payload.path
+            notice_key = self._watch_notice_key(payload)
+        else:
+            record = self._selected_record()
+            if record is None or self.current_root is None:
+                return
+            root = self.current_root.resolve()
+            path = root / str(record["relative_path"])
+            notice_key = None
+        if str(root) not in self.registries:
+            return
+        self._manual_metadata_target = (root, path, notice_key)
+        self._request_foreground_dialog("manual_metadata", root)
+
+    def _open_manual_metadata(self, root: Path) -> None:
+        """Edit one PDF's metadata while its watcher cannot write to the catalog."""
+        target = self._manual_metadata_target
+        try:
+            if target is None or target[0] != root or str(root) not in self.registries:
+                return
+            _, path, notice_key = target
+            path = path.resolve()
+            relative_path = path.relative_to(root).as_posix()
+            if not path.is_file():
+                raise ValueError(f"This PDF is no longer available at {path}.")
+            snapshot = FileSnapshot.from_path(path)
+            record = self.registries[str(root)].find_file_by_current_path(
+                root, relative_path
+            )
+            initial_metadata = record["metadata"] if record is not None else {}
+
+            def save_manual_metadata(changes: dict[str, Any]) -> None:
+                """Merge changed fields with current metadata and preserve the PDF."""
+                registry = self.registries[str(root)]
+                latest = registry.find_file_by_current_path(root, relative_path)
+                if record is not None and (
+                    latest is None or latest["location_id"] != record["location_id"]
+                ):
+                    raise ValueError(
+                        "The PDF's catalog record changed. Reopen the details dialog."
+                    )
+                if FileSnapshot.from_path(path) != snapshot:
+                    raise ValueError(
+                        "The PDF changed while this dialog was open. Reopen the details dialog."
+                    )
+                metadata = deepcopy(latest["metadata"] if latest is not None else {})
+                metadata.update(changes)
+                metadata[LOCKED_METADATA_FIELDS_KEY] = sorted(
+                    set(metadata.get(LOCKED_METADATA_FIELDS_KEY, [])) | set(changes)
+                )
+                if latest is None:
+                    digest = sha256_file(path)
+                    if FileSnapshot.from_path(path) != snapshot:
+                        raise ValueError(
+                            "The PDF changed while saving. Reopen the details dialog."
+                        )
+                    registry.upsert_file(
+                        root=root,
+                        relative_path=relative_path,
+                        current_path=relative_path,
+                        sha256=digest,
+                        size_bytes=snapshot.size_bytes,
+                        mtime_ns=snapshot.mtime_ns,
+                        status="unresolved",
+                        metadata=metadata,
+                    )
+                else:
+                    metadata["status"] = latest["status"]
+                    if not registry.replace_file_metadata(
+                        root, relative_path, metadata
+                    ):
+                        raise ValueError(
+                            "The PDF's catalog record is no longer available."
+                        )
+                saved = registry.find_file_by_current_path(root, relative_path)
+                self.refresh(root)
+                if self.current_root == root and saved is not None:
+                    self._select_file_id(int(saved["location_id"]))
+                if notice_key is not None:
+                    self.notice_bar.dismiss(notice_key)
+                self.status.showMessage(f"Saved paper details: {path.name}")
+
+            dialog = ManualMetadataDialog(
+                path,
+                initial_metadata,
+                save_metadata=save_manual_metadata,
+                parent=self,
+            )
+            dialog.exec()
+        except (OSError, ValueError, sqlite3.Error) as exc:
+            QMessageBox.warning(self, "Could not enter paper details", str(exc))
+        finally:
+            self._manual_metadata_target = None
+            self._resume_foreground_watch()
+            self._sync_refresh_actions()
 
     def _save_detail_metadata(self, metadata: dict[str, Any]) -> None:
         """Persist one selected file's edited metadata and retain its selection."""
@@ -3459,6 +4086,7 @@ class MainWindow(QMainWindow):
             self._resume_foreground_watch()
 
     def _resume_foreground_watch(self) -> None:
+        QTimer.singleShot(0, self._review_next_edition_merge)
         root = self._foreground_paused_root
         if root is None:
             return
@@ -3663,6 +4291,9 @@ class MainWindow(QMainWindow):
         self._pending_watch_refresh_roots.clear()
         self._watch_refresh_selection_id = None
         self._pending_watch_dialog = None
+        self._manual_metadata_target = None
+        self._edition_merge_target = None
+        self._pending_edition_merges.clear()
         self._local_refresh_context = None
         self._guided_identify_context = None
         self._guided_identify_commands.clear()

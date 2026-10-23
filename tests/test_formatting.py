@@ -4,6 +4,20 @@ from adsfolio.formatting import html_to_latex, html_to_text
 
 
 class TestHtmlToLatex(unittest.TestCase):
+    def test_bibtex_literal_braces_use_balanced_commands(self) -> None:
+        self.assertEqual(
+            html_to_latex("Lone } and { in text", bibtex=True),
+            r"Lone \textbraceright{} and \textbraceleft{} in text",
+        )
+        self.assertEqual(
+            html_to_latex("<sub>}</sub>", bibtex=True),
+            r"$_{\rbrace{}}$",
+        )
+        self.assertEqual(
+            html_to_latex(r"$x^{2}$ and <b>{value}</b>", bibtex=True),
+            r"$x^{2}$ and \textbf{\textbraceleft{}value\textbraceright{}}",
+        )
+
     def test_basic_conversion(self):
         self.assertEqual(html_to_latex("Test"), "Test")
         self.assertEqual(html_to_latex(""), "")

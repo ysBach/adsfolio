@@ -904,6 +904,7 @@ class DetailPane(QWidget):
     copy_feedback = Signal(str)
     metadata_changed = Signal(dict)
     ads_update_requested = Signal(str)
+    manual_metadata_requested = Signal()
     row_order_changed = Signal(list)
     label_width_changed = Signal(object)
 
@@ -967,14 +968,23 @@ class DetailPane(QWidget):
         buttons.setContentsMargins(4, 4, 4, 4)
         buttons.setSpacing(4)
         update_button = QPushButton("Update by ID…", self._actions)
+        self.manual_metadata_button = QPushButton("Enter Details…", self._actions)
         open_button = QPushButton("Open", self._actions)
         reveal_button = QPushButton("Reveal", self._actions)
         for button, icon_name, description in (
             (
                 update_button,
                 "refresh",
-                "Update metadata from a bibcode, DOI, or arXiv ID. Crossref and "
-                "DataCite answer when ADS has no match.",
+                "Look up a Bibcode, DOI, arXiv ID, or reference.\n"
+                "Reference formats: {authorLastName}-{year}-{bibstem} or {bibstem}-{volume}-{page}.\n"
+                "{bibstem} means the ADS journal abbreviation. You can use the full journal name instead.\n"
+                "These reference formats query ADS only; other sites are not searched.\n"
+                "Click for field definitions and examples.",
+            ),
+            (
+                self.manual_metadata_button,
+                "edit",
+                "Enter paper metadata without an online lookup",
             ),
             (open_button, "open", "Open PDF"),
             (reveal_button, "folder", "Reveal PDF in file manager"),
@@ -984,10 +994,12 @@ class DetailPane(QWidget):
             button.setToolTip(description)
             button.setAccessibleName(description)
         buttons.addWidget(update_button)
+        buttons.addWidget(self.manual_metadata_button)
         buttons.addWidget(open_button)
         buttons.addWidget(reveal_button)
         layout.addWidget(self._actions)
         update_button.clicked.connect(self._request_ads_update)
+        self.manual_metadata_button.clicked.connect(self.manual_metadata_requested)
         open_button.clicked.connect(self._open)
         reveal_button.clicked.connect(self._reveal)
         self._actions.setEnabled(False)

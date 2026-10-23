@@ -55,7 +55,7 @@ _MATH_ESCAPES = {
 }
 
 
-def _escape_latex(s: str, *, in_math: bool = False) -> str:
+def _escape_latex(s: str, *, in_math: bool = False, bibtex: bool = False) -> str:
     r"""Escape special characters for LaTeX.
 
     Parameters
@@ -66,6 +66,8 @@ def _escape_latex(s: str, *, in_math: bool = False) -> str:
         The text is inside a math group such as ``$_{...}$``. The text-mode
         commands for backslash, ``^`` and ``~`` do not work there, so these
         characters are typeset as text with ``\mbox``.
+    bibtex
+        Use brace commands that keep BibTeX field delimiters balanced.
     """
     if not s:
         return ""
@@ -84,6 +86,11 @@ def _escape_latex(s: str, *, in_math: bool = False) -> str:
     }
     if in_math:
         repl |= _MATH_ESCAPES
+    if bibtex:
+        repl |= {
+            "{": r"\lbrace{}" if in_math else r"\textbraceleft{}",
+            "}": r"\rbrace{}" if in_math else r"\textbraceright{}",
+        }
     return "".join(repl.get(ch, ch) for ch in s)
 
 
@@ -320,7 +327,7 @@ def _decode_entities(text: str) -> str:
     return _ENTITY_PATTERN.sub(lambda match: _ENTITIES[match.group()], text)
 
 
-def html_to_latex(text: str) -> str:
+def html_to_latex(text: str, *, bibtex: bool = False) -> str:
     """Convert an HTML-like string to LaTeX.
 
     Handles the tags `<sub>`, `<sup>`, `<i>`, `<em>`, `<b>` and `<strong>`,
@@ -337,6 +344,10 @@ def html_to_latex(text: str) -> str:
     ----------
     text : str
         Input string containing HTML tags.
+    bibtex : bool, optional
+        Write literal braces as LaTeX commands with balanced delimiters so
+        the result can be stored in a BibTeX field. Existing dollar math is
+        preserved.
 
     Returns
     -------
@@ -354,7 +365,7 @@ def html_to_latex(text: str) -> str:
 
     def flatten_top() -> None:
         _, raw, parts = stack.pop()
-        stack[-1][2].append(_escape_latex(raw, in_math=in_math()))
+        stack[-1][2].append(_escape_latex(raw, in_math=in_math(), bibtex=bibtex))
         stack[-1][2].extend(parts)
 
     position = 0
@@ -364,7 +375,7 @@ def html_to_latex(text: str) -> str:
         match = pattern.search(text, position)
         end = len(text) if match is None else match.start()
         chunk = _decode_entities(text[position:end])
-        stack[-1][2].append(_escape_latex(chunk, in_math=in_math_tag))
+        stack[-1][2].append(_escape_latex(chunk, in_math=in_math_tag, bibtex=bibtex))
         if match is None:
             break
         position = match.end()
@@ -389,7 +400,9 @@ def html_to_latex(text: str) -> str:
                 wrapped = "\\textbf{" + content + "}"
             stack[-1][2].append(wrapped)
         else:
-            stack[-1][2].append(_escape_latex(match.group(), in_math=in_math_tag))
+            stack[-1][2].append(
+                _escape_latex(match.group(), in_math=in_math_tag, bibtex=bibtex)
+            )
 
     while len(stack) > 1:
         flatten_top()

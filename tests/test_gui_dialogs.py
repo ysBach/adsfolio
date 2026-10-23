@@ -9,11 +9,16 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 pytest.importorskip("PySide6")
 
 from PySide6.QtCore import QItemSelectionModel, QObject, Qt, Signal
-from PySide6.QtWidgets import QApplication, QDialog, QMessageBox
+from PySide6.QtWidgets import QApplication, QDialog, QDialogButtonBox, QMessageBox
 
 from adsfolio.citations import CitationStyle
 from adsfolio.gui.config import GuiConfig, RootEntry
-from adsfolio.gui.dialogs import IdentifyDialog, RenameDialog, UserProfileDialog
+from adsfolio.gui.dialogs import (
+    IdentifyDialog,
+    ManualMetadataDialog,
+    RenameDialog,
+    UserProfileDialog,
+)
 from adsfolio.gui.main_window import MainWindow
 from adsfolio.pdf.identify_settings import IdentifySettings, IdentifyStrategy
 from adsfolio.pdf.registry import CentralPdfRegistryState
@@ -24,6 +29,67 @@ from adsfolio.user_profile import UserProfile
 @pytest.fixture(scope="module")
 def application() -> QApplication:
     return QApplication.instance() or QApplication([])
+
+
+def test_manual_metadata_dialog_saves_only_changed_fields(application) -> None:
+    """Local entry preserves unedited metadata and accepts incomplete details."""
+    saved = []
+    original = {"title": ["Original"], "pub": ["Existing journal"], "notes": "Keep"}
+    dialog = ManualMetadataDialog(
+        Path("/papers/paper.pdf"), original, save_metadata=saved.append
+    )
+    dialog.fields["title"].setText("Manual title")
+    dialog.fields["author"].setPlainText(" Bach, Yoonsoo \n\n Another, Author ")
+    dialog.fields["doi"].setPlainText("10.1234/one\n10.1234/two")
+
+    dialog.buttons.button(QDialogButtonBox.Save).click()
+
+    assert dialog.result() == QDialog.Accepted
+    assert saved == [
+        {
+            "title": ["Manual title"],
+            "author": ["Bach, Yoonsoo", "Another, Author"],
+            "author_count": 2,
+            "doi": ["10.1234/one", "10.1234/two"],
+        }
+    ]
+    assert original == {
+        "title": ["Original"],
+        "pub": ["Existing journal"],
+        "notes": "Keep",
+    }
+
+
+def test_manual_metadata_dialog_retains_input_after_save_failure(application) -> None:
+    """A storage failure leaves the user's text available for correction."""
+
+    def fail_save(changes: dict[str, object]) -> None:
+        raise OSError("Cannot write catalog")
+
+    dialog = ManualMetadataDialog(
+        Path("/papers/paper.pdf"), {}, save_metadata=fail_save
+    )
+    dialog.fields["title"].setText("Keep my input")
+
+    dialog.buttons.button(QDialogButtonBox.Save).click()
+
+    assert dialog.result() != QDialog.Accepted
+    assert dialog.error.text() == "Cannot write catalog"
+    assert dialog.fields["title"].text() == "Keep my input"
+    dialog.reject()
+
+
+def test_manual_metadata_dialog_cancel_does_not_save(application) -> None:
+    saved = []
+    dialog = ManualMetadataDialog(
+        Path("/papers/paper.pdf"), {}, save_metadata=saved.append
+    )
+    dialog.fields["title"].setText("Unsaved")
+
+    dialog.buttons.button(QDialogButtonBox.Cancel).click()
+
+    assert saved == []
+    assert dialog.result() == QDialog.Rejected
 
 
 def test_identify_dialog_defaults_global_and_keeps_profile_fields_out(application):

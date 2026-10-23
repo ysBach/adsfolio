@@ -16,12 +16,6 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 from ..config import Config
-from ..data_migration import (
-    LEGACY_REGISTRY,
-    LEGACY_SIDECAR,
-    migrate_catalog_keys,
-    normalize_metadata,
-)
 from .arxiv import normalize_arxiv_id
 from .files import sha256_file
 from .readiness import (
@@ -104,7 +98,6 @@ class PdfCatalog:
         except sqlite3.OperationalError:
             pass
         self._initialize_schema()
-        migrate_catalog_keys(self._connection)
 
     @property
     def schema_version(self) -> int:
@@ -1260,11 +1253,7 @@ class PdfCatalog:
         normalized_root = self._normalize_root(root)
         sources: list[tuple[str, Callable[[], list[dict[str, Any]]]]] = []
         legacy_path = Path(normalized_root) / LEGACY_REGISTRY_FILENAME
-        if not legacy_path.exists():
-            legacy_path = Path(normalized_root) / LEGACY_REGISTRY
         sidecar_path = Path(normalized_root) / SIDECAR_FILENAME
-        if not sidecar_path.exists():
-            sidecar_path = Path(normalized_root) / LEGACY_SIDECAR
         legacy_ads_key = f"sqlite:{legacy_path}:ads_documents"
         sidecar_key = f"sidecar:{sidecar_path}"
         if legacy_path.exists():
@@ -1311,9 +1300,7 @@ class PdfCatalog:
                         mtime_ns = int(record.get("mtime_ns", 0) or 0)
                         device = record.get("device")
                         inode = record.get("inode")
-                    metadata = normalize_metadata(
-                        dict(record.get("metadata") or record)
-                    )
+                    metadata = dict(record.get("metadata") or record)
                     metadata.pop("current_filename", None)
                     metadata.pop("current_path", None)
                     metadata.pop("size_bytes", None)
@@ -2135,6 +2122,8 @@ class PdfCatalog:
             "citation_count": raw.get("citation_count"),
             "metrics": raw.get("_adsfolio_metrics", {}),
             "raw": raw,
+            "identifier": raw.get("identifier", []),
+            "alternate_bibcode": raw.get("alternate_bibcode", []),
             "source": row["source"],
             "fetched_at": row["fetched_at"],
         }

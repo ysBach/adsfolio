@@ -261,6 +261,32 @@ adsfolio pdf identify ~/Papers --recursive --ai-csv ~/Papers/unresolved_ai.csv
 It uses the library's saved Rename settings, or global settings when no library
 override exists. To use global settings explicitly, pass `--rename-scope global`.
 
+To supply a reference manually, use `--identifier` with `--relative-path`.
+Use either format:
+
+* `{authorLastName}-{year}-{bibstem}`: an author's last name, four-digit publication
+  year, and ADS journal abbreviation.
+* `{bibstem}-{volume}-{page}`: ADS journal abbreviation, journal volume number, and
+  starting page or article number.
+
+You can replace `{bibstem}` with the full journal name in either format.
+For example, `Last-2020-Natur` means author Last, year 2020, and journal
+*Nature*. `Sci-123-45` means journal *Science*, volume 123, and starting
+page 45. These illustrate the input format.
+
+These reference formats query ADS only; other sites are not searched.
+DOI and arXiv lookups can also use Crossref or DataCite.
+Quote references that contain spaces:
+
+```bash
+adsfolio pdf refresh-ads ~/Papers --relative-path paper.pdf --identifier 'Last-2020-Natur'
+adsfolio pdf refresh-ads ~/Papers --relative-path paper.pdf --identifier 'Sci-123-45'
+adsfolio pdf refresh-ads ~/Papers --relative-path paper.pdf --identifier 'The Astrophysical Journal-900-100'
+```
+
+If several ADS records match, the command lists candidates without changing
+the PDF. The GUI lets you select the correct candidate.
+
 Files under the configured unresolved directory return to the library root
 with their new name. Other PDFs stay in their current directory. The
 `--output-unresolved` option overrides the saved unresolved directory.

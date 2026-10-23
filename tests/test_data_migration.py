@@ -4,10 +4,8 @@ import json
 import sqlite3
 from pathlib import Path
 
-import pytest
-
 from adsfolio.config import Config
-from adsfolio.data_migration import copy_data_directory, normalize_metadata
+from adsfolio.data_migration import copy_data_directory
 from adsfolio.pdf.catalog import PdfCatalog
 from adsfolio.pdf.sidecar import Sidecar
 
@@ -16,7 +14,10 @@ def test_directory_copy_snapshots_live_wal_and_keeps_source(tmp_path: Path) -> N
     source = tmp_path / "source"
     target = tmp_path / "target"
     source.mkdir()
-    settings = {"roots": ["/papers"], "notes": "Keep _adsapi_reference in user text"}
+    settings = {
+        "roots": ["/papers"],
+        "notes": "Keep reserved-looking keys in user text",
+    }
     (source / "gui.json").write_text(json.dumps(settings))
     database = sqlite3.connect(source / "pdf-library.sqlite")
     try:
@@ -39,17 +40,6 @@ def test_directory_copy_snapshots_live_wal_and_keeps_source(tmp_path: Path) -> N
         assert (target / "gui.json").read_text() == "new user settings"
     finally:
         database.close()
-
-
-def test_reserved_keys_preserve_text_and_reject_conflicts() -> None:
-    assert normalize_metadata(
-        {"_adsapi_locked_fields": ["title"], "note": "_adsapi_locked_fields"}
-    ) == {
-        "_adsfolio_locked_fields": ["title"],
-        "note": "_adsapi_locked_fields",
-    }
-    with pytest.raises(ValueError, match="Conflicting"):
-        normalize_metadata({"_adsapi_reference": 1, "_adsfolio_reference": 2})
 
 
 def test_configuration_uses_copied_settings(monkeypatch, tmp_path: Path) -> None:
@@ -78,14 +68,10 @@ def test_catalog_reopen_keeps_identity_history_and_field_locks(tmp_path: Path) -
         metadata={
             "bibcode": "2024Test",
             "title": ["Manual title"],
-            "_adsapi_locked_fields": ["title"],
+            "_adsfolio_locked_fields": ["title"],
         },
     )
     catalog.close()
-    connection = sqlite3.connect(path)
-    connection.execute("DELETE FROM catalog_meta WHERE key = 'adsfolio_metadata_keys'")
-    connection.commit()
-    connection.close()
     catalog = PdfCatalog(path)
     try:
         record = catalog.get_file(root, "paper.pdf")
@@ -108,12 +94,12 @@ def test_catalog_reopen_keeps_identity_history_and_field_locks(tmp_path: Path) -
         catalog.close()
 
 
-def test_sidecar_reads_earlier_filename_without_changing_it(tmp_path: Path) -> None:
-    path = tmp_path / ".adsapi-pdfs.json"
+def test_sidecar_reads_metadata_without_changing_source(tmp_path: Path) -> None:
+    path = tmp_path / ".adsfolio-pdfs.json"
     payload = {
         "version": 1,
         "files": {
-            "paper.pdf": {"title": ["Retained"], "_adsapi_locked_fields": ["title"]}
+            "paper.pdf": {"title": ["Retained"], "_adsfolio_locked_fields": ["title"]}
         },
     }
     path.write_text(json.dumps(payload))

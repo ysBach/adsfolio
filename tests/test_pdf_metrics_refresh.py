@@ -152,12 +152,111 @@ def test_parse_ads_identifier_accepts_doi_and_journal_coordinates() -> None:
     )
     assert _parse_ads_identifier("A&A-259-333") == (
         "query",
-        'bibstem:"A&A" volume:"259" page:"333"',
+        '(bibstem:"A&A" OR pub:"A&A") volume:"259" page:"333"',
     )
     assert _parse_ads_identifier("1992A&A...259..333K") == (
         "bibcode",
         "1992A&A...259..333K",
     )
+
+
+@pytest.mark.parametrize(
+    "identifier, journal, volume, page",
+    [
+        ("Nature-359-42", "Nature", "359", "42"),
+        (
+            "The Astrophysical Journal-900-100",
+            "The Astrophysical Journal",
+            "900",
+            "100",
+        ),
+        (
+            "Astronomy & Astrophysics:654:A113",
+            "Astronomy & Astrophysics",
+            "654",
+            "A113",
+        ),
+        (
+            "Monthly Notices of the Royal Astronomical Society 469 443",
+            "Monthly Notices of the Royal Astronomical Society",
+            "469",
+            "443",
+        ),
+        (
+            "Astronomy and Astrophysics_654_A113",
+            "Astronomy and Astrophysics",
+            "654",
+            "A113",
+        ),
+        (
+            "Journal of Physics: Condensed Matter-36-1",
+            "Journal of Physics: Condensed Matter",
+            "36",
+            "1",
+        ),
+        ("A&A-1992-L42", "A&A", "1992", "L42"),
+    ],
+)
+def test_parse_ads_identifier_accepts_full_journal_coordinates(
+    identifier: str, journal: str, volume: str, page: str
+) -> None:
+    """Coordinates accept full journal names, punctuation, and lettered pages."""
+    assert _parse_ads_identifier(identifier) == (
+        "query",
+        f'(bibstem:"{journal}" OR pub:"{journal}") volume:"{volume}" page:"{page}"',
+    )
+
+
+@pytest.mark.parametrize(
+    "identifier, author, year, journal",
+    [
+        ("fulle-1992-natur", "fulle", "1992", "natur"),
+        ("Fulle-1992-Nature", "Fulle", "1992", "Nature"),
+        ("Fulle 1992 Nature", "Fulle", "1992", "Nature"),
+        ("Fulle_1992_Nature", "Fulle", "1992", "Nature"),
+        (
+            "Smith-2024-The Astrophysical Journal",
+            "Smith",
+            "2024",
+            "The Astrophysical Journal",
+        ),
+        (
+            "O'Connor-2024-Monthly Notices of the Royal Astronomical Society",
+            "O'Connor",
+            "2024",
+            "Monthly Notices of the Royal Astronomical Society",
+        ),
+        (
+            "García-López-2024-Astronomy & Astrophysics",
+            "García-López",
+            "2024",
+            "Astronomy & Astrophysics",
+        ),
+        ("de la Cruz-1892-Nature", "de la Cruz", "1892", "Nature"),
+    ],
+)
+def test_parse_ads_identifier_accepts_author_year_journal(
+    identifier: str, author: str, year: str, journal: str
+) -> None:
+    """Author-year references retain the full author and journal text."""
+    assert _parse_ads_identifier(identifier) == (
+        "query",
+        f'(bibstem:"{journal}" OR pub:"{journal}") author:"{author}" year:"{year}"',
+    )
+
+
+def test_parse_ads_identifier_escapes_author_and_journal_phrases() -> None:
+    """User text cannot introduce additional ADS clauses inside a phrase."""
+    assert _parse_ads_identifier('Smith" OR *:*-2024-Journal "A" \\ Physics') == (
+        "query",
+        r'(bibstem:"Journal \"A\" \\ Physics" OR pub:"Journal \"A\" \\ Physics") author:"Smith\" OR *:*" year:"2024"',
+    )
+
+
+def test_parse_ads_identifier_keeps_publisher_urls_out_of_reference_queries() -> None:
+    """An unsupported publisher URL stays an identifier, not journal coordinates."""
+    value = "https://publisher.example/1992/42"
+    assert _parse_ads_identifier(value) == ("bibcode", value)
 
 
 def test_clear_invalid_bibcode_keeps_pdf_tracking_row(tmp_path: Path) -> None:

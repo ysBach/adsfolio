@@ -97,7 +97,7 @@ from a script.
 
 The same formats work for any papers in your library, for example a reading
 list or a reference list for a proposal. Select the rows (**⌘**-click or
-**Shift**-click), right-click, and choose **Export Selected Papers…**. ADSfolio
+**Shift**-click), right-click, and choose **Export Selection As… → Publication list**. ADSfolio
 uses the stored details and needs no ADS token.
 
 ![Export Selected Papers window with a rendered Markdown preview](_static/tutorial/export-selected.png)

@@ -73,11 +73,37 @@ def _validated_entry(
     if clean:
         database = BibDatabase()
         database.entries = [entry]
-        parsed = _parse_database(BibTexWriter().write(database))
-        if parsed.entries != [entry]:
-            raise ValueError(
-                f"Fields cannot be represented safely in BibTeX: {cite_key}"
+        try:
+            parsed = _parse_database(BibTexWriter().write(database))
+            if parsed.entries != [entry]:
+                raise ValueError("BibTeX changes field values during validation")
+        except ValueError as exc:
+            invalid_fields = []
+            for name, value in clean.items():
+                single_entry = {
+                    "ID": cite_key,
+                    "ENTRYTYPE": entry_type.lower(),
+                    name: value,
+                }
+                database.entries = [single_entry]
+                try:
+                    parsed = _parse_database(BibTexWriter().write(database))
+                    if parsed.entries != [single_entry]:
+                        invalid_fields.append(name)
+                except ValueError:
+                    invalid_fields.append(name)
+            field_names = (
+                ", ".join(invalid_fields) if invalid_fields else ", ".join(clean)
             )
+            title = clean.get("title") or cite_key
+            raise ValueError(
+                f'Cannot generate BibTeX for "{title}" (citation key: {cite_key}).\n'
+                f"Field(s): {field_names}.\n"
+                "The field contains invalid BibTeX syntax or cannot be preserved "
+                "during export. Check for unbalanced braces in LaTeX or math.\n"
+                "Open this paper's details, correct the named field(s), "
+                "and export again."
+            ) from exc
     return {"cite_key": cite_key, "entry_type": entry_type.lower(), "fields": clean}
 
 
@@ -192,7 +218,9 @@ def _reference_from_document(
             )
         if value not in (None, ""):
             fields[target] = (
-                str(value) if source == "doi" else html_to_latex(str(value))
+                str(value)
+                if source == "doi"
+                else html_to_latex(str(value), bibtex=True)
             )
     return {
         "id": document["id"],

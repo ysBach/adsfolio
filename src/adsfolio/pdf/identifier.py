@@ -20,6 +20,7 @@ if TYPE_CHECKING:
 
 from ..api.search import escape_query_phrase
 from ..config import AuthenticationError, RequestTooLongError
+from .arxiv import normalize_arxiv_id
 from .doi_providers import (
     DEFAULT_DOI_PROVIDERS,
     DoiProvider,
@@ -266,6 +267,8 @@ class PdfIdentifier:
     SEARCH_FIELDS: ClassVar[list[str]] = [
         "abstract",
         "bibcode",
+        "identifier",
+        "alternate_bibcode",
         "citation_count",
         "doi",
         "title",
@@ -880,6 +883,20 @@ class PdfIdentifier:
 
             for code in chunk:
                 doc = docs_by_bibcode.get(code.lower())
+                if doc is None:
+                    arxiv = normalize_arxiv_id(code)
+                    aliases = {
+                        self._first_scalar(candidate.get("bibcode")): candidate
+                        for candidate in documents
+                        if any(
+                            str(value).casefold() == code.casefold()
+                            or (arxiv and normalize_arxiv_id(value) == arxiv)
+                            for field in ("alternate_bibcode", "identifier")
+                            for value in self._as_list(candidate.get(field))
+                        )
+                    }
+                    if len(aliases) == 1:
+                        doc = next(iter(aliases.values()))
                 if doc is not None:
                     resolved[code] = doc
 
@@ -1175,6 +1192,9 @@ class PdfIdentifier:
             "identified_at": now,
             "_adsfolio_metadata_sha256": digest,
         }
+        for field in ("identifier", "alternate_bibcode"):
+            if doc.get(field):
+                record[field] = self._as_list(doc[field])
         if is_ads:
             record["status"] = "resolved"
         else:

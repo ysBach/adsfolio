@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
@@ -19,8 +20,10 @@ class NoticeAction(str, Enum):
     """Typed action identity with its user-facing label."""
 
     IDENTIFY_RENAME = "Identify & Rename"
+    IDENTIFY = "Identify…"
     RETRY = "Retry"
     VIEW_RELEASE = "Update Details"
+    MERGE_EDITIONS = "Review Merge…"
 
 
 @dataclass(frozen=True)
@@ -35,10 +38,14 @@ class Notice:
     root: Path | None = None
     action: NoticeAction | None = None
     details: str | None = None
+    manual_entry: bool = False
+    reveal_path: Path | None = None
 
     def __post_init__(self) -> None:
         if self.root is not None and not isinstance(self.root, Path):
             object.__setattr__(self, "root", Path(self.root))
+        if self.reveal_path is not None and not isinstance(self.reveal_path, Path):
+            object.__setattr__(self, "reveal_path", Path(self.reveal_path))
         action = self.action
         if action is not None and not isinstance(action, NoticeAction):
             action = NoticeAction(action)
@@ -58,6 +65,8 @@ class NoticeBar(QFrame):
     """Show one notice from an insertion-ordered replacement queue."""
 
     action_requested = Signal(object)
+    manual_entry_requested = Signal(object)
+    reveal_requested = Signal(object)
     dismiss_requested = Signal(object)
     action_all_requested = Signal(tuple)
     dismiss_all_requested = Signal(tuple)
@@ -77,6 +86,22 @@ class NoticeBar(QFrame):
         self.message.setWordWrap(True)
         self.pending_count = QLabel(self)
         self.action_button = QPushButton(self)
+        self.manual_entry_button = QPushButton("Enter Details…", self)
+        self.manual_entry_button.setIcon(vector_icon("edit", self.manual_entry_button))
+        self.manual_entry_button.setIconSize(ICON_SIZE)
+        self.manual_entry_button.setAccessibleName("Enter Details")
+        self.manual_entry_button.setToolTip(
+            "Enter paper metadata without an online lookup"
+        )
+        self.reveal_button = QPushButton(
+            "Reveal in Finder"
+            if sys.platform == "darwin"
+            else "Reveal in File Manager",
+            self,
+        )
+        self.reveal_button.setIcon(vector_icon("folder", self.reveal_button))
+        self.reveal_button.setIconSize(ICON_SIZE)
+        self.reveal_button.setAccessibleName(self.reveal_button.text())
         self.action_all_button = QPushButton(
             self._button_text("Identify & Rename All"), self
         )
@@ -91,10 +116,14 @@ class NoticeBar(QFrame):
         layout.addWidget(self.message, 1)
         layout.addWidget(self.pending_count)
         layout.addWidget(self.action_button)
+        layout.addWidget(self.manual_entry_button)
+        layout.addWidget(self.reveal_button)
         layout.addWidget(self.action_all_button)
         layout.addWidget(self.dismiss_button)
         layout.addWidget(self.dismiss_all_button)
         self.action_button.clicked.connect(self._request_action)
+        self.manual_entry_button.clicked.connect(self._request_manual_entry)
+        self.reveal_button.clicked.connect(self._request_reveal)
         self.action_all_button.clicked.connect(self._request_all_actions)
         self.dismiss_button.clicked.connect(self._request_dismiss)
         self.dismiss_all_button.clicked.connect(self._request_all_dismissals)
@@ -139,6 +168,17 @@ class NoticeBar(QFrame):
         self.dismiss_requested.emit(notice.payload)
         self.dismiss(notice.key)
 
+    def _request_manual_entry(self) -> None:
+        notice = self._current()
+        if notice is not None and notice.manual_entry:
+            self.manual_entry_requested.emit(notice.payload)
+
+    def _request_reveal(self) -> None:
+        """Request the displayed notice's path without dismissing it."""
+        notice = self._current()
+        if notice is not None and notice.reveal_path is not None:
+            self.reveal_requested.emit(notice.reveal_path)
+
     def _request_all_actions(self) -> None:
         payloads = tuple(
             notice.payload
@@ -162,6 +202,8 @@ class NoticeBar(QFrame):
             self.pending_count.clear()
             self.pending_count.setToolTip("")
             self.action_button.hide()
+            self.manual_entry_button.hide()
+            self.reveal_button.hide()
             self.action_all_button.hide()
             self.dismiss_button.hide()
             self.dismiss_all_button.hide()
@@ -190,6 +232,11 @@ class NoticeBar(QFrame):
             button.setAccessibleName(button.text().replace("&&", "&"))
             button.setToolTip(button.accessibleName())
         self.action_button.setVisible(notice.action_label is not None)
+        self.manual_entry_button.setVisible(notice.manual_entry)
+        self.reveal_button.setVisible(notice.reveal_path is not None)
+        self.reveal_button.setToolTip(
+            str(notice.reveal_path) if notice.reveal_path is not None else ""
+        )
         manual_actions = sum(
             item.action is NoticeAction.IDENTIFY_RENAME
             for item in self._notices.values()

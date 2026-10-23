@@ -1,4 +1,5 @@
 import csv
+import json
 import os
 import shlex
 from pathlib import Path
@@ -2328,6 +2329,175 @@ def test_refresh_ads_cli_resolves_doi_resolver_url_with_closing_paren(
         assert records[0]["metadata"]["title"] == ["Parenthesis DOI Paper"]
     finally:
         verify_state.close()
+
+
+@pytest.mark.parametrize(
+    "identifier, expected_query",
+    [
+        (
+            "fulle-1992-natur",
+            '(bibstem:"natur" OR pub:"natur") author:"fulle" year:"1992"',
+        ),
+        (
+            "Fulle-1992-Nature",
+            '(bibstem:"Nature" OR pub:"Nature") author:"Fulle" year:"1992"',
+        ),
+        ("Nature-359-42", '(bibstem:"Nature" OR pub:"Nature") volume:"359" page:"42"'),
+    ],
+)
+def test_refresh_ads_cli_resolves_manual_bibliographic_references(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    identifier: str,
+    expected_query: str,
+) -> None:
+    """Manual references reach ADS and preserve local locks and PDF identity."""
+    root = tmp_path / "library"
+    root.mkdir()
+    path = root / "paper.pdf"
+    content = b"%PDF-1.4\nreference test\n"
+    path.write_bytes(content)
+    state = open_registry_state(root)
+    state.upsert_file(
+        "paper.pdf",
+        {
+            "sha256": sha256_file(path),
+            "status": "unresolved",
+            "title": ["My locked title"],
+            "notes": "Keep my notes",
+            "_adsfolio_locked_fields": ["title"],
+        },
+    )
+    before = state.registry.find_file_by_current_path(root, "paper.pdf")
+    state.close()
+    queries: list[str] = []
+
+    class ReferenceSearch:
+        def query(self, *, q: str, fl: list[str], rows: int) -> SimpleNamespace:
+            queries.append(q)
+            return SimpleNamespace(
+                num_found=1,
+                docs=[
+                    {
+                        "bibcode": "1992Natur.359...42F",
+                        "title": ["Title from ADS"],
+                        "author": ["Fulle, M."],
+                        "year": "1992",
+                        "bibstem": ["Natur"],
+                        "pub": "Nature",
+                        "volume": "359",
+                        "page": ["42"],
+                    }
+                ],
+            )
+
+    monkeypatch.setattr(
+        "adsfolio.pdf.cli._get_client",
+        lambda ctx: SimpleNamespace(search=ReferenceSearch()),
+    )
+
+    result = CliRunner().invoke(
+        pdf,
+        [
+            "refresh-ads",
+            str(root),
+            "--relative-path",
+            "paper.pdf",
+            "--identifier",
+            identifier,
+            "--no-rename",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert queries == [expected_query]
+    state = open_registry_state(root)
+    try:
+        after = state.registry.find_file_by_current_path(root, "paper.pdf")
+        assert after["bibcode"] == "1992Natur.359...42F"
+        assert after["status"] == "resolved"
+        assert after["metadata"]["title"] == ["My locked title"]
+        assert after["metadata"]["notes"] == "Keep my notes"
+        assert after["metadata"]["_adsfolio_locked_fields"] == ["title"]
+        for key in ("location_id", "attachment_id", "sha256"):
+            assert after[key] == before[key]
+        assert path.read_bytes() == content
+    finally:
+        state.close()
+
+
+def test_refresh_ads_cli_keeps_ambiguous_author_year_matches_for_user_choice(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An author-year search cannot replace metadata with an arbitrary candidate."""
+    root = tmp_path / "library"
+    root.mkdir()
+    path = root / "paper.pdf"
+    path.write_bytes(b"%PDF\nambiguous reference")
+    state = open_registry_state(root)
+    state.upsert_file(
+        "paper.pdf",
+        {
+            "sha256": sha256_file(path),
+            "title": ["Keep this title"],
+            "status": "unresolved",
+        },
+    )
+    before = state.registry.find_file_by_current_path(root, "paper.pdf")
+    state.close()
+    documents = [
+        {
+            "bibcode": "1992Natur.359...42F",
+            "title": ["Candidate one"],
+            "author": ["Fulle, M."],
+        },
+        {
+            "bibcode": "1992Natur.359...42X",
+            "title": ["Candidate two"],
+            "author": ["Fulle, M."],
+        },
+    ]
+
+    class AmbiguousSearch:
+        def query(self, *, q: str, fl: list[str], rows: int) -> SimpleNamespace:
+            assert q == '(bibstem:"Nature" OR pub:"Nature") author:"Fulle" year:"1992"'
+            return SimpleNamespace(num_found=2, docs=documents)
+
+    monkeypatch.setattr(
+        "adsfolio.pdf.cli._get_client",
+        lambda ctx: SimpleNamespace(search=AmbiguousSearch()),
+    )
+
+    result = CliRunner().invoke(
+        pdf,
+        [
+            "refresh-ads",
+            str(root),
+            "--relative-path",
+            "paper.pdf",
+            "--identifier",
+            "Fulle-1992-Nature",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    candidate_line = next(
+        line
+        for line in result.output.splitlines()
+        if line.startswith("ADS_MATCH_CANDIDATES_JSON:")
+    )
+    candidates = json.loads(candidate_line.split(":", 1)[1])
+    assert [candidate["bibcode"] for candidate in candidates] == [
+        doc["bibcode"] for doc in documents
+    ]
+    state = open_registry_state(root)
+    try:
+        after = state.registry.find_file_by_current_path(root, "paper.pdf")
+        assert after["metadata"] == before["metadata"]
+        assert after["status"] == "unresolved"
+        assert path.read_bytes() == b"%PDF\nambiguous reference"
+    finally:
+        state.close()
 
 
 def test_external_identify_then_rename_without_ads_token(tmp_path, monkeypatch):

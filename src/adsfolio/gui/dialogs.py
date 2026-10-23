@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Sequence
+import sqlite3
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -13,6 +14,7 @@ from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QDialog,
+    QDialogButtonBox,
     QFileDialog,
     QFormLayout,
     QHBoxLayout,
@@ -49,6 +51,103 @@ from ..pdf.rename_settings import RenameSettings
 from ..pdf.renamer import PdfRenamer
 from ..user_profile import UserProfile, normalize_orcid
 from .jobs import CommandJob, cli_argv
+
+
+class ManualMetadataDialog(QDialog):
+    """Enter paper metadata and save it without an online lookup."""
+
+    def __init__(
+        self,
+        path: Path,
+        metadata: Mapping[str, Any],
+        *,
+        save_metadata: Callable[[dict[str, Any]], None],
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Enter paper details")
+        self._save_metadata = save_metadata
+        layout = QVBoxLayout(self)
+        filename = QLabel(str(path), self)
+        filename.setTextFormat(Qt.PlainText)
+        filename.setWordWrap(True)
+        filename.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        layout.addWidget(filename)
+        explanation = QLabel(
+            "Save metadata locally without an online lookup.\n"
+            "Changed fields stay locked against provider updates.\n"
+            "The PDF keeps its name and location.",
+            self,
+        )
+        explanation.setWordWrap(True)
+        layout.addWidget(explanation)
+        form = QFormLayout()
+        self.fields: dict[str, QLineEdit | QPlainTextEdit] = {}
+        self._initial: dict[str, str] = {}
+        for key, label in (
+            ("title", "Title"),
+            ("author", "Authors, one per line"),
+            ("year", "Year"),
+            ("pub", "Journal"),
+            ("doi", "DOIs, one per line"),
+        ):
+            value = metadata.get(key) or ""
+            multiline = key in {"author", "doi"}
+            text = (
+                ("\n" if multiline else " ").join(str(item) for item in value)
+                if isinstance(value, (list, tuple))
+                else str(value)
+            )
+            field: QLineEdit | QPlainTextEdit
+            if multiline:
+                field = QPlainTextEdit(text, self)
+                field.setFixedHeight(field.fontMetrics().lineSpacing() * 3)
+            else:
+                field = QLineEdit(text, self)
+            field.setAccessibleName(label)
+            self.fields[key] = field
+            self._initial[key] = text
+            form.addRow(label, field)
+        layout.addLayout(form)
+        self.error = QLabel(self)
+        self.error.setTextFormat(Qt.PlainText)
+        self.error.setWordWrap(True)
+        layout.addWidget(self.error)
+        self.buttons = QDialogButtonBox(
+            QDialogButtonBox.Save | QDialogButtonBox.Cancel, self
+        )
+        self.buttons.button(QDialogButtonBox.Save).setText("Save Metadata")
+        self.buttons.accepted.connect(self._save)
+        self.buttons.rejected.connect(self.reject)
+        layout.addWidget(self.buttons)
+
+    def _save(self) -> None:
+        """Save changed fields and keep the dialog open if saving fails."""
+        changes: dict[str, Any] = {}
+        for key, field in self.fields.items():
+            text = (
+                field.toPlainText()
+                if isinstance(field, QPlainTextEdit)
+                else field.text()
+            )
+            if text == self._initial[key]:
+                continue
+            changes[key] = (
+                [line.strip() for line in text.splitlines() if line.strip()]
+                if key in {"title", "author", "doi"}
+                else text.strip()
+            )
+        if not changes:
+            self.error.setText("Enter or change a field before saving.")
+            return
+        if "author" in changes:
+            changes["author_count"] = len(changes["author"])
+        try:
+            self._save_metadata(changes)
+        except (OSError, ValueError, sqlite3.Error) as exc:
+            self.error.setText(str(exc))
+            return
+        self.accept()
 
 
 class OptionalYearSpinBox(QSpinBox):

@@ -166,17 +166,15 @@ def test_unwaived_unsupported_items_make_the_merge_partial(tmp_path: Path) -> No
     assert "not a full consolidation" in report.summary()
 
 
-def test_cannot_waive_supported_annotation(tmp_path: Path) -> None:
+def test_explicit_waiver_can_exclude_a_supported_annotation(tmp_path: Path) -> None:
     source = _source(tmp_path)
     target = _pdf(tmp_path / "target.pdf", TEXT)
     items = enumerate_annotations(source)
-    supported = next(i for i in items if i.supported)
-
-    with pytest.raises(AnnotationMergeError, match="waived"):
-        build_merged_copy(
-            target, source, items, {}, {supported.item_id}, tmp_path / "out.pdf"
-        )
-    assert not (tmp_path / "out.pdf").exists()
+    waived = {item.item_id for item in items if not item.companion}
+    report = build_merged_copy(target, source, items, {}, waived, tmp_path / "out.pdf")
+    assert report.complete
+    assert set(report.waived) == waived
+    assert not report.transferred
 
 
 def test_never_overwrites_existing_output(tmp_path: Path) -> None:

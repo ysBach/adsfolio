@@ -2,9 +2,8 @@
 
 The target PDF is never modified. A user places each source annotation on the
 target, or waives it explicitly, and the result is written to a new file after
-it has been re-read and checked. No text matching is approximate: a placement
-may be suggested only when the source text occurs as the same word sequence
-exactly once in the target.
+it has been re-read and checked. The companion `annotation_matching` module
+finds candidate text locations. Every placement still needs explicit approval.
 """
 
 from __future__ import annotations
@@ -35,6 +34,7 @@ RectTuple = tuple[float, float, float, float]
 __all__ = [
     "AnnotationItem",
     "AnnotationMergeError",
+    "MergeInput",
     "MergeReport",
     "MissingDependencyError",
     "Placement",
@@ -134,6 +134,14 @@ class Placement:
     point: Point | None = None
 
 
+@dataclass(frozen=True)
+class MergeInput:
+    """An original PDF path and the exact content used for a saved merge."""
+
+    path: str
+    sha256: str
+
+
 @dataclass
 class MergeReport:
     """Outcome of one merge. `complete` is true only if nothing is left over."""
@@ -145,6 +153,8 @@ class MergeReport:
     unresolved: list[str] = field(default_factory=list)
     companions: list[str] = field(default_factory=list)
     verified: bool = False
+    input_files: tuple[MergeInput, ...] = ()
+    output_sha256: str = ""
 
     @property
     def complete(self) -> bool:
@@ -685,6 +695,7 @@ def build_merged_copy(
         raise AnnotationMergeError(f"{output_path.parent} does not exist.")
     by_id = {item.item_id: item for item in items}
     sha = _sha256(source_path)
+    target_sha = _sha256(target_path)
     if any(item.source_sha256 != sha for item in items):
         raise AnnotationMergeError("The source PDF changed since it was reviewed.")
     current = {i.item_id for i in enumerate_annotations(source_path)}
@@ -694,10 +705,8 @@ def build_merged_copy(
         )
     for item_id in waived:
         item = by_id.get(item_id)
-        if item is None or not item.needs_waiver:
-            raise AnnotationMergeError(
-                "Only unsupported annotation types may be waived."
-            )
+        if item is None or item.companion:
+            raise AnnotationMergeError("A waiver must name a source annotation.")
     for item_id in placements:
         if item_id not in by_id or not by_id[item_id].supported:
             raise AnnotationMergeError(
@@ -714,9 +723,10 @@ def build_merged_copy(
         for item in items:
             if item.companion:
                 report.companions.append(item.item_id)
+            elif item.item_id in waived:
+                report.waived.append(item.item_id)
             elif not item.supported:
-                bucket = report.waived if item.item_id in waived else report.unresolved
-                bucket.append(item.item_id)
+                report.unresolved.append(item.item_id)
             elif item.provenance in done_before:
                 report.already_present.append(item.item_id)
             elif item.item_id in placements:
@@ -761,11 +771,24 @@ def build_merged_copy(
         check.close()
     if errors:
         raise AnnotationMergeError("Verification failed:\n" + "\n".join(errors))
+    if _sha256(target_path) != target_sha or _sha256(source_path) != sha:
+        raise AnnotationMergeError(
+            "An original PDF changed while the copy was built. Reload the originals and review again."
+        )
     try:
         with output_path.open("xb") as handle:
             handle.write(data)
     except FileExistsError as exc:
         raise AnnotationMergeError(f"{output_path} already exists.") from exc
+    report.output_sha256 = hashlib.sha256(data).hexdigest()
+    if _sha256(output_path) != report.output_sha256:
+        raise AnnotationMergeError(
+            "The saved PDF differs from the verified copy. Keep the originals and choose a new output path."
+        )
+    report.input_files = (
+        MergeInput(str(target_path.absolute()), target_sha),
+        MergeInput(str(source_path.absolute()), sha),
+    )
     report.transferred = [item.item_id for item, _p in created]
     report.verified = True
     return report

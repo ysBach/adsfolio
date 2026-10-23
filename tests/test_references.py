@@ -398,3 +398,68 @@ def test_export_detects_key_collision_created_by_later_ads_identification(
     ads = references.catalog.document_for_attachment(observed.attachment_id)
     with pytest.raises(ValueError, match="duplicate citation keys"):
         references.export_bibtex([manual["id"], ads["id"]])
+
+
+@pytest.mark.parametrize(
+    ("abstract", "expected"),
+    [
+        ("A lone } in text", r"A lone \textbraceright{} in text"),
+        ("A lone { in text", r"A lone \textbraceleft{} in text"),
+        (
+            "2012 {DR}<sub>30</sub>} data",
+            r"2012 \textbraceleft{}DR\textbraceright{}$_{30}$\textbraceright{} data",
+        ),
+    ],
+)
+def test_export_preserves_provider_literal_braces_without_changing_metadata(
+    references: LocalReferences, tmp_path: Path, abstract: str, expected: str
+) -> None:
+    observed = references.catalog.observe_file(
+        tmp_path,
+        "braces.pdf",
+        sha256=None,
+        size_bytes=1,
+        mtime_ns=1,
+        metadata={
+            "bibcode": "BracePaper",
+            "title": ["Provider braces"],
+            "abstract": abstract,
+        },
+    )
+    document = references.catalog.document_for_attachment(observed.attachment_id)
+
+    output = references.export_bibtex([document["id"]])
+
+    result = BibTexParser().parse(output).entries_dict
+    assert result["BracePaper"]["abstract"] == expected
+    assert references.catalog.get_document(document["id"]) == document
+
+
+def test_export_field_error_identifies_paper_and_corrective_action(
+    references: LocalReferences, tmp_path: Path
+) -> None:
+    observed = references.catalog.observe_file(
+        tmp_path,
+        "bad-math.pdf",
+        sha256=None,
+        size_bytes=1,
+        mtime_ns=1,
+        metadata={
+            "bibcode": "BadMathPaper",
+            "title": ["A paper to review"],
+            "abstract": "$x^{2$",
+        },
+    )
+    document = references.catalog.document_for_attachment(observed.attachment_id)
+
+    with pytest.raises(ValueError) as caught:
+        references.export_bibtex([document["id"]])
+
+    message = str(caught.value)
+    assert "A paper to review" in message
+    assert "BadMathPaper" in message
+    assert "abstract" in message
+    assert "paper's details" in message
+    assert "export again" in message
+    assert isinstance(caught.value.__cause__, ValueError)
+    assert references.catalog.get_document(document["id"]) == document

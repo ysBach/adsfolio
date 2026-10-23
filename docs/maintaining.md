@@ -138,9 +138,12 @@ discovery.
 
 ## Deferred design
 
-The development version includes annotation review that saves a separate PDF.
-It does not consolidate catalog records or delete duplicates. See the
-[annotation workflow](gui.md) for supported types and limits.
+Annotation review saves a separate PDF. For library PDFs, saving the copy
+inside an open library folder registers it with the canonical PDF's metadata.
+After a complete, verified merge, users can choose which
+unchanged originals to move to Trash. Keeping originals is the default.
+Catalog history remains available. See the [annotation workflow](gui.md) for
+supported types and limits.
 
 Catalog consolidation and unified TOML configuration remain future work.
 They must preserve these requirements:
@@ -336,17 +339,25 @@ names the credential for the NASA ADS service, not the application.
 
 On first use, the application copies earlier configuration and cache directories
 into the ADSfolio directories if the destination does not exist. SQLite uses the
-backup API, including committed WAL data. Migration retains catalog IDs, file
-history, user text, and manual field locks.
+backup API, including committed WAL data. Directory migration never merges or
+overwrites an existing destination.
 
-Migration translates reserved metadata keys in a transaction. Conflicting old
-and new reserved keys stop migration instead of choosing a value. Migration
-never merges or overwrites an existing destination.
+Version 0.6.1 no longer converts reserved metadata keys from the earlier
+application. Copying an unconverted catalog retains its data, but manual field
+locks, author text, and local references under those keys are not honoured.
+Provider refreshes can overwrite fields whose earlier locks are not recognised.
 
-1. Close the earlier application before migration.
-2. Keep the original directories until you verify the new catalog.
+Before upgrading from the earlier application:
 
-Earlier per-library sidecars remain readable. Their old names exist only in
-migration readers, migration tests, and ignore rules that prevent private
-catalog files from entering Git. The rename keeps old Git history. It does not
-rewrite commits or change bibliographic user text.
+1. Close the earlier application.
+2. Open ADSfolio **0.6.0** once to convert the catalog and import its per-library
+   files. Verify the metadata, manual locks, and local references there.
+3. Install version 0.6.1. Keep the original directories until you verify the
+   converted library.
+
+If you already used ADSfolio 0.6.0, the catalog conversion is complete. Version
+0.6.1 does not read per-library files under the earlier application name.
+
+ADSfolio-named per-library sidecars and registries remain readable. The
+rename keeps old Git history. It does not rewrite commits or change
+bibliographic user text.

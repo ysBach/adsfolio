@@ -8,7 +8,6 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
-from ..data_migration import LEGACY_SIDECAR, normalize_metadata
 from .identify_settings import IdentifySettings
 
 SIDECAR_FILENAME = ".adsfolio-pdfs.json"
@@ -39,7 +38,7 @@ class Sidecar:
     def __init__(self, directory: Path, filename: str = SIDECAR_FILENAME):
         self.directory = Path(directory)
         self.path = self.directory / filename
-        self._data = normalize_metadata(self._load())
+        self._data = self._load()
         self._sha_index: dict[str, list[str]] = {}
         self._current_filename_index: dict[str, list[str]] = {}
         self._rebuild_indexes()
@@ -118,10 +117,6 @@ class Sidecar:
 
     def _load(self) -> dict[str, Any]:
         load_path = self.path
-        if not load_path.exists() and self.path.name == SIDECAR_FILENAME:
-            legacy = self.directory / LEGACY_SIDECAR
-            if legacy.exists():
-                load_path = legacy
         migrated_path = self.path.with_name(f"{self.path.name}.migrated")
         if not load_path.exists() and migrated_path.exists():
             load_path = migrated_path
@@ -137,7 +132,7 @@ class Sidecar:
 
     def reload(self) -> dict[str, Any]:
         """Reload the sidecar from disk and return a copy."""
-        self._data = normalize_metadata(self._load())
+        self._data = self._load()
         self._rebuild_indexes()
         return self.data
 

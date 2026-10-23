@@ -91,6 +91,7 @@ PDF catalog and processing
    adsfolio.pdf.obsidian
    adsfolio.pdf.annotations
    adsfolio.pdf.annotation_merge
+   adsfolio.pdf.annotation_matching
    adsfolio.pdf.upgrade
    adsfolio.pdf.upgrade_utils
 
@@ -118,6 +119,8 @@ standalone bundle setup.
    adsfolio.gui.main_window
    adsfolio.gui.detail_pane
    adsfolio.gui.annotation_merge
+   adsfolio.gui.merge_cleanup
+   adsfolio.gui.edition_merge
    adsfolio.gui.dialogs
    adsfolio.gui.appearance
    adsfolio.gui.citation_styles

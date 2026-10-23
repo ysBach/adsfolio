@@ -214,9 +214,7 @@ __marimo__/
 # Local auxiliary files (never commit)
 _local_aux/
 
-# Earlier catalog files and service tokens must stay private.
-.adsapi-pdfs.sqlite*
-.adsapi-pdfs.json*
+# Service tokens must stay private.
 .ads-token
 .adsfolio-token
 _site/

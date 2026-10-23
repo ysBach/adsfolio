@@ -31,6 +31,8 @@ ADS_METADATA_FIELDS = (
     "author",
     "author_count",
     "bibcode",
+    "identifier",
+    "alternate_bibcode",
     "citation_count",
     "doi",
     "page",

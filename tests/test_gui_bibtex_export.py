@@ -12,11 +12,19 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 pytest.importorskip("PySide6")
 pytest.importorskip("pytestqt")
 
-from PySide6.QtWidgets import QApplication, QDialog, QDialogButtonBox
+from PySide6.QtWidgets import (
+    QApplication,
+    QDialog,
+    QDialogButtonBox,
+    QFileDialog,
+    QInputDialog,
+    QMessageBox,
+)
 
 from adsfolio.citekeys import KeyPolicy, KeyStyle
 from adsfolio.config import Config
 from adsfolio.gui.bibtex_export import CitationKeyDialog
+from adsfolio.gui.library import FileQuery
 from adsfolio.gui.main_window import MainWindow
 from adsfolio.references import CitationKeyError, LocalReferences
 
@@ -160,3 +168,166 @@ def test_key_settings_action_saves_the_policy(window, monkeypatch):
     monkeypatch.setattr(CitationKeySettingsDialog, "exec", choose)
     window.citation_keys_action.trigger()
     assert Config.load_key_policy().other is KeyStyle.MANUAL
+
+
+@pytest.mark.parametrize("all_papers", [False, True])
+@pytest.mark.parametrize("limited_view", ["filtered", "paged"])
+def test_export_as_bibtex_respects_scope_and_uses_all_current_rows(
+    window, monkeypatch, tmp_path, all_papers, limited_view
+) -> None:
+    """All exports include hidden rows; selection exports contain only selected PDFs."""
+    catalog = window.registries[str(window.current_root)].catalog
+    service = LocalReferences(catalog)
+    records = _records(window)
+    for record, key in zip(records, ("first-paper", "second-paper")):
+        service.set_cite_key(record["document_id"], key)
+    other = tmp_path / "other"
+    other.mkdir()
+    catalog.observe_file(
+        other,
+        "outside.pdf",
+        sha256="c" * 64,
+        size_bytes=1,
+        mtime_ns=1,
+        metadata=_crossref("10.5555/outside", "Outside this library"),
+    )
+    if limited_view == "filtered":
+        window.model.set_query(FileQuery(search="Dust grains"))
+    else:
+        monkeypatch.setattr("adsfolio.gui.models.PAGE_SIZE", 1)
+        window.model.set_query(FileQuery(order_by="relative_path"))
+    assert window.model.rowCount() == 1
+    window.table.setCurrentIndex(window.model.index(0, 0))
+    selected_id = window._selected_records()[0]["document_id"]
+    target = tmp_path / "export.bib"
+    choices = []
+
+    def choose_format(
+        parent, title, label, items, current, editable
+    ) -> tuple[str, bool]:
+        choices.append((title, tuple(items), editable))
+        return "BibTeX (*.bib)", True
+
+    monkeypatch.setattr(QInputDialog, "getItem", choose_format)
+    monkeypatch.setattr(
+        QFileDialog, "getSaveFileName", lambda *args: (str(target), "BibTeX (*.bib)")
+    )
+    action = window.export_all_action if all_papers else window.export_selected_action
+    assert action.isEnabled()
+
+    action.trigger()
+
+    text = target.read_text()
+    expected = (
+        {record["document_id"] for record in records} if all_papers else {selected_id}
+    )
+    for record, key in zip(records, ("first-paper", "second-paper")):
+        assert (f"{{{key}," in text) == (record["document_id"] in expected)
+    assert "Outside this library" not in text
+    assert choices == [
+        (
+            "Export All As" if all_papers else "Export Selection As",
+            ("BibTeX (*.bib)", "Publication list (LaTeX, HTML, Markdown, text)"),
+            False,
+        )
+    ]
+
+
+def test_export_all_is_available_without_a_selection_and_can_export_a_list(
+    window, monkeypatch
+) -> None:
+    """The all action can pass the whole library to the existing list formatter."""
+    window.table.clearSelection()
+    window._sync_export_action()
+    assert window.export_selected_action.text() == "Export Selection As…"
+    assert window.export_all_action.text() == "Export All As…"
+    assert not window.export_selected_action.isEnabled()
+    assert window.export_all_action.isEnabled()
+    opened = []
+
+    class Dialog:
+        def __init__(self, parent, **kwargs) -> None:
+            opened.extend(kwargs["records"])
+
+        def exec(self) -> int:
+            return QDialog.Accepted
+
+    monkeypatch.setattr("adsfolio.gui.main_window.CVDialog", Dialog)
+    monkeypatch.setattr(
+        QInputDialog,
+        "getItem",
+        lambda *args: (
+            "Publication list (LaTeX, HTML, Markdown, text)",
+            True,
+        ),
+    )
+
+    window.export_all_action.trigger()
+
+    assert {row["document_id"] for row in opened} == {
+        row["document_id"] for row in _records(window)
+    }
+
+
+def test_cancelling_export_format_does_not_ask_for_keys_or_a_filename(
+    window, monkeypatch
+) -> None:
+    """Cancel the format choice before BibTeX key edits or file writes begin."""
+    window.table.setCurrentIndex(window.model.index(0, 0))
+    monkeypatch.setattr(QInputDialog, "getItem", lambda *args: ("", False))
+
+    def unexpected_dialog(*args) -> None:
+        pytest.fail("A cancelled export must not open another dialog")
+
+    monkeypatch.setattr(CitationKeyDialog, "exec", unexpected_dialog)
+    monkeypatch.setattr(QFileDialog, "getSaveFileName", unexpected_dialog)
+
+    window.export_selected_action.trigger()
+
+
+@pytest.mark.parametrize("valid", [True, False])
+def test_export_all_handles_abstract_braces_and_reports_invalid_math(
+    window, monkeypatch, tmp_path, valid
+) -> None:
+    """Export literal braces; identify an unexportable paper before touching a file."""
+    catalog = window.registries[str(window.current_root)].catalog
+    service = LocalReferences(catalog)
+    records = _records(window)
+    for record, key in zip(records, ("first-paper", "second-paper")):
+        service.set_cite_key(record["document_id"], key)
+    document = catalog.get_document(records[0]["document_id"])
+    document["metadata"]["abstract"] = (
+        "Text } in an ADS abstract" if valid else "$x^{2$"
+    )
+    catalog.save_reference_documents([document])
+    saved = catalog.get_document(document["id"])
+    target = tmp_path / "existing.bib"
+    target.write_text("Existing bibliography")
+    warnings = []
+    monkeypatch.setattr(QInputDialog, "getItem", lambda *args: ("BibTeX (*.bib)", True))
+    monkeypatch.setattr(
+        QFileDialog, "getSaveFileName", lambda *args: (str(target), "BibTeX (*.bib)")
+    )
+    monkeypatch.setattr(QMessageBox, "warning", lambda *args: warnings.append(args[2]))
+
+    window.export_all_action.trigger()
+
+    if valid:
+        assert warnings == []
+        text = target.read_text()
+        assert "{first-paper," in text and "{second-paper," in text
+        assert r"Text \textbraceright{} in an ADS abstract" in text
+    else:
+        assert len(warnings) == 1
+        assert all(
+            part in warnings[0]
+            for part in (
+                "Dust",
+                "first-paper",
+                "abstract",
+                "paper's details",
+                "export again",
+            )
+        )
+        assert target.read_text() == "Existing bibliography"
+    assert catalog.get_document(document["id"]) == saved

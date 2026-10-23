@@ -2,45 +2,12 @@
 
 from __future__ import annotations
 
-import json
 import os
 import shutil
 import sqlite3
 import tempfile
 from contextlib import closing
 from pathlib import Path
-from typing import Any
-
-LEGACY_SIDECAR = ".adsapi-pdfs.json"
-LEGACY_REGISTRY = ".adsapi-pdfs.sqlite"
-_KEY_RENAMES = {
-    f"_adsapi_{suffix}": f"_adsfolio_{suffix}"
-    for suffix in (
-        "locked_fields",
-        "reference",
-        "metrics",
-        "external_metadata",
-        "metadata_sha256",
-        "metadata_stale",
-        "author_text",
-    )
-}
-
-
-def normalize_metadata(value: Any) -> Any:
-    """Translate reserved metadata keys while preserving user text and values."""
-    if isinstance(value, list):
-        return [normalize_metadata(item) for item in value]
-    if not isinstance(value, dict):
-        return value
-    result = {}
-    for key, item in value.items():
-        target = _KEY_RENAMES.get(key, key)
-        converted = normalize_metadata(item)
-        if target in result and result[target] != converted:
-            raise ValueError(f"Conflicting metadata values for {target!r}")
-        result[target] = converted
-    return result
 
 
 def copy_data_directory(source: Path, destination: Path) -> None:
@@ -88,32 +55,3 @@ def copy_data_directory(source: Path, destination: Path) -> None:
     finally:
         if staging.exists():
             shutil.rmtree(staging)
-
-
-def migrate_catalog_keys(connection: sqlite3.Connection) -> None:
-    """Translate reserved keys in a catalog transaction without changing IDs."""
-    marker = "adsfolio_metadata_keys"
-    if connection.execute(
-        "SELECT 1 FROM catalog_meta WHERE key = ?", (marker,)
-    ).fetchone():
-        return
-    with connection:
-        for table, identity, column in (
-            ("attachments", "id", "metadata_json"),
-            ("documents", "id", "metadata_json"),
-            ("ads_documents", "bibcode", "raw_json"),
-        ):
-            rows = connection.execute(
-                f"SELECT {identity}, {column} FROM {table}"
-            ).fetchall()
-            for row_id, encoded in rows:
-                original = json.loads(encoded)
-                converted = normalize_metadata(original)
-                if converted != original:
-                    connection.execute(
-                        f"UPDATE {table} SET {column} = ? WHERE {identity} = ?",
-                        (json.dumps(converted, ensure_ascii=False), row_id),
-                    )
-        connection.execute(
-            "INSERT INTO catalog_meta(key, value) VALUES (?, ?)", (marker, "1")
-        )

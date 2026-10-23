@@ -628,7 +628,7 @@ def test_single_row_menu_keeps_single_record_labels(
     window.show()
     QApplication.processEvents()
     actions = _menu_for_rows(window, monkeypatch, tmp_path, [0])
-    assert {"Open", "Copy Bibcode", "Copy DOI", "Export Paper as List…"} <= set(actions)
+    assert {"Open", "Copy Bibcode", "Copy DOI", "Export Selection As…"} <= set(actions)
     assert window.update_selected_ads_action.text() in actions
 
 
@@ -730,6 +730,10 @@ def test_export_selected_papers_opens_the_list_window_with_all_rows(
             return 0
 
     monkeypatch.setattr("adsfolio.gui.main_window.CVDialog", Dialog)
+    monkeypatch.setattr(
+        "adsfolio.gui.main_window.QInputDialog.getItem",
+        lambda *args: ("Publication list (LaTeX, HTML, Markdown, text)", True),
+    )
     _select_rows(window, [0, 2])
     window._sync_detail_and_selection_actions()
     assert window.export_selected_action.isEnabled()

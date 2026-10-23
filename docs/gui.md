@@ -141,9 +141,10 @@ Linux), then right-click. Each action covers every selected row:
   **Update and Rename Selected by Identifier…** needs one row, because it asks
   for one identifier.
 - **Add to ADS Library…** adds the selected papers to an ADS library.
-- **Export Selected Papers…** writes them as a list (see below). **Copy BibTeX**
-  and **Export BibTeX…** write their BibTeX, for ADS papers and other papers.
-  See [Export BibTeX](local-references.md#export-bibtex).
+- **Export Selection As…** lets you choose **BibTeX** or **Publication list**
+  for the selected rows. **Export All As…** uses every current PDF in this
+  library, including filtered and unloaded rows. **Copy BibTeX** copies the
+  selection's BibTeX. See [Export BibTeX](local-references.md#export-bibtex).
 
 ![Context menu for three selected papers](_static/tutorial/selection-menu.png)
 
@@ -251,7 +252,35 @@ that information. ADSfolio converts HTML display markup from ADS to plain text
 in the table, detail pane, and generated filenames.
 
 Use **Update by ID…** in the detail pane to enter or correct the
-selected file's Bibcode, DOI, arXiv ID, or journal-volume-page coordinates. A DOI may be bare,
+selected file's Bibcode, DOI, arXiv ID, or bibliographic reference. Use either
+reference format:
+
+* `{authorLastName}-{year}-{bibstem}`
+* `{bibstem}-{volume}-{page}`
+
+| Field | Meaning |
+| --- | --- |
+| `{authorLastName}` | Last name of an author of the paper. |
+| `{year}` | Four-digit publication year. |
+| `{bibstem}` | ADS journal abbreviation, such as `Natur` for *Nature*. |
+| `{volume}` | Journal volume number. |
+| `{page}` | Starting page or article number, such as `42` or `A113`. |
+
+You can replace `{bibstem}` with the full journal name in either format.
+For example, `Last-2020-Natur` specifies author Last, year 2020, and journal
+*Nature*. `Sci-123-45` specifies the journal *Science*, volume 123, and
+starting page 45. These illustrate the input format. `Last-2020-Nature`
+and `Science-123-45` use the full journal names instead.
+
+These reference formats query ADS only; other sites are not searched.
+DOI and arXiv lookups can also use Crossref or DataCite, as described below.
+
+Spaces and underscores can also separate the reference fields. Author and
+journal names can contain spaces or hyphens. A numeric volume and page take
+precedence over the author-year format. If multiple ADS records match,
+ADSfolio lets you choose the correct paper before updating the PDF.
+
+A DOI may be bare,
 `DOI:`-prefixed, or an HTTP(S) `doi.org` / `dx.doi.org` link. ADSfolio does not
 recognize other publisher URLs. ADSfolio uses a DOI exactly as typed (apart from
 lower-casing). As a result, it keeps trailing punctuation or parentheses that
@@ -264,6 +293,12 @@ DataCite supply the metadata, and the file stays unresolved. See
 [My paper is not on ADS](local-references.md#type-the-doi-or-arxiv-id). It then renames the PDF with the selected global or library Rename
 settings. If a Bibcode has no ADS match, the update clears the Bibcode. The
 local file remains tracked as unresolved.
+
+Use **Enter Details…** in the detail pane to type a title, authors, year,
+journal, or DOI without an online lookup. **Save Metadata** saves changed fields
+locally and locks them against provider updates. It preserves the PDF's name
+and location. You can save partial metadata. A local entry does not mark the
+paper as ADS linked.
 
 **Tools → Refresh Selected ADS Record** performs the same update with the
 current Bibcode, including detailed citation splits. **Tools → Refresh All ADS
@@ -318,9 +353,9 @@ placeholder.
 
 ### Export selected papers
 
-Select papers in the table, then choose **Export Selected Papers…** from the
-context menu or the **Tools** menu. The same window opens with the selected
-papers in the preview. It uses the details stored in this library, so it needs
+Select papers in the table, then choose **Export Selection As…** from the
+context menu or the **Tools** menu, then choose **Publication list**.
+The same window opens with the selected papers in the preview. It uses the details stored in this library, so it needs
 no ADS token and makes no network request. The export includes papers without
 a bibcode. Their link uses the DOI when the paper has a stored DOI.
 
@@ -684,30 +719,63 @@ local PDFs, or the local catalog.
 ## Merging annotations from another edition
 
 The same paper can exist as a preprint, a published version, or a duplicate.
-When its annotations are in more than one of these files, use
-**Tools → Merge Annotations…**.
+Select the two rows and right-click **Merge Selected PDFs…**, or use
+**Tools → Merge Annotations…** with the pair selected. The published edition
+is proposed as the **target**; you can change which PDF supplies the pages
+before reviewing the **source** annotations. With no pair selected, the Tools
+action lets you choose the target and source files.
 
-1. Choose the canonical **target** PDF first.
-2. Choose the **source** PDF second.
+After a watched PDF is identified, ADSfolio prompts to review an existing
+edition when a bibcode, alternate bibcode, DOI, or version-free arXiv identifier
+links the files. Identification retains ADS's `identifier` and
+`alternate_bibcode` fields for this purpose. The prompt stays tied to the
+arrival even if another library is selected, and pauses watcher writes during
+review.
 
-ADSfolio shows the source (left) and target (right) pages side by side. It
-lists every annotation in the source, including links and popups.
+ADS sometimes has separate preprint and journal records without a shared
+identifier. In that case the prompt explicitly asks you to choose the matching
+source from the existing preprints or published editions. It does not infer a
+match from the title. Cancel keeps the **Review Merge…** notice available.
 
-For each annotation:
+The review stays in one window. Selecting an annotation opens its source page
+and the suggested target page automatically. Both panes center the marked area
+and fit their pages to the pane width. Use **Fit page** or **100%** to change
+the display scale. The excerpts above the pages show the source selection and
+target candidate, with changed words highlighted.
 
-- Highlight, underline, strike-out, and squiggly marks: drag across the target
-  words. If the source words occur exactly once in the target as the same run
-  of words, ADSfolio outlines that spot. It also enables **Accept exact-text
-  suggestion**. The same run means the same case, punctuation, and hyphenation.
-  ADSfolio places nothing until you accept it. There is no approximate text
-  matching.
-- Notes, rectangles, circles, lines, and ink: click the target position of the
-  annotation's top-left corner. ADSfolio moves the shape, but never resizes or
-  rotates it. So the target page must have the same rotation as the source page.
-- Any other type (free text, stamps, links, form fields, and so on): ADSfolio
-  cannot copy it without approximation. You must waive each one individually
-  with **Waive (do not copy)…**. ADSfolio does not copy popup windows, because
-  their parent annotation carries the content.
+1. Review the target candidate. Local lookup allows differences in spacing,
+   punctuation, line-wrap hyphens, and ligatures. Repeated text appears as
+   separate candidates in the page menu. Select another candidate to inspect it.
+2. Select **Accept & Next** to accept the displayed location and advance to the
+   next unresolved annotation. **Accept placement** keeps the current selection.
+   **Undo decision** returns an accepted placement or waiver to review.
+   ADSfolio never accepts a candidate automatically.
+3. If the text changed, review the **Closest wording** candidates. ADSfolio
+   compares source and target words locally in the background. It retains tied
+   closest occurrences on each page and shows word edit and match counts. Similar wording can have
+   different scientific meaning. Review the differences and boundaries before
+   accepting. This lookup cannot establish that two claims have the same meaning.
+   An annotation stays unresolved until you accept a location or waive it.
+4. Use **Find target text…** to search across target pages. You can also drag
+   across target words to place a highlight, underline, strike-out, or squiggly
+   mark. For notes and shapes, review the suggested text anchor or click the
+   target position of the annotation's top-left corner. Shapes keep their size
+   and require the same page rotation as the source.
+5. Use **Waive (do not copy)…** to explicitly exclude an annotation, including
+   one whose passage was removed from the published edition. **Next unresolved**
+   leaves the item open for later review.
+
+The review list initially shows reader annotations. **Show source hyperlinks**
+opens the source link list. Hidden links are still unresolved until you
+explicitly exclude them. **Exclude … source hyperlinks…** excludes those links
+together and retains all links already in the target. Popups stay attached to
+their parent annotation's content. Unsupported types, including free text,
+stamps, and form fields, require an explicit waiver.
+
+Annotation matching runs entirely on your computer. It needs no account,
+API key, network connection, or downloaded model. PDF text stays on your
+computer during this workflow. **Retry wording search** repeats the local
+search. Manual placement and text search remain available.
 
 ADSfolio copies colour, opacity, comments, author, subject, flags, border, and
 the icon of a note with each annotation. **Save merged copy…** writes a new file
@@ -715,11 +783,35 @@ and refuses to overwrite an existing one.
 
 Before writing, ADSfolio re-reads the copy. It checks every transferred
 annotation and every annotation already in the target. If any check fails,
-ADSfolio saves nothing. The original PDFs and the catalog do not change.
-ADSfolio does not add the copy to the catalog automatically.
+ADSfolio saves nothing. Saving leaves both original PDFs in place. For library
+PDFs, saving the copy inside an open library folder registers it with the
+canonical PDF's metadata. An active watcher
+will not prompt again to merge that same output.
 
 If any annotation is neither placed nor waived, the dialog says so. The result
 is then a partial merge, not a full consolidation.
+
+After a complete, verified save, choose **Keep originals** or **Remove original
+PDFs…**. The removal dialog lists the original paths with checkboxes. Select
+**Move … original PDF(s) to Trash** to leave the final merged PDF and remove
+the checked originals. Unchecked originals remain. **Keep originals** is the
+default. The dialog states how many annotations you waived and explains that
+other editions contribute annotations, not their pages, bookmarks, attachments,
+or form data. You can also use **Remove original PDFs…** in the review window
+later.
+
+Sequential complete merges retain their input history, including intermediate
+merged copies. A later cleanup can remove three or more originals together. This
+history is stored in the local catalog when the merged file is in a registered
+library, so it survives a restart. Inputs from an incomplete earlier merge are
+kept out of that later cleanup list.
+
+Cleanup checks the saved result and each selected original against the exact
+contents used for the merge. A changed or missing result blocks cleanup.
+Changed originals remain for another review. Files go to the system Trash,
+where they can be restored. If a move fails, the dialog names the failed file
+and allows a retry. Trashed originals leave the active library list; their
+catalog history is retained. Partial merges do not offer cleanup.
 
 When you merge a source again into a copy that already holds a merge from that
 source, ADSfolio skips annotations that are already present. A private key in each
@@ -747,6 +839,23 @@ its sidebar context menu:
   them to rename resolved PDFs and apply a configured unresolved-file move. It
   is off by default. When it is off, the non-modal notice bar offers
   **Identify & Rename** and **Dismiss** for each new arrival.
+
+If automatic identification finds no match, the warning offers **Identify…**
+and **Enter Details…** beside **Dismiss**. Choose **Identify…** to enter a
+Bibcode, DOI, arXiv ID, `{authorLastName}-{year}-{bibstem}`, or `{bibstem}-{volume}-{page}`.
+Here, `{bibstem}` means the ADS journal abbreviation. You can replace it with
+the full journal name. This uses the same update and rename workflow
+as **Update by ID…**. It targets the warned PDF, including its destination if
+the watcher moved it to the unresolved folder. Cancel keeps the warning available.
+
+Both failed and unresolved PDF warnings offer **Enter Details…** for local
+metadata entry. You can use it when **Retry** fails or an online provider is
+unavailable. It also works when the failed lookup did not register the PDF.
+
+File notifications also offer **Reveal in Finder** on macOS or **Reveal in
+File Manager** on other platforms. This reveals the notified PDF, including its
+destination after a move or rename, even if another library or row is selected.
+Revealing a file leaves its notification open.
 
 The watcher recognizes the ``.pdf`` suffix in any letter case, such as
 ``PAPER.PDF``. The watcher ignores a symbolic link to a PDF outside the root.

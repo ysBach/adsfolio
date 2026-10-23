@@ -77,8 +77,11 @@ IDENTIFY_PROGRESS_STAGES: dict[str, tuple[str, str]] = {
 __all__ = ["pdf"]
 
 _JOURNAL_COORDINATES = re.compile(
-    r"^(?P<bibstem>[A-Za-z][A-Za-z0-9.&]{0,15})\s*[-:/\s]\s*"
-    r"(?P<volume>\d+)\s*[-:/\s]\s*(?P<page>[A-Za-z]?\d+)$"
+    r"^(?P<journal>.+?)\s*[-:/_\s]\s*"
+    r"(?P<volume>\d+)\s*[-:/_\s]\s*(?P<page>[A-Za-z]?\d+)$"
+)
+_AUTHOR_YEAR_JOURNAL = re.compile(
+    r"^(?P<author>.+?)[_\-\s]+(?P<year>[0-9]{4})[_\-\s]+(?P<journal>.+)$"
 )
 
 
@@ -170,7 +173,14 @@ _ARXIV_INPUT = re.compile(
 
 def _parse_ads_identifier(value: str) -> tuple[str, str]:
     """
-    Classify a Bibcode, DOI, arXiv ID, or journal-volume-page identifier.
+    Classify a Bibcode, DOI, arXiv ID, or bibliographic reference.
+
+    References accept ``{authorLastName}-{year}-{bibstem}`` or
+    ``{bibstem}-{volume}-{page}``. `authorLastName` is an author's last name, and
+    `year` is the four-digit publication year. `bibstem` is the ADS journal
+    abbreviation and can be replaced with the full journal name. A numeric
+    volume and page take precedence over the author-year format. These
+    references query ADS only; other providers are not searched.
 
     An arXiv ID is returned without its version. A legacy arXiv bibcode such
     as ``2024arXiv240112345B`` stays a bibcode.
@@ -186,16 +196,20 @@ def _parse_ads_identifier(value: str) -> tuple[str, str]:
     arxiv = _ARXIV_INPUT.fullmatch(candidate)
     if arxiv is not None:
         return "arxiv", arxiv.group(1).lower()
-    coordinates = _JOURNAL_COORDINATES.fullmatch(candidate)
-    if coordinates is not None:
-        groups = coordinates.groupdict()
-        return (
-            "query",
-            (
-                f'bibstem:"{groups["bibstem"]}" '
-                f'volume:"{groups["volume"]}" page:"{groups["page"]}"'
-            ),
+    if "://" in candidate:
+        return "bibcode", candidate
+    reference = _JOURNAL_COORDINATES.fullmatch(
+        candidate
+    ) or _AUTHOR_YEAR_JOURNAL.fullmatch(candidate)
+    if reference is not None:
+        groups = reference.groupdict()
+        journal = escape_query_phrase(groups.pop("journal").strip())
+        query_parts = [f'(bibstem:"{journal}" OR pub:"{journal}")']
+        query_parts.extend(
+            f'{field}:"{escape_query_phrase(text.strip())}"'
+            for field, text in groups.items()
         )
+        return "query", " ".join(query_parts)
     return "bibcode", candidate
 
 
@@ -380,7 +394,14 @@ def _clear_invalid_bibcode(
 @click.option(
     "--identifier",
     "identifier_input",
-    help="Refresh by Bibcode, DOI, or journal-volume-page coordinates.",
+    help=(
+        "Refresh by Bibcode, DOI, arXiv ID, {authorLastName}-{year}-{bibstem}, or {bibstem}-{volume}-{page}. "
+        "{authorLastName} is an author's last name. {year} is the four-digit publication year. "
+        "{bibstem} is the ADS journal abbreviation. The full journal name also works. "
+        "{volume} is the journal volume number. {page} is the starting page or article number. "
+        "Examples: Last-2020-Natur or Sci-123-45. "
+        "These reference formats query ADS only; other sites are not searched."
+    ),
 )
 @click.option(
     "--all",
