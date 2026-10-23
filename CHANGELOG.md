@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.6.2 (2026-10-23)
+## 0.6.3 (2026-10-23)
 
 ### Merging PDF editions
 
@@ -68,6 +68,9 @@
 - **Detail pane on Windows.** Before: the extra metadata action could force
   the detail pane wider than the publication table. Now: the actions use two
   columns so the default pane sizes remain usable.
+- **Cancellation tests on slower machines.** Before: three tests created a
+  signal waiter without starting it, then relied on a fixed 20 ms delay.
+  Now: they wait for the worker's completion signal before checking results.
 
 ### Compatibility
 
@@ -76,7 +79,7 @@
   name. Now: those compatibility readers are removed. Existing ADSfolio-named
   files remain supported. Before upgrading from the earlier application, open
   ADSfolio **0.6.0** once to convert its catalog and import its per-library files.
-  Version 0.6.2 still copies earlier data directories, but it no longer converts
+  Version 0.6.3 still copies earlier data directories, but it no longer converts
   their reserved keys. An unconverted catalog's manual locks, author text, and
   local references are not honoured. Keep the original data until you verify
   the converted library.
