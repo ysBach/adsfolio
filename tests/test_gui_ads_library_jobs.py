@@ -306,9 +306,8 @@ def test_cancellation_is_observed_before_next_add_request(qtbot) -> None:
     holder["job"] = job
     successes: list[AddDocumentsResult] = []
     job.succeeded.connect(successes.append)
-    job.start()
-    qtbot.waitSignal(job.finished, timeout=2_000)
-    qtbot.wait(20)
+    with qtbot.waitSignal(job.finished, timeout=2_000):
+        job.start()
 
     assert len(successes) == 1
     assert successes[0].acknowledged == tuple(f"B{i}" for i in range(2_000))
@@ -493,9 +492,8 @@ def test_export_job_cancellation_before_network_returns_empty_result(qtbot) -> N
     job.succeeded.connect(successes.append)
     job.failed.connect(failures.append)
     job.cancel()
-    job.start()
-    qtbot.waitSignal(job.finished, timeout=2_000)
-    qtbot.wait(20)
+    with qtbot.waitSignal(job.finished, timeout=2_000):
+        job.start()
 
     assert failures == []
     assert successes == [LibraryExportResult(text="", bibcodes=(), cancelled=True)]
@@ -530,9 +528,8 @@ def test_export_job_cancellation_during_remote_enumeration_skips_export(qtbot) -
     failures: list[object] = []
     job.succeeded.connect(successes.append)
     job.failed.connect(failures.append)
-    job.start()
-    qtbot.waitSignal(job.finished, timeout=2_000)
-    qtbot.wait(20)
+    with qtbot.waitSignal(job.finished, timeout=2_000):
+        job.start()
 
     assert failures == []
     assert successes == [LibraryExportResult(text="", bibcodes=(), cancelled=True)]
