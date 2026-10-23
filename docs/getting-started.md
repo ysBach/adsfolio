@@ -119,8 +119,8 @@ Permanent cleanup is separate.
 The catalog stores metadata, file locations, and version history outside the app.
 Replacing the application does not delete that catalog.
 If you are upgrading from the earlier application, close it and open ADSfolio
-**0.6.0** once before installing version 0.6.1. Version 0.6.0 converts the catalog
-and imports earlier per-library files. Version 0.6.1 copies earlier data
+**0.6.0** once before installing version 0.6.2. Version 0.6.0 converts the catalog
+and imports earlier per-library files. Version 0.6.2 copies earlier data
 directories but no longer converts their reserved metadata keys. Without that
 conversion, earlier manual locks, author text, and local references are not
 honoured. Keep the original data until you check the converted library.

@@ -5,7 +5,7 @@ from .config import Config
 from .formatting import format_author_list_cv, format_title_latex
 from .journal_utils import format_journal
 
-__version__ = "0.6.1"
+__version__ = "0.6.2"
 __all__ = [
     "ADSClient",
     "Config",

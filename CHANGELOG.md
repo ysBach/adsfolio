@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.6.1 (2026-10-23)
+## 0.6.2 (2026-10-23)
 
 ### Merging PDF editions
 
@@ -55,6 +55,20 @@
   full journal names. These reference formats query ADS only. DOI and arXiv
   lookups retain their existing provider choices.
 
+### Fixed
+
+- **Obsidian export for large libraries.** Before: fetching missing abstracts
+  put up to 200 bibcodes in a GET URL, which ADS could reject as too long.
+  Now: the request uses the existing bulk POST API, with up to 2,000 bibcodes
+  in each request body. Dry runs and existing-note protection stay the same.
+- **Changed PDFs during manual entry.** Before: a same-size rewrite could pass
+  the file check when the filesystem retained the same modification time.
+  Now: saving manual metadata also checks the PDF's content digest. A changed
+  PDF keeps the dialog and warning open for another review.
+- **Detail pane on Windows.** Before: the extra metadata action could force
+  the detail pane wider than the publication table. Now: the actions use two
+  columns so the default pane sizes remain usable.
+
 ### Compatibility
 
 - **Retire earlier application formats.** Before: readers also searched for
@@ -62,7 +76,7 @@
   name. Now: those compatibility readers are removed. Existing ADSfolio-named
   files remain supported. Before upgrading from the earlier application, open
   ADSfolio **0.6.0** once to convert its catalog and import its per-library files.
-  Version 0.6.1 still copies earlier data directories, but it no longer converts
+  Version 0.6.2 still copies earlier data directories, but it no longer converts
   their reserved keys. An unconverted catalog's manual locks, author text, and
   local references are not honoured. Keep the original data until you verify
   the converted library.

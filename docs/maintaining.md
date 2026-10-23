@@ -342,7 +342,7 @@ into the ADSfolio directories if the destination does not exist. SQLite uses the
 backup API, including committed WAL data. Directory migration never merges or
 overwrites an existing destination.
 
-Version 0.6.1 no longer converts reserved metadata keys from the earlier
+Version 0.6.2 no longer converts reserved metadata keys from the earlier
 application. Copying an unconverted catalog retains its data, but manual field
 locks, author text, and local references under those keys are not honoured.
 Provider refreshes can overwrite fields whose earlier locks are not recognised.
@@ -352,11 +352,11 @@ Before upgrading from the earlier application:
 1. Close the earlier application.
 2. Open ADSfolio **0.6.0** once to convert the catalog and import its per-library
    files. Verify the metadata, manual locks, and local references there.
-3. Install version 0.6.1. Keep the original directories until you verify the
+3. Install version 0.6.2. Keep the original directories until you verify the
    converted library.
 
 If you already used ADSfolio 0.6.0, the catalog conversion is complete. Version
-0.6.1 does not read per-library files under the earlier application name.
+0.6.2 does not read per-library files under the earlier application name.
 
 ADSfolio-named per-library sidecars and registries remain readable. The
 rename keeps old Git history. It does not rewrite commits or change
