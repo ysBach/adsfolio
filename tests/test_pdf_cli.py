@@ -1168,7 +1168,7 @@ def test_obsidian_dry_run_then_apply(tmp_path, monkeypatch):
     sidecar.save()
 
     class _SearchStub:
-        def query(self, q, fl=None, rows=10, start=0, sort=None, fq=None):
+        def bigquery(self, bibcodes, fl=None, rows=None):
             return SearchResult(
                 num_found=1,
                 start=0,

@@ -1253,6 +1253,29 @@ def test_main_window_applies_default_splitter_sizes_only_when_unset(
     second_window.close()
 
 
+def test_detail_pane_minimum_width_fits_its_default_splitter_width(
+    application: QApplication,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """The action buttons do not force the details wider than their default."""
+    from adsfolio.gui.main_window import DEFAULT_SPLITTER_SIZES
+
+    monkeypatch.setattr(Config, "get_config_dir", classmethod(lambda cls: tmp_path))
+    library = tmp_path / "library"
+    library.mkdir()
+    monkeypatch.setattr(
+        "adsfolio.gui.main_window.load_config",
+        lambda: GuiConfig(roots=[RootEntry(str(library))]),
+    )
+    monkeypatch.setattr("adsfolio.gui.main_window.save_config", lambda config: None)
+    window = MainWindow()
+    window.show()
+    application.processEvents()
+    assert window.detail.minimumSizeHint().width() <= DEFAULT_SPLITTER_SIZES[2]
+    window.close()
+
+
 def test_toolbar_exposes_identify_and_rename_actions(
     application: QApplication,
     monkeypatch: pytest.MonkeyPatch,

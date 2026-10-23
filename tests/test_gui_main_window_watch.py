@@ -1487,6 +1487,50 @@ def test_manual_entry_cancel_or_file_change_retains_warning(
     assert controller.retry_calls == []
 
 
+def test_manual_entry_refuses_same_size_rewrite_with_unchanged_signature(
+    monkeypatch, qtbot, tmp_path
+) -> None:
+    """A content change blocks saving even if size and modification time match."""
+    import os
+
+    import adsfolio.gui.main_window as main_window_module
+
+    root = tmp_path / "library"
+    root.mkdir()
+    window, controller, _saves = _window_factory(
+        monkeypatch, qtbot, GuiConfig(roots=[RootEntry(str(root))])
+    )
+    window.watch_current_action.trigger()
+    event = replace(_event(root, controller.session_id(root)), state=WatchState.FAILED)
+    event.path.write_bytes(b"untracked PDF")
+    opened = event.path.stat()
+    signature = FileSnapshot.from_path(event.path)
+    controller.failed.emit(WatchFailure(root, event.session_id, "Lookup failed", event))
+
+    def enter_details(dialog) -> int:
+        dialog.fields["title"].setText("Unsaved title")
+        event.path.write_bytes(b"different PDF")
+        os.utime(event.path, ns=(opened.st_atime_ns, opened.st_mtime_ns))
+        # Only the content differs, as with a coarse timestamp on Windows.
+        assert FileSnapshot.from_path(event.path) == signature
+        dialog.buttons.button(QDialogButtonBox.Save).click()
+        assert dialog.result() != QDialog.Accepted
+        assert "PDF changed" in dialog.error.text()
+        assert dialog.fields["title"].text() == "Unsaved title"
+        dialog.reject()
+        return dialog.result()
+
+    monkeypatch.setattr(main_window_module.ManualMetadataDialog, "exec", enter_details)
+
+    window.notice_bar.manual_entry_button.click()
+
+    assert (
+        window.registries[str(root)].find_file_by_current_path(root, event.path.name)
+        is None
+    )
+    assert window.notice_bar.queued_keys() == (window._watch_notice_key(event),)
+
+
 def test_manual_entry_waits_for_watcher_pause_and_keeps_origin(
     monkeypatch, qtbot, tmp_path
 ) -> None:

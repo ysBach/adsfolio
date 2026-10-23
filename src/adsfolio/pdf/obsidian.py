@@ -26,7 +26,8 @@ class NotePlan:
 class ObsidianNoteWriter:
     """Generate Obsidian-friendly Markdown notes from sidecar-tracked PDF metadata."""
 
-    MAX_BATCH_TERMS = 200
+    # ADS search returns at most 2000 records per request.
+    MAX_BATCH_TERMS = 2000
 
     def __init__(self, client: "ADSClient | None" = None):
         self.client = client
@@ -61,11 +62,8 @@ class ObsidianNoteWriter:
 
         abstracts: dict[str, str] = {}
         for chunk in self._chunked(normalized, self.MAX_BATCH_TERMS):
-            terms = [f'bibcode:"{code.replace(chr(34), " ")}"' for code in chunk]
-            query = " OR ".join(terms)
-            rows = min(max(len(chunk) * 2, 10), 2000)
-            result = self.client.search.query(
-                q=query, fl=["bibcode", "abstract"], rows=rows
+            result = self.client.search.bigquery(
+                chunk, fl=["bibcode", "abstract"], rows=len(chunk)
             )
             for doc in result.docs:
                 bibcode = self._first(doc.get("bibcode"))

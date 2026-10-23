@@ -25,6 +25,7 @@ from PySide6.QtGui import (
 from PySide6.QtWidgets import (
     QApplication,
     QFrame,
+    QGridLayout,
     QHBoxLayout,
     QInputDialog,
     QLabel,
@@ -964,7 +965,9 @@ class DetailPane(QWidget):
         layout.addWidget(header_box)
         layout.addWidget(scroll)
         self._actions = QWidget(self)
-        buttons = QHBoxLayout(self._actions)
+        # Two columns keep the pane's minimum width below its default splitter
+        # width when the platform style draws wider buttons.
+        buttons = QGridLayout(self._actions)
         buttons.setContentsMargins(4, 4, 4, 4)
         buttons.setSpacing(4)
         update_button = QPushButton("Update by ID…", self._actions)
@@ -993,10 +996,10 @@ class DetailPane(QWidget):
             button.setIconSize(ICON_SIZE)
             button.setToolTip(description)
             button.setAccessibleName(description)
-        buttons.addWidget(update_button)
-        buttons.addWidget(self.manual_metadata_button)
-        buttons.addWidget(open_button)
-        buttons.addWidget(reveal_button)
+        buttons.addWidget(update_button, 0, 0)
+        buttons.addWidget(open_button, 0, 1)
+        buttons.addWidget(self.manual_metadata_button, 1, 0)
+        buttons.addWidget(reveal_button, 1, 1)
         layout.addWidget(self._actions)
         update_button.clicked.connect(self._request_ads_update)
         self.manual_metadata_button.clicked.connect(self.manual_metadata_requested)

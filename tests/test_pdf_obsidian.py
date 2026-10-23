@@ -1,4 +1,9 @@
+from unittest.mock import Mock
+
+import pytest
+
 from adsfolio.api.search import SearchResult
+from adsfolio.client import ADSClient
 from adsfolio.pdf.obsidian import NotePlan, ObsidianNoteWriter
 from adsfolio.pdf.sidecar import Sidecar
 
@@ -8,9 +13,11 @@ class _SearchStub:
         self.results = results
         self.calls = []
 
-    def query(self, q, fl=None, rows=10, start=0, sort=None, fq=None):
-        self.calls.append({"q": q, "fl": fl, "rows": rows})
-        return self.results.get(q, SearchResult(num_found=0, start=0, docs=[]))
+    def bigquery(self, bibcodes, fl=None, rows=None):
+        self.calls.append({"bibcodes": bibcodes, "fl": fl, "rows": rows})
+        return self.results.get(
+            tuple(bibcodes), SearchResult(num_found=0, start=0, docs=[])
+        )
 
 
 class _ClientStub:
@@ -62,14 +69,14 @@ def test_render_note_without_abstract_uses_placeholder(tmp_path):
     assert "_No abstract cached yet._" in note
 
 
-def test_fetch_missing_abstracts_batches_query(tmp_path):
-    query = 'bibcode:"2024ApJ...900..100S"'
+def test_fetch_missing_abstracts_posts_bibcodes(tmp_path):
+    bibcodes = ("2024ApJ...900..100S",)
     result = SearchResult(
         num_found=1,
         start=0,
         docs=[{"bibcode": ["2024ApJ...900..100S"], "abstract": "Fetched abstract."}],
     )
-    client = _ClientStub({query: result})
+    client = _ClientStub({bibcodes: result})
     writer = ObsidianNoteWriter(client=client)
 
     abstracts = writer.fetch_missing_abstracts(["2024ApJ...900..100S"])
@@ -120,13 +127,13 @@ def test_generate_apply_writes_note_and_caches_abstract(tmp_path):
         _sample_metadata(current_filename="paper.pdf"),
     )
 
-    query = 'bibcode:"2024ApJ...900..100S"'
+    bibcodes = ("2024ApJ...900..100S",)
     result = SearchResult(
         num_found=1,
         start=0,
         docs=[{"bibcode": ["2024ApJ...900..100S"], "abstract": "Cached abstract."}],
     )
-    client = _ClientStub({query: result})
+    client = _ClientStub({bibcodes: result})
     writer = ObsidianNoteWriter(client=client)
 
     plans = writer.generate(tmp_path, sidecar, apply=True)
@@ -179,3 +186,62 @@ def test_generate_skips_unresolved_and_missing_file(tmp_path):
     actions = {plan.original_filename: plan.action for plan in plans}
     assert actions["unresolved.pdf"] == "skip-unresolved"
     assert actions["missing.pdf"] == "skip-missing-file"
+
+
+@pytest.mark.parametrize("count", [0, 2000, 2001, 4001])
+def test_fetch_abstracts_posts_bounded_batches_without_long_urls(
+    monkeypatch: pytest.MonkeyPatch, count: int
+) -> None:
+    bibcodes = [f"2024Test..{index:09d}A" for index in range(count)]
+    client = ADSClient(token="test-token")
+    requests = []
+
+    def post(
+        url: str,
+        *,
+        data: str,
+        params: dict[str, str | int],
+        headers: dict[str, str],
+        timeout: tuple[float, float],
+    ) -> Mock:
+        assert url.endswith("/search/bigquery")
+        assert headers["Content-Type"] == "text/plain"
+        assert params["q"] == "*:*"
+        assert params["fl"] == "bibcode,abstract"
+        lines = data.splitlines()
+        assert lines[0] == "bibcode"
+        batch = lines[1:]
+        assert 1 <= len(batch) <= 2000
+        assert params["rows"] == len(batch)
+        requests.append(batch)
+        return Mock(
+            status_code=200,
+            ok=True,
+            headers={},
+            json=lambda: {
+                "response": {
+                    "numFound": len(batch),
+                    "start": 0,
+                    "docs": [
+                        {"bibcode": code, "abstract": f"Abstract for {code}"}
+                        for code in batch
+                    ],
+                }
+            },
+        )
+
+    monkeypatch.setattr(client._base._session, "post", post)
+    monkeypatch.setattr(
+        client._base._session,
+        "get",
+        Mock(side_effect=AssertionError("Use a POST body")),
+    )
+    try:
+        writer = ObsidianNoteWriter(client=client)
+        supplied = ["", *bibcodes, *(f" {code.lower()} " for code in bibcodes)]
+        abstracts = writer.fetch_missing_abstracts(supplied)
+        assert abstracts == {code: f"Abstract for {code}" for code in bibcodes}
+        assert [code for batch in requests for code in batch] == bibcodes
+        assert len(requests) == (count + 1999) // 2000
+    finally:
+        client.close()

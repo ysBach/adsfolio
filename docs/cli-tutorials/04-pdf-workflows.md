@@ -527,8 +527,9 @@ Dry-run (no ADS queries, no files written):
 adsfolio pdf obsidian ~/Papers
 ```
 
-Apply — fetches any missing abstracts from ADS in one batched query, caches them into the
-central catalog, and writes the notes:
+Apply — fetches missing abstracts from ADS in POST batches of up to 2,000
+bibcodes, caches them in the central catalog, and writes the notes. Bibcodes
+travel in the request body, so large libraries do not need long query URLs:
 
 ```bash
 adsfolio pdf obsidian ~/Papers --apply
@@ -546,6 +547,11 @@ Write notes to a separate folder instead of colocating them with the PDFs:
 ```bash
 adsfolio pdf obsidian ~/Papers --apply --notes-dir ~/Papers/notes
 ```
+
+For an Obsidian vault elsewhere, choose a folder such as
+`--notes-dir ~/MyVault/papers`. The `papers` subfolder keeps generated notes
+separate from notes that you write. It is optional and does not change ADS
+requests.
 
 ## Next
 

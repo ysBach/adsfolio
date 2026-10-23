@@ -3661,6 +3661,9 @@ class MainWindow(QMainWindow):
             if not path.is_file():
                 raise ValueError(f"This PDF is no longer available at {path}.")
             snapshot = FileSnapshot.from_path(path)
+            # A same-size rewrite can keep every stat field on filesystems with
+            # coarse timestamps. The content digest detects that change.
+            opened_digest = sha256_file(path)
             record = self.registries[str(root)].find_file_by_current_path(
                 root, relative_path
             )
@@ -3676,7 +3679,10 @@ class MainWindow(QMainWindow):
                     raise ValueError(
                         "The PDF's catalog record changed. Reopen the details dialog."
                     )
-                if FileSnapshot.from_path(path) != snapshot:
+                if (
+                    FileSnapshot.from_path(path) != snapshot
+                    or sha256_file(path) != opened_digest
+                ):
                     raise ValueError(
                         "The PDF changed while this dialog was open. Reopen the details dialog."
                     )
@@ -3687,7 +3693,10 @@ class MainWindow(QMainWindow):
                 )
                 if latest is None:
                     digest = sha256_file(path)
-                    if FileSnapshot.from_path(path) != snapshot:
+                    if (
+                        digest != opened_digest
+                        or FileSnapshot.from_path(path) != snapshot
+                    ):
                         raise ValueError(
                             "The PDF changed while saving. Reopen the details dialog."
                         )
