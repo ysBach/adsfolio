@@ -186,7 +186,8 @@ def test_catalog_move_reuses_path_with_only_missing_history(monkeypatch, tmp_pat
     catalog.close()
 
 
-def test_catalog_move_to_same_path_is_idempotent(monkeypatch, tmp_path):
+@pytest.mark.parametrize("source", ["paper.pdf", "./paper.pdf"])
+def test_catalog_move_to_same_path_is_idempotent(monkeypatch, tmp_path, source):
     catalog = _catalog(monkeypatch, tmp_path)
     root = tmp_path / "library"
     catalog.observe_file(
@@ -197,11 +198,27 @@ def test_catalog_move_to_same_path_is_idempotent(monkeypatch, tmp_path):
         mtime_ns=20,
     )
 
-    assert catalog.move_file(root, "paper.pdf", "paper.pdf")
+    assert catalog.move_file(root, source, "paper.pdf")
+    assert not catalog._connection.in_transaction
     assert [record["relative_path"] for record in catalog.query_files(root=root)] == [
         "paper.pdf"
     ]
 
+    catalog.close()
+
+
+def test_catalog_move_collision_leaves_no_transaction(monkeypatch, tmp_path):
+    catalog = _catalog(monkeypatch, tmp_path)
+    root = tmp_path / "library"
+    for name, digest in (("source.pdf", "a" * 64), ("target.pdf", "b" * 64)):
+        catalog.observe_file(root, name, sha256=digest, size_bytes=10, mtime_ns=20)
+    before = catalog.query_files(root=root)
+
+    with pytest.raises(ValueError, match="already exists"):
+        catalog.move_file(root, "source.pdf", "target.pdf")
+
+    assert not catalog._connection.in_transaction
+    assert catalog.query_files(root=root) == before
     catalog.close()
 
 

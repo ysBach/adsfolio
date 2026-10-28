@@ -395,9 +395,10 @@ def test_unmodified_diagonal_wheel_preserves_both_movements(scrolling_table):
     view = scrolling_table
     horizontal, vertical = view.horizontalScrollBar(), view.verticalScrollBar()
     horizontal.setValue(1000)
-    vertical.setValue(10)
+    vertical.setValue((vertical.minimum() + vertical.maximum()) // 2)
     before_h = horizontal.value()
     before_v = vertical.value()
+    assert vertical.minimum() < before_v < vertical.maximum()
     send_wheel(
         view,
         angle=(120, -120),

@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.7.2 (2026-10-28)
+
+- Keep unchanged catalog paths free of write transactions. A refused move
+  also releases its transaction. Recursive identification can continue after
+  Windows normalizes two path spellings to the same path.
+- Start the diagonal-scroll test inside the available scrollbar range.
+  The test still requires horizontal and vertical movement.
+- Include all changes below. Versions 0.7.0 and 0.7.1 did not publish because
+  Windows release checks failed.
+
 ## 0.7.1 (2026-10-28)
 
 - Fix Windows imports and catalog recovery locking. Recovery now uses the

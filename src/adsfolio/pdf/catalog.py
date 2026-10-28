@@ -1318,14 +1318,16 @@ class PdfCatalog:
         record = self.get_file(root, relative_path)
         if record is None:
             return False
-        root_id = self._ensure_root(self._normalize_root(root))
         normalized_old_path = self._normalize_relative_path(relative_path)
         normalized_new_path = self._normalize_relative_path(new_relative_path)
         if normalized_old_path == normalized_new_path:
             return True
-        if self._active_location(root_id, normalized_new_path) is not None:
-            raise ValueError(f"Catalog location already exists: {normalized_new_path}")
         with self._connection:
+            root_id = self._ensure_root(self._normalize_root(root))
+            if self._active_location(root_id, normalized_new_path) is not None:
+                raise ValueError(
+                    f"Catalog location already exists: {normalized_new_path}"
+                )
             self._connection.execute(
                 """
                 UPDATE file_locations
