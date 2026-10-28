@@ -1,5 +1,73 @@
 # Changelog
 
+## 0.7.0 (2026-10-28)
+
+### Identify papers without changing PDF contents
+
+- **Check the actual PDF.** Identify, Rename, ADS refresh, and the watcher now
+  check readable identifiers against the provider record. File names and title
+  similarity alone cannot establish a match. Readable identifier conflicts
+  block changes. Existing records receive the same check before updates.
+- **Read more publisher metadata.** A complete labeled DOI in the PDF metadata
+  title now identifies the PDF. A DOI in Subject can also identify the PDF when
+  the first page repeats it and the metadata title matches the provider title.
+  A DOI mentioned in ordinary prose does not establish identity.
+- **Tolerate malformed optional XMP.** An unreadable XMP block no longer
+  invalidates a matching DOI from another source. ADSfolio records the parser
+  warning. It also reads declared DOI properties past unrelated undeclared
+  prefixes. Readable conflicting identifiers still block the match.
+- **Recover from a failed lookup.** Failed and unresolved notices now offer
+  **Open PDF** and **Update by ID…**. Identifier lookup fills publication fields
+  and applies saved Rename settings. It also works for an unregistered PDF.
+  **Enter Details…** remains an optional local fallback.
+- **Review an uncertain match explicitly.** A PDF without readable identity
+  evidence needs your review. The CLI accepts `--confirm-identity` with
+  `--relative-path` for one PDF. Stored confirmation applies only to the same
+  file contents and record. No confirmation overrides a readable conflict.
+
+### Replace PDFs and keep their history
+
+- Deleted PDFs no longer reserve active paths or block replacement filenames.
+  Watching updates the visible library after a deletion.
+- A verified replacement can rejoin one uniquely matching absent attachment.
+  It preserves notes, locked fields, and content history. Existing editions
+  remain separate. Ambiguous missing editions remain separate too.
+- Same-path updates, atomic replacements, and changes made while the app was
+  closed receive identity checks. A rename by ADSfolio does not repeat a lookup
+  for unchanged contents.
+- Automatic edition-merge prompts now require a shared identifier. You can
+  still select two PDFs and start a merge explicitly.
+
+### Read the library state
+
+- The status column distinguishes an ADS link, usable local metadata, and
+  a PDF that needs identification. A changed PDF shows a warning marker.
+  Clicking the marker selects the PDF and opens its detail pane.
+- **N_author** and **Citations** show saved counts. A blank means unknown.
+  A known citation count of zero appears as **0**.
+- Compact toolbar icons show their action and scope in tooltips. The Identify
+  badge counts catalogued PDFs that need an ADS lookup across the library.
+- Discrete horizontal mouse-wheel scrolling now uses the same bounded step
+  as Shift scrolling. Ordinary vertical scrolling and smooth trackpad input
+  retain their native behavior.
+
+### Export PDF annotations to Obsidian
+
+- Export now includes highlights, underlines, strikeouts, squiggles, and text
+  comments in a managed **PDF annotations** section.
+- Repeated export updates that section while preserving other note text.
+  Unchanged notes keep their modification time. `--force` regenerates the
+  entire note and replaces manual edits.
+- Export skips unreadable PDFs, invalid section markers, and notes that change
+  during export. PDF contents remain unchanged.
+
+### Documentation
+
+- The guides now explain identity evidence, automatic lookup settings, and
+  recovery through **Open PDF** and **Update by ID…**.
+- `AGENTS.md` requires the ADHD and ASD-STE100 skills for documentation,
+  docstrings, responses, and release notes.
+
 ## 0.6.3 (2026-10-23)
 
 ### Merging PDF editions

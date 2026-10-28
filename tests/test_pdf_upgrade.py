@@ -21,6 +21,18 @@ class _SearchStub:
         return self.mapping.get(q, SearchResult(num_found=0, start=0, docs=[]))
 
 
+def _own_id_pdf(path, arxiv, tag):
+    from pypdf import PdfWriter
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    writer = PdfWriter()
+    writer.add_blank_page(width=72, height=72)
+    writer.add_metadata({"/Title": f"fixture {tag}", "/arXiv": f"arXiv:{arxiv}"})
+    with path.open("wb") as handle:
+        writer.write(handle)
+    return path
+
+
 def _sidecar_entry(**overrides):
     base = {
         "bibcode": "2024arXiv240112345B",
@@ -90,14 +102,17 @@ def test_check_published_version_uses_alternate_bibcode():
 def test_upgrade_pdf_apply_overwrite_with_backup_and_unported_file(
     tmp_path, monkeypatch
 ):
-    current_path = tmp_path / "paper.pdf"
-    current_path.write_bytes(b"%PDF-arxiv")
-    downloaded_path = tmp_path / "2025ApJ...123..456A.pdf"
-    downloaded_path.write_bytes(b"%PDF-official")
-    ported_path = tmp_path / "2025ApJ...123..456A__ported.pdf"
-    ported_path.write_bytes(b"%PDF-ported")
+    library = tmp_path / "library"
+    library.mkdir()
+    current_path = _own_id_pdf(library / "paper.pdf", "2401.12345", "arxiv")
+    scratch_pdf = _own_id_pdf(
+        tmp_path / "scratch" / "2025ApJ...123..456A.pdf", "2401.12345", "official"
+    )
+    ported_path = _own_id_pdf(
+        tmp_path / "scratch" / "ported.pdf", "2401.12345", "ported"
+    )
 
-    sidecar = Sidecar(tmp_path)
+    sidecar = Sidecar(library)
     sidecar.upsert_file("paper.pdf", _sidecar_entry(current_filename="paper.pdf"))
     sidecar.save()
 
@@ -120,7 +135,7 @@ def test_upgrade_pdf_apply_overwrite_with_backup_and_unported_file(
     )
     client = SimpleNamespace(
         search=search,
-        download_pdf=lambda bibcode, output_dir: downloaded_path,
+        download_pdf=lambda bibcode, output_dir: scratch_pdf,
     )
     upgrader = PdfUpgrader(client)
 
@@ -137,6 +152,7 @@ def test_upgrade_pdf_apply_overwrite_with_backup_and_unported_file(
     )
 
     backup_dir = tmp_path / "backup"
+    ported_bytes = ported_path.read_bytes()
     result = upgrader.upgrade_pdf(
         sidecar=sidecar,
         original_filename="paper.pdf",
@@ -147,7 +163,7 @@ def test_upgrade_pdf_apply_overwrite_with_backup_and_unported_file(
     )
 
     assert result.status == "upgraded"
-    assert current_path.read_bytes() == b"%PDF-ported"
+    assert current_path.read_bytes() == ported_bytes
     assert (backup_dir / "paper.pdf").exists()
 
     updated = sidecar.get_file("paper.pdf")
@@ -159,7 +175,7 @@ def test_upgrade_pdf_apply_overwrite_with_backup_and_unported_file(
     assert updated["annotations_ported"] == 1
     assert updated["annotations_failed"] == 1
     assert updated["unported_annotations_file"]
-    assert (tmp_path / updated["unported_annotations_file"]).exists()
+    assert (library / updated["unported_annotations_file"]).exists()
 
 
 def test_batch_upgrade_processes_only_arxiv_entries(tmp_path):

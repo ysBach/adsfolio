@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any
 from ..formatting import html_to_text
 from .cli_common import is_resolved_record
 from .files import sha256_file
+from .identity import IDENTITY_KEY, IdentityValidationError, assert_mutation_allowed
 from .readiness import METADATA_SHA256_KEY, metadata_ready
 from .sidecar import Sidecar
 from .tracked_move import move_tracked_file
@@ -51,7 +52,113 @@ _NONDECOMPOSABLE_LATIN_ASCII = str.maketrans(
     }
 )
 
-__all__ = ["DEFAULT_NONBIBCODE_SCHEME", "DEFAULT_SCHEME", "PdfRenamer"]
+__all__ = [
+    "DEFAULT_NONBIBCODE_SCHEME",
+    "DEFAULT_SCHEME",
+    "PdfRenamer",
+    "identity_view",
+    "verify_record_identity",
+]
+
+
+def identity_view(record: Mapping[str, Any]) -> dict[str, Any]:
+    """Flatten a catalog or sidecar record into one metadata mapping.
+
+    Nested ``metadata`` values are overridden by top-level record fields,
+    matching how readiness checks read the same record.
+    """
+    nested = record.get("metadata")
+    view: dict[str, Any] = dict(nested) if isinstance(nested, Mapping) else {}
+    view.update((key, value) for key, value in record.items() if key != "metadata")
+    return view
+
+
+def cached_provider_document(
+    state: Any, record: Mapping[str, Any]
+) -> Mapping[str, Any] | None:
+    """Return the cached raw ADS document for a record's primary Bibcode.
+
+    Only the primary Bibcode is looked up, so a secondary identifier that a
+    record happens to list cannot select another paper's document. Returns
+    None when the state has no registry or the document is not cached.
+    """
+    registry = getattr(state, "registry", None)
+    lookup = getattr(registry, "find_ads_document_by_bibcode", None)
+    if lookup is None:
+        return None
+    bibcode = identity_view(record).get("bibcode")
+    if isinstance(bibcode, (list, tuple)):
+        bibcode = bibcode[0] if bibcode else ""
+    bibcode = str(bibcode or "").strip()
+    return lookup(bibcode) if bibcode else None
+
+
+def verify_record_identity(
+    pdf_path: Path,
+    record: Mapping[str, Any],
+    *,
+    sha256: str | None = None,
+    manual_confirmation: bool = False,
+    provider_document: Mapping[str, Any] | None = None,
+    state: Any = None,
+) -> dict[str, Any]:
+    """Check that a stored record is proven to describe the PDF's bytes.
+
+    Parameters
+    ----------
+    pdf_path : Path
+        PDF that a write or rename would affect.
+    record : Mapping[str, Any]
+        Catalog or sidecar record, flat or with nested ``metadata``.
+    sha256 : str, optional
+        Digest the proof must be tied to. Defaults to the record's digest.
+    manual_confirmation : bool, optional
+        Set only for an explicit, user-reviewed confirmation of an unknown
+        identity. A known conflict is never overridden.
+    provider_document : Mapping[str, Any], optional
+        Authoritative raw ADS or provider document for the record. When
+        omitted, a valid stored proof is checked first. Otherwise, the cached
+        ADS document for the record's primary Bibcode is used when available.
+    state : Sidecar or CentralPdfRegistryState, optional
+        Catalog state used to look up the cached document.
+
+    Returns
+    -------
+    dict[str, Any]
+        Identity proof to store under ``IDENTITY_KEY``.
+
+    Raises
+    ------
+    IdentityValidationError
+        If the identity is conflicting or cannot be independently verified.
+    """
+    view = identity_view(record)
+    expected = sha256 or str(view.get("sha256") or "").strip() or None
+    proof = view.get(IDENTITY_KEY)
+    if (
+        provider_document is None
+        and isinstance(proof, Mapping)
+        and proof.get("status") in {"verified", "manual_confirmed"}
+    ):
+        try:
+            return assert_mutation_allowed(
+                Path(pdf_path),
+                view,
+                expected_sha256=expected,
+                manual_confirmation=manual_confirmation,
+            )
+        except IdentityValidationError:
+            # An invalid stored proof grants nothing; use ordinary validation.
+            pass
+    if provider_document is None and state is not None:
+        provider_document = cached_provider_document(state, view)
+    return assert_mutation_allowed(
+        Path(pdf_path),
+        view,
+        expected_sha256=expected,
+        manual_confirmation=manual_confirmation,
+        provider_document=provider_document,
+    )
 
 
 def _resolve_rename_template(template: str, metadata: Mapping[str, Any]) -> str:
@@ -69,6 +176,7 @@ class PdfRenamer:
     def __init__(self, client: "ADSClient | None" = None):
         self.client = client
         self.logger = logging.getLogger(__name__)
+        self.identity_refused: dict[str, str] = {}
 
     def sanitize_filename(self, name: str, max_bytes: int = 240) -> str:
         """Normalize a filename to a filesystem-safe form."""
@@ -317,8 +425,13 @@ class PdfRenamer:
         If both move directories are supplied, resolved files below
         ``move_resolved_from`` are placed in ``move_resolved_to`` after the
         new filename is rendered. Non-ADS records are renamed in place.
+
+        Records whose identity is not proven by the PDF itself are skipped,
+        including in a dry run. Their tracked names and reasons are kept in
+        ``identity_refused`` until the next call.
         """
         self._validate_author_limits(max_authors, authors_when_truncated)
+        self.identity_refused = {}
         plans: list[tuple[str, str]] = []
         for original_name, metadata in sidecar.files.items():
             if not (is_resolved_record(dict(metadata)) or metadata_ready(metadata)):
@@ -342,6 +455,17 @@ class PdfRenamer:
                         "Skipping rename due to hash mismatch: %s", source_path
                     )
                     continue
+
+            try:
+                verify_record_identity(
+                    source_path, metadata, sha256=stored_sha or None, state=sidecar
+                )
+            except (IdentityValidationError, OSError) as exc:
+                self.logger.warning(
+                    "Skipping rename; identity not verified: %s: %s", source_path, exc
+                )
+                self.identity_refused[str(current_name)] = str(exc)
+                continue
 
             effective_template = _resolve_rename_template(template, metadata)
             new_name = self.render(
@@ -411,6 +535,8 @@ class PdfRenamer:
                     f"File content hash mismatch for {source}: "
                     f"expected {stored_sha}, got {actual_sha}"
                 )
+
+        verify_record_identity(source, metadata, sha256=stored_sha or None, state=state)
 
         effective_template = _resolve_rename_template(template, metadata)
         destination_directory = (

@@ -4,8 +4,16 @@ from __future__ import annotations
 
 from typing import Any
 
-from PySide6.QtCore import QByteArray, QEvent, QObject, QRectF, QSize, Qt
-from PySide6.QtGui import QIcon, QPainter, QPalette, QPixmap
+from PySide6.QtCore import QByteArray, QEvent, QObject, QRect, QRectF, QSize, Qt
+from PySide6.QtGui import (
+    QAction,
+    QFont,
+    QFontMetrics,
+    QIcon,
+    QPainter,
+    QPalette,
+    QPixmap,
+)
 from PySide6.QtSvg import QSvgRenderer
 from PySide6.QtWidgets import QLabel, QToolButton, QWidget
 
@@ -22,6 +30,15 @@ _PATHS = {
         f'<circle cx="{x}" cy="{y}" r="1"/>' for x in (9, 15) for y in (5, 12, 19)
     ),
     "refresh": '<path d="M20 9a8 8 0 1 0 0 6M20 3v6h-6"/>',
+    # Magnifier with a check: look up and confirm publication details.
+    "identify": '<circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3M8 11l2 2 4-4"/>',
+    # Text field with a cursor: change a file name.
+    "rename": '<path d="M5 4h1a3 3 0 0 1 3 3 3 3 0 0 1 3-3h1M13 20h-1a3 3 0 0 1-3-3 '
+    "3 3 0 0 1-3 3H5M5 16H4a2 2 0 0 1-2-2v-4a2 2 0 0 1 2-2h1M13 8h7a2 2 0 0 1 2 2v4"
+    'a2 2 0 0 1-2 2h-7M9 7v10"/>',
+    # Refresh arrow around a star: refresh records from ADS, not the local scan.
+    "ads_refresh": '<path d="M20 9a8 8 0 1 0 0 6M20 3v6h-6"/>'
+    '<path d="m12 8.5 1 2.5 2.5 1-2.5 1-1 2.5-1-2.5-2.5-1 2.5-1z"/>',
     "open": '<path d="M14 3h7v7M21 3 10 14M10 5H5a2 2 0 0 0-2 2v12'
     'a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-5"/>',
     "folder": '<path d="M3 7V5a2 2 0 0 1 2-2h5l2 3h7a2 2 0 0 1 2 2v2'
@@ -155,3 +172,104 @@ class RoundIconButton(QToolButton):
             "QToolButton:hover { background: palette(alternate-base); }"
             "QToolButton:pressed { background: palette(midlight); }"
         )
+
+
+class ActionIconBinder(QObject):
+    """Keep vector icons on actions matched to a widget's palette.
+
+    Qt renders action icons once, so a palette change would leave them in the
+    old colors. The binder renders them again whenever `widget` changes palette.
+    """
+
+    def __init__(self, widget: QWidget) -> None:
+        super().__init__(widget)
+        self._widget = widget
+        self._icons: list[tuple[QAction, str]] = []
+        widget.installEventFilter(self)
+
+    def bind(self, action: QAction, name: str) -> None:
+        """Give `action` the vector icon `name` and keep it current."""
+        self._icons.append((action, name))
+        action.setIcon(vector_icon(name, self._widget))
+
+    def eventFilter(self, watched: QObject, event: QEvent) -> bool:
+        """Render action icons again after a palette change."""
+        if watched is self._widget and event.type() == QEvent.PaletteChange:
+            for action, name in self._icons:
+                action.setIcon(vector_icon(name, self._widget))
+        return False
+
+
+class BadgeToolButton(QToolButton):
+    """Tool button that draws a count badge in its top-right corner.
+
+    The badge shows the exact count. Its width is measured from the font, and
+    the button grows just enough that the badge stays over the right half of
+    the icon and never covers the left half. An empty badge draws nothing and
+    leaves the button at its normal size.
+    """
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._badge_text = ""
+
+    @property
+    def badge_text(self) -> str:
+        """Return the text drawn in the badge, or an empty string."""
+        return self._badge_text
+
+    def set_badge(self, count: int | None) -> None:
+        """Show `count` in the badge, or hide it when `count` is `None` or 0."""
+        text = "" if count is None or count <= 0 else str(count)
+        if text != self._badge_text:
+            self._badge_text = text
+            self.updateGeometry()
+            self.update()
+
+    def _badge_font(self) -> QFont:
+        """Return the small bold font used for badge digits."""
+        font = QFont(self.font())
+        font.setPointSizeF(max(1.0, self.font().pointSizeF() * 0.75))
+        font.setBold(True)
+        return font
+
+    def _badge_size(self) -> QSize:
+        """Return the badge size measured from the digits' font metrics."""
+        metrics = QFontMetrics(self._badge_font())
+        height = metrics.height()
+        width = metrics.horizontalAdvance(self._badge_text) + height // 2
+        return QSize(max(width, height), height)
+
+    def _widened(self, size: QSize) -> QSize:
+        """Return `size` widened so the badge leaves the icon's left half visible."""
+        if not self._badge_text:
+            return size
+        badge = self._badge_size()
+        return QSize(max(size.width(), 2 * (badge.width() + 1)), size.height())
+
+    def sizeHint(self) -> QSize:
+        """Return the normal size, widened only when the badge needs room."""
+        return self._widened(super().sizeHint())
+
+    def minimumSizeHint(self) -> QSize:
+        """Return the minimum size, widened only when the badge needs room."""
+        return self._widened(super().minimumSizeHint())
+
+    def paintEvent(self, event: Any) -> None:
+        """Draw the button, then the badge in the highlight colors."""
+        super().paintEvent(event)
+        if not self._badge_text:
+            return
+        size = self._badge_size()
+        rect = QRect(self.width() - size.width() - 1, 1, size.width(), size.height())
+        group = QPalette.Active if self.isEnabled() else QPalette.Disabled
+        palette = self.palette()
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing, True)
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(palette.color(group, QPalette.Highlight))
+        painter.drawRoundedRect(rect, size.height() / 2, size.height() / 2)
+        painter.setPen(palette.color(group, QPalette.HighlightedText))
+        painter.setFont(self._badge_font())
+        painter.drawText(rect, Qt.AlignCenter, self._badge_text)
+        painter.end()

@@ -32,6 +32,14 @@ from .identify_settings import (
     RECOMMENDED_IDENTIFY_STRATEGIES,
     IdentifyStrategy,
 )
+from .identity import (
+    IDENTITY_KEY,
+    IdentityConflictError,
+    IdentityValidationError,
+    assert_mutation_allowed,
+    extract_pdf_own_identity,
+    target_identity,
+)
 from .upgrade_utils import _extract_doi_resolver_path, _normalize_doi
 
 DOI_PATTERN = re.compile(r"\b10\.\d{4,9}/[-._;()/:A-Z0-9]+", re.IGNORECASE)
@@ -292,6 +300,9 @@ class PdfIdentifier:
         self.client = client
         self.logger = logger or logging.getLogger(__name__)
         self.suppress_parser_warnings = suppress_parser_warnings
+        # Files whose candidate record was rejected by identity validation,
+        # keyed by path. Callers must not move or overwrite these files.
+        self.identity_failures: dict[Path, IdentityValidationError] = {}
 
     def compute_sha256(self, pdf_path: Path) -> str:
         """Compute SHA-256 for duplicate detection."""
@@ -1170,8 +1181,18 @@ class PdfIdentifier:
         doc: Mapping[str, Any],
         pdf_path: Path,
         sha256: str | None = None,
+        *,
+        manual_confirmation: bool = False,
     ) -> dict[str, Any]:
-        digest = sha256 if sha256 else self.compute_sha256(pdf_path)
+        """Build a library record, after checking the PDF is the paper in `doc`.
+
+        Raises
+        ------
+        IdentityConflictError
+            The PDF's own identifiers contradict `doc`.
+        UnverifiedIdentityError
+            The PDF does not confirm `doc` and `manual_confirmation` is false.
+        """
         bibcode = self._first_scalar(doc.get("bibcode"))
         is_ads = bool(bibcode)
         now = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
@@ -1179,7 +1200,7 @@ class PdfIdentifier:
         record: dict[str, Any] = {
             "bibcode": bibcode,
             "doi": self._first_scalar(doc.get("doi")),
-            "sha256": digest,
+            "sha256": "",
             "title": self._as_list(doc.get("title")),
             "author": self._as_list(doc.get("author")),
             "year": self._first_scalar(doc.get("year")),
@@ -1190,11 +1211,18 @@ class PdfIdentifier:
             "publisher": self._first_scalar(doc.get("publisher")),
             "current_filename": Path(pdf_path).name,
             "identified_at": now,
-            "_adsfolio_metadata_sha256": digest,
+            "_adsfolio_metadata_sha256": "",
         }
         for field in ("identifier", "alternate_bibcode"):
             if doc.get(field):
                 record[field] = self._as_list(doc[field])
+        extra_dois = [
+            str(doi)
+            for doi in self._as_list(doc.get("doi"))[1:]
+            if str(doi) not in record.get("identifier", [])
+        ]
+        if extra_dois:
+            record["identifier"] = [*record.get("identifier", []), *extra_dois]
         if is_ads:
             record["status"] = "resolved"
         else:
@@ -1204,12 +1232,65 @@ class PdfIdentifier:
                 "doi": record["doi"],
                 "identified_at": now,
             }
+        # Validate the projection that will be stored, against the full
+        # provider document, so the proof matches the stored identifiers.
+        provenance = assert_mutation_allowed(
+            pdf_path,
+            record,
+            expected_sha256=sha256 or None,
+            manual_confirmation=manual_confirmation,
+            provider_document=doc,
+        )
+        record["sha256"] = provenance["sha256"]
+        record["_adsfolio_metadata_sha256"] = provenance["sha256"]
+        record[IDENTITY_KEY] = provenance
         return record
 
     @staticmethod
     def _normalized_title(value: str) -> str:
         """Return a case- and punctuation-insensitive title key."""
         return re.sub(r"[^\w]+", "", str(value).casefold(), flags=re.UNICODE)
+
+    def extract_arxiv_from_first_page(self, pdf_path: Path) -> str | None:
+        """Return the PDF's own arXiv identifier if it states exactly one."""
+        ids = extract_pdf_own_identity(pdf_path).arxiv_ids
+        return next(iter(ids)) if len(ids) == 1 else None
+
+    def query_docs_for_arxiv_ids(
+        self,
+        arxiv_ids: list[str],
+        ads_documents_callback: AdsDocumentsCallback | None = None,
+    ) -> dict[str, dict[str, Any] | None]:
+        """Resolve arXiv identifiers through ADS ``identifier:"arXiv:ID"``.
+
+        An identifier maps to a document only if exactly one returned document
+        carries that arXiv identifier among its own aliases.
+        """
+        resolved: dict[str, dict[str, Any] | None] = {i: None for i in arxiv_ids}
+        if self.client is None:
+            return resolved
+        for chunk in self._chunked(sorted(resolved), self.MAX_BATCH_TERMS):
+            query = " OR ".join(
+                f'identifier:"arXiv:{escape_query_phrase(i)}"' for i in chunk
+            )
+            result = self.client.search.query(
+                q=query, fl=self.SEARCH_FIELDS, rows=min(max(len(chunk) * 5, 10), 2000)
+            )
+            documents = list(result.docs)
+            if ads_documents_callback is not None:
+                ads_documents_callback(documents)
+            for arxiv_id in chunk:
+                owners = {
+                    self._first_scalar(doc.get("bibcode")): doc
+                    for doc in documents
+                    if arxiv_id in target_identity(doc).arxiv_ids
+                }
+                owners.pop("", None)
+                if len(owners) == 1:
+                    resolved[arxiv_id] = next(iter(owners.values()))
+                elif owners:
+                    self.logger.info("Ambiguous ADS match for arXiv:%s", arxiv_id)
+        return resolved
 
     def _extract_strategy_candidates(
         self,
@@ -1220,6 +1301,7 @@ class PdfIdentifier:
     ) -> dict[Path, Any]:
         """Extract candidates for one configured strategy."""
         extractors: dict[IdentifyStrategy, Callable[[Path], Any]] = {
+            IdentifyStrategy.FIRST_PAGE_ARXIV: self.extract_arxiv_from_first_page,
             IdentifyStrategy.FILENAME_BIBCODE: lambda path: (
                 self.extract_bibcode_from_filename(path.name)
             ),
@@ -1583,6 +1665,8 @@ class PdfIdentifier:
         }:
             normalized = _normalize_doi(str(candidate))
             return ("doi", normalized) if normalized else None
+        if strategy is IdentifyStrategy.FIRST_PAGE_ARXIV:
+            return ("arxiv", str(candidate))
         if strategy is IdentifyStrategy.STRUCTURED_FILENAME:
             return ("structured", self._parsed_filename_hint_key(candidate))
         normalized = self._normalized_title(str(candidate))
@@ -1602,7 +1686,22 @@ class PdfIdentifier:
         providers: Sequence[DoiProvider] = DEFAULT_DOI_PROVIDERS,
     ) -> tuple[dict[Path, dict[str, Any]], list[Path]]:
         ads_enabled = DoiProvider.ADS in providers
-        if strategy in {
+        if strategy is IdentifyStrategy.FIRST_PAGE_ARXIV:
+            pending = sorted(
+                {
+                    str(value)
+                    for value in candidates.values()
+                    if ("arxiv", str(value)) not in candidate_cache
+                }
+            )
+            docs = (
+                self.query_docs_for_arxiv_ids(pending, ads_documents_callback)
+                if pending and ads_enabled and allow_network_lookup
+                else dict.fromkeys(pending)
+            )
+            for key, doc in docs.items():
+                candidate_cache[("arxiv", key)] = doc
+        elif strategy in {
             IdentifyStrategy.FILENAME_BIBCODE,
             IdentifyStrategy.PDF_METADATA_BIBCODE,
             IdentifyStrategy.FIRST_PAGE_BIBCODE,
@@ -1669,11 +1768,21 @@ class PdfIdentifier:
             if doc is None:
                 unresolved.append(path)
                 continue
-            record = self.build_record(
-                doc,
-                path,
-                sha256=sha256_by_path.get(path) if sha256_by_path else None,
-            )
+            try:
+                record = self.build_record(
+                    doc,
+                    path,
+                    sha256=sha256_by_path.get(path) if sha256_by_path else None,
+                )
+            except IdentityValidationError as exc:
+                self.logger.warning("Rejected identification of %s: %s", path.name, exc)
+                if not isinstance(
+                    self.identity_failures.get(path), IdentityConflictError
+                ):
+                    self.identity_failures[path] = exc
+                unresolved.append(path)
+                continue
+            self.identity_failures.pop(path, None)
             record["resolution_strategy"] = strategy.value
             resolved[path] = record
         return resolved, unresolved
@@ -1722,6 +1831,7 @@ class PdfIdentifier:
         if not ordered_paths:
             return results
 
+        self.identity_failures.clear()
         pending = list(ordered_paths)
         candidate_cache: dict[tuple[str, Any], dict[str, Any] | None] = {}
         for strategy in strategies:

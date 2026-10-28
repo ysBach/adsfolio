@@ -56,7 +56,11 @@ the folder where your browser saves papers.
 
 Renames use the saved settings from the **Rename** window. Set the filename
 template there first, and check it with **Preview**. The watcher processes
-only PDFs that arrive after watching starts. Existing PDFs stay unchanged. A ``●``
+only PDFs that arrive after watching starts. Existing PDFs stay unchanged.
+Automatic renaming requires a verified
+[PDF identity check](gui.md#pdf-identity-checks). A new PDF that states no
+arXiv ID or DOI, or one that contradicts the found record, keeps its name and
+shows a warning. A ``●``
 beside the library name shows an active watcher. See
 [Watching library roots](gui.md#watching-library-roots) for details. For the
 command line, see [Tutorial 4, step 4](cli-tutorials/04-pdf-workflows.md#4-watch-a-folder-for-new-pdfs).

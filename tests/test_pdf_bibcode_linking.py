@@ -7,9 +7,10 @@ from pathlib import Path
 
 import pytest
 from click.testing import CliRunner
+from pypdf import PdfWriter
 
 from adsfolio.config import Config
-from adsfolio.pdf.cli import _clear_invalid_bibcode, _refresh_file_metadata, pdf
+from adsfolio.pdf.cli import _refresh_file_metadata, pdf
 from adsfolio.pdf.files import sha256_file
 from adsfolio.pdf.identifier import PdfIdentifier
 from adsfolio.pdf.readiness import METADATA_SHA256_KEY, METADATA_STALE_KEY
@@ -20,6 +21,16 @@ from adsfolio.pdf.registry import (
 )
 
 BIBCODE = "2017MNRAS.469S.443B"
+DOI = "10.1000/linking.test"
+
+
+def write_pdf(path: Path) -> None:
+    """Write a PDF whose own DocInfo names DOI, so ADS data for it can be proven."""
+    writer = PdfWriter()
+    writer.add_blank_page(width=72, height=72)
+    writer.add_metadata({"/DOI": DOI})
+    with path.open("wb") as handle:
+        writer.write(handle)
 
 
 def register(
@@ -27,7 +38,7 @@ def register(
 ) -> dict:
     root.mkdir(parents=True, exist_ok=True)
     path = root / name
-    path.write_bytes(b"%PDF paper content")
+    write_pdf(path)
     digest = sha256_file(path)
     metadata = {
         "bibcode": BIBCODE,
@@ -72,6 +83,7 @@ def test_metadata_only_bulk_refresh_includes_pending_bibcodes_without_renaming(
         return {
             BIBCODE: {
                 "bibcode": BIBCODE,
+                "doi": [DOI],
                 "title": ["ADS title"],
                 "author": ["ADS author"],
                 "abstract": "ADS abstract",
@@ -103,23 +115,6 @@ def test_metadata_only_bulk_refresh_includes_pending_bibcodes_without_renaming(
         assert METADATA_SHA256_KEY not in after["metadata"]
 
 
-@pytest.mark.parametrize("status,locked", [("unresolved", False), ("resolved", True)])
-def test_missing_lookup_keeps_pending_or_locked_bibcode(
-    tmp_path: Path, status: str, locked: bool
-) -> None:
-    root = tmp_path / "library"
-    register(root)
-    registry = PdfRegistry(root)
-    metadata = registry.find_file_by_current_path(root, "paper.pdf")["metadata"]
-    metadata[LOCKED_METADATA_FIELDS_KEY] = ["bibcode"] if locked else []
-    metadata.pop("status", None)
-    registry.replace_file_metadata(root, "paper.pdf", metadata)
-    registry.update_file_status(root, "paper.pdf", status)
-    assert _clear_invalid_bibcode(registry, root, BIBCODE) == 0
-    assert registry.find_file_by_current_path(root, "paper.pdf")["bibcode"] == BIBCODE
-    registry.close()
-
-
 @pytest.mark.parametrize("mismatch", [False, True])
 def test_metadata_only_refresh_does_not_validate_stale_or_wrong_digest(
     tmp_path: Path, mismatch: bool
@@ -148,7 +143,8 @@ def test_pending_lookup_uses_cache_without_ads_token(
     register(root)
     with closing(open_registry_state(root)) as state:
         state.registry.upsert_ads_documents(
-            [{"bibcode": BIBCODE, "abstract": "Cached abstract"}], source="test"
+            [{"bibcode": BIBCODE, "doi": [DOI], "abstract": "Cached abstract"}],
+            source="test",
         )
     monkeypatch.setattr(
         "adsfolio.pdf.cli._get_client",

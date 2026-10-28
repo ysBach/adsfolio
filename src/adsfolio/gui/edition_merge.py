@@ -83,25 +83,17 @@ def edition_role(record: Mapping[str, Any]) -> str:
 def edition_candidates(
     arrival: Mapping[str, Any], records: Sequence[dict[str, Any]]
 ) -> tuple[tuple[dict[str, Any], ...], bool]:
-    """Find identifier-linked files, or offer an explicitly unlinked edition picker."""
+    """Find other records with a shared bibcode, DOI, or version-free arXiv ID."""
     path = arrival.get("current_path") or arrival.get("relative_path")
-    others = [
+    identifiers = edition_identifiers(arrival)
+    linked = tuple(
         record
         for record in records
         if (record.get("current_path") or record.get("relative_path")) != path
         and not record.get("missing_at")
-    ]
-    identifiers = edition_identifiers(arrival)
-    linked = tuple(
-        record for record in others if identifiers & edition_identifiers(record)
+        and identifiers & edition_identifiers(record)
     )
-    if linked:
-        return linked, True
-    role = edition_role(arrival)
-    opposite = {"published": "preprint", "preprint": "published"}.get(role)
-    return tuple(
-        record for record in others if opposite and edition_role(record) == opposite
-    ), False
+    return linked, bool(linked)
 
 
 @dataclass(frozen=True)
@@ -134,7 +126,7 @@ class EditionMergeDialog(QDialog):
         self.explanation = QLabel(
             "These files share an ADS, DOI, or arXiv identifier. Review which PDF supplies the pages."
             if request.linked
-            else "ADS has not supplied a shared identifier for these files. Select the matching editions yourself; no title-based match has been assumed.",
+            else "These files have no shared identifier in the available metadata. Continue only if they are editions of the same paper.",
             self,
         )
         self.explanation.setWordWrap(True)

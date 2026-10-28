@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-import adsfolio.gui.notifications as notifications
+from adsfolio.gui import notifications
 from adsfolio.gui.notifications import Notice, NoticeAction, NoticeBar
 
 
@@ -58,12 +58,16 @@ def test_notice_reveal_uses_platform_label(monkeypatch, qtbot, platform, label) 
     assert bar.reveal_button.accessibleName() == label
 
 
-def test_notice_reveal_tracks_displayed_path_without_dismissal(qtbot, tmp_path) -> None:
+@pytest.mark.parametrize("action", ["reveal", "open"])
+def test_notice_reveal_tracks_displayed_path_without_dismissal(
+    qtbot, tmp_path, action
+) -> None:
     """Reveal follows replacements and the queue without running other actions."""
     bar = NoticeBar()
     qtbot.addWidget(bar)
     revealed, actions, dismissals = [], [], []
-    bar.reveal_requested.connect(revealed.append)
+    getattr(bar, f"{action}_requested").connect(revealed.append)
+    button = getattr(bar, f"{action}_button")
     bar.action_requested.connect(actions.append)
     bar.dismiss_requested.connect(dismissals.append)
     first = tmp_path / "first.pdf"
@@ -71,27 +75,60 @@ def test_notice_reveal_tracks_displayed_path_without_dismissal(qtbot, tmp_path) 
     second = tmp_path / "second.pdf"
     bar.enqueue(Notice("first", "New PDF", reveal_path=first))
     bar.enqueue(Notice("second", "Another PDF", reveal_path=second))
-    assert not bar.reveal_button.isHidden()
-    assert bar.reveal_button.toolTip() == str(first)
-    bar.reveal_button.click()
+    assert not button.isHidden()
+    assert button.toolTip() == str(first)
+    button.click()
     assert bar.queued_keys() == ("first", "second")
 
     bar.enqueue(Notice("first", "No match", reveal_path=moved))
-    assert bar.reveal_button.toolTip() == str(moved)
-    bar.reveal_button.click()
+    assert button.toolTip() == str(moved)
+    button.click()
     bar.dismiss("first")
-    assert bar.reveal_button.toolTip() == str(second)
-    bar.reveal_button.click()
+    assert button.toolTip() == str(second)
+    button.click()
     bar.dismiss("second")
-    assert bar.reveal_button.isHidden()
-    bar.reveal_button.click()
+    assert button.isHidden()
+    button.click()
 
     bar.enqueue(Notice("general", "General notification"))
-    assert bar.reveal_button.isHidden()
-    bar.reveal_button.click()
+    assert button.isHidden()
+    button.click()
     assert revealed == [first, moved, second]
     assert actions == []
     assert dismissals == []
+
+
+def test_failed_notice_offers_identifier_lookup_without_retry_or_manual_entry(
+    qtbot,
+) -> None:
+    bar = NoticeBar()
+    qtbot.addWidget(bar)
+    updates, retries, edits = [], [], []
+    payload = object()
+    bar.update_by_id_requested.connect(updates.append)
+    bar.action_requested.connect(retries.append)
+    bar.manual_entry_requested.connect(edits.append)
+    bar.enqueue(
+        Notice(
+            "failed",
+            "Lookup failed",
+            action=NoticeAction.RETRY,
+            payload=payload,
+            manual_entry=True,
+            update_by_id=True,
+        )
+    )
+    bar.enqueue(Notice("next", "Another notice"))
+    assert bar.update_by_id_button.text() == "Update by ID…"
+    assert not bar.update_by_id_button.isHidden()
+    bar.update_by_id_button.click()
+    assert updates == [payload]
+    assert retries == edits == []
+    assert bar.queued_keys() == ("failed", "next")
+    bar.dismiss("failed")
+    assert bar.update_by_id_button.isHidden()
+    bar.update_by_id_button.click()
+    assert updates == [payload]
 
 
 def test_failed_notice_offers_manual_entry_beside_retry(qtbot) -> None:

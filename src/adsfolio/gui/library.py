@@ -13,11 +13,21 @@ from urllib.parse import quote
 from ..citations import CitationFormatter, CitationStyle, citation_preference_key
 from ..formatting import html_to_text
 from ..pdf.arxiv import arxiv_id
-from ..pdf.readiness import METADATA_SHA256_KEY, METADATA_STALE_KEY
+from ..pdf.cli_common import is_resolved_record
+from ..pdf.readiness import METADATA_SHA256_KEY, METADATA_STALE_KEY, metadata_ready
+from ..pdf.registry import stored_count
 
 ISO8601_TIMESTAMP_FORMAT = "iso8601"
 STALE_VERIFICATION_TOOLTIP = (
     "PDF changed since identification. Run Identify to verify it again."
+)
+SAVED_AUTHOR_COUNT_TOOLTIP = (
+    "Saved author count from metadata or a manual edit. "
+    "It is a snapshot, not a live ADS value."
+)
+SAVED_CITATION_COUNT_TOOLTIP = (
+    "Saved citation count from metadata or a manual edit. "
+    "It is a snapshot, not a live ADS value."
 )
 
 
@@ -39,6 +49,43 @@ def verification_stale(record: dict[str, Any]) -> bool:
         or metadata.get(METADATA_STALE_KEY)
         or (expected_sha and expected_sha != record.get("sha256"))
     )
+
+
+class ResolutionState(str, Enum):
+    """How far a library record has been identified, for the status marker."""
+
+    CHANGED = "changed"
+    ADS_LINKED = "ads_linked"
+    LOCAL_METADATA = "local_metadata"
+    UNRESOLVED = "unresolved"
+
+
+def resolution_state(record: dict[str, Any]) -> ResolutionState:
+    """Classify a record for the status marker and its tooltip.
+
+    A changed PDF wins over every other state. Otherwise a record with a saved
+    ADS link is `ADS_LINKED`. A record without one but with current,
+    rename-ready manual or external metadata is `LOCAL_METADATA`. Everything
+    else, including partly entered manual metadata, is `UNRESOLVED`. This only
+    changes presentation; stored status and rename readiness are unchanged.
+    """
+    if verification_stale(record):
+        return ResolutionState.CHANGED
+    if is_resolved_record(record):
+        return ResolutionState.ADS_LINKED
+    if metadata_ready(record):
+        return ResolutionState.LOCAL_METADATA
+    return ResolutionState.UNRESOLVED
+
+
+def format_count(record: dict[str, Any], key: str) -> str:
+    """Return a saved count as text, or an empty string when it is unknown.
+
+    Zero is shown as `"0"`. The same value drives numeric sorting in
+    ``PdfRegistry.query_files()``.
+    """
+    count = stored_count(record, key)
+    return "" if count is None else str(count)
 
 
 class LibraryView(str, Enum):
@@ -238,8 +285,20 @@ class FileQuery:
 BASE_COLUMNS: tuple[Column, ...] = (
     Column("title", "Title", 380, _title),
     Column("author", "First author", 160, _author),
+    Column(
+        "author_count",
+        "N_author",
+        70,
+        lambda record: format_count(record, "author_count"),
+    ),
     Column("year", "Year", 60, lambda record: _text(record, "year")),
     Column("pub", "Journal", 120, _pub),
+    Column(
+        "citation_count",
+        "Citations",
+        75,
+        lambda record: format_count(record, "citation_count"),
+    ),
     Column("bibcode", "Bibcode", 190, lambda record: _text(record, "bibcode")),
     Column("arxiv", "arXiv", 120, arxiv_id),
     Column("status", "", 22, lambda record: _text(record, "status")),
@@ -312,10 +371,13 @@ __all__ = [
     "Column",
     "FileQuery",
     "LibraryView",
+    "ResolutionState",
     "ads_url",
     "arxiv_id",
     "arxiv_url",
     "build_columns",
+    "format_count",
     "format_first_seen",
     "format_mtime",
+    "resolution_state",
 ]

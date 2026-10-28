@@ -8,6 +8,7 @@ from pathlib import Path
 from threading import Event
 
 import pytest
+from pypdf import PdfWriter
 from PySide6.QtCore import QItemSelectionModel, QObject, Qt, Signal
 from PySide6.QtWidgets import (
     QDialog,
@@ -42,6 +43,7 @@ class FakeWatchController(QObject):
     outcome = Signal(object)
     failed = Signal(object)
     paused = Signal(object)
+    reconciled = Signal(object)
 
     def __init__(self) -> None:
         super().__init__()
@@ -256,7 +258,9 @@ def test_failed_local_refresh_keeps_history_and_restores_controls(
 ) -> None:
     root = tmp_path / "library"
     root.mkdir()
-    (root / "paper.pdf").write_bytes(b"paper")
+    writer = PdfWriter()
+    writer.add_blank_page(width=300, height=400)
+    writer.write(root / "paper.pdf")
     window, _controller, _saves = _window_factory(
         monkeypatch, qtbot, GuiConfig(roots=[RootEntry(str(root))])
     )
@@ -368,8 +372,10 @@ def test_ads_toolbar_reuses_selected_and_identifier_refresh(
     monkeypatch.setattr(
         QInputDialog, "getText", lambda *args, **kwargs: (identifier, True)
     )
+    monkeypatch.setattr(QMessageBox, "question", lambda *args: QMessageBox.Yes)
     window.update_selected_ads_action.trigger()
 
+    assert "--confirm-identity" in calls[1][0]
     assert calls[0][0][:2] == ("--bibcode", "B1")
     assert calls[1][0][:2] == ("--identifier", identifier)
     assert "--relative-path" in calls[0][0]
@@ -1046,8 +1052,9 @@ def test_unresolved_watch_notice_identifies_current_file_path(
     ["detected", "worker_failure", "unresolved", "failed", "resolved", "renamed"],
 )
 @pytest.mark.parametrize("relocated", [False, True])
+@pytest.mark.parametrize("file_action", ["reveal", "open"])
 def test_file_notice_reveals_its_path_independently_of_selection(
-    monkeypatch, qtbot, tmp_path, notice_source, relocated
+    monkeypatch, qtbot, tmp_path, notice_source, relocated, file_action
 ) -> None:
     """Every file notice reveals its PDF, including a processing destination."""
     root, other = tmp_path / "library", tmp_path / "other"
@@ -1082,13 +1089,24 @@ def test_file_notice_reveals_its_path_independently_of_selection(
     window._select_root(other)
     window.table.setCurrentIndex(window.model.index(0, 0))
     revealed = []
-    monkeypatch.setattr(
-        "adsfolio.gui.main_window.reveal_in_file_manager",
-        lambda path: revealed.append(path) or True,
-    )
-    assert not window.notice_bar.reveal_button.isHidden()
+    if file_action == "reveal":
+        monkeypatch.setattr(
+            "adsfolio.gui.main_window.reveal_in_file_manager",
+            lambda path: revealed.append(path) or True,
+        )
+    else:
+        window.config.pdf_viewer_command = "preferred-viewer"
 
-    window.notice_bar.reveal_button.click()
+        def open_pdf(path, viewer):
+            assert viewer == "preferred-viewer"
+            revealed.append(path)
+            return True
+
+        monkeypatch.setattr("adsfolio.gui.main_window.open_path", open_pdf)
+    button = getattr(window.notice_bar, f"{file_action}_button")
+    assert not button.isHidden()
+
+    button.click()
 
     assert revealed == [destination]
     assert window.notice_bar.queued_keys() == (window._watch_notice_key(event),)
@@ -1100,8 +1118,9 @@ def test_file_notice_reveals_its_path_independently_of_selection(
     assert destination.read_bytes() == b"Notified PDF"
 
 
+@pytest.mark.parametrize("file_action", ["reveal", "open"])
 def test_notice_reveal_failure_reports_path_and_keeps_notice(
-    monkeypatch, qtbot, tmp_path
+    monkeypatch, qtbot, tmp_path, file_action
 ) -> None:
     """An unsuccessful file-manager launch leaves the notification available."""
     root = tmp_path / "library"
@@ -1114,13 +1133,19 @@ def test_notice_reveal_failure_reports_path_and_keeps_notice(
         _event(root, controller.session_id(root)), state=WatchState.UNRESOLVED
     )
     controller.outcome.emit(WatchOutcome(event))
-    monkeypatch.setattr(
-        "adsfolio.gui.main_window.reveal_in_file_manager", lambda path: False
+    if file_action == "reveal":
+        monkeypatch.setattr(
+            "adsfolio.gui.main_window.reveal_in_file_manager", lambda path: False
+        )
+    else:
+        monkeypatch.setattr("adsfolio.gui.main_window.open_path", lambda *args: False)
+
+    getattr(window.notice_bar, f"{file_action}_button").click()
+
+    prefix = (
+        "Could not reveal file" if file_action == "reveal" else "Could not open PDF"
     )
-
-    window.notice_bar.reveal_button.click()
-
-    assert window.status.currentMessage() == f"Could not reveal file: {event.path}"
+    assert window.status.currentMessage() == f"{prefix}: {event.path}"
     assert window.notice_bar.queued_keys() == (window._watch_notice_key(event),)
 
 
@@ -1152,18 +1177,23 @@ def test_dismissing_failed_notice_does_not_dismiss_terminal_worker_state(
 
 
 @pytest.mark.parametrize("relocated", [False, True])
+@pytest.mark.parametrize("notice_source", ["unresolved", "failed", "worker_failure"])
+@pytest.mark.parametrize("tracked", [False, True])
 @pytest.mark.parametrize(
     "selection", ["same", "other", "filtered", "changes_in_prompt"]
 )
 def test_unresolved_notice_identifies_its_pdf_independently_of_selection(
-    monkeypatch, qtbot, tmp_path, relocated, selection
+    monkeypatch, qtbot, tmp_path, relocated, selection, notice_source, tracked
 ) -> None:
     """Manual identification uses the warning's library and current PDF path."""
     root, other = tmp_path / "library", tmp_path / "other"
     root.mkdir()
     other.mkdir()
     source = root / "new-0.pdf"
-    source.write_bytes(b"unidentified PDF")
+    writer = PdfWriter()
+    writer.add_blank_page(width=300, height=400)
+    if tracked:
+        writer.write(source)
     (other / "selected.pdf").write_bytes(b"another PDF")
     window, controller, _saves = _window_factory(
         monkeypatch,
@@ -1172,20 +1202,33 @@ def test_unresolved_notice_identifies_its_pdf_independently_of_selection(
     )
     window._select_root(root)
     window.watch_current_action.trigger()
+    if not tracked:
+        writer.write(source)
+    source_bytes = source.read_bytes()
     event = replace(
-        _event(root, controller.session_id(root)), state=WatchState.UNRESOLVED
+        _event(root, controller.session_id(root)),
+        state=WatchState.UNRESOLVED
+        if notice_source == "unresolved"
+        else WatchState.FAILED,
     )
     destination = root / "unresolved" / source.name if relocated else source
     state = CentralPdfRegistryState(window.registries[str(root)])
     if relocated:
         destination.parent.mkdir()
         source.rename(destination)
-        assert state.set_current_filename(source.name, "unresolved/" + source.name)
+        if tracked:
+            assert state.set_current_filename(source.name, "unresolved/" + source.name)
     relative_path = destination.relative_to(root).as_posix()
     record = state.registry.find_file_by_current_path(root, relative_path)
-    controller.outcome.emit(WatchOutcome(event, destination=destination))
-    assert window.notice_bar.action_button.text() == "Identify…"
-    assert not window.notice_bar.action_button.isHidden()
+    if notice_source == "worker_failure":
+        event = replace(event, path=destination)
+        controller.failed.emit(
+            WatchFailure(root, event.session_id, "Lookup failed", event)
+        )
+    else:
+        controller.outcome.emit(WatchOutcome(event, destination=destination))
+    assert window.notice_bar.update_by_id_button.text() == "Update by ID…"
+    assert not window.notice_bar.update_by_id_button.isHidden()
     assert window.notice_bar.dismiss_button.text() == "Dismiss"
     if selection == "other":
         window._select_root(other)
@@ -1206,10 +1249,11 @@ def test_unresolved_notice_identifies_its_pdf_independently_of_selection(
         return " 10.1234/manual ", True
 
     monkeypatch.setattr(QInputDialog, "getText", enter_identifier)
+    monkeypatch.setattr(QMessageBox, "question", lambda *args: QMessageBox.Yes)
     jobs: list[FakeAdsRefreshJob] = []
     _ads_refresh_job_factory(monkeypatch, jobs)
 
-    window.notice_bar.action_button.click()
+    window.notice_bar.update_by_id_button.click()
 
     assert len(jobs) == 1
     job = jobs[0]
@@ -1217,6 +1261,8 @@ def test_unresolved_notice_identifies_its_pdf_independently_of_selection(
     assert job.working_directory == root.resolve()
     assert _argv_value(job.argv, "--identifier") == "10.1234/manual"
     assert _argv_value(job.argv, "--relative-path") == relative_path
+    record = state.registry.find_file_by_current_path(root, relative_path)
+    assert record is not None
     assert window._refresh_selection_id == record["location_id"]
     assert window._ambiguous_ads_match_context == (
         root.resolve(),
@@ -1227,37 +1273,157 @@ def test_unresolved_notice_identifies_its_pdf_independently_of_selection(
     assert controller.process_calls == []
     assert controller.retry_calls == []
     assert window.notice_bar.queued_keys() == ()
-    assert destination.read_bytes() == b"unidentified PDF"
+    assert "--confirm-identity" in job.argv
+    assert destination.read_bytes() == source_bytes
     assert (other / "selected.pdf").read_bytes() == b"another PDF"
     job.finished.emit(0)
     assert controller.resume_calls == [root.resolve()]
 
 
 @pytest.mark.parametrize("answer", [("", True), ("10.1234/manual", False)])
+@pytest.mark.parametrize("tracked", [False, True])
 def test_unresolved_notice_remains_when_manual_identification_is_cancelled(
-    monkeypatch, qtbot, tmp_path, answer
+    monkeypatch, qtbot, tmp_path, answer, tracked
 ) -> None:
     """Cancel or empty input retains the warning without starting work."""
     root = tmp_path / "library"
     root.mkdir()
-    (root / "new-0.pdf").write_bytes(b"paper")
+    if tracked:
+        (root / "new-0.pdf").write_bytes(b"paper")
     window, controller, _saves = _window_factory(
         monkeypatch, qtbot, GuiConfig(roots=[RootEntry(str(root))])
     )
     window.watch_current_action.trigger()
+    if not tracked:
+        (root / "new-0.pdf").write_bytes(b"paper")
     event = replace(
         _event(root, controller.session_id(root)), state=WatchState.UNRESOLVED
     )
     controller.outcome.emit(WatchOutcome(event))
     monkeypatch.setattr(QInputDialog, "getText", lambda *args, **kwargs: answer)
 
-    window.notice_bar.action_button.click()
+    window.notice_bar.update_by_id_button.click()
 
     assert window.notice_bar.queued_keys() == (window._watch_notice_key(event),)
     assert window.job is None
     assert controller.pause_calls == []
     assert controller.process_calls == []
     assert controller.retry_calls == []
+    if not tracked:
+        assert (
+            window.registries[str(root)].find_file_by_current_path(root, "new-0.pdf")
+            is None
+        )
+
+
+@pytest.mark.parametrize("tracked", [False, True])
+def test_failed_notice_identifier_lookup_fills_metadata_and_renames_pdf(
+    monkeypatch, qtbot, tmp_path, tracked
+) -> None:
+    """One identifier fills provider metadata without manual bibliographic entry."""
+    from click.testing import CliRunner
+
+    from adsfolio.cli.commands import main
+    from adsfolio.pdf.identifier import PdfIdentifier
+
+    root = tmp_path / "library"
+    root.mkdir()
+    pdf = root / "new-0.pdf"
+    writer = PdfWriter()
+    writer.add_blank_page(width=300, height=400)
+    if tracked:
+        writer.write(pdf)
+    window, controller, _ = _window_factory(
+        monkeypatch, qtbot, GuiConfig(roots=[RootEntry(str(root))])
+    )
+    window.watch_current_action.trigger()
+    if not tracked:
+        writer.write(pdf)
+    original = pdf.read_bytes()
+    code = "2024MNRAS.529.3521P"
+    provider = {
+        "bibcode": code,
+        "title": ["Provider supplied title"],
+        "author": ["Example, A."],
+        "year": "2024",
+        "doi": ["10.1000/example"],
+    }
+    event = replace(_event(root, controller.session_id(root)), state=WatchState.FAILED)
+    controller.outcome.emit(WatchOutcome(event, message="No readable identifier"))
+    monkeypatch.setattr(QInputDialog, "getText", lambda *args, **kwargs: (code, True))
+    monkeypatch.setattr(QMessageBox, "question", lambda *args: QMessageBox.Yes)
+    monkeypatch.setattr("adsfolio.pdf.cli._get_client", lambda ctx: object())
+    monkeypatch.setattr(
+        PdfIdentifier,
+        "query_docs_for_bibcodes",
+        lambda self, bibcodes, **kwargs: {code: provider},
+    )
+    jobs = []
+    _ads_refresh_job_factory(monkeypatch, jobs)
+
+    window.notice_bar.update_by_id_button.click()
+
+    assert len(jobs) == 1
+    job = jobs[0]
+    args = job.argv[job.argv.index("pdf") :]
+    result = CliRunner().invoke(main, args)
+    assert result.exit_code == 0, result.output
+    records = window.registries[str(root)].query_files()
+    assert len(records) == 1
+    saved = records[0]
+    assert saved["bibcode"] == code
+    assert saved["metadata"]["title"] == provider["title"]
+    assert saved["metadata"]["author"] == provider["author"]
+    assert saved["metadata"]["year"] == provider["year"]
+    destination = root / saved["current_path"]
+    assert destination != pdf
+    assert destination.read_bytes() == original
+    assert controller.retry_calls == []
+    job.finished.emit(result.exit_code)
+    assert window.job is None
+    assert window.notice_bar.queued_keys() == ()
+
+
+@pytest.mark.parametrize("review", ["declined", "file_changed"])
+def test_untracked_notice_does_not_register_a_cancelled_or_changed_pdf(
+    monkeypatch, qtbot, tmp_path, review
+) -> None:
+    root = tmp_path / "library"
+    root.mkdir()
+    window, controller, _ = _window_factory(
+        monkeypatch, qtbot, GuiConfig(roots=[RootEntry(str(root))])
+    )
+    window.watch_current_action.trigger()
+    pdf = root / "new-0.pdf"
+    writer = PdfWriter()
+    writer.add_blank_page(width=300, height=400)
+    writer.write(pdf)
+    event = replace(_event(root, controller.session_id(root)), state=WatchState.FAILED)
+    controller.outcome.emit(WatchOutcome(event, message="No readable identifier"))
+    monkeypatch.setattr(
+        QInputDialog, "getText", lambda *args, **kwargs: ("10.1000/manual", True)
+    )
+    warnings = []
+    monkeypatch.setattr(QMessageBox, "warning", lambda *args: warnings.append(args[2]))
+
+    def answer(*args):
+        if review == "file_changed":
+            pdf.write_bytes(pdf.read_bytes() + b"\n% External update")
+            return QMessageBox.Yes
+        return QMessageBox.No
+
+    monkeypatch.setattr(QMessageBox, "question", answer)
+
+    window.notice_bar.update_by_id_button.click()
+
+    assert window.job is None
+    assert (
+        window.registries[str(root)].find_file_by_current_path(root, pdf.name) is None
+    )
+    assert window.notice_bar.queued_keys() == (window._watch_notice_key(event),)
+    assert controller.pause_calls == []
+    if review == "file_changed":
+        assert "PDF changed during review" in warnings[0]
 
 
 @pytest.mark.parametrize("unavailable", ["missing", "stale_session", "busy"])
@@ -1293,7 +1459,7 @@ def test_unresolved_notice_does_not_identify_unavailable_pdf(
     else:
         window.job = FakeJob()
 
-    window.notice_bar.action_button.click()
+    window.notice_bar.update_by_id_button.click()
 
     assert window.notice_bar.queued_keys() == (window._watch_notice_key(event),)
     assert controller.pause_calls == []
@@ -2295,6 +2461,7 @@ def test_guided_cached_lookup_requests_token_only_when_cli_requires_it(
         "paper.pdf",
         {
             "bibcode": "2017MNRAS.469S.443B",
+            "doi": ["10.1234/cached"],
             "status": "unresolved",
             "sha256": hashlib.sha256(content).hexdigest(),
         },
@@ -2372,8 +2539,9 @@ def test_guided_cli_steps_preserve_cached_metadata_and_content_history(
 
     root = tmp_path / "library"
     root.mkdir()
-    content = b"paper content"
-    (root / "paper.pdf").write_bytes(content)
+    from pdf_identity_fixtures import write_pdf
+
+    content = write_pdf(root / "paper.pdf", doi="10.1234/cached")
     registry = PdfRegistry(root)
     state = CentralPdfRegistryState(registry)
     state.upsert_file(
@@ -2393,6 +2561,7 @@ def test_guided_cli_steps_preserve_cached_metadata_and_content_history(
         [
             {
                 "bibcode": "2017MNRAS.469S.443B",
+                "doi": ["10.1234/cached"],
                 "title": ["ADS title"],
                 "author": ["ADS author"],
                 "year": "2017",
@@ -2521,3 +2690,58 @@ def test_watch_menu_label_shows_its_ampersand(monkeypatch, qtbot):
     window, _, _ = _window_factory(monkeypatch, qtbot, GuiConfig())
     # Qt hides a single "&" as a shortcut marker; the label must escape it.
     assert window.auto_process_action.iconText() == "Automatically Identify & Rename"
+
+
+def test_watch_reconciliation_removes_deleted_pdf_from_visible_library(
+    monkeypatch, qtbot, tmp_path
+):
+    root = tmp_path / "library"
+    root.mkdir()
+    path = root / "obsolete.pdf"
+    path.write_bytes(b"obsolete PDF")
+    window, controller, _ = _window_factory(
+        monkeypatch, qtbot, GuiConfig(roots=[RootEntry(str(root))])
+    )
+    assert window.model.rowCount() == 1
+    path.unlink()
+    window.registries[str(root)].catalog.mark_missing_locations(root, set())
+    controller.reconciled.emit(root)
+    qtbot.waitUntil(lambda: window.model.rowCount() == 0)
+    assert window._selected_record() is None
+
+
+def test_watch_refresh_follows_selected_attachment_to_its_replacement(
+    monkeypatch, qtbot, tmp_path
+):
+    from test_pdf_replacement import Identifier, make_pdf, register
+
+    from adsfolio.pdf.renamer import PdfRenamer
+    from adsfolio.pdf.watcher import PdfWatcher
+
+    root = tmp_path / "library"
+    root.mkdir()
+    old = root / "old.pdf"
+    make_pdf(old)
+    window, controller, _ = _window_factory(
+        monkeypatch, qtbot, GuiConfig(roots=[RootEntry(str(root))])
+    )
+    state = CentralPdfRegistryState(window.registries[str(root)])
+    original = register(state, old, notes="Keep")
+    window.refresh()
+    state = CentralPdfRegistryState(window.registries[str(root)])
+    window.table.setCurrentIndex(window.model.index(0, 0))
+    old.unlink()
+    new = root / "new.pdf"
+    make_pdf(new, revision="replacement")
+    PdfWatcher(Identifier(None), PdfRenamer()).process_new_pdf(
+        new, state, scheme="new", apply=True
+    )
+    controller.reconciled.emit(root)
+    qtbot.waitUntil(
+        lambda: (
+            window._selected_record() is not None
+            and window._selected_record()["current_path"] == "new.pdf"
+        )
+    )
+    assert window._selected_record()["attachment_id"] == original["attachment_id"]
+    assert window._selected_record()["metadata"]["notes"] == "Keep"

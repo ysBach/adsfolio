@@ -25,9 +25,11 @@ from .identifier import (
     extract_first_page_text_pdf,
 )
 from .identify_settings import IdentifyStrategy
+from .identity import IDENTITY_KEY, IdentityValidationError
 from .prefetch import PublicationProfile, load_profile, query_publications
 from .readiness import metadata_ready
 from .registry import open_registry_state
+from .renamer import verify_record_identity
 from .tracked_move import move_tracked_file, resolved_file_directory
 from .upgrade_utils import _normalize_doi
 
@@ -36,6 +38,7 @@ LOGGER = logging.getLogger(__name__)
 __all__ = [
     "IdentifyWorkflowHelpers",
     "build_cached_candidate_lookup",
+    "build_checked_record",
     "cached_ads_record",
     "print_cache_status",
     "run_identify",
@@ -84,22 +87,33 @@ def cached_ads_record(
     bibcode: str = "",
     sha256: str = "",
 ) -> tuple[bool, dict[str, Any] | None]:
-    """Return cache-hit status and a unique folder-cache identify record."""
+    """Return cache-hit status and a unique folder-cache identify record.
+
+    A cached document that the PDF does not prove is reported as a cache hit
+    without a record, and the reason is kept in ``identifier.identity_failures``.
+    """
     if bibcode:
         document = registry.find_ads_document_by_bibcode(bibcode)
         if document is not None:
-            return True, identifier.build_record(
-                document,
-                path,
-                sha256=sha256 or None,
-            )
+            return True, build_checked_record(identifier, document, path, sha256)
 
     candidates = registry.find_ads_documents_by_doi(doi) if doi else []
     if not candidates:
         return False, None
     if len(candidates) != 1:
         return True, None
-    return True, identifier.build_record(candidates[0], path, sha256=sha256 or None)
+    return True, build_checked_record(identifier, candidates[0], path, sha256)
+
+
+def build_checked_record(
+    identifier: Any, document: dict[str, Any], path: Path, sha256: str
+) -> dict[str, Any] | None:
+    """Build a record, or note why the PDF does not prove `document`."""
+    try:
+        return identifier.build_record(document, path, sha256=sha256 or None)
+    except IdentityValidationError as exc:
+        identifier.identity_failures[path] = exc
+        return None
 
 
 def build_cached_candidate_lookup(
@@ -243,6 +257,7 @@ def run_identify(
     pending_sha256: dict[Path, str] = {}
     pending_original_names: dict[Path, str] = {}
     unresolved_paths: list[Path] = []
+    identity_skipped: dict[Path, str] = {}
     unresolved_first_page_text_cache: dict[Path, str] = {}
     first_page_preview_cache: dict[Path, str] = {}
     scan_started = perf_counter()
@@ -375,6 +390,17 @@ def run_identify(
             sidecar_dirty = True
         elif existing is None:
             existing = sidecar.find_by_sha256(sha256)
+            if existing is not None and (
+                is_resolved_record(existing[1]) or metadata_ready(existing[1])
+            ):
+                # A matching digest is not proof; the PDF must prove the record.
+                try:
+                    verify_record_identity(
+                        pdf_path, existing[1], sha256=sha256, state=sidecar
+                    )
+                except (IdentityValidationError, OSError) as exc:
+                    identity_skipped[pdf_path] = str(exc)
+                    continue
             if existing is not None:
                 original_name, record = existing
                 previous_path = sidecar_directory / str(
@@ -390,6 +416,24 @@ def run_identify(
         if existing is not None:
             original_name, record = existing
             if is_resolved_record(record) or metadata_ready(record):
+                try:
+                    proof = verify_record_identity(
+                        pdf_path, record, sha256=sha256, state=sidecar
+                    )
+                except (IdentityValidationError, OSError) as exc:
+                    # Keep the saved record and the file where they are.
+                    identity_skipped[pdf_path] = str(exc)
+                    continue
+                if IDENTITY_KEY not in record:
+                    sidecar.upsert_file(
+                        sidecar_key,
+                        {
+                            **record,
+                            "current_filename": sidecar_key,
+                            IDENTITY_KEY: proof,
+                        },
+                    )
+                    sidecar_dirty = True
                 if record.get("current_filename") != sidecar_key:
                     sidecar.set_current_filename(original_name, sidecar_key)
                     sidecar_dirty = True
@@ -531,6 +575,9 @@ def run_identify(
             f"{helpers.format_elapsed(perf_counter() - fallback_started)}."
         )
     apply_started = perf_counter()
+    identity_failed: dict[Path, IdentityValidationError] = dict(
+        identifier.identity_failures
+    )
     apply_progress = helpers.build_progress(
         total=len(pending_paths),
         desc="Apply results",
@@ -538,6 +585,24 @@ def run_identify(
     )
     for pdf_path in pending_paths:
         record = resolved_map.get(pdf_path)
+        if record is not None:
+            try:
+                record[IDENTITY_KEY] = verify_record_identity(
+                    pdf_path,
+                    record,
+                    sha256=pending_sha256[pdf_path],
+                    state=sidecar,
+                )
+            except (IdentityValidationError, OSError) as exc:
+                identity_skipped[pdf_path] = str(exc)
+                record = None
+                identity_failed[pdf_path] = exc
+        if record is None and pdf_path in identity_failed:
+            # Not proven is not the same as not found: no move, no upsert.
+            identity_skipped.setdefault(pdf_path, str(identity_failed[pdf_path]))
+            if apply_progress is not None:
+                apply_progress.update(1)
+            continue
         if record is None:
             unresolved += 1
             unresolved_path = pdf_path
@@ -671,6 +736,20 @@ def run_identify(
                     unresolved_paths,
                     ai_csv_path,
                 )
+                for path, failure in identifier.identity_failures.items():
+                    if path in unresolved_paths:
+                        identity_skipped.setdefault(path, str(failure))
+                verified_ai: dict[Path, dict[str, Any]] = {}
+                for path, record in ai_resolved.items():
+                    try:
+                        record[IDENTITY_KEY] = verify_record_identity(
+                            path, record, state=sidecar
+                        )
+                    except (IdentityValidationError, OSError) as exc:
+                        identity_skipped[path] = str(exc)
+                        continue
+                    verified_ai[path] = record
+                ai_resolved = verified_ai
                 if ai_resolved:
                     for path, record in ai_resolved.items():
                         sidecar_key = helpers.to_sidecar_key(path, sidecar_directory)
@@ -715,6 +794,11 @@ def run_identify(
         tracked = sidecar.find_by_current_filename(relative_path)
         if tracked is None or not is_resolved_record(tracked[1]):
             continue
+        try:
+            verify_record_identity(source, tracked[1], state=sidecar)
+        except (IdentityValidationError, OSError) as exc:
+            identity_skipped[source] = str(exc)
+            continue
         target = target_directory / source.name
         if target.exists():
             click.secho(
@@ -735,6 +819,13 @@ def run_identify(
     click.echo(f"Scanned directory: {directory}")
     click.echo(f"Resolved PDFs: {resolved}")
     click.echo(f"Unresolved PDFs: {unresolved}")
+    if identity_skipped:
+        click.secho(
+            f"Identity not verified (left unchanged): {len(identity_skipped)}",
+            fg="yellow",
+        )
+        for skipped_path, reason in sorted(identity_skipped.items()):
+            click.echo(f"  {skipped_path}: {reason}")
     if moved_resolved:
         click.echo(f"Resolved PDFs moved out of unresolved: {moved_resolved}")
     if (output_unresolved or planned_resolved) and not apply:

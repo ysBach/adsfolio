@@ -22,6 +22,7 @@ _UNSET = object()
 class IdentifyStrategy(str, Enum):
     """Supported evidence extraction strategies for PDF identification."""
 
+    FIRST_PAGE_ARXIV = "first_page_arxiv"
     FILENAME_BIBCODE = "filename_bibcode"
     FILENAME_DOI = "filename_doi"
     PDF_METADATA_BIBCODE = "pdf_metadata_bibcode"
@@ -36,6 +37,7 @@ class IdentifyStrategy(str, Enum):
 RECOMMENDED_IDENTIFY_STRATEGIES: tuple[IdentifyStrategy, ...] = tuple(IdentifyStrategy)
 
 IDENTIFY_STRATEGY_LABELS: Mapping[IdentifyStrategy, str] = {
+    IdentifyStrategy.FIRST_PAGE_ARXIV: "arXiv identifier stamped on first page",
     IdentifyStrategy.FILENAME_BIBCODE: "Bibcode in filename",
     IdentifyStrategy.FILENAME_DOI: "DOI in filename",
     IdentifyStrategy.PDF_METADATA_BIBCODE: "Bibcode in PDF metadata",

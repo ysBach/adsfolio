@@ -4,17 +4,28 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from pypdf import PdfWriter
 
 from adsfolio.config import Config
 from adsfolio.pdf.cli import (
     _ads_match_candidates,
     _citation_metrics_payload,
-    _clear_invalid_bibcode,
     _parse_ads_identifier,
     _refresh_bibcode_metadata,
     _refresh_file_metadata,
 )
+from adsfolio.pdf.files import sha256_file
 from adsfolio.pdf.registry import PdfRegistry
+
+
+def write_pdf(path: Path, doi: str) -> str:
+    """Write a PDF whose own DocInfo names doi; return its digest."""
+    writer = PdfWriter()
+    writer.add_blank_page(width=72, height=72)
+    writer.add_metadata({"/DOI": doi})
+    with path.open("wb") as handle:
+        writer.write(handle)
+    return sha256_file(path)
 
 
 @pytest.fixture(autouse=True)
@@ -74,11 +85,12 @@ def test_refresh_file_metadata_replaces_only_unlocked_ads_fields(
     tmp_path: Path,
 ) -> None:
     registry = PdfRegistry(tmp_path)
+    digest = write_pdf(tmp_path / "paper.pdf", "10.1000/new")
     registry.upsert_file(
         root=tmp_path,
         relative_path="paper.pdf",
         current_path="paper.pdf",
-        sha256="a" * 64,
+        sha256=digest,
         size_bytes=1,
         mtime_ns=2,
         status="unresolved",
@@ -96,7 +108,7 @@ def test_refresh_file_metadata_replaces_only_unlocked_ads_fields(
         {
             "bibcode": "2022StGal...5....4B",
             "title": ["ADS title"],
-            "doi": ["10.0/new"],
+            "doi": ["10.1000/new"],
             "abstract": "ADS abstract",
         },
     )
@@ -104,7 +116,7 @@ def test_refresh_file_metadata_replaces_only_unlocked_ads_fields(
     record = registry.find_file_by_relative_path(tmp_path, "paper.pdf")
     assert record is not None
     assert record["metadata"]["title"] == ["Manually corrected title"]
-    assert record["metadata"]["doi"] == ["10.0/new"]
+    assert record["metadata"]["doi"] == ["10.1000/new"]
     assert record["metadata"]["bibcode"] == "2022StGal...5....4B"
     assert record["status"] == "resolved"
 
@@ -113,11 +125,12 @@ def test_refresh_bibcode_metadata_updates_every_matching_file(tmp_path: Path) ->
     """A bulk ADS refresh repairs each file record for the same bibcode."""
     registry = PdfRegistry(tmp_path)
     for relative_path in ("first.pdf", "second.pdf"):
+        digest = write_pdf(tmp_path / relative_path, "10.1000/icarus")
         registry.upsert_file(
             root=tmp_path,
             relative_path=relative_path,
             current_path=relative_path,
-            sha256=relative_path,
+            sha256=digest,
             size_bytes=1,
             mtime_ns=2,
             status="resolved",
@@ -133,6 +146,7 @@ def test_refresh_bibcode_metadata_updates_every_matching_file(tmp_path: Path) ->
         "1996Icar..119..209L",
         {
             "bibcode": "1996Icar..119..209L",
+            "doi": ["10.1000/icarus"],
             "author": ["Lupishko, D. F.", "Mohamed, R. A."],
         },
     )
@@ -257,24 +271,3 @@ def test_parse_ads_identifier_keeps_publisher_urls_out_of_reference_queries() ->
     """An unsupported publisher URL stays an identifier, not journal coordinates."""
     value = "https://publisher.example/1992/42"
     assert _parse_ads_identifier(value) == ("bibcode", value)
-
-
-def test_clear_invalid_bibcode_keeps_pdf_tracking_row(tmp_path: Path) -> None:
-    """An invalid Bibcode is removed without deleting the local file record."""
-    registry = PdfRegistry(tmp_path)
-    registry.upsert_file(
-        root=tmp_path,
-        relative_path="paper.pdf",
-        current_path="paper.pdf",
-        sha256="a" * 64,
-        size_bytes=1,
-        mtime_ns=2,
-        status="resolved",
-        metadata={"bibcode": "1999.on.the.Flux.of", "title": ["Paper"]},
-    )
-
-    assert _clear_invalid_bibcode(registry, tmp_path, "1999.on.the.Flux.of") == 1
-    record = registry.find_file_by_relative_path(tmp_path, "paper.pdf")
-    assert record is not None
-    assert record["metadata"]["bibcode"] == ""
-    assert record["status"] == "unresolved"

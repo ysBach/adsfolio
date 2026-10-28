@@ -7,6 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 from click.testing import CliRunner
+from pdf_identity_fixtures import write_pdf
 
 from adsfolio.config import Config
 from adsfolio.pdf.cli import pdf
@@ -20,9 +21,9 @@ def library(tmp_path: Path, monkeypatch) -> SimpleNamespace:
     )
     root = tmp_path / "library"
     (root / "unresolved").mkdir(parents=True)
-    (root / "10.1234_first.pdf").write_bytes(b"%PDF-1.4 first")
-    (root / "10.1234_second.pdf").write_bytes(b"%PDF-1.4 second")
-    (root / "unresolved" / "10.1234_third.pdf").write_bytes(b"%PDF-1.4 third")
+    write_pdf(root / "10.1234_first.pdf", doi="10.1234/first")
+    write_pdf(root / "10.1234_second.pdf", doi="10.1234/second")
+    write_pdf(root / "unresolved" / "10.1234_third.pdf", doi="10.1234/third")
     looked_up: list[str] = []
 
     def crossref(doi: str):

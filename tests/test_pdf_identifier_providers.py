@@ -4,6 +4,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+from pypdf import PdfWriter
 
 from adsfolio.config import ADSError
 from adsfolio.pdf.doi_providers import (
@@ -15,9 +16,18 @@ from adsfolio.pdf.identifier import PdfIdentifier
 from adsfolio.pdf.identify_settings import IdentifyStrategy
 
 
+def _pdf(path: Path, doi: str) -> Path:
+    """Write a one-page PDF whose DocInfo names 'doi' as its own DOI."""
+    writer = PdfWriter()
+    writer.add_blank_page(width=200, height=200)
+    writer.add_metadata({"/DOI": doi})
+    with path.open("wb") as handle:
+        writer.write(handle)
+    return path
+
+
 def test_pdf_identifier_optional_client_without_token(tmp_path: Path):
-    pdf = tmp_path / "10.1038_sample.pdf"
-    pdf.write_bytes(b"%PDF-1.4 sample")
+    pdf = _pdf(tmp_path / "10.1038_sample.pdf", "10.1038/sample")
 
     identifier = PdfIdentifier(client=None)
     assert identifier.client is None
@@ -45,8 +55,7 @@ def test_pdf_identifier_optional_client_without_token(tmp_path: Path):
 
 
 def test_provider_order_crossref_before_ads(tmp_path: Path):
-    pdf = tmp_path / "10.1038_sample.pdf"
-    pdf.write_bytes(b"%PDF-1.4 sample")
+    pdf = _pdf(tmp_path / "10.1038_sample.pdf", "10.1038/sample")
 
     client = MagicMock()
     identifier = PdfIdentifier(client=client)
@@ -74,8 +83,7 @@ def test_provider_order_crossref_before_ads(tmp_path: Path):
 
 
 def test_provider_order_fallback_to_datacite_when_ads_misses(tmp_path: Path):
-    pdf = tmp_path / "10.5281_zenodo.1234.pdf"
-    pdf.write_bytes(b"%PDF-1.4 sample")
+    pdf = _pdf(tmp_path / "10.5281_zenodo.1234.pdf", "10.5281/zenodo.1234")
 
     client = MagicMock()
     # ADS search returns 0 documents
@@ -126,8 +134,7 @@ def test_disabling_ads_skips_bibcode_and_title_strategies(tmp_path: Path):
 
 
 def test_cache_lookup_does_not_bypass_disabled_ads(tmp_path: Path):
-    pdf = tmp_path / "10.1038_sample.pdf"
-    pdf.write_bytes(b"%PDF-1.4 sample")
+    pdf = _pdf(tmp_path / "10.1038_sample.pdf", "10.1038/sample")
 
     identifier = PdfIdentifier(client=None)
 
@@ -152,8 +159,7 @@ def test_cache_lookup_does_not_bypass_disabled_ads(tmp_path: Path):
 
 
 def test_external_rate_limit_propagates_without_negative_cache(tmp_path: Path):
-    pdf = tmp_path / "10.1038_sample.pdf"
-    pdf.write_bytes(b"%PDF-1.4 sample")
+    pdf = _pdf(tmp_path / "10.1038_sample.pdf", "10.1038/sample")
 
     identifier = PdfIdentifier(client=None)
 
@@ -170,8 +176,7 @@ def test_external_rate_limit_propagates_without_negative_cache(tmp_path: Path):
 
 
 def test_external_network_error_propagates_without_negative_cache(tmp_path: Path):
-    pdf = tmp_path / "10.1038_sample.pdf"
-    pdf.write_bytes(b"%PDF-1.4 sample")
+    pdf = _pdf(tmp_path / "10.1038_sample.pdf", "10.1038/sample")
 
     identifier = PdfIdentifier(client=None)
 
@@ -188,8 +193,7 @@ def test_external_network_error_propagates_without_negative_cache(tmp_path: Path
 
 
 def test_ads_error_propagates_when_queried(tmp_path: Path):
-    pdf = tmp_path / "10.1038_sample.pdf"
-    pdf.write_bytes(b"%PDF-1.4 sample")
+    pdf = _pdf(tmp_path / "10.1038_sample.pdf", "10.1038/sample")
 
     client = MagicMock()
     client.search.query.side_effect = ADSError("ADS server error")

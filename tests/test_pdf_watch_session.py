@@ -43,11 +43,16 @@ def test_watch_state_and_source_are_str_enum_subclasses():
     assert WatchSource.CREATED.value == "created"
 
 
-def test_preexisting_identity_remains_excluded_after_modification(tmp_path):
+def test_preexisting_identity_is_rearrival_only_when_content_facts_change(tmp_path):
     before = snapshot(tmp_path / "existing.pdf", device=1, inode=2, mtime_ns=3)
     session = WatchSession(Path(tmp_path), "session-1", [before])
+    assert session.observe(replace(before), WatchSource.MODIFIED) is None
     changed = replace(before, size_bytes=20, mtime_ns=4)
-    assert session.observe(changed, WatchSource.MODIFIED) is None
+    event = session.observe(changed, WatchSource.MODIFIED)
+    assert event is not None
+    assert event.identity.generation == 1
+    assert event.identity not in session.baseline
+    assert session.observe(changed, WatchSource.RECONCILE) is None
 
 
 def test_created_event_during_baseline_is_new_even_when_scan_sees_it(tmp_path):
@@ -125,9 +130,8 @@ def test_deterministic_terminal_and_retry_transitions(tmp_path):
     # Complete as FAILED
     assert session.complete(identity2, WatchState.FAILED).state is WatchState.FAILED
 
-    # Modified does not auto-retry FAILED
-    changed2 = replace(created2, size_bytes=250, mtime_ns=2500)
-    assert session.observe(changed2, WatchSource.MODIFIED) is None
+    # Unchanged facts do not auto-retry FAILED
+    assert session.observe(replace(created2), WatchSource.MODIFIED) is None
 
     # Explicit retry returns to DETECTED
     assert session.retry(identity2).state is WatchState.DETECTED
@@ -140,6 +144,7 @@ def test_deterministic_terminal_and_retry_transitions(tmp_path):
     assert session.observe(created2, WatchSource.RECONCILE) is None
 
     # Changed facts return DEFERRED to DETECTED
+    changed2 = replace(created2, size_bytes=250, mtime_ns=2500)
     assert session.observe(changed2, WatchSource.MODIFIED).state is WatchState.DETECTED
 
 
@@ -173,9 +178,27 @@ def test_begin_processing_and_completion_states(tmp_path):
     resolved_event = session.complete(identity, WatchState.RENAMED)
     assert resolved_event.state is WatchState.RENAMED
 
-    # Terminal state ignores subsequent modification
-    changed = replace(created, size_bytes=500, mtime_ns=5000)
-    assert session.observe(changed, WatchSource.MODIFIED) is None
+    # Terminal state ignores a modification event whose facts are unchanged
+    assert session.observe(replace(created), WatchSource.MODIFIED) is None
+
+
+def test_changed_terminal_or_failed_file_becomes_new_generation(tmp_path):
+    for state in (WatchState.RENAMED, WatchState.FAILED, WatchState.DISMISSED):
+        session = WatchSession(Path(tmp_path), "session-1")
+        created = snapshot(tmp_path / "paper.pdf", inode=30)
+        first = session.observe(created, WatchSource.CREATED)
+        assert first is not None
+        if state is WatchState.DISMISSED:
+            session.dismiss(first.identity)
+        else:
+            session.begin_processing(first.identity)
+            session.complete(first.identity, state)
+        changed = replace(created, size_bytes=500, mtime_ns=5000)
+        second = session.observe(changed, WatchSource.MODIFIED)
+        assert second is not None
+        assert second.identity.generation == 1
+        assert session.state(first.identity) is WatchState.STALE
+        assert session.state(second.identity) is WatchState.DETECTED
 
 
 def test_invalid_transitions_raise_value_error(tmp_path):
@@ -594,3 +617,127 @@ def test_processing_arrival_after_scan_boundary_survives_older_absent_scan(tmp_p
     assert session.state(event.identity) is WatchState.RESOLVED
     assert duplicate is None
     assert session.snapshot(event.identity) == arrived
+
+
+def _arrive(session, snap, source=WatchSource.CREATED):
+    event = session.observe(snap, source)
+    assert event is not None
+    return event
+
+
+def test_replacement_at_same_path_with_new_inode_is_new_arrival(tmp_path):
+    path = tmp_path / "paper.pdf"
+    old = snapshot(path, inode=10)
+    session = WatchSession(Path(tmp_path), "s", [old])
+    new = snapshot(path, inode=11, size_bytes=300, mtime_ns=9)
+    # Atomic replace reaches the session as a rename inside the root.
+    event = _arrive(session, new, WatchSource.MODIFIED)
+    assert event.identity.inode == 11
+    session.reconcile([new])
+    assert not session.is_baseline(old)
+
+
+def test_same_inode_changed_bytes_is_new_generation_then_quiet(tmp_path):
+    path = tmp_path / "paper.pdf"
+    session = WatchSession(Path(tmp_path), "s")
+    first = _arrive(session, snapshot(path, inode=12))
+    session.begin_processing(first.identity)
+    session.complete(first.identity, WatchState.RESOLVED)
+    changed = snapshot(path, inode=12, size_bytes=101, mtime_ns=2_000_000)
+    second = _arrive(session, changed, WatchSource.MODIFIED)
+    assert second.identity.generation == first.identity.generation + 1
+    assert session.observe(changed, WatchSource.RECONCILE) is None
+    assert session.reconcile([changed]) == []
+
+
+def test_delete_then_new_name_is_new_arrival(tmp_path):
+    old = snapshot(tmp_path / "old.pdf", inode=20)
+    session = WatchSession(Path(tmp_path), "s")
+    first = _arrive(session, old)
+    session.begin_processing(first.identity)
+    session.complete(first.identity, WatchState.RENAMED)
+    assert session.reconcile([]) == []
+    new = snapshot(tmp_path / "new.pdf", inode=21)
+    events = session.reconcile([new])
+    assert [e.path.name for e in events] == ["new.pdf"]
+
+
+def test_partial_copy_growth_does_not_emit_until_deferred_wakes(tmp_path):
+    path = tmp_path / "copy.pdf"
+    session = WatchSession(Path(tmp_path), "s")
+    first = _arrive(session, snapshot(path, inode=30, size_bytes=10))
+    grown = snapshot(path, inode=30, size_bytes=50, mtime_ns=5)
+    assert session.observe(grown, WatchSource.MODIFIED) is None
+    assert session.snapshot(first.identity) == grown
+    session.begin_processing(first.identity)
+    session.complete(first.identity, WatchState.DEFERRED)
+    done = snapshot(path, inode=30, size_bytes=90, mtime_ns=6)
+    woken = session.observe(done, WatchSource.MODIFIED)
+    assert woken is not None and woken.identity == first.identity
+    assert session.observe(done, WatchSource.RECONCILE) is None
+
+
+def test_change_during_processing_becomes_new_generation_on_complete(tmp_path):
+    path = tmp_path / "busy.pdf"
+    session = WatchSession(Path(tmp_path), "s")
+    first = _arrive(session, snapshot(path, inode=40))
+    session.begin_processing(first.identity)
+    changed = snapshot(path, inode=40, size_bytes=222, mtime_ns=7)
+    assert session.observe(changed, WatchSource.MODIFIED) is None
+    assert session.drain_followups() == []
+    session.complete(first.identity, WatchState.RENAMED)
+    (follow,) = session.drain_followups()
+    assert follow.identity.generation == first.identity.generation + 1
+    assert session.state(follow.identity) is WatchState.DETECTED
+    assert session.snapshot(follow.identity) == changed
+    assert session.drain_followups() == []
+
+
+def test_unchanged_observation_during_processing_has_no_followup(tmp_path):
+    path = tmp_path / "busy.pdf"
+    session = WatchSession(Path(tmp_path), "s")
+    first = _arrive(session, snapshot(path, inode=41))
+    session.begin_processing(first.identity)
+    assert session.observe(snapshot(path, inode=41), WatchSource.MODIFIED) is None
+    session.complete(first.identity, WatchState.RESOLVED)
+    assert session.drain_followups() == []
+
+
+def test_change_then_disappearance_during_processing_has_no_followup(tmp_path):
+    path = tmp_path / "gone.pdf"
+    session = WatchSession(Path(tmp_path), "s")
+    first = _arrive(session, snapshot(path, inode=42))
+    session.begin_processing(first.identity)
+    session.observe(snapshot(path, inode=42, size_bytes=5), WatchSource.MODIFIED)
+    session.reconcile([])
+    session.complete(first.identity, WatchState.RENAMED)
+    assert session.drain_followups() == []
+
+
+def test_self_rename_with_unchanged_facts_never_loops(tmp_path):
+    session = WatchSession(Path(tmp_path), "s")
+    first = _arrive(session, snapshot(tmp_path / "raw.pdf", inode=50))
+    session.begin_processing(first.identity)
+    session.complete(first.identity, WatchState.RENAMED)
+    renamed = snapshot(tmp_path / "Author+2020.pdf", inode=50)
+    for source in (WatchSource.MODIFIED, WatchSource.MOVED_IN, WatchSource.CREATED):
+        assert session.observe(renamed, source) is None
+    assert session.reconcile([renamed]) == []
+    assert session.snapshot(first.identity).path == renamed.path
+
+
+def test_baseline_file_renamed_with_unchanged_facts_is_quiet(tmp_path):
+    base = snapshot(tmp_path / "a.pdf", inode=60)
+    session = WatchSession(Path(tmp_path), "s", [base])
+    renamed = replace(base, path=tmp_path / "b.pdf")
+    assert session.observe(renamed, WatchSource.MODIFIED) is None
+    assert session.reconcile([renamed]) == []
+
+
+def test_baseline_file_changed_during_startup_scan_is_found_by_reconcile(tmp_path):
+    scanned = snapshot(tmp_path / "a.pdf", inode=61)
+    session = WatchSession.starting(Path(tmp_path), "s")
+    session.finish_baseline([scanned])
+    now = replace(scanned, size_bytes=999, mtime_ns=77)
+    (event,) = session.reconcile([now])
+    assert event.identity.generation == 1

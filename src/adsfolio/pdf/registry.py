@@ -43,7 +43,11 @@ ADS_METADATA_FIELDS = (
     "bibstem",
 )
 
-NUMERIC_SORT_COLUMNS = frozenset({"size_bytes", "mtime_ns"})
+NUMERIC_SORT_COLUMNS = frozenset(
+    {"size_bytes", "mtime_ns", "author_count", "citation_count"}
+)
+# Counts stored in record metadata. A missing value is unknown, not zero.
+STORED_COUNT_KEYS = frozenset({"author_count", "citation_count"})
 SORTABLE_COLUMNS = {
     key: key
     for key in (
@@ -60,11 +64,54 @@ SORTABLE_COLUMNS = {
         "relative_path",
         "size_bytes",
         "mtime_ns",
+        "author_count",
+        "citation_count",
         "first_seen_at",
         "updated_at",
         "identified_at",
     )
 }
+
+
+def stored_count(record: Mapping[str, Any], key: str) -> int | None:
+    """Return a saved non-negative count from a catalog record, or `None`.
+
+    The record's own field is read first, then its `metadata` mapping. Whole
+    numbers (`int`) and strings of decimal digits are accepted. Booleans,
+    negative numbers, floats, and other text, including malformed digit
+    strings, are treated as unknown, so a missing value is never reported as
+    zero. The count is the value saved at the last ADS lookup, refresh, or
+    manual edit, not a live ADS value.
+
+    Parameters
+    ----------
+    record : Mapping[str, Any]
+        Catalog record from ``PdfRegistry.query_files()``.
+    key : str
+        Metadata key, such as `"author_count"` or `"citation_count"`.
+
+    Returns
+    -------
+    int or None
+        The saved count, or `None` when no valid count is saved.
+    """
+    metadata = record.get("metadata")
+    sources = (record, metadata if isinstance(metadata, Mapping) else {})
+    for source in sources:
+        value = source.get(key)
+        if isinstance(value, bool):
+            continue
+        if isinstance(value, int) and value >= 0:
+            return value
+        if isinstance(value, str):
+            try:
+                parsed = int(value.strip())
+            except ValueError:
+                continue
+            if parsed >= 0 and value.strip().isdecimal():
+                return parsed
+    return None
+
 
 __all__ = [
     "ADS_METADATA_FIELDS",
@@ -72,6 +119,7 @@ __all__ = [
     "REGISTRY_FILENAME",
     "SCHEMA_VERSION",
     "SORTABLE_COLUMNS",
+    "STORED_COUNT_KEYS",
     "FileReconciliation",
     "LibraryRefresh",
     "PdfRegistry",
@@ -79,6 +127,7 @@ __all__ = [
     "merge_ads_metadata",
     "migrate_sidecar",
     "open_registry_state",
+    "stored_count",
 ]
 
 
@@ -292,6 +341,17 @@ class CentralPdfRegistry:
             inode = stat.st_ino
         except OSError:
             pass
+        proof = (metadata or {}).get("_adsfolio_identity")
+        if (
+            isinstance(proof, Mapping)
+            and proof.get("status") == "verified"
+            and actual_path.is_file()
+        ):
+            replacement = self.catalog.register_verified_replacement(
+                root, current_path, {**dict(metadata or {}), "sha256": sha256}
+            )
+            if replacement is not None:
+                return replacement.attachment_id
         observation = self.catalog.observe_file(
             root,
             current_path,
@@ -568,6 +628,9 @@ class CentralPdfRegistry:
 
     @staticmethod
     def _sort_value(record: Mapping[str, Any], key: str) -> tuple[bool, str | int]:
+        if key in STORED_COUNT_KEYS:
+            count = stored_count(record, key)
+            return (True, 0) if count is None else (False, count)
         if key in NUMERIC_SORT_COLUMNS:
             try:
                 return False, int(record[key])
@@ -694,6 +757,20 @@ class CentralPdfRegistryState:
             record.get("status")
             or ("resolved" if record.get("bibcode") else "unresolved")
         )
+        proof = record.get("_adsfolio_identity")
+        if (
+            isinstance(proof, Mapping)
+            and proof.get("status") == "verified"
+            and path.is_file()
+        ):
+            replacement = self.registry.catalog.register_verified_replacement(
+                self.directory, current, record
+            )
+            if replacement is not None:
+                stored = self.registry.catalog.get_file(self.directory, current)
+                if stored is None:
+                    raise RuntimeError(f"Replacement location disappeared: {current}")
+                return self._record_view(stored)
         self.registry.catalog.observe_file(
             self.directory,
             current,

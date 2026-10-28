@@ -38,17 +38,17 @@ from .identifier import (
     extract_first_page_text_pdf,
     fetch_external_identifier,
 )
-from .identify import IdentifyWorkflowHelpers, run_identify
+from .identify import IdentifyWorkflowHelpers, build_checked_record, run_identify
 from .identify_settings import IdentifySettings, IdentifyStrategy
+from .identity import IDENTITY_KEY, IdentityValidationError
 from .obsidian import ObsidianNoteWriter
 from .readiness import metadata_ready, stored_bibcode_matches_file
 from .registry import (
-    LOCKED_METADATA_FIELDS_KEY,
     PdfRegistry,
     merge_ads_metadata,
     open_registry_state,
 )
-from .renamer import DEFAULT_SCHEME, PdfRenamer
+from .renamer import DEFAULT_SCHEME, PdfRenamer, verify_record_identity
 from .sidecar import Sidecar
 from .tracked_move import resolved_file_directory
 from .upgrade import PdfUpgrader
@@ -246,8 +246,18 @@ def _refresh_file_metadata(
     document: dict[str, Any],
     *,
     preserve_existing: bool = False,
+    manual_confirmation: bool = False,
+    refusals: dict[str, str] | None = None,
 ) -> bool:
-    """Apply one ADS document to an existing file, respecting locked fields."""
+    """Apply one ADS document to an existing file, respecting locked fields.
+
+    The fresh ADS document and the merged result must both be proven by the
+    PDF itself. When either is not, nothing is written and the reason is added
+    to `refusals` under `relative_path`.
+
+    `manual_confirmation` records an explicit, user-reviewed confirmation of an
+    unknown identity. It never overrides a known conflict.
+    """
     record = registry.find_file_by_relative_path(root, relative_path)
     if record is None:
         return False
@@ -274,16 +284,43 @@ def _refresh_file_metadata(
                 return False
         except OSError:
             return False
-    merged = merge_ads_metadata(metadata, document)
-    if preserve_existing:
-        merged.update(
-            {
-                key: value
-                for key, value in metadata.items()
-                if value not in (None, "", [])
-            }
+    pdf_path = root / str(record["current_path"])
+    sha256 = str(record.get("sha256") or "") or None
+    claimed = dict(document)
+    if metadata.get(IDENTITY_KEY):
+        claimed[IDENTITY_KEY] = metadata[IDENTITY_KEY]
+    try:
+        verify_record_identity(
+            pdf_path,
+            claimed,
+            sha256=sha256,
+            manual_confirmation=manual_confirmation,
+            provider_document=document,
         )
-    merged.pop("status", None)
+        merged = merge_ads_metadata(metadata, document)
+        if preserve_existing:
+            merged.update(
+                {
+                    key: value
+                    for key, value in metadata.items()
+                    if value not in (None, "", [])
+                }
+            )
+        merged.pop("status", None)
+        merged[IDENTITY_KEY] = verify_record_identity(
+            pdf_path,
+            {**merged, **({"sha256": sha256} if sha256 else {})},
+            sha256=sha256,
+            manual_confirmation=manual_confirmation,
+            provider_document=document,
+        )
+    except (IdentityValidationError, OSError) as exc:
+        LOGGER.warning(
+            "Metadata retained; identity not verified: %s: %s", pdf_path, exc
+        )
+        if refusals is not None:
+            refusals[relative_path] = str(exc)
+        return False
     if not registry.replace_file_metadata(root, relative_path, merged):
         return False
     return registry.update_file_status(root, relative_path, "resolved")
@@ -305,16 +342,31 @@ def _files_inside(directory: Path, files: tuple[Path, ...]) -> list[Path]:
     return list(dict.fromkeys(resolved))
 
 
+def _metadata_skipped_message(relative_path: str, refusals: dict[str, str]) -> str:
+    """Explain why one file's metadata update did not happen."""
+    if relative_path in refusals:
+        return f"Metadata update refused at {relative_path}: {refusals[relative_path]}"
+    return (
+        f"Metadata update skipped at {relative_path}; check file tracking and "
+        "run Identify if the PDF changed."
+    )
+
+
 def _apply_external_metadata(
     registry: PdfRegistry,
     root: Path,
     relative_path: str,
     document: dict[str, Any],
+    *,
+    manual_confirmation: bool = False,
+    refusals: dict[str, str] | None = None,
 ) -> bool:
     """Apply Crossref or DataCite metadata to one file, keeping locked fields.
 
     The file keeps no ADS bibcode and stays unresolved. Its metadata records
     the provider and the file digest, so renaming can use it.
+    The PDF must prove the document's identity; otherwise nothing is written
+    and the reason is added to `refusals` under `relative_path`.
     """
     record = registry.find_file_by_relative_path(root, relative_path)
     if record is None:
@@ -322,15 +374,25 @@ def _apply_external_metadata(
     metadata = record.get("metadata")
     metadata = metadata if isinstance(metadata, dict) else {}
     path = root / str(record["current_path"])
-    built = PdfIdentifier(None).build_record(
-        document, path, sha256=str(record.get("sha256") or "") or None
-    )
+    try:
+        built = PdfIdentifier(None).build_record(
+            document,
+            path,
+            sha256=str(record.get("sha256") or "") or None,
+            manual_confirmation=manual_confirmation,
+        )
+    except (IdentityValidationError, OSError) as exc:
+        LOGGER.warning("Metadata retained; identity not verified: %s: %s", path, exc)
+        if refusals is not None:
+            refusals[relative_path] = str(exc)
+        return False
     merged = merge_ads_metadata(metadata, built)
     for key in (
         "bibcode",
         "_adsfolio_external_metadata",
         "_adsfolio_metadata_sha256",
         "identified_at",
+        IDENTITY_KEY,
     ):
         merged[key] = built.get(key, "")
     merged.pop("_adsfolio_metadata_stale", None)
@@ -351,39 +413,6 @@ def _refresh_bibcode_metadata(
         _refresh_file_metadata(registry, root, str(record["relative_path"]), document)
         for record in registry.find_files_by_bibcode(root, bibcode)
     )
-
-
-def _clear_invalid_bibcode(
-    registry: PdfRegistry,
-    root: Path,
-    bibcode: str,
-    relative_path: str | None = None,
-) -> int:
-    """Clear an ADS-missing Bibcode while retaining local file tracking."""
-    records = (
-        [registry.find_file_by_relative_path(root, relative_path)]
-        if relative_path is not None
-        else registry.find_files_by_bibcode(root, bibcode)
-    )
-    cleared = 0
-    for record in records:
-        if (
-            record is None
-            or str(record.get("bibcode") or "").lower() != bibcode.lower()
-        ):
-            continue
-        metadata = dict(record.get("metadata") or {})
-        if record.get("status") != "resolved" or "bibcode" in metadata.get(
-            LOCKED_METADATA_FIELDS_KEY, []
-        ):
-            continue
-        metadata["bibcode"] = ""
-        if registry.replace_file_metadata(root, str(record["relative_path"]), metadata):
-            registry.update_file_status(
-                root, str(record["relative_path"]), "unresolved"
-            )
-            cleared += 1
-    return cleared
 
 
 @pdf.command("refresh-ads")
@@ -441,6 +470,15 @@ def _clear_invalid_bibcode(
     type=click.Path(path_type=Path),
     help="Override the saved unresolved directory when returning identified PDFs.",
 )
+@click.option(
+    "--confirm-identity",
+    is_flag=True,
+    help=(
+        "Confirm that you reviewed this one PDF and it matches the requested "
+        "record, when the PDF's own identifiers cannot prove it. Requires "
+        "--relative-path. A PDF that contradicts the record is still refused."
+    ),
+)
 @click.pass_context
 def refresh_ads_command(
     ctx: click.Context,
@@ -454,6 +492,7 @@ def refresh_ads_command(
     rename: bool,
     rename_scope: str,
     output_unresolved: Path | None,
+    confirm_identity: bool,
 ) -> None:
     """Refresh ADS metadata, rename PDFs, and return them from unresolved."""
     directory = directory.expanduser().resolve()
@@ -466,6 +505,8 @@ def refresh_ads_command(
         )
     if identifier_input is not None and relative_path is None:
         raise click.UsageError("--identifier requires --relative-path.")
+    if confirm_identity and relative_path is None:
+        raise click.UsageError("--confirm-identity requires --relative-path.")
     if refresh_all:
         requested.extend(_record_bibcodes(directory, pending_only=pending_only))
     requested = list(dict.fromkeys(requested))
@@ -595,6 +636,7 @@ def refresh_ads_command(
             math.ceil(len(requested) / REFRESH_PROGRESS_UPDATE_COUNT),
         )
         paths_by_bibcode: dict[str, set[str]] = {}
+        refusals: dict[str, str] = {}
         for record in state.registry.iter_files():
             if record.get("_adsfolio_metadata_stale") or (
                 record.get("status") != "resolved"
@@ -609,10 +651,15 @@ def refresh_ads_command(
         for index, bibcode in enumerate(requested, start=1):
             if external_document is not None and relative_path is not None:
                 if not _apply_external_metadata(
-                    state.registry, directory, relative_path, external_document
+                    state.registry,
+                    directory,
+                    relative_path,
+                    external_document,
+                    manual_confirmation=confirm_identity,
+                    refusals=refusals,
                 ):
                     raise click.UsageError(
-                        f"Metadata update skipped at {relative_path}; check file tracking and run Identify if the PDF changed."
+                        _metadata_skipped_message(relative_path, refusals)
                     )
                 provider = external_document.get("provider", "external")
                 click.echo(f"Found {identifier_value} at {provider} (not in ADS).")
@@ -620,19 +667,8 @@ def refresh_ads_command(
                 rename_candidates.add(relative_path)
                 continue
             if bibcode in missing_documents:
-                if identifier_input is None and rename:
-                    _clear_invalid_bibcode(state.registry, directory, bibcode)
-                elif (
-                    identifier_input is not None
-                    and identifier_kind == "bibcode"
-                    and rename
-                ):
-                    _clear_invalid_bibcode(
-                        state.registry,
-                        directory,
-                        identifier_value,
-                        relative_path,
-                    )
+                # A failed lookup shows that ADS did not answer, not that the
+                # saved identity is wrong, so saved identities stay as they are.
                 if index % progress_step == 0 or index == len(requested):
                     click.echo(f"Refresh ADS: {index}/{len(requested)}")
                 continue
@@ -645,9 +681,11 @@ def refresh_ads_command(
                     relative_path,
                     document,
                     preserve_existing=not rename,
+                    manual_confirmation=confirm_identity,
+                    refusals=refusals,
                 ):
                     raise click.UsageError(
-                        f"Metadata update skipped at {relative_path}; check file tracking and run Identify if the PDF changed."
+                        _metadata_skipped_message(relative_path, refusals)
                     )
                 if document is not None:
                     rename_candidates.add(relative_path)
@@ -658,7 +696,7 @@ def refresh_ads_command(
                     for code in {bibcode, actual_bibcode}
                     for path in paths_by_bibcode.get(code.casefold(), ())
                 }
-                rename_candidates.update(
+                accepted = {
                     path
                     for path in matching_paths
                     if _refresh_file_metadata(
@@ -667,8 +705,12 @@ def refresh_ads_command(
                         path,
                         document,
                         preserve_existing=not rename,
+                        refusals=refusals,
                     )
-                )
+                }
+                rename_candidates.update(accepted)
+                if matching_paths and not accepted:
+                    refreshed -= 1
             if index % progress_step == 0 or index == len(requested):
                 click.echo(f"Refresh ADS: {index}/{len(requested)}")
         settings = state.identify_settings or Config.load_identify_settings()
@@ -714,6 +756,13 @@ def refresh_ads_command(
                     fg="yellow",
                 )
                 continue
+            except IdentityValidationError as exc:
+                rename_skipped += 1
+                click.secho(
+                    f"ADS metadata updated; rename refused, identity not verified: {exc}",
+                    fg="yellow",
+                )
+                continue
             except (ADSError, OSError, ValueError, sqlite3.Error) as exc:
                 rename_skipped += 1
                 click.secho(
@@ -729,12 +778,21 @@ def refresh_ads_command(
                 f"Updated metadata for {len(rename_candidates)} file(s); no files were renamed or moved."
             )
         click.echo(f"Refreshed ADS metadata for {refreshed} bibcode(s).")
+        if refusals:
+            click.secho(
+                f"Refused {len(refusals)} file(s): the PDF does not prove the "
+                "ADS record, so metadata, names, and locations are unchanged.",
+                fg="yellow",
+            )
+            for refused_path, reason in sorted(refusals.items()):
+                click.echo(f"  {refused_path}: {reason}")
         click.echo(
             f"Renamed or moved {renamed} PDF(s); skipped {rename_skipped} PDF(s)."
         )
         if missing_documents:
             click.secho(
-                f"No ADS document found for {len(missing_documents)} bibcode(s).",
+                f"No ADS document found for {len(missing_documents)} bibcode(s); "
+                "saved identities were left unchanged.",
                 fg="yellow",
             )
         if citation_metrics:
@@ -1401,7 +1459,9 @@ def _resolve_from_ai_csv(
             doc = docs_by_bibcode.get(str(bibcode).strip())
             if doc is None:
                 continue
-            resolved[path] = identifier.build_record(doc, path)
+            record = build_checked_record(identifier, doc, path, "")
+            if record is not None:
+                resolved[path] = record
 
     remaining_for_doi = {
         path: doi for path, doi in doi_by_path.items() if path not in resolved
@@ -1414,7 +1474,9 @@ def _resolve_from_ai_csv(
             doc = docs_by_doi.get(doi)
             if doc is None:
                 continue
-            resolved[path] = identifier.build_record(doc, path)
+            record = build_checked_record(identifier, doc, path, "")
+            if record is not None:
+                resolved[path] = record
     return resolved
 
 
@@ -1942,6 +2004,11 @@ def rename_command(
                 move_resolved_to=sidecar.directory,
             )
         plans = renamer.batch_rename(**rename_options)
+        for refused_name, reason in sorted(renamer.identity_refused.items()):
+            click.secho(
+                f"Not renamed; identity not verified: {refused_name}: {reason}",
+                fg="yellow",
+            )
         if not plans:
             click.echo("No files to rename.")
             return
@@ -1969,12 +2036,12 @@ def rename_command(
     help="Where to write .md notes. Defaults to DIRECTORY (colocated with the PDFs).",
 )
 @click.option(
-    "--force", is_flag=True, help="Overwrite existing notes. Default skips them."
+    "--force", is_flag=True, help="Regenerate existing notes, replacing manual edits."
 )
 @click.option(
     "--apply",
     is_flag=True,
-    help="Write notes and fetch/cache missing abstracts. Default is dry-run.",
+    help="Update PDF annotations and write notes. Fetch and cache missing abstracts. Default is dry-run.",
 )
 @click.pass_context
 def obsidian_command(

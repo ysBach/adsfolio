@@ -7,6 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 from click.testing import CliRunner
+from pdf_identity_fixtures import write_pdf
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 pytest.importorskip("PySide6")
@@ -28,7 +29,7 @@ def test_typed_doi_renames_the_pdf_and_exports_bibtex(qtbot, monkeypatch, tmp_pa
     root = tmp_path / "library"
     root.mkdir()
     scan = root / "scan_0042.pdf"
-    scan.write_bytes(b"%PDF-1.4\n%a scanned paper\n")
+    write_pdf(scan)
     state = open_registry_state(root)
     try:
         state.upsert_file(
@@ -72,6 +73,7 @@ def test_typed_doi_renames_the_pdf_and_exports_bibtex(qtbot, monkeypatch, tmp_pa
             str(root),
             "--identifier",
             "doi:10.5555/JEX.2019.12.34",
+            "--confirm-identity",
             "--relative-path",
             scan.name,
         ],

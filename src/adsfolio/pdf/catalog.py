@@ -18,10 +18,12 @@ from typing import Any
 from ..config import Config
 from .arxiv import normalize_arxiv_id
 from .files import sha256_file
+from .identity import IDENTITY_KEY, assert_mutation_allowed, target_identity
 from .readiness import (
     EXTERNAL_METADATA_KEY,
     METADATA_SHA256_KEY,
     METADATA_STALE_KEY,
+    WATCH_PENDING_KEY,
 )
 from .sidecar import SIDECAR_FILENAME, Sidecar
 
@@ -326,6 +328,311 @@ class PdfCatalog:
             version_id=version_id,
             matched_by=matched_by,
         )
+
+    def register_verified_replacement(
+        self,
+        root: Path,
+        relative_path: str,
+        metadata: Mapping[str, Any],
+    ) -> CatalogObservation | None:
+        """Register verified new contents without losing an absent PDF's history.
+
+        A different name rejoins an old attachment only when exactly one
+        matching attachment has no live locations. Existing editions remain
+        separate. A different paper at the same path receives a new attachment.
+        File bytes are never changed. Unknown filesystem state stops the write.
+        """
+        base = Path(self._normalize_root(root))
+        relative = self._normalize_relative_path(relative_path)
+        path = base / relative
+        incoming = copy.deepcopy(dict(metadata))
+        digest = str(incoming.get("sha256") or "")
+        provenance = assert_mutation_allowed(path, incoming, expected_sha256=digest)
+        if provenance["status"] != "verified":
+            return None
+        authority = target_identity(incoming)
+        initial = path.stat()
+        facts = (initial.st_size, initial.st_mtime_ns, initial.st_dev, initial.st_ino)
+        if not base.is_dir():
+            raise FileNotFoundError(base)
+        conn = self._connection
+        if conn.in_transaction:
+            raise RuntimeError("Replacement registration needs its own transaction")
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            root_id = self._ensure_root(str(base))
+            current = self._active_location(root_id, relative)
+            current_id = int(current["attachment_id"]) if current is not None else None
+            attachment = (
+                self._attachment(current_id) if current_id is not None else None
+            )
+            old_at_path = (
+                json.loads(attachment["metadata_json"])
+                if attachment is not None
+                else {}
+            )
+            old_identity = target_identity(old_at_path)
+            same_paper = (
+                old_identity.has_stable_identity
+                and not old_identity.claims_outside(authority)
+            )
+            conflicting_path = bool(old_identity.primary) and not same_paper
+            if (
+                conflicting_path
+                and not old_identity.has_stable_identity
+                and current is not None
+            ):
+                old_version = conn.execute(
+                    "SELECT sha256 FROM content_versions WHERE id = ?",
+                    (current["current_version_id"],),
+                ).fetchone()
+                if old_version is not None and old_version["sha256"] == digest:
+                    # Identifying the same unchanged file preserves manual work;
+                    # different bytes need a shared stable paper identifier.
+                    same_paper = True
+                    conflicting_path = False
+            changed_live_alias = False
+            if same_paper and current is not None:
+                prior_version = conn.execute(
+                    "SELECT sha256 FROM content_versions WHERE id = ?",
+                    (current["current_version_id"],),
+                ).fetchone()
+                if prior_version is not None and prior_version["sha256"] != digest:
+                    for alias in conn.execute(
+                        "SELECT f.*, r.canonical_path FROM file_locations f "
+                        "JOIN library_roots r ON r.id = f.root_id "
+                        "WHERE f.attachment_id = ? AND f.id != ? AND f.missing_at IS NULL",
+                        (current_id, current["id"]),
+                    ).fetchall():
+                        alias_root = Path(alias["canonical_path"])
+                        if not alias_root.is_dir():
+                            raise OSError(
+                                f"Attachment root is unavailable: {alias_root}"
+                            )
+                        try:
+                            (alias_root / alias["relative_path"]).lstat()
+                        except FileNotFoundError:
+                            continue
+                        changed_live_alias = True
+                        break
+
+            # A previously identified download may already own this path. It
+            # may join a missing attachment only if it has no reader-owned data.
+            automatic = {
+                "bibcode",
+                "doi",
+                "arxiv",
+                "arxiv_id",
+                "identifier",
+                "alternate_bibcode",
+                "sha256",
+                "title",
+                "author",
+                "year",
+                "bibstem",
+                "volume",
+                "page",
+                "pub",
+                "publisher",
+                "identified_at",
+                "status",
+                "resolution_strategy",
+                "abstract",
+                "author_count",
+                "citation_count",
+                "current_filename",
+                "current_path",
+                IDENTITY_KEY,
+                METADATA_SHA256_KEY,
+                METADATA_STALE_KEY,
+                EXTERNAL_METADATA_KEY,
+                WATCH_PENDING_KEY,
+            }
+            disposable = current_id is None or (
+                not (set(old_at_path) - automatic)
+                and conn.execute(
+                    "SELECT COUNT(*) FROM file_locations WHERE attachment_id = ?",
+                    (current_id,),
+                ).fetchone()[0]
+                == 1
+                and conn.execute(
+                    "SELECT COUNT(*) FROM content_versions WHERE attachment_id = ?",
+                    (current_id,),
+                ).fetchone()[0]
+                <= 1
+            )
+            candidates: list[sqlite3.Row] = []
+            absent_locations: dict[int, list[int]] = {}
+            if disposable and not conflicting_path:
+                rows = conn.execute(
+                    "SELECT DISTINCT a.* FROM attachments a JOIN file_locations f ON f.attachment_id = a.id "
+                    "WHERE f.root_id = ? AND a.id IS NOT ?",
+                    (root_id, current_id),
+                ).fetchall()
+                for candidate in rows:
+                    previous = json.loads(candidate["metadata_json"] or "{}")
+                    identity = target_identity(previous)
+                    if not identity.has_stable_identity or identity.claims_outside(
+                        authority
+                    ):
+                        continue
+                    missing: list[int] = []
+                    eligible = True
+                    for location in conn.execute(
+                        "SELECT f.*, r.canonical_path FROM file_locations f "
+                        "JOIN library_roots r ON r.id = f.root_id WHERE f.attachment_id = ?",
+                        (candidate["id"],),
+                    ).fetchall():
+                        location_root = Path(location["canonical_path"])
+                        if not location_root.is_dir():
+                            # Another matching attachment has unknown liveness;
+                            # excluding it would manufacture a unique match.
+                            conn.rollback()
+                            return None
+                        # Historical paths can now name a different attachment.
+                        # They do not make the old content a live alias.
+                        if (
+                            location["root_id"] == root_id
+                            and location["relative_path"] == relative
+                        ):
+                            missing.append(int(location["id"]))
+                            continue
+                        owner = self._active_location(
+                            location["root_id"], location["relative_path"]
+                        )
+                        if (
+                            location["missing_at"] is not None
+                            and owner is not None
+                            and owner["attachment_id"] != candidate["id"]
+                        ):
+                            continue
+                        try:
+                            (location_root / location["relative_path"]).lstat()
+                        except FileNotFoundError:
+                            missing.append(int(location["id"]))
+                        else:
+                            eligible = False
+                            break
+                    if eligible and missing:
+                        candidates.append(candidate)
+                        absent_locations[int(candidate["id"])] = missing
+            chosen = candidates[0] if len(candidates) == 1 else None
+            if chosen is not None:
+                selected_id = int(chosen["id"])
+                previous_metadata = json.loads(chosen["metadata_json"] or "{}")
+            elif same_paper and not changed_live_alias:
+                selected_id = int(current_id)
+                previous_metadata = old_at_path
+            elif conflicting_path or changed_live_alias:
+                selected_id = self._create_attachment(metadata={}, status="unresolved")
+                previous_metadata = {}
+                conn.execute(
+                    "UPDATE file_locations SET missing_at = ? WHERE id = ?",
+                    (self._utc_timestamp(), current["id"]),
+                )
+                current = None
+            else:
+                conn.rollback()
+                return None
+
+            # File-specific proof and state must describe the new bytes. User
+            # notes and locked bibliographic fields survive only for this paper.
+            for key in (
+                IDENTITY_KEY,
+                METADATA_SHA256_KEY,
+                METADATA_STALE_KEY,
+                "sha256",
+                "identified_at",
+                "resolution_strategy",
+                "recovery_evidence",
+            ):
+                previous_metadata.pop(key, None)
+            merged = self._merge_metadata(previous_metadata, incoming)
+            merged.pop(METADATA_STALE_KEY, None)
+            merged[WATCH_PENDING_KEY] = False
+            merged["sha256"] = digest
+            merged[METADATA_SHA256_KEY] = digest
+            merged[IDENTITY_KEY] = assert_mutation_allowed(
+                path,
+                merged,
+                expected_sha256=digest,
+                provider_document=incoming,
+            )
+            document_id = self._ensure_document(merged)
+            status = (
+                "resolved"
+                if merged.get("bibcode") and document_id is not None
+                else "unresolved"
+            )
+            self._update_attachment(
+                selected_id, document_id=document_id, status=status, metadata=merged
+            )
+            if current is not None and current_id != selected_id:
+                # Move the fresh arrival's single version with its location.
+                # Duplicating it would make later hash matching ambiguous.
+                conn.execute(
+                    "UPDATE content_versions SET attachment_id = ? WHERE attachment_id = ?",
+                    (selected_id, current_id),
+                )
+                self._update_attachment(
+                    int(current_id),
+                    document_id=None,
+                    status="superseded",
+                    metadata={**old_at_path, "_adsfolio_superseded_by": selected_id},
+                )
+            version_id = self._select_or_create_version(
+                selected_id, None, digest, initial.st_size
+            )
+            now = self._utc_timestamp()
+            for location_id in absent_locations.get(selected_id, []):
+                conn.execute(
+                    "UPDATE file_locations SET missing_at = ? WHERE id = ? AND missing_at IS NULL",
+                    (now, location_id),
+                )
+            if current is not None:
+                location_id = int(current["id"])
+                conn.execute(
+                    "UPDATE file_locations SET attachment_id = ?, current_version_id = ?, size_bytes = ?, "
+                    "mtime_ns = ?, device = ?, inode = ?, last_seen_at = ?, missing_at = NULL WHERE id = ?",
+                    (
+                        selected_id,
+                        version_id,
+                        initial.st_size,
+                        initial.st_mtime_ns,
+                        _sqlite_file_identity(initial.st_dev),
+                        _sqlite_file_identity(initial.st_ino),
+                        now,
+                        location_id,
+                    ),
+                )
+            else:
+                cursor = conn.execute(
+                    "INSERT INTO file_locations(attachment_id, root_id, relative_path, size_bytes, mtime_ns, device, inode, "
+                    "current_version_id, first_seen_at, last_seen_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        selected_id,
+                        root_id,
+                        relative,
+                        initial.st_size,
+                        initial.st_mtime_ns,
+                        _sqlite_file_identity(initial.st_dev),
+                        _sqlite_file_identity(initial.st_ino),
+                        version_id,
+                        now,
+                        now,
+                    ),
+                )
+                location_id = int(cursor.lastrowid)
+            final = path.stat()
+            if (final.st_size, final.st_mtime_ns, final.st_dev, final.st_ino) != facts:
+                raise ValueError("Replacement PDF changed while it was registered")
+            conn.commit()
+            return CatalogObservation(
+                selected_id, location_id, version_id, "verified replacement"
+            )
+        except BaseException:
+            conn.rollback()
+            raise
 
     def get_file(self, root: Path, relative_path: str) -> dict[str, Any] | None:
         """Return one location record and its attachment metadata."""
@@ -781,10 +1088,10 @@ class PdfCatalog:
     ) -> int:
         """Discover PDFs and verify known identity candidates by content.
 
-        The discovery pass leaves SHA-256 unknown, with one exception: a file at
-        a path with no active location is hashed once, before any catalog write,
-        when a stored location with the same device and inode has a known
-        digest. The digest decides whether the file is that content again
+        Changed tracked files are hashed before their filesystem facts are
+        updated. A new path is also hashed when its filesystem identity has a
+        known digest. New paths in an existing library are queued for watching;
+        the first import retains the baseline behavior. The digest decides whether the file is that content again
         (see `_observe_file`). Unchanged files are never hashed. A file that
         vanishes before hashing is skipped; any other read error aborts the
         scan before the catalog changes.
@@ -814,6 +1121,10 @@ class PdfCatalog:
                                 observations.append((Path(entry.path), stat))
                         except FileNotFoundError:
                             continue
+        known_rows = {
+            record["current_path"]: record
+            for record in self.query_files(root=normalized_root, include_missing=True)
+        }
         prepared: list[tuple[str, os.stat_result, str | None]] = []
         for path, stat in observations:
             if cancelled is not None and cancelled():
@@ -839,6 +1150,17 @@ class PdfCatalog:
                     relative_path,
                 ),
             ).fetchone()[0]
+            previous = known_rows.get(relative_path)
+            if previous is not None and previous["sha256"]:
+                needs_digest = needs_digest or any(
+                    previous[key] is not None and previous[key] != value
+                    for key, value in (
+                        ("size_bytes", stat.st_size),
+                        ("mtime_ns", stat.st_mtime_ns),
+                        ("device", stat.st_dev),
+                        ("inode", stat.st_ino),
+                    )
+                )
             digest = None
             if needs_digest:
                 try:
@@ -862,7 +1184,25 @@ class PdfCatalog:
                     mtime_ns=stat.st_mtime_ns,
                     device=stat.st_dev,
                     inode=stat.st_ino,
-                    metadata=None,
+                    metadata=(
+                        {WATCH_PENDING_KEY: True}
+                        if known_rows
+                        and (
+                            relative_path not in known_rows
+                            or known_rows[relative_path]["missing_at"] is not None
+                            or any(
+                                known_rows[relative_path][key] is not None
+                                and known_rows[relative_path][key] != value
+                                for key, value in (
+                                    ("size_bytes", stat.st_size),
+                                    ("mtime_ns", stat.st_mtime_ns),
+                                    ("device", stat.st_dev),
+                                    ("inode", stat.st_ino),
+                                )
+                            )
+                        )
+                        else None
+                    ),
                     status=None,
                 )
                 discovered += 1

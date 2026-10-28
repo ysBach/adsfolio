@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 from click.testing import CliRunner
+from pdf_identity_fixtures import write_pdf
 
 from adsfolio.cli.commands import main
 from adsfolio.config import ADSError, Config
@@ -26,11 +27,6 @@ def isolated_catalog(monkeypatch, tmp_path) -> None:
         "adsfolio.pubcache.cache_path", lambda: tmp_path / "cache" / "publications.json"
     )
     monkeypatch.setattr(
-        PdfIdentifier,
-        "compute_sha256",
-        lambda self, path: Path(path).read_bytes().hex(),
-    )
-    monkeypatch.setattr(
         "adsfolio.pdf.cli._estimate_ads_queries_for_targets",
         lambda *args, **kwargs: {},
     )
@@ -45,13 +41,10 @@ def test_identify_moves_new_and_cached_matches(
     root = tmp_path / "library"
     source = root / unresolved_name / "nested" / "Paper 한글.pdf"
     source.parent.mkdir(parents=True)
-    source.write_bytes(b"%PDF resolved")
-    record = {
-        "bibcode": "2024ApJ...900..100S",
-        "sha256": source.read_bytes().hex(),
-        "status": "resolved",
-        "current_filename": source.relative_to(root).as_posix(),
-    }
+    write_pdf(source, doi="10.1234/relocation")
+    record = PdfIdentifier(None).build_record(
+        {"bibcode": "2024ApJ...900..100S", "doi": ["10.1234/relocation"]}, source
+    )
     if cached:
         state = open_registry_state(root)
         state.upsert_file(record["current_filename"], record)
@@ -96,14 +89,19 @@ def test_identify_collision_keeps_both_files_and_resolved_catalog(
     root = tmp_path / "library"
     source = root / "unresolved" / "paper.pdf"
     source.parent.mkdir(parents=True)
-    source.write_bytes(b"source")
+    source_content = write_pdf(source, doi="10.1234/relocation")
     target = root / source.name
     target.write_bytes(b"existing")
     monkeypatch.setattr(
         PdfIdentifier,
         "resolve_many",
         lambda self, paths, **kwargs: {
-            path: {"bibcode": "B1", "sha256": path.read_bytes().hex()} for path in paths
+            path: PdfIdentifier(None).build_record(
+                {"bibcode": "B1", "doi": ["10.1234/relocation"]}, path
+            )
+            if path == source
+            else None
+            for path in paths
         },
     )
     result = CliRunner().invoke(
@@ -111,7 +109,7 @@ def test_identify_collision_keeps_both_files_and_resolved_catalog(
     )
     assert result.exit_code == 0, result.output
     assert "destination exists" in result.output
-    assert source.read_bytes() == b"source"
+    assert source.read_bytes() == source_content
     assert target.read_bytes() == b"existing"
     state = open_registry_state(root)
     try:
@@ -124,7 +122,7 @@ def test_ai_csv_resolved_file_moves_out_in_same_run(monkeypatch, tmp_path) -> No
     root = tmp_path / "library"
     source = root / "unresolved" / "paper.pdf"
     source.parent.mkdir(parents=True)
-    source.write_bytes(b"source")
+    write_pdf(source, doi="10.1234/relocation")
     csv = tmp_path / "hints.csv"
     csv.write_text("filename,bibcode\npaper.pdf,B1\n")
     monkeypatch.setattr(
@@ -135,7 +133,10 @@ def test_ai_csv_resolved_file_moves_out_in_same_run(monkeypatch, tmp_path) -> No
     monkeypatch.setattr(
         "adsfolio.pdf.cli._resolve_from_ai_csv",
         lambda identifier, directory, paths, csv_path: {
-            path: {"bibcode": "B1", "sha256": path.read_bytes().hex()} for path in paths
+            path: PdfIdentifier(None).build_record(
+                {"bibcode": "B1", "doi": ["10.1234/relocation"]}, path
+            )
+            for path in paths
         },
     )
     monkeypatch.setattr(
@@ -173,7 +174,7 @@ def test_ads_refresh_returns_identified_file_to_root(
     unresolved_name = "unresolved" if scope == "default" else "pending-review"
     source = root / unresolved_name / "nested" / "Paper 한글.pdf"
     source.parent.mkdir(parents=True)
-    source.write_bytes(b"source")
+    source_content = write_pdf(source, doi="10.1234/relocation")
     relative_path = source.relative_to(root).as_posix()
     identify_settings = IdentifySettings(output_unresolved=unresolved_name)
     rename_settings = RenameSettings(template="{title}-{bibcode}")
@@ -206,6 +207,7 @@ def test_ads_refresh_returns_identified_file_to_root(
         lambda self, requested, **kwargs: {
             bibcode: {
                 "bibcode": bibcode,
+                "doi": ["10.1234/relocation"],
                 "title": ["Identified"],
                 "author": ["Smith, Jane"],
                 "year": "2024",
@@ -229,11 +231,11 @@ def test_ads_refresh_returns_identified_file_to_root(
     result = CliRunner().invoke(main, args)
     assert result.exit_code == 0, result.output
     if collision:
-        assert source.read_bytes() == b"source"
+        assert source.read_bytes() == source_content
         assert destination.read_bytes() == b"existing"
     else:
         assert not source.exists()
-        assert destination.read_bytes() == b"source"
+        assert destination.read_bytes() == source_content
     state = open_registry_state(root)
     try:
         record = state.registry.find_location_by_id(location_id)
@@ -256,7 +258,7 @@ def test_ads_refresh_global_scope_overrides_saved_library_rename(
     root = tmp_path / "library"
     source = root / "unresolved" / "paper.pdf"
     source.parent.mkdir(parents=True)
-    source.write_bytes(b"source")
+    source_content = write_pdf(source, doi="10.1234/relocation")
     relative_path = source.relative_to(root).as_posix()
     Config.save_rename_settings(RenameSettings(template="{year}-{bibcode}"))
     state = open_registry_state(root)
@@ -279,6 +281,7 @@ def test_ads_refresh_global_scope_overrides_saved_library_rename(
         lambda self, requested, **kwargs: {
             bibcode: {
                 "bibcode": bibcode,
+                "doi": ["10.1234/relocation"],
                 "title": ["Global title"],
                 "author": ["Smith, Jane"],
                 "year": "2024",
@@ -303,7 +306,7 @@ def test_ads_refresh_global_scope_overrides_saved_library_rename(
     )
 
     assert result.exit_code == 0, result.output
-    assert (root / "2024-B1.pdf").read_bytes() == b"source"
+    assert (root / "2024-B1.pdf").read_bytes() == source_content
     assert not source.exists()
     assert not (root / "Global_title.pdf").exists()
     state = open_registry_state(root)
@@ -322,7 +325,7 @@ def test_ads_refresh_renames_existing_library_file_in_place(
     root = tmp_path / "library"
     source = root / "papers" / "paper.pdf"
     source.parent.mkdir(parents=True)
-    source.write_bytes(b"source")
+    source_content = write_pdf(source, doi="10.1234/relocation")
     relative_path = source.relative_to(root).as_posix()
     Config.save_rename_settings(RenameSettings(template="{bibcode}-{title}"))
     state = open_registry_state(root)
@@ -345,6 +348,7 @@ def test_ads_refresh_renames_existing_library_file_in_place(
         lambda self, requested, **kwargs: {
             bibcode: {
                 "bibcode": bibcode,
+                "doi": ["10.1234/relocation"],
                 "title": ["Library title"],
                 "author": ["Smith, Jane"],
                 "year": "2024",
@@ -368,7 +372,7 @@ def test_ads_refresh_renames_existing_library_file_in_place(
 
     assert result.exit_code == 0, result.output
     target = root / "papers" / "B1-Library_title.pdf"
-    assert target.read_bytes() == b"source"
+    assert target.read_bytes() == source_content
     assert not source.exists()
     assert not (root / "B1-Library_title.pdf").exists()
     state = open_registry_state(root)
@@ -386,7 +390,7 @@ def test_ads_refresh_uses_locked_title_for_renamed_filename(
     root = tmp_path / "library"
     source = root / "unresolved" / "paper.pdf"
     source.parent.mkdir(parents=True)
-    source.write_bytes(b"source")
+    source_content = write_pdf(source, doi="10.1234/relocation")
     relative_path = source.relative_to(root).as_posix()
     locked_title = ["Local locked title"]
     Config.save_rename_settings(RenameSettings(template="{title}-{bibcode}"))
@@ -411,6 +415,7 @@ def test_ads_refresh_uses_locked_title_for_renamed_filename(
         lambda self, requested, **kwargs: {
             bibcode: {
                 "bibcode": bibcode,
+                "doi": ["10.1234/relocation"],
                 "title": ["ADS replacement title"],
                 "author": ["Smith, Jane"],
                 "year": "2024",
@@ -434,7 +439,7 @@ def test_ads_refresh_uses_locked_title_for_renamed_filename(
 
     assert result.exit_code == 0, result.output
     target = root / "Local_locked_title-B1.pdf"
-    assert target.read_bytes() == b"source"
+    assert target.read_bytes() == source_content
     assert not source.exists()
     state = open_registry_state(root)
     try:
@@ -456,7 +461,7 @@ def test_ads_refresh_invalid_template_keeps_refreshed_metadata_and_source(
     root = tmp_path / "library"
     source = root / "unresolved" / "paper.pdf"
     source.parent.mkdir(parents=True)
-    source.write_bytes(b"source")
+    source_content = write_pdf(source, doi="10.1234/relocation")
     relative_path = source.relative_to(root).as_posix()
     Config.save_rename_settings(RenameSettings(template="{unknown_field}"))
     state = open_registry_state(root)
@@ -478,6 +483,7 @@ def test_ads_refresh_invalid_template_keeps_refreshed_metadata_and_source(
         lambda self, requested, **kwargs: {
             bibcode: {
                 "bibcode": bibcode,
+                "doi": ["10.1234/relocation"],
                 "title": ["Refreshed title"],
                 "author": ["Smith, Jane"],
                 "year": "2024",
@@ -502,7 +508,7 @@ def test_ads_refresh_invalid_template_keeps_refreshed_metadata_and_source(
     assert result.exit_code == 0, result.output
     assert "ADS metadata updated; could not rename" in result.output
     assert "Unknown template key" in result.output
-    assert source.read_bytes() == b"source"
+    assert source.read_bytes() == source_content
     state = open_registry_state(root)
     try:
         record = state.get_file(relative_path)
@@ -515,7 +521,7 @@ def test_ads_refresh_invalid_template_keeps_refreshed_metadata_and_source(
         state.close()
 
 
-def test_ads_refresh_missing_pdf_keeps_refreshed_metadata_and_catalog_path(
+def test_ads_refresh_missing_pdf_refuses_update_and_preserves_catalog_path(
     monkeypatch, tmp_path
 ) -> None:
     root = tmp_path / "library"
@@ -541,6 +547,7 @@ def test_ads_refresh_missing_pdf_keeps_refreshed_metadata_and_catalog_path(
         lambda self, requested, **kwargs: {
             bibcode: {
                 "bibcode": bibcode,
+                "doi": ["10.1234/relocation"],
                 "title": ["Refreshed missing title"],
                 "author": ["Smith, Jane"],
                 "year": "2024",
@@ -562,17 +569,16 @@ def test_ads_refresh_missing_pdf_keeps_refreshed_metadata_and_catalog_path(
         ],
     )
 
-    assert result.exit_code == 0, result.output
-    assert "PDF missing, rename skipped" in result.output
-    assert "Refreshed ADS metadata" in result.output
+    assert result.exit_code != 0
+    assert "Metadata update refused" in result.output
     state = open_registry_state(root)
     try:
         record = state.get_file(relative_path)
         assert record is not None
         assert record["current_filename"] == relative_path
-        assert record["status"] == "resolved"
-        assert record["bibcode"] == "B1"
-        assert record["title"] == ["Refreshed missing title"]
+        assert record["status"] == "unresolved"
+        assert not record.get("bibcode")
+        assert not record.get("title")
     finally:
         state.close()
 
@@ -583,7 +589,7 @@ def test_ads_refresh_missing_document_keeps_filename_and_file(
     root = tmp_path / "library"
     source = root / "unresolved" / "paper.pdf"
     source.parent.mkdir(parents=True)
-    source.write_bytes(b"source")
+    source_content = write_pdf(source, doi="10.1234/relocation")
     relative_path = source.relative_to(root).as_posix()
     state = open_registry_state(root)
     try:
@@ -611,15 +617,15 @@ def test_ads_refresh_missing_document_keeps_filename_and_file(
     )
 
     assert result.exit_code == 0, result.output
-    assert source.read_bytes() == b"source"
+    assert source.read_bytes() == source_content
     assert not (root / "B1.pdf").exists()
     state = open_registry_state(root)
     try:
         record = state.get_file(relative_path)
         assert record is not None
         assert record["current_filename"] == relative_path
-        assert record["status"] == "unresolved"
-        assert record["bibcode"] in (None, "")
+        assert record["status"] == "resolved"
+        assert record["bibcode"] == "B1"
     finally:
         state.close()
 
@@ -630,7 +636,7 @@ def test_ads_refresh_metrics_error_leaves_successfully_moved_pdf(
     root = tmp_path / "library"
     source = root / "unresolved" / "paper.pdf"
     source.parent.mkdir(parents=True)
-    source.write_bytes(b"source")
+    source_content = write_pdf(source, doi="10.1234/relocation")
     relative_path = source.relative_to(root).as_posix()
     Config.save_rename_settings(RenameSettings(template="{bibcode}"))
     state = open_registry_state(root)
@@ -659,6 +665,7 @@ def test_ads_refresh_metrics_error_leaves_successfully_moved_pdf(
         lambda self, requested, **kwargs: {
             bibcode: {
                 "bibcode": bibcode,
+                "doi": ["10.1234/relocation"],
                 "title": ["Refreshed title"],
                 "author": ["Smith, Jane"],
                 "year": "2024",
@@ -685,7 +692,7 @@ def test_ads_refresh_metrics_error_leaves_successfully_moved_pdf(
     assert isinstance(result.exception, ADSError)
     assert "Renamed resolved PDF" in result.output
     target = root / "B1.pdf"
-    assert target.read_bytes() == b"source"
+    assert target.read_bytes() == source_content
     assert not source.exists()
     state = open_registry_state(root)
     try:
@@ -705,7 +712,7 @@ def test_ads_refresh_lowercase_bibcode_batch_moves_original_tracked_file(
     root = tmp_path / "library"
     source = root / "unresolved" / "nested" / "paper.pdf"
     source.parent.mkdir(parents=True)
-    source.write_bytes(b"source")
+    source_content = write_pdf(source, doi="10.1234/relocation")
     relative_path = source.relative_to(root).as_posix()
     Config.save_rename_settings(RenameSettings(template="{bibcode}"))
     state = open_registry_state(root)
@@ -729,6 +736,7 @@ def test_ads_refresh_lowercase_bibcode_batch_moves_original_tracked_file(
         return {
             requested[0]: {
                 "bibcode": "B1",
+                "doi": ["10.1234/relocation"],
                 "title": ["Canonical title"],
                 "author": ["Smith, Jane"],
                 "year": "2024",
@@ -746,7 +754,7 @@ def test_ads_refresh_lowercase_bibcode_batch_moves_original_tracked_file(
     assert result.exit_code == 0, result.output
     assert requested_values == ["b1"]
     target = root / "B1.pdf"
-    assert target.read_bytes() == b"source"
+    assert target.read_bytes() == source_content
     assert not source.exists()
     state = open_registry_state(root)
     try:
@@ -766,7 +774,7 @@ def test_ads_refresh_custom_author_export_error_skips_rename_with_metadata(
     root = tmp_path / "library"
     source = root / "unresolved" / "paper.pdf"
     source.parent.mkdir(parents=True)
-    source.write_bytes(b"source")
+    source_content = write_pdf(source, doi="10.1234/relocation")
     relative_path = source.relative_to(root).as_posix()
     Config.save_rename_settings(
         RenameSettings(
@@ -799,6 +807,7 @@ def test_ads_refresh_custom_author_export_error_skips_rename_with_metadata(
         lambda self, requested, **kwargs: {
             bibcode: {
                 "bibcode": bibcode,
+                "doi": ["10.1234/relocation"],
                 "title": ["Refreshed custom title"],
                 "author": ["Smith, Jane"],
                 "year": "2024",
@@ -823,7 +832,7 @@ def test_ads_refresh_custom_author_export_error_skips_rename_with_metadata(
     assert result.exit_code == 0, result.output
     assert "ADS metadata updated; could not rename" in result.output
     assert "author export unavailable" in result.output
-    assert source.read_bytes() == b"source"
+    assert source.read_bytes() == source_content
     assert not (root / "B1.pdf").exists()
     state = open_registry_state(root)
     try:
@@ -845,12 +854,15 @@ def test_rename_uses_saved_unresolved_destination(
     root = tmp_path / "library"
     source = root / "pending-review" / "nested" / "paper.pdf"
     source.parent.mkdir(parents=True)
-    source.write_bytes(b"source")
+    write_pdf(source, doi="10.1234/relocation")
     settings = IdentifySettings(output_unresolved="pending-review")
     if scope == "global":
         Config.save_identify_settings(settings)
     state = open_registry_state(root)
     try:
+        state.registry.upsert_ads_documents(
+            [{"bibcode": "B1", "doi": ["10.1234/relocation"]}], source="test"
+        )
         if scope == "library":
             state.set_identify_settings(settings)
         relative_path = source.relative_to(root).as_posix()

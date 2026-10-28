@@ -12,6 +12,7 @@ from adsfolio.pdf.registry import (
     merge_ads_metadata,
     migrate_sidecar,
     open_registry_state,
+    stored_count,
 )
 from adsfolio.pdf.rename_settings import RenameSettings
 
@@ -925,4 +926,73 @@ def test_count_files_matching_still_loads_records_for_source_and_duplicates(
     assert (
         registry.count_files_matching(duplicates_only=True, include_missing=True) == 2
     )
+    registry.close()
+
+
+@pytest.mark.parametrize(
+    ("record", "expected"),
+    [
+        ({"metadata": {"citation_count": 0}}, 0),
+        ({"metadata": {"citation_count": 12}}, 12),
+        ({"citation_count": 3, "metadata": {"citation_count": 9}}, 3),
+        ({"metadata": {"citation_count": "42"}}, 42),
+        ({"citation_count": None, "metadata": {"citation_count": 5}}, 5),
+        ({"metadata": {}}, None),
+        ({"metadata": {"citation_count": None}}, None),
+        ({"metadata": {"citation_count": True}}, None),
+        ({"metadata": {"citation_count": -1}}, None),
+        ({"metadata": {"citation_count": "-1"}}, None),
+        ({"metadata": {"citation_count": 1.5}}, None),
+        ({"metadata": {"citation_count": "1_0"}}, None),
+        ({"metadata": {"citation_count": "+3"}}, None),
+        # Superscripts pass `str.isdigit()` but are not integers.
+        ({"metadata": {"citation_count": "\u00b2"}}, None),
+        ({"metadata": {"citation_count": ["4"]}}, None),
+        ({"metadata": "not a mapping"}, None),
+    ],
+)
+def test_stored_count_accepts_only_saved_whole_numbers(
+    record: dict, expected: int | None
+) -> None:
+    assert stored_count(record, "citation_count") == expected
+
+
+@pytest.mark.parametrize("key", ["author_count", "citation_count"])
+def test_count_sort_is_numeric_with_unknown_values_last(
+    tmp_path: Path, key: str
+) -> None:
+    root = tmp_path / "library"
+    root.mkdir()
+    registry = PdfRegistry(root)
+    values = {"two": 2, "ten": 10, "zero": 0, "text": "7", "missing": None}
+    for name, value in values.items():
+        metadata = {} if value is None else {key: value}
+        registry.upsert_file(
+            root=root,
+            relative_path=f"{name}.pdf",
+            current_path=f"{name}.pdf",
+            sha256=name,
+            size_bytes=1,
+            mtime_ns=1,
+            status="resolved",
+            metadata=metadata,
+        )
+
+    ascending = registry.query_files(order_by=key)
+    descending = registry.query_files(order_by=key, descending=True)
+
+    assert [row["current_path"] for row in ascending] == [
+        "zero.pdf",
+        "two.pdf",
+        "text.pdf",
+        "ten.pdf",
+        "missing.pdf",
+    ]
+    assert [row["current_path"] for row in descending] == [
+        "ten.pdf",
+        "text.pdf",
+        "two.pdf",
+        "zero.pdf",
+        "missing.pdf",
+    ]
     registry.close()

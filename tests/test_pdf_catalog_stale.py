@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from pdf_identity_fixtures import confirm_metadata, write_pdf
 
 from adsfolio.config import Config
 from adsfolio.pdf.catalog import PdfCatalog
@@ -196,7 +197,7 @@ def test_renamer_non_ads_metadata_ready_default_and_custom_scheme(
     tmp_path: Path,
 ) -> None:
     source = tmp_path / "paper.pdf"
-    source.write_bytes(b"%PDF content for non-ads")
+    write_pdf(source)
     sha = sha256_file(source)
 
     sidecar = Sidecar(tmp_path)
@@ -210,7 +211,7 @@ def test_renamer_non_ads_metadata_ready_default_and_custom_scheme(
         METADATA_SHA256_KEY: sha,
         EXTERNAL_METADATA_KEY: {"provider": "crossref", "doi": "10.1000/123"},
     }
-    sidecar.upsert_file("paper.pdf", metadata)
+    sidecar.upsert_file("paper.pdf", confirm_metadata(source, metadata))
 
     renamer = PdfRenamer()
 

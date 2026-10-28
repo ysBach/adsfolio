@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import shutil
+import os
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Protocol
@@ -89,7 +89,8 @@ def move_tracked_file(
     """
     root = Path(state.directory).resolve()
     source = Path(source_path).resolve()
-    destination = Path(destination_path).resolve()
+    raw_destination = Path(destination_path).expanduser()
+    destination = raw_destination.parent.resolve() / raw_destination.name
     source_relative = _relative_to_root(root, source)
     destination_relative = _relative_to_root(root, destination)
 
@@ -97,24 +98,45 @@ def move_tracked_file(
         return destination
     if not source.is_file():
         raise FileNotFoundError(f"Tracked source file does not exist: {source}")
-    if destination.exists():
+    try:
+        destination.lstat()
+    except FileNotFoundError:
+        pass
+    else:
         raise FileExistsError(f"Tracked move destination already exists: {destination}")
 
     registry = getattr(state, "registry", None)
     if registry is not None:
-        active_paths = {
-            str(record["current_path"])
-            for record in registry.catalog.query_files(root=root)
-        }
-        if destination_relative in active_paths:
-            raise ValueError(f"Catalog location already exists: {destination_relative}")
+        occupied = registry.catalog.get_file(root, destination_relative)
+        if occupied is not None and occupied["missing_at"] is None:
+            # A deleted PDF must not reserve its old name forever. Only an
+            # actual missing path can release the row; access errors propagate.
+            try:
+                destination.lstat()
+            except FileNotFoundError:
+                with registry.catalog._connection:
+                    registry.catalog._connection.execute(
+                        "UPDATE file_locations SET missing_at = ? WHERE id = ?",
+                        (registry.catalog._utc_timestamp(), occupied["location_id"]),
+                    )
+            else:
+                raise ValueError(
+                    f"Catalog location already exists: {destination_relative}"
+                )
     tracked_entry = state.find_by_current_filename(source_relative)
     if tracked_entry is None:
         raise KeyError(f"Source is not tracked in the catalog: {source_relative}")
     original_key, _record = tracked_entry
 
     destination.parent.mkdir(parents=True, exist_ok=True)
-    shutil.move(str(source), str(destination))
+    # Both paths are inside one library. Hard links provide an atomic
+    # no-replace operation; a racing destination must never be overwritten.
+    os.link(source, destination)
+    try:
+        source.unlink()
+    except OSError:
+        destination.unlink()
+        raise
     state_updated = False
     try:
         updated = state.set_current_filename(original_key, destination_relative)
@@ -138,7 +160,8 @@ def move_tracked_file(
             except Exception as state_rollback_error:  # noqa: BLE001 - rollback must continue
                 rollback_errors.append(state_rollback_error)
         try:
-            shutil.move(str(destination), str(source))
+            os.link(destination, source)
+            destination.unlink()
         except Exception as rollback_error:  # noqa: BLE001 - report incomplete rollback
             rollback_errors.append(rollback_error)
         if rollback_errors:

@@ -100,6 +100,11 @@ adsfolio pdf refresh-ads ~/papers --identifier arXiv:2401.12345 \
   --relative-path preprint.pdf
 ```
 
+The command refuses an identifier that contradicts the PDF's own arXiv stamp or
+metadata DOI. If the PDF states no such identifier, add `--confirm-identity`
+after you check the paper yourself. See
+[PDF identity checks](../gui.md#pdf-identity-checks).
+
 To identify only some PDFs with the saved strategies, repeat `--file`:
 
 ```bash

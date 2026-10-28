@@ -31,7 +31,8 @@ ADSfolio asks ADS first. When ADS has no match, it asks Crossref and DataCite
 in your provider order. For an arXiv ID, it uses the DataCite record of the
 arXiv DOI, `10.48550/arXiv.<ID>`. The PDF then receives the title, the authors,
 and the year, and ADSfolio renames it with your Rename settings. The status
-column still shows that ADS has no record.
+column shows a purple dot for usable metadata without an ADS link. This state
+does not establish whether ADS contains a matching record.
 
 An arXiv ID needs **DataCite** in your metadata providers, because Crossref
 does not have arXiv DOIs. When ADS adds the paper later, choose **Update by ID…** again. The PDF then receives its bibcode.
@@ -39,6 +40,12 @@ does not have arXiv DOIs. When ADS adds the paper later, choose **Update by ID�
 Check the identifier against the paper before you choose **OK**. ADSfolio uses
 the DOI as you type it, apart from lowercase letters. Remove sentence
 punctuation that you pasted with the DOI.
+
+ADSfolio then compares the found record with the arXiv stamp and the DOIs in
+the PDF's own metadata. If they contradict the record, it refuses the update.
+If the PDF states no such identifier, the update needs your explicit
+confirmation before ADSfolio saves the metadata or renames the file. See
+[PDF identity checks](gui.md#pdf-identity-checks).
 
 To identify only some PDFs with the usual strategies, select their rows,
 right-click, and choose **Identify Selected PDFs…**.

@@ -1,10 +1,14 @@
+import re
 from pathlib import Path
 
 import pytest
+from pdf_identity_fixtures import confirm_metadata, write_pdf
 
 from adsfolio.config import AuthenticationError, Config
 from adsfolio.pdf.doi_providers import DEFAULT_DOI_PROVIDERS
+from adsfolio.pdf.files import sha256_file
 from adsfolio.pdf.identify_settings import IdentifySettings, IdentifyStrategy
+from adsfolio.pdf.identity import IDENTITY_KEY, assert_mutation_allowed
 from adsfolio.pdf.registry import open_registry_state
 from adsfolio.pdf.rename_settings import RenameSettings
 from adsfolio.pdf.renamer import PdfRenamer
@@ -14,11 +18,30 @@ from adsfolio.pdf.watch_session import ArrivalIdentity, WatchEvent, WatchState
 from adsfolio.pdf.watcher import PdfNotReadyError, PdfWatcher, WatchIdentifyPolicy
 
 
-@pytest.fixture(autouse=True)
-def consistent_mock_digest(monkeypatch):
-    # Watcher test identifiers use a fixed digest; the rename guard must use
-    # the same hashing double. Real digest mismatches have dedicated tests.
-    monkeypatch.setattr("adsfolio.pdf.renamer.sha256_file", lambda path: "watch-sha")
+def _doi(bibcode: str) -> str:
+    return "10.1000/" + re.sub(r"[^a-z0-9]", "", bibcode.lower())
+
+
+def _rec(bibcode: str, **extra) -> dict:
+    """ADS-like record whose DOI is the identifier its PDF states about itself."""
+    return {"bibcode": bibcode, "doi": _doi(bibcode), **extra}
+
+
+def _pdf(path: Path, bibcode: str | None = None) -> bytes:
+    """Write a real PDF that states the DOI of 'bibcode' (none if omitted)."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    return write_pdf(path, doi=_doi(bibcode) if bibcode else "")
+
+
+def _proved(path: Path, record: dict | None) -> dict | None:
+    """Stamp 'record' as production does: the record is its own provider document."""
+    if record is None:
+        return None
+    stamped = dict(record)
+    stamped[IDENTITY_KEY] = assert_mutation_allowed(
+        path, stamped, provider_document=record
+    )
+    return stamped
 
 
 class _Identifier:
@@ -26,13 +49,13 @@ class _Identifier:
         self.record = record
 
     def compute_sha256(self, path: Path) -> str:
-        return "watch-sha"
+        return sha256_file(path)
 
     def pdf_is_readable(self, path: Path) -> bool:
         return True
 
     def resolve_many(self, paths, journal_map=None, **kwargs):
-        return {Path(path): self.record for path in paths}
+        return {Path(path): _proved(Path(path), self.record) for path in paths}
 
 
 class _CountingIdentifier(_Identifier):
@@ -52,15 +75,6 @@ class _NoResolveIdentifier(_Identifier):
         raise AssertionError("cached resolved PDF must not query ADS")
 
 
-class _ChangingIdentifier(_Identifier):
-    def __init__(self, record):
-        super().__init__(record)
-        self.sha256 = "watch-sha-1"
-
-    def compute_sha256(self, path: Path) -> str:
-        return self.sha256
-
-
 class _StrategyRecordingIdentifier(_Identifier):
     def __init__(self, record):
         super().__init__(None)
@@ -74,7 +88,8 @@ class _StrategyRecordingIdentifier(_Identifier):
 
     def resolve_many(self, paths, journal_map=None, **kwargs):
         self.resolve_many_calls.append((paths, journal_map, kwargs))
-        return {Path(paths[0]): self.inferred_record}
+        path = Path(paths[0])
+        return {path: _proved(path, self.inferred_record)}
 
 
 class _Renamer:
@@ -107,7 +122,7 @@ def test_watcher_persists_unresolved_nested_path(monkeypatch, tmp_path):
     record = state.registry.find_file_by_relative_path(root, "nested/paper.pdf")
     assert record is not None
     assert record["status"] == "unresolved"
-    assert record["sha256"] == "watch-sha"
+    assert record["sha256"] == sha256_file(nested)
     state.close()
 
 
@@ -116,11 +131,10 @@ def test_watcher_registers_resolved_nested_path_without_batch_rename(
 ):
     root = tmp_path / "library"
     nested = root / "nested" / "paper.pdf"
-    nested.parent.mkdir(parents=True)
-    nested.write_bytes(b"%PDF")
+    _pdf(nested, "B1")
     state = _state(monkeypatch, root)
     watcher = PdfWatcher(
-        _Identifier({"bibcode": "B1", "sha256": "watch-sha"}),
+        _Identifier(_rec("B1")),
         _Renamer(),
     )
 
@@ -137,22 +151,21 @@ def test_watcher_records_new_content_version_for_existing_path(monkeypatch, tmp_
     root = tmp_path / "library"
     pdf_path = root / "paper.pdf"
     root.mkdir()
-    pdf_path.write_bytes(b"first")
+    _pdf(pdf_path, "B1")
     state = _state(monkeypatch, root)
-    identifier = _ChangingIdentifier({"bibcode": "B1"})
-    watcher = PdfWatcher(identifier, _Renamer())
+    watcher = PdfWatcher(_Identifier(_rec("B1")), _Renamer())
 
     watcher.process_new_pdf(pdf_path, state)
     first = state.registry.find_file_by_relative_path(root, "paper.pdf")
     assert first is not None
 
-    pdf_path.write_bytes(b"second")
-    identifier.sha256 = "watch-sha-2"
+    # A new revision of the same paper: different bytes, same stated DOI.
+    pdf_path.write_bytes(pdf_path.read_bytes() + b"\n%second revision\n")
     watcher.process_new_pdf(pdf_path, state)
 
     second = state.registry.find_file_by_relative_path(root, "paper.pdf")
     assert second is not None
-    assert second["sha256"] == "watch-sha-2"
+    assert second["sha256"] == sha256_file(pdf_path) != first["sha256"]
     assert len(state.registry.catalog.content_versions(first["attachment_id"])) == 2
     state.close()
 
@@ -161,13 +174,13 @@ def test_watcher_retries_unchanged_unresolved_pdf(monkeypatch, tmp_path):
     root = tmp_path / "library"
     pdf_path = root / "paper.pdf"
     root.mkdir()
-    pdf_path.write_bytes(b"%PDF")
+    write_pdf(pdf_path, doi="10.1051/0004-6361/202243983")
     state = _state(monkeypatch, root)
     state.upsert_file(
         "paper.pdf",
         {
             "current_filename": "paper.pdf",
-            "sha256": "watch-sha",
+            "sha256": sha256_file(pdf_path),
             "status": "unresolved",
         },
     )
@@ -205,7 +218,7 @@ def test_watcher_does_not_suffix_unresolved_pdf_already_in_output_directory(
         "unresolved/paper.pdf",
         {
             "current_filename": "unresolved/paper.pdf",
-            "sha256": "watch-sha",
+            "sha256": sha256_file(pdf_path),
             "status": "unresolved",
         },
     )
@@ -230,9 +243,9 @@ def test_polling_skips_unchanged_registered_pdf(monkeypatch, tmp_path):
     root = tmp_path / "library"
     pdf_path = root / "paper.pdf"
     root.mkdir()
-    pdf_path.write_bytes(b"%PDF")
+    _pdf(pdf_path, "B1")
     state = _state(monkeypatch, root)
-    identifier = _CountingIdentifier({"bibcode": "B1"})
+    identifier = _CountingIdentifier(_rec("B1"))
     watcher = PdfWatcher(identifier, _Renamer())
 
     class _StopAfterSecondCheck:
@@ -338,16 +351,15 @@ def test_watcher_moves_unresolved_and_updates_catalog(monkeypatch, tmp_path):
 def test_watcher_renames_only_resolved_new_pdf(monkeypatch, tmp_path):
     root = tmp_path / "library"
     source = root / "paper.pdf"
-    source.parent.mkdir()
-    source.write_bytes(b"%PDF")
+    _pdf(source, "2025RNAAS...9..338Z")
     state = _state(monkeypatch, root)
     watcher = PdfWatcher(
         _Identifier(
-            {
-                "bibcode": "2025RNAAS...9..338Z",
-                "title": ["Aperture-averaged Polarimetry"],
-                "author": ["Zheltobryukhov, Maxim"],
-            }
+            _rec(
+                "2025RNAAS...9..338Z",
+                title=["Aperture-averaged Polarimetry"],
+                author=["Zheltobryukhov, Maxim"],
+            )
         ),
         PdfRenamer(),
     )
@@ -434,17 +446,20 @@ def test_watcher_preserves_cached_sidecar_record_during_rename(
     tmp_path, filename: str
 ) -> None:
     source = tmp_path / filename
-    source.write_bytes(b"%PDF cached")
+    data = _pdf(source, "B1")
     sidecar = Sidecar(tmp_path)
     sidecar.upsert_file(
         "download.pdf",
-        {
-            "current_filename": filename,
-            "sha256": "watch-sha",
-            "status": "resolved",
-            "bibcode": "B1",
-            "notes": "Keep this note",
-        },
+        _proved(
+            source,
+            _rec(
+                "B1",
+                current_filename=filename,
+                sha256=sha256_file(source),
+                status="resolved",
+                notes="Keep this note",
+            ),
+        ),
     )
     watcher = PdfWatcher(_NoResolveIdentifier(None), PdfRenamer())
 
@@ -452,7 +467,7 @@ def test_watcher_preserves_cached_sidecar_record_during_rename(
 
     assert record is not None
     assert record["current_filename"] == "B1.pdf"
-    assert (tmp_path / "B1.pdf").read_bytes() == b"%PDF cached"
+    assert (tmp_path / "B1.pdf").read_bytes() == data
     reloaded = Sidecar(tmp_path)
     assert set(reloaded.files) == {"download.pdf"}
     assert reloaded.get_file("download.pdf")["current_filename"] == "B1.pdf"
@@ -462,16 +477,15 @@ def test_watcher_preserves_cached_sidecar_record_during_rename(
 def test_watcher_dry_run_does_not_mutate_catalog_or_files(monkeypatch, tmp_path):
     root = tmp_path / "library"
     source = root / "paper.pdf"
-    source.parent.mkdir()
-    source.write_bytes(b"%PDF")
+    _pdf(source, "2025RNAAS...9..338Z")
     state = _state(monkeypatch, root)
     watcher = PdfWatcher(
         _Identifier(
-            {
-                "bibcode": "2025RNAAS...9..338Z",
-                "title": ["Aperture-averaged Polarimetry"],
-                "author": ["Zheltobryukhov, Maxim"],
-            }
+            _rec(
+                "2025RNAAS...9..338Z",
+                title=["Aperture-averaged Polarimetry"],
+                author=["Zheltobryukhov, Maxim"],
+            )
         ),
         PdfRenamer(),
     )
@@ -497,18 +511,21 @@ def test_duplicate_hash_arrival_is_renamed_without_ads_query(monkeypatch, tmp_pa
     existing = root / "existing.pdf"
     incoming = root / "download.pdf"
     root.mkdir()
-    existing.write_bytes(b"first")
-    incoming.write_bytes(b"same content represented by test digest")
+    data = _pdf(existing, "2024ApJ...900..100S")
+    incoming.write_bytes(data)
     state = _state(monkeypatch, root)
     state.upsert_file(
         "existing.pdf",
-        {
-            "bibcode": "2024ApJ...900..100S",
-            "title": ["Paper Title"],
-            "author": ["Smith, John"],
-            "current_filename": "existing.pdf",
-            "sha256": "watch-sha",
-        },
+        _proved(
+            existing,
+            _rec(
+                "2024ApJ...900..100S",
+                title=["Paper Title"],
+                author=["Smith, John"],
+                current_filename="existing.pdf",
+                sha256=sha256_file(existing),
+            ),
+        ),
     )
     identifier = _Identifier(None)
     watcher = PdfWatcher(identifier, PdfRenamer())
@@ -601,16 +618,11 @@ def test_watch_identify_policy_rejects_skip_destination_containing_root(
 def test_process_event_reports_renamed_destination(monkeypatch, tmp_path):
     root = tmp_path / "library"
     source = root / "incoming.pdf"
-    root.mkdir()
-    source.write_bytes(b"%PDF")
+    _pdf(source, "2025RNAAS...9..338Z")
     state = _state(monkeypatch, root)
     watcher = PdfWatcher(
         _Identifier(
-            {
-                "bibcode": "2025RNAAS...9..338Z",
-                "title": ["A title"],
-                "author": ["Smith, Jane"],
-            }
+            _rec("2025RNAAS...9..338Z", title=["A title"], author=["Smith, Jane"])
         ),
         PdfRenamer(),
     )
@@ -630,15 +642,14 @@ def test_process_event_reports_renamed_destination(monkeypatch, tmp_path):
 def test_process_event_applies_saved_author_join_settings(monkeypatch, tmp_path):
     root = tmp_path / "library"
     source = root / "incoming.pdf"
-    root.mkdir()
-    source.write_bytes(b"%PDF")
+    _pdf(source, "2025RNAAS...9..338Z")
     state = _state(monkeypatch, root)
     watcher = PdfWatcher(
         _Identifier(
-            {
-                "bibcode": "2025RNAAS...9..338Z",
-                "author": ["Smith, Jane", "Doe, John", "Lee, Alex"],
-            }
+            _rec(
+                "2025RNAAS...9..338Z",
+                author=["Smith, Jane", "Doe, John", "Lee, Alex"],
+            )
         ),
         PdfRenamer(),
     )
@@ -666,11 +677,10 @@ def test_process_event_passes_configured_strategy_order_to_resolver(
 ) -> None:
     root = tmp_path / "library"
     source = root / "2025RNAAS...9..338Z.pdf"
-    root.mkdir()
-    source.write_bytes(b"%PDF")
+    _pdf(source, "2025RNAAS...9..338Z")
     state = _state(monkeypatch, root)
     identifier = _StrategyRecordingIdentifier(
-        {"bibcode": "2025RNAAS...9..338Z", "title": ["Inferred"]}
+        _rec("2025RNAAS...9..338Z", title=["Inferred"])
     )
     watcher = PdfWatcher(identifier, _Renamer())
 
@@ -691,12 +701,14 @@ def test_process_event_passes_configured_strategy_order_to_resolver(
     assert len(identifier.resolve_many_calls) == 1
     paths, _journal_map, kwargs = identifier.resolve_many_calls[0]
     assert paths == [source]
+    lookup = kwargs.pop("cached_candidate_lookup")
+    assert callable(lookup)
     assert kwargs == {
         "strategies": (
             IdentifyStrategy.FIRST_PAGE_DOI,
             IdentifyStrategy.FILENAME_BIBCODE,
         ),
-        "sha256_by_path": {source: "watch-sha"},
+        "sha256_by_path": {source: sha256_file(source)},
         "providers": DEFAULT_DOI_PROVIDERS,
     }
     state.close()
@@ -818,24 +830,26 @@ def test_process_event_reports_collision_without_overwrite(
     root = tmp_path / "library"
     source = root / "incoming.pdf"
     occupied = root / "2025RNAAS...9..338Z.pdf"
-    root.mkdir()
-    source.write_bytes(b"%PDF source")
+    data = _pdf(source, "2025RNAAS...9..338Z")
     occupied.write_bytes(b"occupied")
     state = _state(monkeypatch, root)
     if cached:
         state.upsert_file(
             source.name,
-            {
-                "current_filename": source.name,
-                "sha256": "watch-sha",
-                "status": "resolved",
-                "bibcode": "2025RNAAS...9..338Z",
-            },
+            _proved(
+                source,
+                _rec(
+                    "2025RNAAS...9..338Z",
+                    current_filename=source.name,
+                    sha256=sha256_file(source),
+                    status="resolved",
+                ),
+            ),
         )
     watcher = PdfWatcher(
         _NoResolveIdentifier(None)
         if cached
-        else _Identifier({"bibcode": "2025RNAAS...9..338Z"}),
+        else _Identifier(_rec("2025RNAAS...9..338Z")),
         PdfRenamer(),
     )
 
@@ -848,7 +862,7 @@ def test_process_event_reports_collision_without_overwrite(
 
     assert outcome.event.state is WatchState.FAILED
     assert str(occupied) in (outcome.message or "")
-    assert source.read_bytes() == b"%PDF source"
+    assert source.read_bytes() == data
     assert occupied.read_bytes() == b"occupied"
     state.close()
 
@@ -889,17 +903,10 @@ def test_watcher_relocates_fresh_resolved_pdf_from_nested_unresolved(
     root = tmp_path / "library"
     unresolved = root / "review" / "pending" if configured else root / "unresolved"
     source = unresolved / "nested" / "paper.pdf"
-    source.parent.mkdir(parents=True)
-    source.write_bytes(b"%PDF fresh")
+    data = _pdf(source, "B1")
     state = _state(monkeypatch, root)
     watcher = PdfWatcher(
-        _Identifier(
-            {
-                "bibcode": "B1",
-                "title": ["Nested paper"],
-                "author": ["Smith, Jane"],
-            }
-        ),
+        _Identifier(_rec("B1", title=["Nested paper"], author=["Smith, Jane"])),
         PdfRenamer(),
     )
 
@@ -915,7 +922,7 @@ def test_watcher_relocates_fresh_resolved_pdf_from_nested_unresolved(
     if apply:
         assert record is not None
         assert record["current_filename"] == target.name
-        assert target.read_bytes() == b"%PDF fresh"
+        assert target.read_bytes() == data
         assert not source.exists()
         stored = state.registry.find_file_by_relative_path(root, target.name)
         assert stored is not None
@@ -941,20 +948,22 @@ def test_watcher_renames_cached_resolved_pdf(
     source = (
         unresolved / "nested" / "cached.pdf" if from_unresolved else root / "cached.pdf"
     )
-    source.parent.mkdir(parents=True)
-    source.write_bytes(b"%PDF cached")
+    data = _pdf(source, "B2")
     relative = source.relative_to(root).as_posix()
     state = _state(monkeypatch, root)
     state.upsert_file(
         relative,
-        {
-            "current_filename": relative,
-            "sha256": "watch-sha",
-            "status": "resolved",
-            "bibcode": "B2",
-            "title": ["Cached paper"],
-            "author": ["Doe, Alex"],
-        },
+        _proved(
+            source,
+            _rec(
+                "B2",
+                current_filename=relative,
+                sha256=sha256_file(source),
+                status="resolved",
+                title=["Cached paper"],
+                author=["Doe, Alex"],
+            ),
+        ),
     )
     watcher = PdfWatcher(_NoResolveIdentifier(None), PdfRenamer())
 
@@ -970,7 +979,7 @@ def test_watcher_renames_cached_resolved_pdf(
     if apply:
         assert record is not None
         assert record["current_filename"] == target.name
-        assert target.read_bytes() == b"%PDF cached"
+        assert target.read_bytes() == data
         assert not source.exists()
         assert state.registry.find_file_by_relative_path(root, relative) is None
         stored = state.registry.find_file_by_relative_path(root, target.name)
@@ -981,7 +990,7 @@ def test_watcher_renames_cached_resolved_pdf(
         repeated = watcher.process_new_pdf(target, state, scheme="{bibcode}")
         assert repeated is not None
         assert repeated["current_filename"] == target.name
-        assert target.read_bytes() == b"%PDF cached"
+        assert target.read_bytes() == data
     else:
         assert record is not None
         assert record["planned_filename"] == target.name
@@ -1001,11 +1010,10 @@ def test_process_event_reports_destination_after_unresolved_relocation(
     root = tmp_path / "library"
     unresolved = root / "review" / "pending" if configured else root / "unresolved"
     source = unresolved / "nested" / "event.pdf"
-    source.parent.mkdir(parents=True)
-    source.write_bytes(b"%PDF event")
+    data = _pdf(source, "B3")
     state = _state(monkeypatch, root)
     watcher = PdfWatcher(
-        _Identifier({"bibcode": "B3", "title": ["Event paper"]}),
+        _Identifier(_rec("B3", title=["Event paper"])),
         PdfRenamer(),
     )
 
@@ -1019,7 +1027,7 @@ def test_process_event_reports_destination_after_unresolved_relocation(
     target = root / "B3.pdf"
     assert outcome.event.state is WatchState.RENAMED
     assert outcome.destination == target
-    assert target.read_bytes() == b"%PDF event"
+    assert target.read_bytes() == data
     assert not source.exists()
     stored = state.registry.find_file_by_relative_path(root, target.name)
     assert stored is not None
@@ -1034,18 +1042,11 @@ def test_process_event_relocation_collision_keeps_source_and_metadata(
     unresolved = root / "review" / "pending"
     source = unresolved / "nested" / "collision.pdf"
     target = root / "B4.pdf"
-    source.parent.mkdir(parents=True)
-    source.write_bytes(b"%PDF source")
+    data = _pdf(source, "B4")
     target.write_bytes(b"%PDF existing")
     state = _state(monkeypatch, root)
     watcher = PdfWatcher(
-        _Identifier(
-            {
-                "bibcode": "B4",
-                "title": ["Retain this metadata"],
-                "author": ["Smith, Jane"],
-            }
-        ),
+        _Identifier(_rec("B4", title=["Retain this metadata"], author=["Smith, Jane"])),
         PdfRenamer(),
     )
 
@@ -1058,7 +1059,7 @@ def test_process_event_relocation_collision_keeps_source_and_metadata(
 
     relative = source.relative_to(root).as_posix()
     assert outcome.event.state is WatchState.FAILED
-    assert source.read_bytes() == b"%PDF source"
+    assert source.read_bytes() == data
     assert target.read_bytes() == b"%PDF existing"
     stored = state.registry.find_file_by_relative_path(root, relative)
     assert stored is not None
@@ -1190,4 +1191,59 @@ def test_symlink_outside_root_does_not_stop_scan_or_hide_known_files(
 
     assert handled == []
     assert _active_paths(state, root) == {"known.pdf"}
+    state.close()
+
+
+def test_wrong_own_identifier_blocks_rename_and_catalog(monkeypatch, tmp_path):
+    root = tmp_path / "library"
+    source = root / "incoming.pdf"
+    data = _pdf(source, "B5")  # the PDF states the DOI of a different paper
+    state = _state(monkeypatch, root)
+    watcher = PdfWatcher(_Identifier(None), PdfRenamer())
+    watcher.identifier.resolve_many = lambda paths, **kwargs: {
+        Path(paths[0]): {**_rec("B6"), "title": ["Other paper"]}
+    }
+
+    outcome = watcher.process_event(
+        _watch_event(root, source),
+        state,
+        RenameSettings(template="{bibcode}"),
+        IdentifySettings(),
+    )
+
+    assert outcome.event.state is WatchState.FAILED
+    assert source.read_bytes() == data
+    assert not (root / "B6.pdf").exists()
+    assert state.registry.find_file_by_relative_path(root, "incoming.pdf") is None
+    state.close()
+
+
+def test_recorded_manual_consent_allows_rename_of_pdf_without_identifier(
+    monkeypatch, tmp_path
+):
+    root = tmp_path / "library"
+    source = root / "scan.pdf"
+    data = _pdf(source)
+    state = _state(monkeypatch, root)
+    record = confirm_metadata(
+        source,
+        {
+            "bibcode": "B7",
+            "current_filename": "scan.pdf",
+            "sha256": sha256_file(source),
+            "status": "resolved",
+        },
+    )
+    state.upsert_file("scan.pdf", record)
+    watcher = PdfWatcher(_NoResolveIdentifier(None), PdfRenamer())
+
+    outcome = watcher.process_event(
+        _watch_event(root, source),
+        state,
+        RenameSettings(template="{bibcode}"),
+        IdentifySettings(),
+    )
+
+    assert outcome.event.state is WatchState.RENAMED
+    assert (root / "B7.pdf").read_bytes() == data
     state.close()

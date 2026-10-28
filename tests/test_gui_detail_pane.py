@@ -1286,7 +1286,9 @@ def test_toolbar_exposes_identify_and_rename_actions(
     window = MainWindow()
     toolbar = window.findChild(QToolBar, "search_toolbar")
 
-    assert window.identify_action in toolbar.actions()
+    # Identify sits in a badge button that shares the menu action.
+    assert window.identify_button.defaultAction() is window.identify_action
+    assert toolbar.isAncestorOf(window.identify_button)
     assert window.rename_action in toolbar.actions()
     window.close()
 

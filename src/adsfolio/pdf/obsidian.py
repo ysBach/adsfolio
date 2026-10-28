@@ -1,6 +1,7 @@
 """Obsidian-friendly Markdown note generation for tracked PDFs."""
 
 import logging
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -134,6 +135,94 @@ class ObsidianNoteWriter:
         lines.append("")
         return "\n".join(lines)
 
+    _ANNOTATIONS_START = "<!-- adsfolio:pdf-annotations:start -->"
+    _ANNOTATIONS_END = "<!-- adsfolio:pdf-annotations:end -->"
+
+    def _annotation_section(self, pdf_path: Path) -> str:
+        """Extract PDF markup and text notes into a managed Markdown section."""
+        try:
+            import fitz
+        except ImportError as exc:
+            raise ValueError(
+                "Exporting PDF annotations requires PyMuPDF. "
+                "Install adsfolio with the full extra."
+            ) from exc
+
+        lines = [self._ANNOTATIONS_START, "## PDF annotations", ""]
+        count = 0
+        with fitz.open(pdf_path) as document:
+            for page_number, page in enumerate(document, start=1):
+                words = None
+                for annot in page.annots() or ():
+                    kind = annot.type[1]
+                    content = (annot.info.get("content") or "").strip()
+                    text = ""
+                    if kind in {"Highlight", "Underline", "StrikeOut", "Squiggly"}:
+                        vertices = annot.vertices or []
+                        if words is None:
+                            words = page.get_text("words", sort=True)
+                        selected = []
+                        for i in range(0, len(vertices) - 3, 4):
+                            quad = fitz.Quad(vertices[i : i + 4])
+                            for word in words:
+                                center = fitz.Point(
+                                    (word[0] + word[2]) / 2,
+                                    (word[1] + word[3]) / 2,
+                                )
+                                if center in quad and word not in selected:
+                                    selected.append(word)
+                        text = " ".join(word[4] for word in selected)
+                    if not text and not content:
+                        if kind not in {
+                            "Highlight",
+                            "Underline",
+                            "StrikeOut",
+                            "Squiggly",
+                        }:
+                            continue
+                        text = "[No selectable text found]"
+                    count += 1
+                    url = f"{pdf_path.resolve().as_uri()}#page={page_number}"
+                    lines.append(f"### {kind} — [page {page_number}]({url})")
+                    lines.append("")
+                    if text:
+                        lines.extend(f"> {line}" for line in text.splitlines())
+                        lines.append("")
+                    if content:
+                        lines.extend(f"> {line}" for line in content.splitlines())
+                        lines.append("")
+        if not count:
+            lines.extend(["_No PDF annotations found._", ""])
+        lines.append(self._ANNOTATIONS_END)
+        return "\n".join(lines)
+
+    def _merge_annotations(self, content: str, section: str) -> str:
+        """Replace the managed section while preserving all other note content."""
+        starts = list(
+            re.finditer(
+                r"(?m)^" + re.escape(self._ANNOTATIONS_START) + r"(?=\r?$)", content
+            )
+        )
+        ends = list(
+            re.finditer(
+                r"(?m)^" + re.escape(self._ANNOTATIONS_END) + r"(?=\r?$)", content
+            )
+        )
+        if not starts and not ends:
+            empty = (
+                f"{self._ANNOTATIONS_START}\n## PDF annotations\n\n"
+                f"_No PDF annotations found._\n\n{self._ANNOTATIONS_END}"
+            )
+            if section == empty:
+                return content
+            separator = (
+                "" if not content else ("\n" if content.endswith("\n") else "\n\n")
+            )
+            return content + separator + section + "\n"
+        if len(starts) != 1 or len(ends) != 1 or ends[0].start() < starts[0].start():
+            raise ValueError("Invalid PDF annotation section markers in note.")
+        return content[: starts[0].start()] + section + content[ends[0].end() :]
+
     def generate(
         self,
         directory: Path,
@@ -143,11 +232,20 @@ class ObsidianNoteWriter:
         force: bool = False,
     ) -> list[NotePlan]:
         """Plan (and, if `apply`, write) Obsidian notes for every tracked PDF."""
+        try:
+            import fitz  # noqa: F401
+        except ImportError as exc:
+            raise ValueError(
+                "Exporting PDF annotations requires PyMuPDF. "
+                "Install adsfolio with the full extra."
+            ) from exc
         directory = Path(directory)
         target_dir = Path(notes_dir) if notes_dir is not None else directory
 
         records: dict[str, dict[str, Any]] = dict(state.files)
         plans: list[NotePlan] = []
+        sections: dict[str, str] = {}
+        existing: dict[str, str] = {}
         for original_name, metadata in records.items():
             current_name = str(metadata.get("current_filename", original_name))
             pdf_path = directory / current_name
@@ -160,12 +258,26 @@ class ObsidianNoteWriter:
                 action = "skip-unresolved"
             elif not pdf_path.exists():
                 action = "skip-missing-file"
-            elif note_path.exists() and not force:
-                action = "skip-exists"
-            elif note_path.exists():
-                action = "update"
             else:
-                action = "create"
+                try:
+                    section = self._annotation_section(pdf_path)
+                    sections[original_name] = section
+                    if note_path.exists():
+                        content = note_path.read_bytes().decode("utf-8")
+                        existing[original_name] = content
+                        candidate = self._merge_annotations(content, section)
+                        if force:
+                            candidate = self._merge_annotations(
+                                self.render_note(metadata, pdf_path), section
+                            )
+                        action = "skip-unchanged" if candidate == content else "update"
+                    else:
+                        action = "create"
+                except (OSError, UnicodeError, RuntimeError, ValueError) as exc:
+                    self.logger.warning(
+                        "Cannot export annotations from %s: %s", pdf_path, exc
+                    )
+                    action = "skip-error"
 
             plans.append(
                 NotePlan(original_name, note_filename, note_path, pdf_path, action)
@@ -178,7 +290,8 @@ class ObsidianNoteWriter:
         missing_bibcodes = [
             self._first(records[plan.original_filename].get("bibcode"))
             for plan in writable
-            if not records[plan.original_filename].get("abstract")
+            if (plan.action == "create" or force)
+            and not records[plan.original_filename].get("abstract")
         ]
         abstracts = (
             self.fetch_missing_abstracts(missing_bibcodes) if missing_bibcodes else {}
@@ -196,9 +309,31 @@ class ObsidianNoteWriter:
                 records[plan.original_filename] = metadata
                 changed = True
 
+            if plan.original_filename in existing and not force:
+                content = existing[plan.original_filename]
+            else:
+                content = self.render_note(metadata, plan.pdf_path)
+            content = self._merge_annotations(content, sections[plan.original_filename])
+            if content == existing.get(plan.original_filename):
+                plan.action = "skip-unchanged"
+                continue
+            if plan.note_path.exists():
+                if (
+                    plan.original_filename not in existing
+                    or plan.note_path.read_bytes()
+                    != existing[plan.original_filename].encode("utf-8")
+                ):
+                    self.logger.warning(
+                        "Note changed during export: %s", plan.note_path
+                    )
+                    plan.action = "skip-changed"
+                    continue
+            elif plan.original_filename in existing:
+                self.logger.warning("Note removed during export: %s", plan.note_path)
+                plan.action = "skip-changed"
+                continue
             plan.note_path.parent.mkdir(parents=True, exist_ok=True)
-            content = self.render_note(metadata, plan.pdf_path)
-            plan.note_path.write_text(content, encoding="utf-8")
+            plan.note_path.write_bytes(content.encode("utf-8"))
 
         if changed:
             state.save()

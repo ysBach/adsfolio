@@ -1,6 +1,9 @@
 # Maintaining ADSfolio
 
-## Keep Documentation in Sync
+## Keep documentation in sync
+
+Apply the ADHD and ASD-STE100 skills to documentation, docstrings, and release
+notes. Follow `AGENTS.md` for the required style and source-preservation rules.
 
 When code changes, update docs in the same commit.
 
@@ -166,9 +169,102 @@ They must preserve these requirements:
 Additional limits:
 
 - Uniform-font OCR or mixed-size titles can require a verified identifier.
-- Title candidates require ADS verification.
+- Title candidates require ADS verification and the PDF identity check below.
 - Downloads serialize session calls while they stream bodies concurrently.
   Callers must not mutate or close the client during active downloads.
+
+## PDF identity checks
+
+`adsfolio.pdf.identity` decides whether a PDF may be associated with a record.
+Every code path that writes publication metadata for a PDF or renames it must
+call `assert_mutation_allowed` on the current file. Store its returned
+provenance under `IDENTITY_KEY`.
+
+### Accepted evidence
+
+- Direct evidence includes the page-1 arXiv stamp and DOI properties in DocInfo
+  and XMP. A complete labeled DOI or DOI URL in DocInfo Title also counts.
+  A DOI mentioned within an ordinary title does not count.
+- Subject evidence requires three agreements. Subject must state one labeled
+  DOI. The first page must repeat it with exact DOI boundaries. DocInfo Title
+  must equal the provider title after whitespace and case normalization.
+  The provider must explicitly list the same DOI.
+
+A new verified result needs `provider_document`, a fresh provider record.
+It must list every identifier that the proposed record and the PDF claim.
+Aliases that appear only in the proposed metadata establish nothing.
+Without a provider record, ADSfolio requires stored verified provenance.
+That provenance must match the same file hash, identifiers, and PDF evidence.
+
+### Refused changes
+- A PDF identifier that contradicts the record raises `IdentityConflictError`.
+  No flag or stored confirmation overrides it.
+- Missing or unconfirmable evidence raises `UnverifiedIdentityError`.
+  Automatic actions must stop there. A warning from optional XMP does not
+  invalidate readable matching identifiers or corroborated Subject evidence.
+- An unreadable file, a file that changes while it is read, or a hash that
+  differs from the caller's expected hash raises `IdentityValidationError`.
+
+### Manual confirmation and stored provenance
+
+Explicit manual confirmation admits a PDF without a readable own identifier.
+It also admits hand-entered metadata without a stable identifier.
+It cannot override an own identifier that the provider does not corroborate.
+Its stored stamp binds the file's SHA-256 hash and the record fingerprint.
+A changed file or different record invalidates that stamp.
+
+Records without stored provenance receive another check before updates or
+renames. Recovered XMP identifiers must use explicit namespace declarations.
+An unrelated undeclared prefix can produce a warning without hiding valid
+identifier fields. Readable identifier conflicts still block the change.
+
+File names, hashes, result order, and title or author similarity alone do not
+establish identity. Renames change a path. Metadata updates change the catalog.
+Neither operation rewrites PDF contents.
+
+The check confirms stated identifiers only. It does not guarantee that every
+PDF can be identified or that its content is the paper.
+
+### Repairing wrong associations
+
+`scripts/repair_pdf_identities.py` reattaches PDFs that a catalog links to the
+wrong paper. It reads a JSON manifest. Each entry names the PDF path, its
+SHA-256 hash, the location and attachment IDs, optionally the wrong document
+ID, the metadata the catalog must still hold, and the full ADS record of the
+correct paper. A verified DOI-provider record can supply the correct metadata
+when ADS has no record. Its ADS link remains empty. Without `--apply` or
+`--undo`, the script only prints the plan.
+
+```sh
+uv run python scripts/repair_pdf_identities.py --catalog CATALOG --root ROOT \
+  --manifest manifest.json --rename-settings rename.json
+uv run python scripts/repair_pdf_identities.py --catalog CATALOG --root ROOT \
+  --manifest manifest.json --rename-settings rename.json --apply --journal-dir DIR
+uv run python scripts/repair_pdf_identities.py --catalog CATALOG --undo DIR/repair-ID.json
+```
+
+Close ADSfolio before apply or undo. Stop every watcher. The repair requires
+exclusive catalog access. Its writer check does not hold a lock across the
+whole operation.
+Pause file sync for the library as well. The manifest's `proposed_ads_record`
+serves as the provider record for the identity check, so build it from a fresh
+ADS response and do not edit it by hand.
+
+Before it changes any PDF or association, the plan checks every entry. It refuses an entry
+if the hash, IDs, or metadata differ from the manifest, or if the attachment
+has several active locations. It also refuses stale metadata and managed local
+references. The PDF's own identifiers must verify the correct record.
+For a PDF with parser errors, a reviewed manifest can instead list the exact
+`reviewed_parser_errors` and an `audit_reference`. Every readable own identifier
+must still agree with the provider. The result receives `reviewed_repair` status.
+That status alone does not permit automatic updates or renames. Optional XMP
+warnings with independently confirming identifiers need no manual audit.
+No PDF bytes
+are changed to remove parser errors. Locked automatic fields block an entry unless
+the manifest lists them in `authorized_locked_fields`. Apply backs up the
+catalog and each PDF, writes a journal, and never overwrites a file or changes
+PDF bytes. A failure reverts the recorded steps. Undo refuses to run if a
+repaired file or catalog row changed after the repair.
 
 ## Publishing releases
 

@@ -18,6 +18,7 @@ from ..config import AuthenticationError
 from ..pdf.files import iter_pdf_paths
 from ..pdf.identify import PdfIdentifier
 from ..pdf.identify_settings import IdentifySettings
+from ..pdf.readiness import METADATA_STALE_KEY, WATCH_PENDING_KEY
 from ..pdf.registry import CentralPdfRegistryState, open_registry_state
 from ..pdf.rename_settings import RenameSettings
 from ..pdf.renamer import PdfRenamer
@@ -58,6 +59,7 @@ class _WorkerProtocol(Protocol):
     outcome: Any
     failed: Any
     paused: Any
+    reconciled: Any
 
     def start(self) -> None: ...
 
@@ -74,6 +76,7 @@ class _LibraryWatchWorker(QObject):
     failed = Signal(object)
     paused = Signal(object)
     pending_ready = Signal()
+    reconciled = Signal(object)
 
     stop_requested = Signal()
     process_requested = Signal(object, object, object)
@@ -97,6 +100,8 @@ class _LibraryWatchWorker(QObject):
         self._paused = False
         self._pending: dict[tuple[Path, WatchSource], None] = {}
         self._pending_lock = threading.Lock()
+        self._reconcile_wanted = False
+        self._reconcile_deferred = False
         self._pending_processes: dict[
             ArrivalIdentity,
             tuple[WatchEvent, IdentifySettings, RenameSettings],
@@ -131,7 +136,12 @@ class _LibraryWatchWorker(QObject):
             self._start_observer()
             baseline = self._scan_snapshots()
             self._drain()
+            baseline, changed = self._split_startup_snapshots(baseline)
             self._session.finish_baseline(baseline)
+            for snapshot in changed:
+                event = self._session.observe(snapshot, WatchSource.CREATED)
+                if event is not None:
+                    self.detected.emit(event)
             self._timer = QTimer(self)
             self._timer.timeout.connect(self._reconcile)
             self._timer.start(10_000)
@@ -143,6 +153,52 @@ class _LibraryWatchWorker(QObject):
     def configure(self, recursive: bool) -> None:
         """Set root recursion before the worker starts."""
         self._recursive = recursive
+
+    def _split_startup_snapshots(
+        self, snapshots: list[FileSnapshot]
+    ) -> tuple[list[FileSnapshot], list[FileSnapshot]]:
+        """Split startup files into the untracked baseline and catalog changes.
+
+        Files with no catalog record, or whose record matches the file, are the
+        baseline. A catalogued file is eligible when its record is marked
+        metadata-stale or watch-pending (set by the startup discovery scan for
+        content that changed or arrived while no watcher was running), or when
+        its size or modification time differ from the record.
+        """
+        if self._registry is None:
+            return snapshots, []
+        try:
+            records = {
+                str(record["current_path"]): record
+                for record in self._registry.registry.catalog.query_files(
+                    root=self.root
+                )
+            }
+        except (OSError, KeyError, TypeError):
+            return snapshots, []
+        baseline: list[FileSnapshot] = []
+        changed: list[FileSnapshot] = []
+        for snapshot in snapshots:
+            record = records.get(snapshot.path.relative_to(self.root).as_posix())
+            if record is not None and self._catalog_record_changed(record, snapshot):
+                changed.append(snapshot)
+            else:
+                baseline.append(snapshot)
+        return baseline, changed
+
+    @staticmethod
+    def _catalog_record_changed(record: Any, snapshot: FileSnapshot) -> bool:
+        metadata = record.get("metadata")
+        metadata = metadata if isinstance(metadata, dict) else {}
+        flagged = any(
+            record.get(key) or metadata.get(key)
+            for key in (METADATA_STALE_KEY, WATCH_PENDING_KEY)
+        )
+        return (
+            flagged
+            or record.get("size_bytes") != snapshot.size_bytes
+            or record.get("mtime_ns") != snapshot.mtime_ns
+        )
 
     def _start_observer(self) -> None:
         try:
@@ -167,14 +223,25 @@ class _LibraryWatchWorker(QObject):
                     return
                 source = Path(event.src_path).resolve()
                 destination = Path(event.dest_path).resolve()
+                if source.is_relative_to(worker.root):
+                    # The source name is gone; a completed scan may now mark it
+                    # missing.
+                    worker._request_reconcile()
                 if not destination.is_relative_to(worker.root):
                     return
+                # An intra-root rename reports the destination as modified.
+                # The session treats an unseen physical identity (an atomic
+                # replace) as an arrival and a known one as a plain rename.
                 source_kind = (
                     WatchSource.MODIFIED
                     if source.is_relative_to(worker.root)
                     else WatchSource.MOVED_IN
                 )
                 worker._enqueue(destination, source_kind)
+
+            def on_deleted(self, event: Any) -> None:
+                if not event.is_directory:
+                    worker._request_reconcile()
 
         observer = Observer()
         observer.schedule(Handler(), str(self.root), recursive=self._recursive)
@@ -234,6 +301,8 @@ class _LibraryWatchWorker(QObject):
         with self._pending_lock:
             pending = list(self._pending)
             self._pending.clear()
+            reconcile_wanted = self._reconcile_wanted
+            self._reconcile_wanted = False
         for path, source in pending:
             try:
                 snapshot = FileSnapshot.from_path(path)
@@ -245,6 +314,13 @@ class _LibraryWatchWorker(QObject):
             event = self._session.observe(snapshot, source)
             if event is not None:
                 self.detected.emit(event)
+        if reconcile_wanted:
+            self._reconcile()
+
+    def _request_reconcile(self) -> None:
+        with self._pending_lock:
+            self._reconcile_wanted = True
+        self.pending_ready.emit()
 
     @Slot()
     def _reconcile(self) -> None:
@@ -252,12 +328,33 @@ class _LibraryWatchWorker(QObject):
             return
         try:
             self._session.start_scan()
-            events = self._session.reconcile(self._scan_snapshots())
+            snapshots = self._scan_snapshots()
+            events = self._session.reconcile(snapshots)
+            marked = self._mark_missing(snapshots)
         except Exception as exc:
             self._emit_failure(str(exc))
             return
         for event in events:
             self.detected.emit(event)
+        if marked:
+            self.reconciled.emit(self.root)
+
+    def _mark_missing(self, snapshots: list[FileSnapshot]) -> int:
+        """Mark catalog locations absent from a completed scan as missing.
+
+        While catalog writes are paused nothing is written; resuming runs
+        another reconcile.
+        """
+        if self._paused or self._registry is None:
+            self._reconcile_deferred = True
+            return 0
+        seen = {s.path.relative_to(self.root).as_posix() for s in snapshots}
+        seen |= self._present_excluded_paths(seen)
+        return int(
+            self._registry.registry.catalog.mark_missing_locations(
+                self.root, seen, recursive=self._recursive
+            )
+        )
 
     @Slot(object, object, object)
     def process(
@@ -323,6 +420,7 @@ class _LibraryWatchWorker(QObject):
             )
             self._session.complete(current.identity, outcome.event.state)
             self.outcome.emit(outcome)
+            self._emit_followups()
         except Exception as exc:
             failed_event = replace(current, state=WatchState.FAILED)
             try:
@@ -330,6 +428,13 @@ class _LibraryWatchWorker(QObject):
             except ValueError:
                 pass
             self._emit_failure(str(exc), event=failed_event)
+
+    def _emit_followups(self) -> None:
+        """Announce files that changed while they were being processed."""
+        if self._session is None:
+            return
+        for event in self._session.drain_followups():
+            self.detected.emit(event)
 
     def _emit_stale(
         self,
@@ -353,6 +458,27 @@ class _LibraryWatchWorker(QObject):
                 message=message,
             )
         )
+
+    def _present_excluded_paths(self, seen: set[str]) -> set[str]:
+        """Return catalogued paths absent from the scan that still exist.
+
+        The scan skips hidden files and links leaving the root, so an unseen
+        path is missing only if lstat reports it absent. Any other error
+        aborts the reconcile and nothing is marked missing.
+        """
+        if not self.root.is_dir():
+            raise FileNotFoundError(f"Watch root does not exist: {self.root}")
+        present: set[str] = set()
+        for record in self._registry.registry.catalog.query_files(root=self.root):
+            relative = str(record["current_path"])
+            if relative in seen:
+                continue
+            try:
+                (self.root / relative).lstat()
+            except (FileNotFoundError, NotADirectoryError):
+                continue
+            present.add(relative)
+        return present
 
     @Slot(object)
     def dismiss(self, event: WatchEvent) -> None:
@@ -395,6 +521,9 @@ class _LibraryWatchWorker(QObject):
             return
         self._paused = False
         self._schedule_pending_process()
+        if self._reconcile_deferred:
+            self._reconcile_deferred = False
+            QTimer.singleShot(0, self._reconcile)
 
     def _schedule_pending_process(self) -> None:
         """Schedule one queued process when the worker can accept work."""
@@ -493,6 +622,7 @@ class LibraryWatchController(QObject):
     outcome = Signal(object)
     failed = Signal(object)
     paused = Signal(object)
+    reconciled = Signal(object)
 
     def __init__(
         self,
@@ -536,6 +666,8 @@ class LibraryWatchController(QObject):
         worker.outcome.connect(self._forward_outcome)
         worker.failed.connect(self._on_failed)
         worker.paused.connect(self._forward_paused)
+        if hasattr(worker, "reconciled"):
+            worker.reconciled.connect(self._forward_reconciled)
         worker.moveToThread(thread)
         thread.started.connect(worker.start)
         ready_loop = QEventLoop()
@@ -584,6 +716,12 @@ class LibraryWatchController(QObject):
         handle = self._handles.get(self._root_key(event.root))
         if handle is not None and event.session_id == handle.session_id:
             self.outcome.emit(outcome)
+
+    @Slot(object)
+    def _forward_reconciled(self, root: Path) -> None:
+        key = self._root_key(root)
+        if key in self._handles:
+            self.reconciled.emit(key)
 
     @Slot(object)
     def _forward_paused(self, session_id: str) -> None:

@@ -12,7 +12,11 @@ You can later convert the Markdown files to LaTeX with minimal changes.
 ## Files
 
 - Example script: `docs/examples/build_cv_markdown.py`
-- Outputs (default): `cv_example_output/publications.md`, `cv_example_output/talks.md`, `cv_example_output/cv_bundle.md`
+- Outputs (default): `cv_example_output/publications.md` and
+  `cv_example_output/cv_bundle.md`, plus `cv_example_output/talks.md` when you
+  pass a talks CSV. The script writes them under the current directory (change
+  this with `--output-dir`). The repository does not include sample outputs.
+  run the script to generate them.
 
 ## Prerequisites
 

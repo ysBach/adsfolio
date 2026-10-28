@@ -145,7 +145,7 @@ def test_verification_displays_agree_without_changing_record(
     assert metadata_ready(record) == readiness
 
 
-def test_fresh_manual_metadata_keeps_readiness_marker(qtbot) -> None:
+def test_fresh_manual_metadata_is_marked_as_local_not_ads(qtbot) -> None:
     record = {
         "status": "unresolved",
         "metadata": {
@@ -164,8 +164,9 @@ def test_fresh_manual_metadata_keeps_readiness_marker(qtbot) -> None:
     index = model.index(0, column)
     assert (
         index.data(Qt.ToolTipRole)
-        == "Metadata ready for renaming. No completed ADS lookup."
+        == "Local metadata ready for renaming. No ADS record linked."
     )
+    assert index.data(Qt.AccessibleTextRole) == index.data(Qt.ToolTipRole)
     image = QImage(24, 24, QImage.Format_ARGB32)
     image.fill(Qt.white)
     painter = QPainter(image)
@@ -174,6 +175,11 @@ def test_fresh_manual_metadata_keeps_readiness_marker(qtbot) -> None:
     ResolutionDelegate().paint(painter, option, index)
     painter.end()
     assert any(
+        image.pixelColor(x, y) == QColor("#7b1fa2")
+        for x in range(24)
+        for y in range(24)
+    )
+    assert not any(
         image.pixelColor(x, y) == QColor("#2e7d32")
         for x in range(24)
         for y in range(24)
@@ -222,3 +228,113 @@ def test_stored_match_sidebar_and_counts_explain_current_verification(
     assert "does not prove the PDF content matches" in window.status.toolTip()
     assert {"resolved": True} in filters_seen
     assert {"resolved": False} in filters_seen
+
+
+def _marker_colors(record: dict) -> set[str]:
+    """Paint the status marker of `record` and return the colors drawn."""
+    model = FileTableModel(None, FileQuery())
+    model._rows = [record]
+    column = next(i for i, c in enumerate(COLUMNS) if c.key == "status")
+    image = QImage(24, 24, QImage.Format_ARGB32)
+    image.fill(Qt.white)
+    painter = QPainter(image)
+    option = QStyleOptionViewItem()
+    option.rect = QRect(0, 0, 24, 24)
+    ResolutionDelegate().paint(painter, option, model.index(0, column))
+    painter.end()
+    colors = {image.pixelColor(x, y).name() for x in range(24) for y in range(24)}
+    return colors - {"#ffffff"}
+
+
+def _status_tooltip(record: dict) -> str:
+    model = FileTableModel(None, FileQuery())
+    model._rows = [record]
+    column = next(i for i, c in enumerate(COLUMNS) if c.key == "status")
+    return model.index(0, column).data(Qt.ToolTipRole)
+
+
+def test_marker_colors_distinguish_ads_local_and_unresolved_records() -> None:
+    ads = {"status": "resolved", "bibcode": "2024TEST", "metadata": {}}
+    local = {
+        "status": "unresolved",
+        "metadata": {
+            "title": ["Paper"],
+            "author": ["Author"],
+            "year": "2026",
+            "_adsfolio_locked_fields": ["title"],
+        },
+    }
+    partial = {
+        "status": "unresolved",
+        "metadata": {"title": ["Paper"], "_adsfolio_locked_fields": ["title"]},
+    }
+    pending = {"status": "unresolved", "bibcode": "2024TEST", "metadata": {}}
+
+    assert "#2e7d32" in _marker_colors(ads)
+    assert "#7b1fa2" in _marker_colors(local)
+    assert "#2e7d32" not in _marker_colors(local)
+    # Partly entered manual metadata is not rename-ready, so it stays amber.
+    assert "#d97706" in _marker_colors(partial)
+    assert "#d97706" in _marker_colors(pending)
+    assert (
+        len(
+            {
+                _status_tooltip(ads),
+                _status_tooltip(local),
+                _status_tooltip(partial),
+                _status_tooltip(pending),
+            }
+        )
+        == 4
+    )
+
+
+def test_changed_pdf_warning_wins_over_ads_and_local_markers() -> None:
+    changed_ads = {
+        "status": "resolved",
+        "bibcode": "2024TEST",
+        "sha256": "now",
+        "metadata": {"_adsfolio_metadata_sha256": "before"},
+    }
+    changed_local = {
+        "status": "unresolved",
+        "sha256": "now",
+        "metadata": {
+            "title": ["Paper"],
+            "author": ["Author"],
+            "year": "2026",
+            "_adsfolio_locked_fields": ["title"],
+            "_adsfolio_metadata_sha256": "before",
+        },
+    }
+    for record in (changed_ads, changed_local):
+        colors = _marker_colors(record)
+        assert "#d97706" in colors
+        assert not colors & {"#2e7d32", "#7b1fa2"}
+        assert _status_tooltip(record) == STALE_VERIFICATION_TOOLTIP
+
+
+def test_count_columns_show_zero_hide_missing_and_align_right() -> None:
+    model = FileTableModel(None, FileQuery())
+    model._rows = [
+        {"metadata": {"author_count": 0, "citation_count": 0}},
+        {"metadata": {"author_count": 7, "citation_count": 120}},
+        {"metadata": {"author": ["A, B."]}},
+    ]
+    authors = next(i for i, c in enumerate(COLUMNS) if c.key == "author_count")
+    cites = next(i for i, c in enumerate(COLUMNS) if c.key == "citation_count")
+
+    assert [model.index(r, authors).data() for r in range(3)] == ["0", "7", ""]
+    assert [model.index(r, cites).data() for r in range(3)] == ["0", "120", ""]
+    assert model.headerData(authors, Qt.Horizontal) == "N_author"
+    assert model.headerData(cites, Qt.Horizontal) == "Citations"
+    assert "snapshot" in model.headerData(cites, Qt.Horizontal, Qt.ToolTipRole)
+    assert "snapshot" in model.index(1, cites).data(Qt.ToolTipRole)
+    assert model.index(2, cites).data(Qt.ToolTipRole) == (
+        "No count is saved for this record."
+    )
+    assert model.index(0, cites).data(Qt.AccessibleTextRole) == "Citations: 0"
+    assert model.index(2, authors).data(Qt.AccessibleTextRole) == (
+        "N_author: not saved"
+    )
+    assert model.index(1, cites).data(Qt.TextAlignmentRole) & Qt.AlignRight

@@ -95,8 +95,13 @@ OpenAlex and PubMed lookup are not supported.
 ## Review metadata before renaming
 
 A bibcode identifies a publication. It does not prove that the current PDF
-matches that publication. Stored citation fields can remain available while
-file verification is pending. Inspect the status tooltip for the reason.
+matches that publication. Before ADSfolio saves metadata or renames a PDF, it
+compares the record with the arXiv stamp and DOIs that the PDF states about
+itself. A contradiction blocks the change. A PDF without such identifiers needs
+your explicit confirmation. File names, title similarity, and author similarity
+do not count as proof. See [PDF identity checks](gui.md#pdf-identity-checks).
+Stored citation fields can remain available while file verification is
+pending. Inspect the status tooltip for the reason.
 
 ![Library window with sample papers and the details of one paper](_static/app-overview.png)
 
@@ -119,8 +124,8 @@ Permanent cleanup is separate.
 The catalog stores metadata, file locations, and version history outside the app.
 Replacing the application does not delete that catalog.
 If you are upgrading from the earlier application, close it and open ADSfolio
-**0.6.0** once before installing version 0.6.3. Version 0.6.0 converts the catalog
-and imports earlier per-library files. Version 0.6.3 copies earlier data
+**0.6.0** once before installing the current version. Version 0.6.0 converts the catalog
+and imports earlier per-library files. Current versions copy earlier data
 directories but no longer converts their reserved metadata keys. Without that
 conversion, earlier manual locks, author text, and local references are not
 honoured. Keep the original data until you check the converted library.

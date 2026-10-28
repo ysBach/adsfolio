@@ -21,6 +21,8 @@ __all__ = [
 
 logger = logging.getLogger(__name__)
 
+_PhysicalKey = tuple[int, int, int | None]
+
 
 class WatchState(str, Enum):
     """Watch item processing states."""
@@ -160,6 +162,9 @@ class WatchSession:
         self.session_id = str(session_id)
         self._baseline: set[ArrivalIdentity] = set()
         self._physical_baseline: set[tuple[int, int, int | None]] = set()
+        self._baseline_snapshots: dict[_PhysicalKey, FileSnapshot] = {}
+        self._pending_changed: dict[_PhysicalKey, FileSnapshot] = {}
+        self._followups: list[WatchEvent] = []
         self._retired_physical_keys: set[tuple[int, int, int | None]] = set()
         self._missing_while_processing: set[tuple[int, int, int | None]] = set()
         self._generation_map: dict[tuple[int, int, int | None], int] = {}
@@ -225,6 +230,7 @@ class WatchSession:
             if key in self._arrivals_during_starting:
                 continue
             self._physical_baseline.add(key)
+            self._baseline_snapshots[key] = s
             self._baseline_created_at_seq[key] = self._sequence
             if key not in self._generation_map:
                 self._generation_map[key] = 0
@@ -290,8 +296,94 @@ class WatchSession:
         )
         return key in self._physical_baseline
 
+    @staticmethod
+    def _facts_changed(old: FileSnapshot, new: FileSnapshot) -> bool:
+        """Return whether size or modification time differ."""
+        return old.size_bytes != new.size_bytes or old.mtime_ns != new.mtime_ns
+
+    def _event(
+        self, identity: ArrivalIdentity, path: Path, state: WatchState
+    ) -> WatchEvent:
+        return WatchEvent(
+            root=self.root,
+            session_id=self.session_id,
+            identity=identity,
+            path=path,
+            state=state,
+        )
+
+    def _new_generation(self, key: _PhysicalKey, snapshot: FileSnapshot) -> WatchEvent:
+        """Admit a new arrival generation for a physical file identity."""
+        self._sequence += 1
+        if self._starting:
+            self._arrivals_during_starting.add(key)
+        gen = self._generation_map[key] + 1 if key in self._generation_map else 0
+        self._generation_map[key] = gen
+        identity = ArrivalIdentity(
+            device=snapshot.device,
+            inode=snapshot.inode,
+            birth_time_ns=snapshot.birth_time_ns,
+            generation=gen,
+        )
+        old_id = self._active_by_key.get(key)
+        if old_id is not None and old_id != identity:
+            self._states[old_id] = WatchState.STALE
+        if key in self._physical_baseline:
+            self._physical_baseline.discard(key)
+            self._baseline = {
+                b for b in self._baseline if (b.device, b.inode, b.birth_time_ns) != key
+            }
+        self._baseline_snapshots.pop(key, None)
+        self._snapshots[identity] = snapshot
+        self._states[identity] = WatchState.DETECTED
+        self._active_by_key[key] = identity
+        self._created_at_seq[identity] = self._sequence
+        self._retired_physical_keys.discard(key)
+        self._missing_while_processing.discard(key)
+        self._pending_changed.pop(key, None)
+        return self._event(identity, snapshot.path, WatchState.DETECTED)
+
+    def _observe_active(
+        self, key: _PhysicalKey, snapshot: FileSnapshot, source: WatchSource
+    ) -> WatchEvent | None:
+        """Handle an observation of a file whose identity is already tracked."""
+        identity = self._active_by_key[key]
+        state = self._states[identity]
+        last = self._snapshots[identity]
+        changed = self._facts_changed(last, snapshot)
+        path_counts = source not in (WatchSource.CREATED, WatchSource.MOVED_IN)
+        self._missing_while_processing.discard(key)
+        if state == WatchState.PROCESSING:
+            # Keep the facts the processor started from and remember the newer
+            # ones, so complete() can admit a new generation.
+            if changed:
+                self._pending_changed[key] = snapshot
+            else:
+                self._snapshots[identity] = snapshot
+            return None
+        if state == WatchState.DEFERRED:
+            self._snapshots[identity] = snapshot
+            if changed or (path_counts and snapshot.path != last.path):
+                self._states[identity] = WatchState.DETECTED
+                return self._event(identity, snapshot.path, WatchState.DETECTED)
+            return None
+        if state == WatchState.DETECTED:
+            self._snapshots[identity] = snapshot
+            return None
+        # Terminal states, including FAILED and STALE: changed content is a new
+        # generation; a rename with unchanged facts only updates the path.
+        if changed:
+            return self._new_generation(key, snapshot)
+        self._snapshots[identity] = snapshot
+        return None
+
     def observe(self, snapshot: FileSnapshot, source: WatchSource) -> WatchEvent | None:
         """Process a filesystem observation and return an event when eligible.
+
+        A tracked or baseline file whose size or modification time changed
+        starts a new arrival generation. An unchanged file, for example after
+        a rename inside the root, only updates its recorded path. A file with
+        a physical identity the session has not seen is a new arrival.
 
         Parameters
         ----------
@@ -306,141 +398,18 @@ class WatchSession:
             Emitted event when a state transition occurs, otherwise None.
         """
         key = (snapshot.device, snapshot.inode, snapshot.birth_time_ns)
-
-        if source in (WatchSource.CREATED, WatchSource.MOVED_IN):
-            if key in self._active_by_key:
-                active_id = self._active_by_key[key]
-                active_state = self._states[active_id]
-                if active_state != WatchState.STALE:
-                    active_snap = self._snapshots[active_id]
-                    facts_changed = active_state == WatchState.DEFERRED and (
-                        snapshot.size_bytes != active_snap.size_bytes
-                        or snapshot.mtime_ns != active_snap.mtime_ns
-                    )
-                    self._snapshots[active_id] = snapshot
-                    self._missing_while_processing.discard(key)
-                    if active_state == WatchState.DEFERRED:
-                        if facts_changed:
-                            self._states[active_id] = WatchState.DETECTED
-                            return WatchEvent(
-                                root=self.root,
-                                session_id=self.session_id,
-                                identity=active_id,
-                                path=snapshot.path,
-                                state=WatchState.DETECTED,
-                            )
-                        return None
-                    return None
-
-            self._sequence += 1
-            if self._starting:
-                self._arrivals_during_starting.add(key)
-            if key in self._generation_map:
-                gen = self._generation_map[key] + 1
-            else:
-                gen = 0
-            self._generation_map[key] = gen
-            identity = ArrivalIdentity(
-                device=snapshot.device,
-                inode=snapshot.inode,
-                birth_time_ns=snapshot.birth_time_ns,
-                generation=gen,
-            )
-            if key in self._active_by_key:
-                old_id = self._active_by_key[key]
-                if old_id != identity:
-                    self._states[old_id] = WatchState.STALE
-            self._snapshots[identity] = snapshot
-            self._states[identity] = WatchState.DETECTED
-            self._active_by_key[key] = identity
-            self._created_at_seq[identity] = self._sequence
-            self._retired_physical_keys.discard(key)
-            self._missing_while_processing.discard(key)
-            return WatchEvent(
-                root=self.root,
-                session_id=self.session_id,
-                identity=identity,
-                path=snapshot.path,
-                state=WatchState.DETECTED,
-            )
-
-        if source == WatchSource.MODIFIED:
-            if key not in self._active_by_key:
-                return None
-            identity = self._active_by_key[key]
-            current_state = self._states[identity]
-            self._missing_while_processing.discard(key)
-            if current_state == WatchState.DEFERRED:
-                last_snap = self._snapshots[identity]
-                facts_changed = (
-                    snapshot.size_bytes != last_snap.size_bytes
-                    or snapshot.mtime_ns != last_snap.mtime_ns
-                    or snapshot.path != last_snap.path
-                )
-                if facts_changed:
-                    self._states[identity] = WatchState.DETECTED
-                    self._snapshots[identity] = snapshot
-                    return WatchEvent(
-                        root=self.root,
-                        session_id=self.session_id,
-                        identity=identity,
-                        path=snapshot.path,
-                        state=WatchState.DETECTED,
-                    )
-                return None
-            if current_state == WatchState.DETECTED:
-                self._snapshots[identity] = snapshot
-                return None
+        arrival_source = source in (WatchSource.CREATED, WatchSource.MOVED_IN)
+        active_id = self._active_by_key.get(key)
+        if active_id is not None and not (
+            arrival_source and self._states[active_id] == WatchState.STALE
+        ):
+            return self._observe_active(key, snapshot, source)
+        if key in self._physical_baseline and not arrival_source:
+            if self._facts_changed(self._baseline_snapshots[key], snapshot):
+                return self._new_generation(key, snapshot)
+            self._baseline_snapshots[key] = snapshot
             return None
-
-        if source == WatchSource.RECONCILE:
-            if key in self._physical_baseline:
-                return None
-            if key in self._active_by_key:
-                identity = self._active_by_key[key]
-                self._missing_while_processing.discard(key)
-                current_state = self._states[identity]
-                last_snap = self._snapshots[identity]
-                facts_changed = current_state == WatchState.DEFERRED and (
-                    snapshot.size_bytes != last_snap.size_bytes
-                    or snapshot.mtime_ns != last_snap.mtime_ns
-                    or snapshot.path != last_snap.path
-                )
-                self._snapshots[identity] = snapshot
-                if current_state == WatchState.DEFERRED:
-                    if facts_changed:
-                        self._states[identity] = WatchState.DETECTED
-                        return WatchEvent(
-                            root=self.root,
-                            session_id=self.session_id,
-                            identity=identity,
-                            path=snapshot.path,
-                            state=WatchState.DETECTED,
-                        )
-                return None
-
-            self._sequence += 1
-            gen = self._generation_map.get(key, 0)
-            self._generation_map[key] = gen
-            identity = ArrivalIdentity(
-                device=snapshot.device,
-                inode=snapshot.inode,
-                birth_time_ns=snapshot.birth_time_ns,
-                generation=gen,
-            )
-            self._snapshots[identity] = snapshot
-            self._states[identity] = WatchState.DETECTED
-            self._active_by_key[key] = identity
-            self._created_at_seq[identity] = self._sequence
-            return WatchEvent(
-                root=self.root,
-                session_id=self.session_id,
-                identity=identity,
-                path=snapshot.path,
-                state=WatchState.DETECTED,
-            )
-
-        return None
+        return self._new_generation(key, snapshot)
 
     def reconcile(
         self,
@@ -482,6 +451,7 @@ class WatchSession:
                 base_seq = self._baseline_created_at_seq.get(key, 0)
                 if base_seq <= token:
                     self._physical_baseline.remove(key)
+                    self._baseline_snapshots.pop(key, None)
                     self._retired_physical_keys.add(key)
                     self._baseline = {
                         b
@@ -509,61 +479,9 @@ class WatchSession:
                 del self._active_by_key[key]
 
         for snapshot in snapshots_list:
-            key = (snapshot.device, snapshot.inode, snapshot.birth_time_ns)
-            if key in self._physical_baseline:
-                continue
-            if key in self._active_by_key:
-                identity = self._active_by_key[key]
-                self._missing_while_processing.discard(key)
-                current_state = self._states[identity]
-                last_snap = self._snapshots[identity]
-                facts_changed = current_state == WatchState.DEFERRED and (
-                    snapshot.size_bytes != last_snap.size_bytes
-                    or snapshot.mtime_ns != last_snap.mtime_ns
-                    or snapshot.path != last_snap.path
-                )
-                self._snapshots[identity] = snapshot
-                if current_state == WatchState.DEFERRED:
-                    if facts_changed:
-                        self._states[identity] = WatchState.DETECTED
-                        events.append(
-                            WatchEvent(
-                                root=self.root,
-                                session_id=self.session_id,
-                                identity=identity,
-                                path=snapshot.path,
-                                state=WatchState.DETECTED,
-                            )
-                        )
-                continue
-
-            self._sequence += 1
-            if key in self._generation_map:
-                gen = self._generation_map[key] + 1
-            else:
-                gen = 0
-            self._generation_map[key] = gen
-            identity = ArrivalIdentity(
-                device=snapshot.device,
-                inode=snapshot.inode,
-                birth_time_ns=snapshot.birth_time_ns,
-                generation=gen,
-            )
-            self._snapshots[identity] = snapshot
-            self._states[identity] = WatchState.DETECTED
-            self._active_by_key[key] = identity
-            self._created_at_seq[identity] = self._sequence
-            self._retired_physical_keys.discard(key)
-            self._missing_while_processing.discard(key)
-            events.append(
-                WatchEvent(
-                    root=self.root,
-                    session_id=self.session_id,
-                    identity=identity,
-                    path=snapshot.path,
-                    state=WatchState.DETECTED,
-                )
-            )
+            event = self.observe(snapshot, WatchSource.RECONCILE)
+            if event is not None:
+                events.append(event)
 
         return events
 
@@ -662,7 +580,23 @@ class WatchSession:
             self._retired_physical_keys.add(key)
             self._missing_while_processing.discard(key)
             del self._active_by_key[key]
+            self._pending_changed.pop(key, None)
+            return event
+        pending = self._pending_changed.pop(key, None)
+        if pending is not None:
+            # The file changed while it was being processed. Admit it as a
+            # new generation so the update is not lost.
+            self._followups.append(self._new_generation(key, pending))
         return event
+
+    def drain_followups(self) -> list[WatchEvent]:
+        """Return and clear events for changes seen while processing.
+
+        Call after `complete()`. Each event is a new DETECTED generation of a
+        file that changed during processing.
+        """
+        followups, self._followups = self._followups, []
+        return followups
 
     def dismiss(self, identity: ArrivalIdentity) -> WatchEvent:
         """Mark an arrival as dismissed for this session.

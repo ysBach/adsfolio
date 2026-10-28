@@ -44,7 +44,11 @@ def _sample_metadata(**overrides):
 def test_render_note_includes_frontmatter_and_pdf_link(tmp_path):
     writer = ObsidianNoteWriter()
     pdf_path = tmp_path / "paper.pdf"
-    pdf_path.write_bytes(b"%PDF")
+    fitz = pytest.importorskip("fitz")
+
+    with fitz.open() as doc:
+        doc.new_page()
+        doc.save(pdf_path)
     metadata = _sample_metadata(abstract="An interesting result.")
 
     note = writer.render_note(metadata, pdf_path)
@@ -62,7 +66,11 @@ def test_render_note_includes_frontmatter_and_pdf_link(tmp_path):
 def test_render_note_without_abstract_uses_placeholder(tmp_path):
     writer = ObsidianNoteWriter()
     pdf_path = tmp_path / "paper.pdf"
-    pdf_path.write_bytes(b"%PDF")
+    fitz = pytest.importorskip("fitz")
+
+    with fitz.open() as doc:
+        doc.new_page()
+        doc.save(pdf_path)
 
     note = writer.render_note(_sample_metadata(), pdf_path)
 
@@ -96,7 +104,11 @@ def test_fetch_missing_abstracts_requires_client():
 
 def test_generate_dry_run_plans_without_writing(tmp_path):
     pdf_path = tmp_path / "paper.pdf"
-    pdf_path.write_bytes(b"%PDF")
+    fitz = pytest.importorskip("fitz")
+
+    with fitz.open() as doc:
+        doc.new_page()
+        doc.save(pdf_path)
     sidecar = Sidecar(tmp_path)
     sidecar.upsert_file(
         "original.pdf",
@@ -120,7 +132,11 @@ def test_generate_dry_run_plans_without_writing(tmp_path):
 
 def test_generate_apply_writes_note_and_caches_abstract(tmp_path):
     pdf_path = tmp_path / "paper.pdf"
-    pdf_path.write_bytes(b"%PDF")
+    fitz = pytest.importorskip("fitz")
+
+    with fitz.open() as doc:
+        doc.new_page()
+        doc.save(pdf_path)
     sidecar = Sidecar(tmp_path)
     sidecar.upsert_file(
         "original.pdf",
@@ -150,7 +166,11 @@ def test_generate_apply_writes_note_and_caches_abstract(tmp_path):
 
 def test_generate_skips_existing_note_unless_forced(tmp_path):
     pdf_path = tmp_path / "paper.pdf"
-    pdf_path.write_bytes(b"%PDF")
+    fitz = pytest.importorskip("fitz")
+
+    with fitz.open() as doc:
+        doc.new_page()
+        doc.save(pdf_path)
     note_path = tmp_path / "paper.md"
     note_path.write_text("manual notes", encoding="utf-8")
     sidecar = Sidecar(tmp_path)
@@ -161,7 +181,7 @@ def test_generate_skips_existing_note_unless_forced(tmp_path):
 
     writer = ObsidianNoteWriter()
     plans = writer.generate(tmp_path, sidecar, apply=True)
-    assert plans[0].action == "skip-exists"
+    assert plans[0].action == "skip-unchanged"
     assert note_path.read_text(encoding="utf-8") == "manual notes"
 
     forced_plans = writer.generate(tmp_path, sidecar, apply=True, force=True)

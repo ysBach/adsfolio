@@ -78,6 +78,9 @@ PDF catalog and processing
    adsfolio.pdf.arxiv
    adsfolio.pdf.files
    adsfolio.pdf.identifier
+   adsfolio.pdf.identity
+   adsfolio.pdf.document_identity_evidence
+   adsfolio.pdf.identity_repair
    adsfolio.pdf.doi_providers
    adsfolio.pdf.readiness
    adsfolio.pdf.identify

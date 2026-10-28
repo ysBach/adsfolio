@@ -172,10 +172,23 @@ Right-click the table header to:
 **Added** appears immediately before **Modified**, and the default
 sort places the most recently added files first.
 
-The narrow, unlabeled resolution column shows a green dot for a successful ADS
-match or complete, current external metadata. Its tooltip distinguishes ADS
-linkage from metadata readiness. Click that header to group records needing
-attention first.
+The narrow, unlabeled status column uses three dot colors:
+
+- **Green:** an ADS record is linked.
+- **Purple:** local or external metadata is ready for renaming, without an ADS link.
+- **Amber:** the PDF still needs identification or metadata entry.
+
+A changed PDF shows an amber warning triangle instead of a dot.
+Tooltips and accessible text explain the state without relying on color.
+An ADS link does not prove that the PDF contains the correct paper.
+Click the status header to group records by their saved ADS status.
+
+**N_author** shows the saved author count. **Citations** shows the saved citation
+count. A blank count means unknown. A known citation count of zero appears as
+**0**. These counts come from saved metadata or manual edits. They are snapshots,
+not live ADS queries. Use the header menu to hide either column.
+The table uses each PDF's saved citation count. Separate citation metrics in
+the detail pane can come from a different refresh.
 
 Use **View → Appearance…** to:
 
@@ -184,7 +197,18 @@ Use **View → Appearance…** to:
 - select ISO 8601 or any Python ``strftime`` timestamp format, for example
   ``%Y-%m-%d``. Month is lowercase ``%m``.
 
-Use the toolbar **Refresh** button or **F5** after you add, edit, move, or
+The toolbar uses compact icons for **Refresh**, **Identify**, **Rename**, and
+the **ADS Refresh** menu. Hover over an icon for its action and scope.
+The menus retain text labels and keyboard shortcuts.
+
+The Identify badge counts catalogued PDFs that need an ADS lookup across the
+selected library. Search, category filters, selection, and pagination do not
+limit this count. It does not predict successful matches or the exact number
+that Identify will process. Identify can discover untracked PDFs and skip
+records whose metadata is already ready. It can also skip the configured
+unresolved folder. The badge can therefore remain above zero after identification.
+
+Use the toolbar **Refresh** icon or **F5** after you add, edit, move, or
 delete PDFs outside adsfolio. Refresh scans the selected root with its
 **Include Subdirectories** setting. It runs locally in a background job. It
 updates changed file facts and discovers new PDFs. It hides missing paths but
@@ -214,7 +238,9 @@ bibcodes. A local **Refresh/F5** reconciles file facts without querying ADS.
 Hold **Shift** to scroll the table horizontally. Each mouse-wheel event moves
 at most one tenth of the visible page. Smooth trackpad movement uses one tenth
 of its pixel distance. The same speed applies over the table header and scrollbars.
-Scrolling without Shift keeps its native behavior.
+Discrete horizontal mouse-wheel scrolling without Shift also uses at most one
+tenth of the visible page. Smooth trackpad movement and vertical scrolling
+without Shift keep their native behavior.
 
 Permanent cleanup remains separate: **File → Remove Missing Registry Records…**
 asks before removing missing catalog entries and never deletes files.
@@ -251,6 +277,11 @@ order places bibstem, volume, and page at the end, because the bibcode encodes
 that information. ADSfolio converts HTML display markup from ADS to plain text
 in the table, detail pane, and generated filenames.
 
+Click a PDF's status marker to select that file and reveal the right detail
+pane, including when the pane is hidden or collapsed. The pane shows the
+file's status and offers **Update by ID…** and **Enter Details…**. Modified
+clicks retain the usual table selection behavior.
+
 Use **Update by ID…** in the detail pane to enter or correct the
 selected file's Bibcode, DOI, arXiv ID, or bibliographic reference. Use either
 reference format:
@@ -272,7 +303,7 @@ For example, `Last-2020-Natur` specifies author Last, year 2020, and journal
 starting page 45. These illustrate the input format. `Last-2020-Nature`
 and `Science-123-45` use the full journal names instead.
 
-These reference formats query ADS only; other sites are not searched.
+These reference formats query ADS only. They do not search other sites.
 DOI and arXiv lookups can also use Crossref or DataCite, as described below.
 
 Spaces and underscores can also separate the reference fields. Author and
@@ -507,10 +538,66 @@ their order.
 
 Identification stops at the first unique validated ADS match. If a
 candidate is missing, invalid, or ambiguous, Identify tries the next enabled
-source. The recommended order checks filename and PDF metadata Bibcodes/DOIs
-before first-page evidence, structured filenames, and title matching. Thus, for
+source. The default order starts with the first-page arXiv stamp. It then checks
+filename and metadata identifiers before structured filenames and title matching. Thus, for
 an opaque filename such as `aa43983-22.pdf`, Identify continues to DOI
 extraction from the PDF itself.
+
+A validated ADS match must also pass the [PDF identity check](#pdf-identity-checks).
+A candidate that fails it leaves the PDF unresolved, and the job log states the reason.
+
+### PDF identity checks
+
+Before ADSfolio saves publication metadata for a PDF or renames it, it compares
+the record with identifiers from the PDF. It reads the page-1 arXiv margin
+stamp and DOI properties in DocInfo and XMP metadata.
+
+A metadata title that contains only a labeled DOI or DOI URL also identifies
+the PDF. A Subject DOI needs additional agreement: the first page must repeat
+it, and the metadata title must match the provider title. These comparisons
+ignore title case and whitespace. A DOI mentioned in an ordinary title or a
+reference does not establish identity.
+
+The check has three outcomes:
+
+- **Verified:** the provider's record (ADS, Crossref, or DataCite) lists every
+  identifier of the proposed record and every arXiv ID and DOI that the PDF
+  states. Identify, Rename, the watcher, and ADS refresh actions can proceed.
+- **Conflict:** the PDF states an arXiv ID or DOI, and the record has a
+  different identifier of the same kind. ADSfolio refuses the change. Manual
+  confirmation cannot override a conflict.
+- **Unverified:** the PDF states no identifier, states one of a kind the
+  record lacks, or contains an unreadable required identity field. Automatic
+  actions leave the PDF and its name unchanged. A PDF without readable identity
+  evidence needs explicit review.
+  **Update by ID** asks you to confirm the association explicitly. A readable
+  own identifier that the provider does not corroborate remains blocked.
+  ADSfolio stores that confirmation with the file's SHA-256 hash and the
+  record's identifier. It applies only to those exact file contents and that
+  record. A changed PDF needs a new check.
+
+Malformed optional XMP does not block a matching DOI from another metadata
+field. ADSfolio also reads explicitly declared DOI properties when an unrelated
+XMP property uses an undeclared prefix. It records the parsing issue as a
+warning. Every readable own identifier must still agree with the provider.
+If no readable own identifier remains, **Update by ID…** lets you review and
+confirm the match.
+
+Identification updates the app's catalog. Renaming changes the file's name or
+location. Neither action rewrites the PDF contents or repairs its metadata.
+
+File names, content hashes, search result order, and title or author
+similarity are never proof. A title search can propose a candidate, but the
+candidate must still pass the check. Many PDFs, for example scanned or older
+publisher files, state no identifier. They need your confirmation before
+ADSfolio associates them with a record. The check uses explicit identifiers
+and the stated corroboration rules. It does not interpret scientific content.
+
+Records identified by earlier versions have no stored identity proof.
+ADSfolio checks them again against the current file before it renames them or
+writes their metadata. A previously resolved PDF that fails the check keeps its
+name, location, and stored metadata until you correct the record. If the PDF
+states no own identifier, you can instead review and confirm the association.
 
 **Save Defaults** saves the reusable controls for the selected scope. It does
 not run Identify or close the dialog. **Run Identify** uses the controls as
@@ -518,6 +605,12 @@ currently displayed, without saving them. Parser warnings and the optional AI
 CSV are one-run inputs. **Refresh publication cache**, **Allow ADS fallback**,
 and **Apply file moves** are one-run actions on purpose. They always reopen
 disabled.
+
+**Allow ADS fallback** authorizes the current advanced batch run. It differs
+from the saved DOI provider selection and the watcher's automatic-processing
+setting. **Automatically Identify & Rename** permits ADS lookups for new
+arrivals while watching. **Autowatch at Start** restores watching after restart.
+An ADS match can still fail the separate PDF identity check.
 
 **Skip unresolved directory** excludes the configured unresolved destination
 before hashing, metadata extraction, or ADS queries. Without a destination it
@@ -540,6 +633,7 @@ AI service:
 The current importer verifies bibcodes and DOIs with ADS. It does not apply
 AI-written title or author fields directly. Normal Identify still provides DOI
 lookup through Crossref and DataCite, and ADS title matching.
+AI CSV matches pass the same [PDF identity check](#pdf-identity-checks).
 
 Enable **Apply file moves** to return successfully identified files from the
 unresolved subtree to the library root. Identify keeps their filenames. Rename
@@ -553,7 +647,9 @@ identified files in that scanned subtree, without repeating their ADS lookup.
 Identify handles AI CSV matches in the same run.
 
 **Update by ID** and the ADS refresh actions labeled **Rename** rename
-updated PDFs with the effective Rename settings. Files in the unresolved
+updated PDFs with the effective Rename settings when the
+[PDF identity check](#pdf-identity-checks) verifies the file or you have
+confirmed it. Files in the unresolved
 subtree also return to the root in the same move. These actions rename other
 PDFs within their current directory. Filenames use the refreshed metadata,
 including any locally locked fields. These actions apply immediately and pause
@@ -721,21 +817,22 @@ local PDFs, or the local catalog.
 The same paper can exist as a preprint, a published version, or a duplicate.
 Select the two rows and right-click **Merge Selected PDFs…**, or use
 **Tools → Merge Annotations…** with the pair selected. The published edition
-is proposed as the **target**; you can change which PDF supplies the pages
+serves as the proposed **target**. You can change which PDF supplies the pages
 before reviewing the **source** annotations. With no pair selected, the Tools
 action lets you choose the target and source files.
 
-After a watched PDF is identified, ADSfolio prompts to review an existing
+After it identifies a watched PDF, ADSfolio prompts to review an existing
 edition when a bibcode, alternate bibcode, DOI, or version-free arXiv identifier
 links the files. Identification retains ADS's `identifier` and
 `alternate_bibcode` fields for this purpose. The prompt stays tied to the
-arrival even if another library is selected, and pauses watcher writes during
+arrival even if you select another library. It pauses watcher writes during
 review.
 
-ADS sometimes has separate preprint and journal records without a shared
-identifier. In that case the prompt explicitly asks you to choose the matching
-source from the existing preprints or published editions. It does not infer a
-match from the title. Cancel keeps the **Review Merge…** notice available.
+If no existing PDF shares an identifier, ADSfolio shows no automatic merge
+prompt. If one PDF matches, it preselects both files. If several PDFs match, it
+asks you to choose among those files. You can still select two PDFs and start
+**Merge Selected PDFs…** manually when their stored identifiers do not link them.
+Cancel keeps a linked arrival's **Review Merge…** notice available.
 
 The review stays in one window. Selecting an annotation opens its source page
 and the suggested target page automatically. Both panes center the marked area
@@ -810,8 +907,8 @@ Cleanup checks the saved result and each selected original against the exact
 contents used for the merge. A changed or missing result blocks cleanup.
 Changed originals remain for another review. Files go to the system Trash,
 where they can be restored. If a move fails, the dialog names the failed file
-and allows a retry. Trashed originals leave the active library list; their
-catalog history is retained. Partial merges do not offer cleanup.
+and allows a retry. Trashed originals leave the active library list.
+The catalog retains their history. Partial merges do not offer cleanup.
 
 When you merge a source again into a copy that already holds a merge from that
 source, ADSfolio skips annotations that are already present. A private key in each
@@ -836,17 +933,24 @@ its sidebar context menu:
   process anything.
 * **Automatically Identify & Rename** authorizes future arrivals in an active
   watch session to make ADS requests and update the catalog. It also authorizes
-  them to rename resolved PDFs and apply a configured unresolved-file move. It
+  them to rename resolved PDFs and apply a configured unresolved-file move.
+  Automatic renaming applies only to PDFs that pass the
+  [PDF identity check](#pdf-identity-checks) as verified. Unverified and
+  conflicting arrivals stay in place with a warning. It
   is off by default. When it is off, the non-modal notice bar offers
   **Identify & Rename** and **Dismiss** for each new arrival.
 
-If automatic identification finds no match, the warning offers **Identify…**
-and **Enter Details…** beside **Dismiss**. Choose **Identify…** to enter a
+Failed and unresolved PDF notices offer **Open PDF** and **Update by ID…**.
+**Open PDF** opens the notice's local file in your configured PDF viewer or
+the system default. Choose **Update by ID…** to enter a
 Bibcode, DOI, arXiv ID, `{authorLastName}-{year}-{bibstem}`, or `{bibstem}-{volume}-{page}`.
 Here, `{bibstem}` means the ADS journal abbreviation. You can replace it with
 the full journal name. This uses the same update and rename workflow
-as **Update by ID…**. It targets the warned PDF, including its destination if
+as the detail pane's **Update by ID…**. It targets the warned PDF, including its destination if
 the watcher moved it to the unresolved folder. Cancel keeps the warning available.
+Identifier lookup also works when the failed lookup did not register the PDF.
+It retrieves the publication metadata for you. If the PDF has no readable own
+identifier, confirm the association after checking the paper.
 
 Both failed and unresolved PDF warnings offer **Enter Details…** for local
 metadata entry. You can use it when **Retry** fails or an online provider is
@@ -855,7 +959,7 @@ unavailable. It also works when the failed lookup did not register the PDF.
 File notifications also offer **Reveal in Finder** on macOS or **Reveal in
 File Manager** on other platforms. This reveals the notified PDF, including its
 destination after a move or rename, even if another library or row is selected.
-Revealing a file leaves its notification open.
+Opening or revealing a file leaves its notification open.
 
 The watcher recognizes the ``.pdf`` suffix in any letter case, such as
 ``PAPER.PDF``. The watcher ignores a symbolic link to a PDF outside the root.
@@ -924,3 +1028,24 @@ The View menu shows the shortcuts available on your system.
 Hiding a panel keeps the selected PDF and current query.
 Find restores its bar if the bar is hidden. Refresh updates local file facts.
 ADS metadata updates remain separate actions.
+
+
+### Replacing a PDF outside ADSfolio
+
+You can delete an obsolete PDF and copy its replacement into the library.
+With watching and **Automatically Identify & Rename** enabled, ADSfolio checks
+its own DOI or arXiv identifier, identifies the paper, and applies your saved
+rename settings. A deleted file no longer reserves its former name.
+
+If exactly one matching attachment has no remaining file, the replacement
+keeps that attachment's notes, locked metadata, and content-version history.
+The new PDF has its own content hash and identity proof. Existing PDF editions
+stay separate. If several missing attachments match, ADSfolio keeps the new
+file separate because it cannot determine which one you meant to replace.
+
+ADSfolio also checks same-path updates, atomic replacements, and changes made
+while the app was not running. The initial library import remains a baseline.
+It does not automatically rename every existing PDF. A copy in progress waits
+until ADSfolio can read it. Identity conflicts leave the
+file unchanged for review. Deleting a PDF also removes its active row from the
+library view while retaining its catalog history.

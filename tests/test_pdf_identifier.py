@@ -4,6 +4,7 @@ from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
+from pypdf import PdfWriter
 
 from adsfolio.api.search import SearchResult
 from adsfolio.config import ADSError, RequestTooLongError
@@ -17,6 +18,19 @@ def _disable_external_network_in_identifier_tests(monkeypatch):
     """Ensure no un-mocked external network calls occur during unit tests."""
     monkeypatch.setattr("adsfolio.pdf.identifier.fetch_crossref_doi", lambda doi: None)
     monkeypatch.setattr("adsfolio.pdf.identifier.fetch_datacite_doi", lambda doi: None)
+
+
+OWN_DOI = "10.5555/own.paper"
+
+
+def _pdf(path, doi=OWN_DOI, body="paper"):
+    """Write a one-page PDF whose DocInfo names \'doi\' as its own DOI."""
+    writer = PdfWriter()
+    writer.add_blank_page(width=200, height=200)
+    writer.add_metadata({"/DOI": doi, "/Keywords": body})
+    with path.open("wb") as handle:
+        writer.write(handle)
+    return path
 
 
 class _SearchStub:
@@ -332,14 +346,14 @@ def test_build_record_has_expected_fields(tmp_path):
     identifier, _ = _build_identifier({})
     doc = {"bibcode": "BIB"}
 
-    record = identifier.build_record(doc, path)
+    record = identifier.build_record(doc, path, manual_confirmation=True)
 
     assert record["bibcode"] == "BIB"
 
 
 def test_resolve_uses_metadata_doi_before_title_fallback(tmp_path):
     path = tmp_path / "paper.pdf"
-    path.write_bytes(b"%PDF-1.4\none\n")
+    _pdf(path, "10.1234/abc")
     doc = {
         "bibcode": "2024ApJ...900..100S",
         "doi": ["10.1234/abc"],
@@ -371,11 +385,12 @@ def test_resolve_uses_metadata_doi_before_title_fallback(tmp_path):
 def test_resolve_validates_filename_bibcode_before_doi_and_title(tmp_path):
     bibcode = "2025RNAAS...9..338Z"
     path = tmp_path / f"{bibcode}.pdf"
-    path.write_bytes(b"%PDF")
+    _pdf(path)
     query = f'bibcode:"{bibcode}"'
     document = {
         "bibcode": bibcode,
         "title": ["Aperture-averaged Polarimetry"],
+        "doi": [OWN_DOI],
         "author": ["Zheltobryukhov, Maxim"],
     }
     identifier, search = _build_identifier(
@@ -399,10 +414,14 @@ def test_resolve_validates_filename_bibcode_before_doi_and_title(tmp_path):
 def test_resolve_falls_through_when_filename_bibcode_is_not_validated(tmp_path):
     false_candidate = "2009.Error.analysis"
     path = tmp_path / f"{false_candidate}-paper.pdf"
-    path.write_bytes(b"%PDF")
+    _pdf(path)
     title = "Reliable Paper Title"
     title_query = f'title:"{title}"'
-    document = {"bibcode": "2009ApJ...700..100A", "title": [title]}
+    document = {
+        "bibcode": "2009ApJ...700..100A",
+        "title": [title],
+        "doi": [OWN_DOI],
+    }
     identifier, search = _build_identifier(
         {title_query: SearchResult(num_found=1, start=0, docs=[document])}
     )
@@ -425,7 +444,7 @@ def test_resolve_falls_through_when_filename_bibcode_is_not_validated(tmp_path):
 
 def test_resolve_zhelto_style_pdf_via_first_page_title(tmp_path, monkeypatch):
     path = tmp_path / "zhelto.pdf"
-    path.write_bytes(b"%PDF")
+    _pdf(path)
     title = (
         "Aperture-averaged Polarimetry of the Second Interstellar Comet "
         "3I/ATLAS within the Snow Line"
@@ -433,6 +452,7 @@ def test_resolve_zhelto_style_pdf_via_first_page_title(tmp_path, monkeypatch):
     document = {
         "bibcode": "2025RNAAS...9..338Z",
         "title": [title],
+        "doi": [OWN_DOI],
         "author": ["Zheltobryukhov, Maxim"],
     }
     identifier, search = _build_identifier(
@@ -476,8 +496,8 @@ def test_resolve_many_extracts_and_validates_filename_bibcodes_by_default(
 ):
     bibcode = "2025RNAAS...9..338Z"
     path = tmp_path / f"{bibcode}.pdf"
-    path.write_bytes(b"%PDF")
-    document = {"bibcode": bibcode, "title": ["Paper Title"]}
+    _pdf(path)
+    document = {"bibcode": bibcode, "title": ["Paper Title"], "doi": [OWN_DOI]}
     identifier, search = _build_identifier(
         {
             f'bibcode:"{bibcode}"': SearchResult(
@@ -501,7 +521,7 @@ def test_resolve_many_extracts_and_validates_filename_bibcodes_by_default(
 
 def test_resolve_handles_metadata_doi_direct_ads_lookup(tmp_path):
     path = tmp_path / "paper.pdf"
-    path.write_bytes(b"%PDF-1.4\ndoi\n")
+    _pdf(path, "10.1234/abc")
     query = 'doi:"10.1234/abc"'
     doc = {
         "bibcode": "2024ApJ...900..100S",
@@ -526,11 +546,12 @@ def test_resolve_handles_metadata_doi_direct_ads_lookup(tmp_path):
 
 def test_resolve_uses_title_after_other_strategies(tmp_path):
     path = tmp_path / "paper.pdf"
-    path.write_bytes(b"%PDF-1.4\ntext\n")
+    _pdf(path)
     query = 'title:"Interesting Result on Star Formation"'
     doc = {
         "bibcode": "2025A&A...111..222A",
         "title": ["Interesting Result on Star Formation"],
+        "doi": [OWN_DOI],
     }
     identifier, search = _build_identifier(
         {query: SearchResult(num_found=1, start=0, docs=[doc])}
@@ -607,7 +628,7 @@ def test_resolve_treats_distinct_trailing_punctuation_as_distinct_complete_doi(
     tmp_path,
 ):
     path = tmp_path / "paper.pdf"
-    path.write_bytes(b"%PDF")
+    _pdf(path, "10.1234/ambiguous.")
     query1 = 'doi:"10.1234/ambiguous."'
     query2 = 'doi:"10.1234/ambiguous"'
     docs1 = [{"bibcode": "B1", "doi": ["10.1234/ambiguous."]}]
@@ -633,7 +654,7 @@ def test_resolve_treats_distinct_trailing_punctuation_as_distinct_complete_doi(
 
 def test_resolve_many_obeys_configured_strategy_order(tmp_path, monkeypatch):
     path = tmp_path / "paper.pdf"
-    path.write_bytes(b"%PDF")
+    _pdf(path, "10.1234/from-pdf")
     identifier, search = _build_identifier(
         {
             'doi:"10.1234/from-file"': SearchResult(
@@ -673,8 +694,8 @@ def test_missing_filename_candidate_falls_through_to_first_page_doi(
     tmp_path, monkeypatch
 ):
     path = tmp_path / "aa43983-22.pdf"
-    path.write_bytes(b"%PDF")
     doi = "10.1051/0004-6361/202243983"
+    _pdf(path, doi)
     query = f'doi:"{doi}"'
     identifier, search = _build_identifier(
         {
@@ -704,7 +725,7 @@ def test_missing_filename_candidate_falls_through_to_first_page_doi(
 
 def test_ambiguous_doi_falls_through_to_next_strategy(tmp_path, monkeypatch):
     path = tmp_path / "paper.pdf"
-    path.write_bytes(b"%PDF")
+    _pdf(path, "10.1234/good")
     identifier, search = _build_identifier(
         {
             'doi:"10.1234/ambiguous"': SearchResult(
@@ -768,7 +789,7 @@ def test_cached_lookup_answers_candidates_without_overriding_priority(
     tmp_path, monkeypatch
 ):
     path = tmp_path / "paper.pdf"
-    path.write_bytes(b"%PDF")
+    _pdf(path)
     identifier, search = _build_identifier({})
     monkeypatch.setattr(
         identifier,
@@ -783,7 +804,7 @@ def test_cached_lookup_answers_candidates_without_overriding_priority(
     def cached_lookup(kind, candidate):
         lookups.append((kind, candidate))
         if kind == "bibcode":
-            return True, {"bibcode": "2024ApJ...900..100A"}
+            return True, {"bibcode": "2024ApJ...900..100A", "doi": [OWN_DOI]}
         return True, {"bibcode": "LATER", "doi": ["10.1234/later"]}
 
     record = identifier.resolve_many(
@@ -896,8 +917,8 @@ def test_cached_ads_record_uses_bibcode_outside_prefetch_window(tmp_path):
 def test_resolve_many_batches_metadata_doi_queries(tmp_path):
     first = tmp_path / "first.pdf"
     second = tmp_path / "second.pdf"
-    first.write_bytes(b"%PDF-1.4\nfirst\n")
-    second.write_bytes(b"%PDF-1.4\nsecond\n")
+    _pdf(first, "10.1234/a", "first")
+    _pdf(second, "10.1234/b", "second")
 
     query = 'doi:"10.1234/a" OR doi:"10.1234/b"'
     docs = [
@@ -978,8 +999,8 @@ def test_resolve_many_exposes_ambiguous_ads_documents_before_matching(
 def test_resolve_many_deduplicates_same_metadata_doi(tmp_path):
     first = tmp_path / "same-1.pdf"
     second = tmp_path / "same-2.pdf"
-    first.write_bytes(b"%PDF-1.4\nfirst\n")
-    second.write_bytes(b"%PDF-1.4\nsecond\n")
+    _pdf(first, "10.1234/shared", "first")
+    _pdf(second, "10.1234/shared", "second")
 
     shared_query = 'doi:"10.1234/shared"'
     doc = {
@@ -1015,13 +1036,14 @@ def test_resolve_many_deduplicates_same_metadata_doi(tmp_path):
 def test_resolve_many_caches_duplicate_title_fallback_queries(tmp_path):
     first = tmp_path / "title-1.pdf"
     second = tmp_path / "title-2.pdf"
-    first.write_bytes(b"%PDF-1.4\nfirst\n")
-    second.write_bytes(b"%PDF-1.4\nsecond\n")
+    _pdf(first, body="first")
+    _pdf(second, body="second")
 
     query = 'title:"Shared Title"'
     doc = {
         "bibcode": "2026ApJ...777..888D",
         "title": ["Shared Title"],
+        "doi": [OWN_DOI],
         "author": ["Dup, D."],
         "year": "2026",
         "bibstem": ["ApJ"],
@@ -1056,12 +1078,12 @@ def test_oversized_title_query_preserves_other_files_and_later_strategies(
     duplicate = tmp_path / "duplicate.pdf"
     other = tmp_path / "other.pdf"
     for path in (first, duplicate, other):
-        path.write_bytes(b"%PDF")
+        _pdf(path)
     rejected_title = "Extracted title and body text"
     good_title = "Valid title"
     rejected_query = f'title:"{rejected_title}"'
     good_query = f'title:"{good_title}"'
-    document = {"bibcode": "B1", "title": [good_title]}
+    document = {"bibcode": "B1", "title": [good_title], "doi": [OWN_DOI]}
     identifier, search = _build_identifier({})
 
     def query(q: str, **kwargs: object) -> SearchResult:
@@ -1113,8 +1135,8 @@ def test_title_lookup_preserves_unrelated_api_failures(tmp_path) -> None:
 def test_resolve_many_skips_disabled_structured_filename_strategy(tmp_path):
     first = tmp_path / "BachYP_2024_A&A_684_80_title.pdf"
     second = tmp_path / "BachYP_2021_A&A_654_A113_title.pdf"
-    first.write_bytes(b"%PDF-1.4\nfirst\n")
-    second.write_bytes(b"%PDF-1.4\nsecond\n")
+    _pdf(first, "10.5555/one", "first")
+    _pdf(second, "10.5555/two", "second")
 
     query_first = 'title:"Title One"'
     query_second = 'title:"Title Two"'
@@ -1122,12 +1144,12 @@ def test_resolve_many_skips_disabled_structured_filename_strategy(tmp_path):
         query_first: SearchResult(
             num_found=1,
             start=0,
-            docs=[{"bibcode": "BIB1", "title": ["Title One"]}],
+            docs=[{"bibcode": "BIB1", "title": ["Title One"], "doi": ["10.5555/one"]}],
         ),
         query_second: SearchResult(
             num_found=1,
             start=0,
-            docs=[{"bibcode": "BIB2", "title": ["Title Two"]}],
+            docs=[{"bibcode": "BIB2", "title": ["Title Two"], "doi": ["10.5555/two"]}],
         ),
     }
     identifier, search = _build_identifier(docs)
@@ -1157,7 +1179,7 @@ def test_resolve_many_skips_disabled_structured_filename_strategy(tmp_path):
 def test_resolve_many_structured_filename_only_skips_pdf_content_extraction(tmp_path):
     parseable = tmp_path / "BachYP_2024_A&A_684_80_title.pdf"
     unknown = tmp_path / "mystery.pdf"
-    parseable.write_bytes(b"%PDF-1.4\none\n")
+    _pdf(parseable, "10.1234/one")
     unknown.write_bytes(b"%PDF-1.4\ntwo\n")
 
     clause = 'author:"Bach" AND year:2024 AND bibstem:"A&A" AND volume:684 AND page:80'
@@ -1292,10 +1314,10 @@ def test_typography_retains_title_below_larger_masthead(tmp_path, monkeypatch):
 @pytest.mark.parametrize(
     "documents,expected",
     [
-        ([{"bibcode": "BIB1", "title": ["Actual title"]}], "BIB1"),
+        ([{"bibcode": "BIB1", "title": ["Actual title"], "doi": [OWN_DOI]}], "BIB1"),
         (
             [
-                {"bibcode": "BIB1", "title": ["Actual title"]},
+                {"bibcode": "BIB1", "title": ["Actual title"], "doi": [OWN_DOI]},
                 {"bibcode": "BIB2", "title": ["Journal heading"]},
             ],
             None,
@@ -1319,7 +1341,7 @@ def test_typography_candidates_require_one_exact_ads_identity(
             num_found=2, start=0, docs=documents
         )
     path = tmp_path / "paper.pdf"
-    path.write_bytes(b"%PDF")
+    _pdf(path)
     identifier.extract_title_candidates = Mock(
         return_value=("Journal heading", "Actual title")
     )
@@ -1393,7 +1415,12 @@ def test_typography_keeps_whitespace_and_normalizes_ligatures(tmp_path, monkeypa
 
 
 def test_title_probe_caches_only_verified_full_record(tmp_path):
-    doc = {"bibcode": "BIB1", "title": ["Actual title"], "author": ["Author, A."]}
+    doc = {
+        "bibcode": "BIB1",
+        "title": ["Actual title"],
+        "author": ["Author, A."],
+        "doi": [OWN_DOI],
+    }
     identifier, _ = _build_identifier(
         {
             'title:"Journal" OR title:"Actual title"': SearchResult(
@@ -1408,7 +1435,7 @@ def test_title_probe_caches_only_verified_full_record(tmp_path):
         }
     )
     path = tmp_path / "paper.pdf"
-    path.write_bytes(b"%PDF")
+    _pdf(path)
     identifier.extract_title_candidates = Mock(return_value=("Journal", "Actual title"))
     callback = Mock()
     result = identifier.resolve(

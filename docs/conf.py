@@ -91,7 +91,6 @@ exclude_patterns = [
     "_build",
     "Thumbs.db",
     ".DS_Store",
-    "examples/cv_example_output/*.md",
 ]
 
 myst_heading_anchors = 3

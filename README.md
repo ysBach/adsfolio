@@ -22,7 +22,8 @@ for the steps.
 
 - **Keep a BibTeX file for your paper:** export an ADS library as `.bib` for
   LaTeX or Overleaf.
-- **Watch a folder:** ADSfolio identifies and renames each new PDF.
+- **Watch a folder:** ADSfolio identifies each new PDF and renames it when the
+  PDF's own arXiv ID or DOI confirms the match.
 - **Make your CV:** write your publication list in LaTeX, HTML, Markdown, or
   your own format.
 

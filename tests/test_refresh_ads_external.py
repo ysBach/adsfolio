@@ -7,6 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 from click.testing import CliRunner
+from pdf_identity_fixtures import write_pdf
 
 from adsfolio.config import AuthenticationError
 from adsfolio.pdf.cli import _parse_ads_identifier, pdf
@@ -41,7 +42,7 @@ def library(tmp_path: Path) -> Path:
     root = tmp_path / "library"
     root.mkdir()
     pdf_path = root / "scan.pdf"
-    pdf_path.write_bytes(b"%PDF-1.4\n%outside ads\n")
+    write_pdf(pdf_path)
     state = open_registry_state(root)
     try:
         state.upsert_file(
@@ -91,6 +92,7 @@ def _run(library: Path, identifier: str):
             str(library),
             "--identifier",
             identifier,
+            "--confirm-identity",
             "--relative-path",
             "scan.pdf",
         ],
@@ -265,6 +267,7 @@ def test_paper_found_outside_ads_gains_its_bibcode_later(
             str(library),
             "--identifier",
             "10.5555/not.in.ads",
+            "--confirm-identity",
             "--relative-path",
             str(before["current_path"]),
         ],

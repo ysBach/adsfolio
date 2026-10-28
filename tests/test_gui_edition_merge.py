@@ -75,15 +75,54 @@ def test_same_title_does_not_claim_an_identifier_link() -> None:
     published = record("published.pdf", "2026ApJ..1009L..41B")
     unrelated = record("another.pdf", "2025ApJ...999...10A")
 
-    candidates, linked = edition_candidates(published, [published, unrelated, preprint])
+    records = [published, unrelated, preprint]
+    for arrival in (published, preprint):
+        assert edition_candidates(arrival, records) == ((), False)
 
-    assert candidates == (preprint,)
-    assert not linked
+
+def test_several_exact_matches_require_source_choice_and_exclude_others(
+    qtbot, tmp_path: Path
+) -> None:
+    arrival = record("new.pdf", "2015Natur.525..500D", doi="10.1038/nature14869")
+    first = record("first.pdf", "2015arXiv150100001D", doi="10.1038/nature14869")
+    second = record(
+        "second.pdf", "2015Natur.525..500D", identifier=["10.1038/nature14869"]
+    )
+    unrelated = record("unrelated.pdf", "2026arXiv260627535B")
+    missing = record("missing.pdf", "2015arXiv150100003D", doi="10.1038/nature14869")
+    missing["missing_at"] = "2026-01-01"
+
+    candidates, linked = edition_candidates(
+        arrival, [arrival, first, unrelated, second, missing]
+    )
+
+    assert candidates == (first, second)
+    assert linked
+    for name in ("new.pdf", "first.pdf", "second.pdf"):
+        make_pdf(tmp_path / name)
+    dialog = EditionMergeDialog(
+        EditionMergeRequest(
+            root=tmp_path,
+            records=(arrival, *candidates),
+            target=tmp_path / "new.pdf",
+            choose_source=True,
+            linked=linked,
+        )
+    )
+    qtbot.addWidget(dialog)
+    assert dialog.source is None
+    assert not dialog.review_button.isEnabled()
+    dialog.source_combo.setCurrentIndex(
+        dialog.source_combo.findData(str(tmp_path / "second.pdf"))
+    )
+    assert dialog.review_button.isEnabled()
 
 
 def test_identification_preserves_ads_edition_identifiers(tmp_path: Path) -> None:
     path = tmp_path / "published.pdf"
-    make_pdf(path)
+    from pdf_identity_fixtures import write_pdf
+
+    write_pdf(path, arxiv="2606.27535")
     identifiers = ["arXiv:2606.27535", "10.3847/2041-8213/aea84e"]
     aliases = ["2026arXiv260627535B"]
     document = {
@@ -115,7 +154,7 @@ def test_unlinked_edition_dialog_requires_source_choice_and_allows_swapping(
     )
     dialog = EditionMergeDialog(request)
     qtbot.addWidget(dialog)
-    assert "not supplied a shared identifier" in dialog.explanation.text()
+    assert "no shared identifier in the available metadata" in dialog.explanation.text()
     assert dialog.target == tmp_path / "published.pdf"
     assert dialog.source is None
     assert not dialog.review_button.isEnabled()
@@ -132,10 +171,10 @@ def test_unlinked_edition_dialog_requires_source_choice_and_allows_swapping(
     assert not dialog.review_button.isEnabled()
 
 
-@pytest.mark.parametrize("linked", [False, True])
+@pytest.mark.parametrize("multiple", [False, True])
 @pytest.mark.parametrize("accept", [False, True])
 def test_watched_published_arrival_prompts_for_merge_after_pause(
-    monkeypatch, qtbot, tmp_path: Path, linked: bool, accept: bool
+    monkeypatch, qtbot, tmp_path: Path, accept: bool, multiple: bool
 ) -> None:
     root, other = tmp_path / "library", tmp_path / "other"
     root.mkdir()
@@ -153,10 +192,16 @@ def test_watched_published_arrival_prompts_for_merge_after_pause(
     state.upsert_file(
         "preprint.pdf", record("preprint.pdf", "2026arXiv260627535B")["metadata"]
     )
+    if multiple:
+        make_pdf(root / "preprint-copy.pdf")
+        state.upsert_file(
+            "preprint-copy.pdf",
+            record("preprint-copy.pdf", "2026arXiv260627535B")["metadata"],
+        )
     published = record(
         "new-0.pdf",
         "2026ApJ..1009L..41B",
-        identifier=["arXiv:2606.27535"] if linked else [],
+        identifier=["arXiv:2606.27535"],
     )
     state.upsert_file("new-0.pdf", published["metadata"])
     state.save()
@@ -172,12 +217,15 @@ def test_watched_published_arrival_prompts_for_merge_after_pause(
         opened.append(dialog.request)
         assert controller.pause_calls == [root.resolve()]
         assert dialog.target == root / "new-0.pdf"
-        if not linked:
+        assert dialog.request.choose_source is multiple
+        if multiple:
             assert dialog.source is None
+            assert not dialog.review_button.isEnabled()
             dialog.source_combo.setCurrentIndex(
                 dialog.source_combo.findData(str(root / "preprint.pdf"))
             )
         assert dialog.source == root / "preprint.pdf"
+        assert dialog.review_button.isEnabled()
         return QDialog.Accepted if accept else QDialog.Rejected
 
     monkeypatch.setattr(EditionMergeDialog, "exec", choose)
@@ -196,7 +244,7 @@ def test_watched_published_arrival_prompts_for_merge_after_pause(
     controller.paused.emit(controller.session_id(root))
 
     assert len(opened) == 1
-    assert opened[0].linked == linked
+    assert opened[0].linked
     assert reviewed == ([(root / "new-0.pdf", root / "preprint.pdf")] if accept else [])
     assert controller.resume_calls == [root.resolve()]
     assert window.current_root == other.resolve()
@@ -366,3 +414,39 @@ def test_ads_refresh_retains_version_identifiers_and_locked_fields() -> None:
     assert merged["identifier"] == incoming["identifier"]
     assert merged["alternate_bibcode"] == incoming["alternate_bibcode"]
     assert original == {"title": ["My title"], "_adsfolio_locked_fields": ["title"]}
+
+
+@pytest.mark.parametrize("state", [WatchState.RESOLVED, WatchState.RENAMED])
+def test_unrelated_preprint_does_not_prompt_for_watched_published_arrival(
+    monkeypatch, qtbot, tmp_path: Path, state: WatchState
+) -> None:
+    root = tmp_path / "library"
+    root.mkdir()
+    for name in ("preprint.pdf", "new-0.pdf"):
+        make_pdf(root / name)
+    window, controller, _saves = _window_factory(
+        monkeypatch, qtbot, GuiConfig(roots=[RootEntry(str(root))])
+    )
+    registry = window.registries[str(root)]
+    registry.replace_file_metadata(
+        root, "preprint.pdf", {"bibcode": "2026arXiv260627535B"}
+    )
+    registry.replace_file_metadata(
+        root,
+        "new-0.pdf",
+        {
+            "bibcode": "2015Natur.525..500D",
+            "doi": "10.1038/nature14869",
+            "identifier": ["2015Natur.525..500D", "10.1038/nature14869"],
+        },
+    )
+    window.watch_current_action.trigger()
+    event = replace(_event(root, controller.session_id(root)), state=state)
+
+    controller.outcome.emit(WatchOutcome(event, destination=event.path))
+
+    assert window.notice_bar._current().action is None
+    assert window.notice_bar._current().severity == "success"
+    assert window._pending_edition_merges == {}
+    assert window._edition_merge_target is None
+    assert controller.pause_calls == []

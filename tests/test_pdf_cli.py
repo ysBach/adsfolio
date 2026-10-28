@@ -9,6 +9,7 @@ from typing import Any, ClassVar
 import pytest
 import requests
 from click.testing import CliRunner
+from pypdf import PdfWriter
 
 from adsfolio.cli.commands import main
 from adsfolio.config import ADSError, Config, RateLimitError
@@ -67,6 +68,30 @@ def _metadata(**overrides):
     }
     base.update(overrides)
     return base
+
+
+def _write_pdf(path: Path, doi: str = "10.1234/example", marker: str = "") -> str:
+    """Write a real PDF that states its own DOI and return its SHA-256."""
+    writer = PdfWriter()
+    writer.add_blank_page(200, 200)
+    writer.add_metadata({"/DOI": doi, "/Title": marker})
+    with path.open("wb") as handle:
+        writer.write(handle)
+    return sha256_file(path)
+
+
+def _proven_metadata(path: Path, **overrides: Any) -> dict[str, Any]:
+    """Build a record through the public API; the PDF's own DOI proves it."""
+    fields = ("bibcode", "doi", "title", "author", "year", "bibstem", "volume")
+    base = _metadata()
+    doc = {key: base[key] for key in (*fields, "page", "pub")}
+    doc["doi"] = [base["doi"]]
+    for key in list(overrides):
+        if key in doc:
+            doc[key] = overrides.pop(key)
+    record = PdfIdentifier(None).build_record(doc, path)
+    record.update(overrides)
+    return record
 
 
 def _estimate_ads_ready(paths):
@@ -271,20 +296,12 @@ def test_identify_command_reports_reversed_year_override_as_usage_error(tmp_path
 
 def test_identify_creates_registry_record(tmp_path, monkeypatch):
     pdf_path = tmp_path / "paper.pdf"
-    pdf_path.write_bytes(b"%PDF")
+    _write_pdf(pdf_path)
 
-    monkeypatch.setattr(
-        "adsfolio.pdf.identify.PdfIdentifier.compute_sha256",
-        lambda self, path: f"sha-{path.name}",
-    )
     monkeypatch.setattr(
         "adsfolio.pdf.identify.PdfIdentifier.resolve_many",
         lambda self, paths, journal_map=None, **kwargs: {
-            Path(path): _metadata(
-                sha256=f"sha-{Path(path).name}",
-                current_filename=Path(path).name,
-            )
-            for path in paths
+            Path(path): _proven_metadata(Path(path)) for path in paths
         },
     )
     monkeypatch.setattr(
@@ -443,23 +460,12 @@ def test_identify_writes_unresolved_csv_and_ai_prompt(tmp_path, monkeypatch):
 
 def test_identify_passes_cached_lookup_to_ordered_resolver(tmp_path, monkeypatch):
     pdf_path = tmp_path / "paper.pdf"
-    pdf_path.write_bytes(b"%PDF")
+    _write_pdf(pdf_path)
     observed = {}
-
-    monkeypatch.setattr(
-        "adsfolio.pdf.identify.PdfIdentifier.compute_sha256",
-        lambda self, path: f"sha-{path.name}",
-    )
 
     def fake_resolve_many(self, paths, journal_map=None, **kwargs):
         observed.update(kwargs)
-        return {
-            Path(path): _metadata(
-                sha256=f"sha-{Path(path).name}",
-                current_filename=Path(path).name,
-            )
-            for path in paths
-        }
+        return {Path(path): _proven_metadata(Path(path)) for path in paths}
 
     monkeypatch.setattr(
         "adsfolio.pdf.identify.PdfIdentifier.resolve_many", fake_resolve_many
@@ -638,6 +644,7 @@ def test_identify_verbose_parser_disables_parser_suppression(tmp_path, monkeypat
         ):
             observed["suppress_parser_warnings"] = suppress_parser_warnings
             self.suppress_parser_warnings = suppress_parser_warnings
+            self.identity_failures = {}
 
         def compute_sha256(self, path):
             return f"sha-{path.name}"
@@ -685,37 +692,26 @@ def test_identify_recursive_uses_registry_matches(tmp_path, monkeypatch):
     subdir.mkdir()
     known_pdf = subdir / "known.pdf"
     new_pdf = tmp_path / "new.pdf"
-    known_pdf.write_bytes(b"%PDF")
-    new_pdf.write_bytes(b"%PDF")
+    _write_pdf(known_pdf, marker="known")
+    _write_pdf(new_pdf, marker="new")
 
     state = open_registry_state(tmp_path)
     state.upsert_file(
         "nested/known-original.pdf",
-        _metadata(
-            sha256="sha-known",
+        _proven_metadata(
+            known_pdf,
             current_filename="nested/known.pdf",
             bibcode="2021A&A...654A.113B",
         ),
     )
     state.save()
 
-    monkeypatch.setattr(
-        "adsfolio.pdf.identify.PdfIdentifier.compute_sha256",
-        lambda self, path: "sha-known" if Path(path).name == "known.pdf" else "sha-new",
-    )
-
     resolve_calls = []
 
     def fake_resolve_many(self, paths, journal_map=None, **kwargs):
         normalized = [Path(path) for path in paths]
         resolve_calls.append(normalized)
-        return {
-            path: _metadata(
-                sha256="sha-new",
-                current_filename=path.name,
-            )
-            for path in normalized
-        }
+        return {path: _proven_metadata(path) for path in normalized}
 
     monkeypatch.setattr(
         "adsfolio.pdf.identify.PdfIdentifier.resolve_many", fake_resolve_many
@@ -747,23 +743,18 @@ def test_identify_recursive_persists_filename_updates_in_registry(
     subdir = tmp_path / "nested"
     subdir.mkdir()
     renamed_pdf = subdir / "renamed.pdf"
-    renamed_pdf.write_bytes(b"%PDF")
+    _write_pdf(renamed_pdf)
 
     state = open_registry_state(tmp_path)
     state.upsert_file(
         "nested/known-original.pdf",
-        _metadata(
-            sha256="sha-known",
+        _proven_metadata(
+            renamed_pdf,
             current_filename="nested/old-name.pdf",
             bibcode="2021A&A...654A.113B",
         ),
     )
     state.save()
-
-    monkeypatch.setattr(
-        "adsfolio.pdf.identify.PdfIdentifier.compute_sha256",
-        lambda self, path: "sha-known",
-    )
 
     resolve_calls = []
     monkeypatch.setattr(
@@ -837,24 +828,19 @@ def test_identify_registers_new_duplicate_path_without_moving_existing_path(
 ):
     archived_pdf = tmp_path / "archived-copy.pdf"
     current_pdf = tmp_path / "current.pdf"
-    archived_pdf.write_bytes(b"%PDF")
-    current_pdf.write_bytes(b"%PDF")
+    _write_pdf(archived_pdf)
+    current_pdf.write_bytes(archived_pdf.read_bytes())
 
     state = open_registry_state(tmp_path)
     state.upsert_file(
         "archived-copy.pdf",
-        _metadata(
-            sha256="sha-shared",
+        _proven_metadata(
+            archived_pdf,
             current_filename="archived-copy.pdf",
             bibcode="2021A&A...654A.113B",
         ),
     )
     state.save()
-
-    monkeypatch.setattr(
-        "adsfolio.pdf.identify.PdfIdentifier.compute_sha256",
-        lambda self, path: "sha-shared",
-    )
 
     result = CliRunner().invoke(pdf, ["identify", str(tmp_path)])
 
@@ -1131,14 +1117,14 @@ def test_watch_rejects_retained_count_above_max_authors(tmp_path):
 
 def test_rename_dry_run_then_apply(tmp_path):
     source = tmp_path / "old.pdf"
-    source.write_bytes(b"%PDF")
+    _write_pdf(source)
     sidecar = open_registry_state(tmp_path)
     sidecar.upsert_file(
         "orig.pdf",
-        _metadata(
+        _proven_metadata(
+            source,
             current_filename="old.pdf",
             bibcode="2021A&A...654A.113B",
-            sha256=sha256_file(source),
         ),
     )
     sidecar.save()
@@ -1162,7 +1148,11 @@ def test_obsidian_dry_run_then_apply(tmp_path, monkeypatch):
     from adsfolio.api.search import SearchResult
 
     pdf_path = tmp_path / "paper.pdf"
-    pdf_path.write_bytes(b"%PDF")
+    fitz = pytest.importorskip("fitz")
+
+    with fitz.open() as doc:
+        doc.new_page()
+        doc.save(pdf_path)
     sidecar = open_registry_state(tmp_path)
     sidecar.upsert_file("orig.pdf", _metadata(current_filename="paper.pdf"))
     sidecar.save()
@@ -1641,14 +1631,10 @@ def test_pdf_ocr_make_ocr_sh_writes_script_with_output_dir(tmp_path, monkeypatch
 
 def test_identify_can_import_ai_csv_resolutions(tmp_path, monkeypatch):
     pdf_path = tmp_path / "unresolved.pdf"
-    pdf_path.write_bytes(b"%PDF")
+    _write_pdf(pdf_path)
     ai_csv = tmp_path / "ai.csv"
     ai_csv.write_text("relative_path,ads_bibcode\nunresolved.pdf,2024ApJ...900..100S\n")
 
-    monkeypatch.setattr(
-        "adsfolio.pdf.cli.PdfIdentifier.compute_sha256",
-        lambda self, path: "sha-unresolved",
-    )
     monkeypatch.setattr(
         "adsfolio.pdf.identify.PdfIdentifier.resolve_many",
         lambda self, paths, journal_map=None, **kwargs: {
@@ -1672,10 +1658,8 @@ def test_identify_can_import_ai_csv_resolutions(tmp_path, monkeypatch):
     monkeypatch.setattr(
         "adsfolio.pdf.cli._resolve_from_ai_csv",
         lambda identifier, directory, unresolved_paths, ai_csv_path: {
-            unresolved_paths[0]: _metadata(
-                bibcode="2024ApJ...900..100S",
-                sha256="sha-unresolved",
-                current_filename="unresolved.pdf",
+            unresolved_paths[0]: _proven_metadata(
+                pdf_path, bibcode="2024ApJ...900..100S"
             )
         },
     )
@@ -1700,31 +1684,23 @@ def test_identify_can_import_ai_csv_resolutions(tmp_path, monkeypatch):
 
 def test_identify_retries_registry_records_marked_unresolved(tmp_path, monkeypatch):
     pdf_path = tmp_path / "retry.pdf"
-    pdf_path.write_bytes(b"%PDF")
+    digest = _write_pdf(pdf_path)
 
     sidecar = open_registry_state(tmp_path)
     sidecar.upsert_file(
         "retry.pdf",
         {
             "current_filename": "retry.pdf",
-            "sha256": "sha-retry",
+            "sha256": digest,
             "status": "unresolved",
         },
     )
     sidecar.save()
 
     monkeypatch.setattr(
-        "adsfolio.pdf.identify.PdfIdentifier.compute_sha256",
-        lambda self, path: "sha-retry",
-    )
-    monkeypatch.setattr(
         "adsfolio.pdf.identify.PdfIdentifier.resolve_many",
         lambda self, paths, **kwargs: {
-            Path(path): _metadata(
-                bibcode="2024ApJ...900..100S",
-                sha256="sha-retry",
-                current_filename=Path(path).name,
-            )
+            Path(path): _proven_metadata(Path(path), bibcode="2024ApJ...900..100S")
             for path in paths
         },
     )
@@ -2263,14 +2239,14 @@ def test_refresh_ads_cli_resolves_doi_resolver_url_with_closing_paren(
     library = tmp_path / "library"
     library.mkdir()
     pdf_path = library / "paper.pdf"
-    pdf_path.write_bytes(b"%PDF-1.4\n%test\n")
+    digest = _write_pdf(pdf_path, doi="10.1234/a(b)")
     state = open_registry_state(library)
     try:
         state.upsert_file(
             "paper.pdf",
             {
                 "current_filename": "paper.pdf",
-                "sha256": "sha-paren",
+                "sha256": digest,
                 "status": "unresolved",
             },
         )
@@ -2406,6 +2382,7 @@ def test_refresh_ads_cli_resolves_manual_bibliographic_references(
             "--identifier",
             identifier,
             "--no-rename",
+            "--confirm-identity",
         ],
     )
 
@@ -2504,7 +2481,7 @@ def test_external_identify_then_rename_without_ads_token(tmp_path, monkeypatch):
     root = tmp_path / "library"
     root.mkdir()
     source = root / "10.1234_example.pdf"
-    source.write_bytes(b"%PDF-1.4 external publication")
+    _write_pdf(source, doi="10.1234/example")
     monkeypatch.setattr(
         "adsfolio.pdf.cli._get_client",
         lambda ctx: pytest.fail(

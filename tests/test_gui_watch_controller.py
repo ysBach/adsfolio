@@ -488,3 +488,250 @@ def test_enqueue_ignores_path_outside_root(tmp_path):
     worker._enqueue(outside, watch_module.WatchSource.CREATED)
 
     assert worker._pending == {}
+
+
+def _worker_with_registry(watch_module, root, rows, *, recursive=False):
+    from adsfolio.pdf.watch_session import WatchSession
+
+    worker = watch_module._LibraryWatchWorker(root, "session-1")
+    worker.configure(recursive)
+    worker._session = WatchSession(root, "session-1")
+    worker._registry = MagicMock()
+    catalog = worker._registry.registry.catalog
+    catalog.query_files.return_value = rows
+    catalog.mark_missing_locations.return_value = 1
+    return worker, catalog
+
+
+def test_reconcile_marks_only_absent_paths_missing_and_signals(tmp_path):
+    import adsfolio.gui.watch as watch_module
+
+    root = tmp_path.resolve()
+    (root / "kept.pdf").write_bytes(b"x")
+    (root / ".hidden.pdf").write_bytes(b"x")
+    (root / "outside.pdf").symlink_to(tmp_path.parent)
+    rows = [
+        {"current_path": n}
+        for n in ("kept.pdf", ".hidden.pdf", "outside.pdf", "gone.pdf")
+    ]
+    worker, catalog = _worker_with_registry(watch_module, root, rows)
+    signalled = []
+    worker.reconciled.connect(signalled.append)
+
+    worker._reconcile()
+
+    (call,) = catalog.mark_missing_locations.call_args_list
+    assert call.args[0] == root
+    assert call.args[1] == {"kept.pdf", ".hidden.pdf", "outside.pdf"}
+    assert call.kwargs == {"recursive": False}
+    assert signalled == [root]
+
+
+def test_reconcile_without_missing_files_emits_no_signal(tmp_path):
+    import adsfolio.gui.watch as watch_module
+
+    worker, catalog = _worker_with_registry(watch_module, tmp_path.resolve(), [])
+    catalog.mark_missing_locations.return_value = 0
+    signalled = []
+    worker.reconciled.connect(signalled.append)
+    worker._reconcile()
+    assert signalled == []
+
+
+def test_reconcile_with_unreadable_catalog_path_marks_nothing(monkeypatch, tmp_path):
+    import adsfolio.gui.watch as watch_module
+
+    root = tmp_path.resolve()
+    worker, catalog = _worker_with_registry(
+        watch_module, root, [{"current_path": "x.pdf"}]
+    )
+    failures = []
+    monkeypatch.setattr(worker, "_emit_failure", failures.append)
+    real_lstat = watch_module.Path.lstat
+
+    def lstat(self, *args, **kwargs):
+        if self.name == "x.pdf":
+            raise PermissionError("denied")
+        return real_lstat(self, *args, **kwargs)
+
+    monkeypatch.setattr(watch_module.Path, "lstat", lstat)
+    worker._reconcile()
+    catalog.mark_missing_locations.assert_not_called()
+    assert failures == ["denied"]
+
+
+def test_reconcile_while_paused_writes_nothing_and_runs_on_resume(
+    monkeypatch, tmp_path
+):
+    import adsfolio.gui.watch as watch_module
+
+    root = tmp_path.resolve()
+    worker, catalog = _worker_with_registry(watch_module, root, [])
+    reopened, _ = MagicMock(), None
+    reopened.registry.catalog.query_files.return_value = []
+    reopened.registry.catalog.mark_missing_locations.return_value = 0
+    monkeypatch.setattr(watch_module, "open_registry_state", lambda r: reopened)
+    scheduled = []
+    monkeypatch.setattr(
+        watch_module.QTimer, "singleShot", lambda ms, fn: scheduled.append(fn)
+    )
+    worker.pause_writes()
+    worker._reconcile()
+    catalog.mark_missing_locations.assert_not_called()
+    assert worker._reconcile_deferred
+
+    worker.resume_writes()
+
+    assert worker._reconcile in scheduled or any(
+        getattr(f, "__name__", "") == "_reconcile" for f in scheduled
+    )
+    worker._reconcile()
+    reopened.registry.catalog.mark_missing_locations.assert_called_once()
+
+
+def test_startup_baseline_queues_only_stale_pending_or_changed_catalog_files(
+    tmp_path,
+):
+    import adsfolio.gui.watch as watch_module
+    from adsfolio.pdf.watch_session import FileSnapshot
+
+    root = tmp_path.resolve()
+    names = ["plain", "stale", "pending", "facts", "untracked", "nested"]
+    snaps = [
+        FileSnapshot(root / f"{n}.pdf", 10, 20, 1, i + 1) for i, n in enumerate(names)
+    ]
+
+    def row(name, **extra):
+        return {
+            "current_path": f"{name}.pdf",
+            "size_bytes": 10,
+            "mtime_ns": 20,
+            "metadata": extra,
+        }
+
+    rows = [
+        row("plain"),
+        row("stale", _adsfolio_metadata_stale=True),
+        row("pending", **{watch_module.WATCH_PENDING_KEY: True}),
+        {**row("facts"), "size_bytes": 9},
+        {**row("nested"), "_adsfolio_metadata_stale": True},
+    ]
+    worker, _ = _worker_with_registry(watch_module, root, rows)
+
+    baseline, changed = worker._split_startup_snapshots(snaps)
+
+    assert {s.path.stem for s in changed} == {"stale", "pending", "facts", "nested"}
+    assert {s.path.stem for s in baseline} == {"plain", "untracked"}
+
+
+def test_start_emits_catalog_changed_file_as_created_arrival(monkeypatch, tmp_path):
+    import adsfolio.gui.watch as watch_module
+
+    root = tmp_path.resolve()
+    (root / "a.pdf").write_bytes(b"x")
+    registry = MagicMock()
+    registry.registry.catalog.query_files.return_value = [
+        {
+            "current_path": "a.pdf",
+            "size_bytes": 1,
+            "mtime_ns": 0,
+            "metadata": {"_adsfolio_metadata_stale": True},
+        }
+    ]
+    monkeypatch.setattr(watch_module, "open_registry_state", lambda r: registry)
+    monkeypatch.setattr(watch_module, "ADSClient", lambda: MagicMock())
+    for name in ("PdfIdentifier", "PdfRenamer", "PdfWatcher"):
+        monkeypatch.setattr(watch_module, name, MagicMock())
+    worker = watch_module._LibraryWatchWorker(root, "session-1")
+    monkeypatch.setattr(worker, "_start_observer", lambda: None)
+    detected = []
+    worker.detected.connect(detected.append)
+
+    worker.start()
+
+    assert [e.path.name for e in detected] == ["a.pdf"]
+    worker._cleanup()
+
+
+def test_deleted_and_moved_out_events_request_reconcile(monkeypatch, tmp_path):
+    import watchdog.observers
+
+    import adsfolio.gui.watch as watch_module
+
+    root = tmp_path.resolve()
+    scheduled = {}
+
+    class FakeObserver:
+        def schedule(self, handler, path, *, recursive):
+            scheduled["handler"] = handler
+
+        def start(self):
+            pass
+
+    monkeypatch.setattr(watchdog.observers, "Observer", FakeObserver)
+    worker = watch_module._LibraryWatchWorker(root, "session-1")
+    worker._start_observer()
+    handler = scheduled["handler"]
+
+    def event(**kw):
+        return type("E", (), {"is_directory": False, **kw})()
+
+    handler.on_deleted(event(src_path=str(root / "a.pdf")))
+    assert worker._reconcile_wanted
+    worker._reconcile_wanted = False
+    handler.on_moved(
+        event(src_path=str(root / "a.pdf"), dest_path=str(root.parent / "a.pdf"))
+    )
+    assert worker._reconcile_wanted
+
+
+def test_process_announces_change_made_while_processing(tmp_path):
+    import adsfolio.gui.watch as watch_module
+    from adsfolio.pdf.watch_session import (
+        FileSnapshot,
+        WatchOutcome,
+        WatchSession,
+        WatchSource,
+    )
+
+    root = tmp_path.resolve()
+    pdf = root / "a.pdf"
+    pdf.write_bytes(b"x")
+    worker = watch_module._LibraryWatchWorker(root, "session-1")
+    worker._session = WatchSession(root, "session-1")
+    worker._registry = MagicMock()
+    event = worker._session.observe(FileSnapshot.from_path(pdf), WatchSource.CREATED)
+
+    def process_event(current, *args):
+        pdf.write_bytes(b"xyz")
+        worker._session.observe(FileSnapshot.from_path(pdf), WatchSource.MODIFIED)
+        return WatchOutcome(
+            event=type(current)(**{**current.__dict__, "state": WatchState.RESOLVED})
+        )
+
+    worker._watcher = MagicMock()
+    worker._watcher.process_event.side_effect = process_event
+    detected = []
+    worker.detected.connect(detected.append)
+
+    worker.process(event, IdentifySettings(), RenameSettings())
+
+    assert [e.identity.generation for e in detected] == [1]
+
+
+def test_controller_forwards_reconciled_for_current_root(qtbot, tmp_path):
+    from adsfolio.gui.watch import LibraryWatchController
+
+    class ReconcileWorker(FakeWorker):
+        reconciled = Signal(object)
+
+    root = tmp_path.resolve()
+    controller = LibraryWatchController(
+        worker_factory=lambda r, rec, sid: ReconcileWorker(r, sid)
+    )
+    controller.start_root(root, recursive=False)
+    received = []
+    controller.reconciled.connect(received.append)
+    controller._handles[root].worker.reconciled.emit(root)
+    assert received == [root]
+    controller.stop_all()

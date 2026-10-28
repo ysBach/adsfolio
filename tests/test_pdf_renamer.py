@@ -2,6 +2,7 @@ import json
 from types import SimpleNamespace
 
 import pytest
+from pdf_identity_fixtures import confirm_metadata, write_pdf
 
 from adsfolio.pdf.renamer import DEFAULT_SCHEME, PdfRenamer
 from adsfolio.pdf.sidecar import SIDECAR_FILENAME, Sidecar
@@ -224,11 +225,11 @@ def test_render_rejects_invalid_author_limits(max_authors, authors_when_truncate
 
 def test_batch_rename_uses_authors_when_truncated(tmp_path):
     source = tmp_path / "old.pdf"
-    source.write_bytes(b"%PDF")
+    write_pdf(source)
     sidecar = Sidecar(tmp_path)
     sidecar.upsert_file(
         "original.pdf",
-        _sample_metadata(current_filename="old.pdf"),
+        confirm_metadata(source, _sample_metadata(current_filename="old.pdf")),
     )
 
     plans = PdfRenamer().batch_rename(
@@ -257,12 +258,12 @@ def test_pdf_renamer_strips_ads_html_markup_from_title():
 
 def test_batch_rename_dry_run_does_not_change_files(tmp_path):
     source = tmp_path / "old.pdf"
-    source.write_bytes(b"%PDF")
+    write_pdf(source)
 
     sidecar = Sidecar(tmp_path)
     sidecar.upsert_file(
         "original.pdf",
-        _sample_metadata(current_filename="old.pdf"),
+        confirm_metadata(source, _sample_metadata(current_filename="old.pdf")),
     )
 
     renamer = PdfRenamer()
@@ -276,12 +277,12 @@ def test_batch_rename_dry_run_does_not_change_files(tmp_path):
 
 def test_batch_rename_apply_updates_sidecar_and_filesystem(tmp_path):
     source = tmp_path / "old.pdf"
-    source.write_bytes(b"%PDF")
+    write_pdf(source)
 
     sidecar = Sidecar(tmp_path)
     sidecar.upsert_file(
         "original.pdf",
-        _sample_metadata(current_filename="old.pdf"),
+        confirm_metadata(source, _sample_metadata(current_filename="old.pdf")),
     )
 
     renamer = PdfRenamer()
@@ -308,14 +309,17 @@ def test_batch_rename_relocates_resolved_files_from_unresolved(tmp_path):
     unresolved.mkdir()
     resolved_source = unresolved / "old.pdf"
     unresolved_source = unresolved / "still-unresolved.pdf"
-    resolved_source.write_bytes(b"%PDF")
-    unresolved_source.write_bytes(b"%PDF")
+    write_pdf(resolved_source)
+    write_pdf(unresolved_source)
 
     sidecar = Sidecar(tmp_path)
     sidecar.upsert_file(
         "original.pdf",
-        _sample_metadata(
-            current_filename="unresolved/old.pdf",
+        confirm_metadata(
+            resolved_source,
+            _sample_metadata(
+                current_filename="unresolved/old.pdf",
+            ),
         ),
     )
     sidecar.upsert_file(

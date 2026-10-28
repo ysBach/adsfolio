@@ -1,13 +1,18 @@
+import pytest
+
 from adsfolio.gui.library import (
     BASE_COLUMNS,
     COLUMNS,
     ISO8601_TIMESTAMP_FORMAT,
     FileQuery,
     LibraryView,
+    ResolutionState,
     ads_url,
     arxiv_url,
     build_columns,
+    format_count,
     format_mtime,
+    resolution_state,
 )
 
 
@@ -62,8 +67,10 @@ def test_columns_render_full_record():
     assert set(values) == {
         "title",
         "author",
+        "author_count",
         "year",
         "pub",
+        "citation_count",
         "bibcode",
         "arxiv",
         "status",
@@ -197,3 +204,72 @@ def test_title_column_converts_html_in_list_metadata():
     record = {"metadata": {"title": ["2001 CC<SUB>21</SUB> &amp; more"]}}
 
     assert title_column.getter(record) == "2001 CC21 & more"
+
+
+def test_saved_counts_show_zero_but_leave_missing_values_empty() -> None:
+    assert format_count({"metadata": {"author_count": 0}}, "author_count") == "0"
+    assert format_count({"metadata": {"citation_count": 12}}, "citation_count") == "12"
+    assert format_count({"metadata": {"citation_count": "7"}}, "citation_count") == "7"
+    assert format_count({"metadata": {}}, "citation_count") == ""
+    assert format_count({"metadata": {"citation_count": None}}, "citation_count") == ""
+    # A short author list does not establish how many authors the paper has.
+    assert (
+        format_count({"metadata": {"author": ["A, B.", "C, D."]}}, "author_count") == ""
+    )
+
+
+def _local_metadata() -> dict:
+    return {
+        "title": ["Notes"],
+        "author": ["Bach, Y."],
+        "year": "2024",
+        "_adsfolio_locked_fields": ["title"],
+    }
+
+
+@pytest.mark.parametrize(
+    ("record", "expected"),
+    [
+        (
+            {"status": "resolved", "bibcode": "2024A&A...1A", "metadata": {}},
+            ResolutionState.ADS_LINKED,
+        ),
+        (
+            {"status": "unresolved", "metadata": _local_metadata()},
+            ResolutionState.LOCAL_METADATA,
+        ),
+        # Partly entered manual metadata is not rename-ready.
+        (
+            {
+                "status": "unresolved",
+                "metadata": {"title": ["Notes"], "_adsfolio_locked_fields": ["title"]},
+            },
+            ResolutionState.UNRESOLVED,
+        ),
+        ({"status": "unresolved", "metadata": {}}, ResolutionState.UNRESOLVED),
+        (
+            {
+                "status": "resolved",
+                "bibcode": "2024A&A...1A",
+                "sha256": "now",
+                "metadata": {"_adsfolio_metadata_sha256": "before"},
+            },
+            ResolutionState.CHANGED,
+        ),
+        (
+            {
+                "status": "unresolved",
+                "sha256": "now",
+                "metadata": {
+                    **_local_metadata(),
+                    "_adsfolio_metadata_sha256": "before",
+                },
+            },
+            ResolutionState.CHANGED,
+        ),
+    ],
+)
+def test_resolution_state_separates_ads_local_unresolved_and_changed(
+    record: dict, expected: ResolutionState
+) -> None:
+    assert resolution_state(record) is expected

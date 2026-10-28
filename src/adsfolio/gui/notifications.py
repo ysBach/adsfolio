@@ -40,6 +40,7 @@ class Notice:
     details: str | None = None
     manual_entry: bool = False
     reveal_path: Path | None = None
+    update_by_id: bool = False
 
     def __post_init__(self) -> None:
         if self.root is not None and not isinstance(self.root, Path):
@@ -66,6 +67,8 @@ class NoticeBar(QFrame):
 
     action_requested = Signal(object)
     manual_entry_requested = Signal(object)
+    update_by_id_requested = Signal(object)
+    open_requested = Signal(object)
     reveal_requested = Signal(object)
     dismiss_requested = Signal(object)
     action_all_requested = Signal(tuple)
@@ -86,6 +89,19 @@ class NoticeBar(QFrame):
         self.message.setWordWrap(True)
         self.pending_count = QLabel(self)
         self.action_button = QPushButton(self)
+        self.open_button = QPushButton("Open PDF", self)
+        self.open_button.setIcon(vector_icon("open", self.open_button))
+        self.open_button.setIconSize(ICON_SIZE)
+        self.open_button.setAccessibleName("Open PDF")
+        self.update_by_id_button = QPushButton("Update by ID…", self)
+        self.update_by_id_button.setIcon(
+            vector_icon("refresh", self.update_by_id_button)
+        )
+        self.update_by_id_button.setIconSize(ICON_SIZE)
+        self.update_by_id_button.setAccessibleName("Update by ID")
+        self.update_by_id_button.setToolTip(
+            "Look up this PDF by Bibcode, DOI, arXiv ID, or bibliographic reference"
+        )
         self.manual_entry_button = QPushButton("Enter Details…", self)
         self.manual_entry_button.setIcon(vector_icon("edit", self.manual_entry_button))
         self.manual_entry_button.setIconSize(ICON_SIZE)
@@ -115,6 +131,8 @@ class NoticeBar(QFrame):
         layout.addWidget(self.severity_icon)
         layout.addWidget(self.message, 1)
         layout.addWidget(self.pending_count)
+        layout.addWidget(self.open_button)
+        layout.addWidget(self.update_by_id_button)
         layout.addWidget(self.action_button)
         layout.addWidget(self.manual_entry_button)
         layout.addWidget(self.reveal_button)
@@ -122,6 +140,8 @@ class NoticeBar(QFrame):
         layout.addWidget(self.dismiss_button)
         layout.addWidget(self.dismiss_all_button)
         self.action_button.clicked.connect(self._request_action)
+        self.open_button.clicked.connect(self._request_open)
+        self.update_by_id_button.clicked.connect(self._request_update_by_id)
         self.manual_entry_button.clicked.connect(self._request_manual_entry)
         self.reveal_button.clicked.connect(self._request_reveal)
         self.action_all_button.clicked.connect(self._request_all_actions)
@@ -179,6 +199,18 @@ class NoticeBar(QFrame):
         if notice is not None and notice.reveal_path is not None:
             self.reveal_requested.emit(notice.reveal_path)
 
+    def _request_open(self) -> None:
+        """Open the displayed notice's PDF without dismissing its notice."""
+        notice = self._current()
+        if notice is not None and notice.reveal_path is not None:
+            self.open_requested.emit(notice.reveal_path)
+
+    def _request_update_by_id(self) -> None:
+        """Request an identifier lookup for the displayed notice's PDF."""
+        notice = self._current()
+        if notice is not None and notice.update_by_id:
+            self.update_by_id_requested.emit(notice.payload)
+
     def _request_all_actions(self) -> None:
         payloads = tuple(
             notice.payload
@@ -202,6 +234,8 @@ class NoticeBar(QFrame):
             self.pending_count.clear()
             self.pending_count.setToolTip("")
             self.action_button.hide()
+            self.open_button.hide()
+            self.update_by_id_button.hide()
             self.manual_entry_button.hide()
             self.reveal_button.hide()
             self.action_all_button.hide()
@@ -232,6 +266,11 @@ class NoticeBar(QFrame):
             button.setAccessibleName(button.text().replace("&&", "&"))
             button.setToolTip(button.accessibleName())
         self.action_button.setVisible(notice.action_label is not None)
+        self.open_button.setVisible(notice.reveal_path is not None)
+        self.open_button.setToolTip(
+            str(notice.reveal_path) if notice.reveal_path is not None else ""
+        )
+        self.update_by_id_button.setVisible(notice.update_by_id)
         self.manual_entry_button.setVisible(notice.manual_entry)
         self.reveal_button.setVisible(notice.reveal_path is not None)
         self.reveal_button.setToolTip(

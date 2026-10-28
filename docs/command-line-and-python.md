@@ -76,6 +76,9 @@ adsfolio pdf rename ~/Papers --apply
 
 Identify records publication matches. Rename previews changes unless you supply
 `--apply`. Inspect the preview before applying it.
+Both commands check each match against the arXiv stamp and DOIs that the PDF
+states about itself. They skip PDFs whose identifiers contradict the record or
+cannot confirm it. See [PDF identity checks](gui.md#pdf-identity-checks).
 See [PDF workflows](cli-tutorials/04-pdf-workflows.md) for provider order,
 filename templates, OCR preparation, watching, and annotation transfer.
 
@@ -92,7 +95,8 @@ adsfolio pdf obsidian ~/Papers
 adsfolio pdf status ~/Papers --recursive
 ```
 
-Watch with `--apply` can identify and rename arriving PDFs. Review its saved
+Watch with `--apply` can identify and rename arriving PDFs that pass the
+identity check as verified. Review its saved
 policies before starting it on an existing collection.
 Upgrade and Obsidian commands preview their work by default.
 Read their `--help` output before applying changes.
@@ -136,3 +140,8 @@ PDFs, operations, and documents:
 5. [Operations and troubleshooting](cli-tutorials/05-operations-and-troubleshooting.md)
 6. [CV workflows](cli-tutorials/06-cv-workflows.md)
 7. [From an ADS query to a document with Python](query-to-document-example.md)
+
+For a PDF without a readable own identifier, review the PDF and use
+`pdf refresh-ads ROOT --identifier ID --relative-path FILE --confirm-identity`.
+This confirms one file. It cannot override a conflicting identifier or an own
+identifier that the provider does not corroborate.

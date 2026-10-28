@@ -12,6 +12,7 @@ from PySide6.QtCore import (
     QEvent,
     QModelIndex,
     QObject,
+    QPoint,
     QPointF,
     QSize,
     Qt,
@@ -35,24 +36,54 @@ from PySide6.QtWidgets import (
     QTreeView,
 )
 
-from ..pdf.cli_common import is_resolved_record
-from ..pdf.readiness import metadata_ready
 from .library import (
     BASE_COLUMNS,
     ISO8601_TIMESTAMP_FORMAT,
+    SAVED_AUTHOR_COUNT_TOOLTIP,
+    SAVED_CITATION_COUNT_TOOLTIP,
     STALE_VERIFICATION_TOOLTIP,
     Column,
     FileQuery,
+    ResolutionState,
     format_first_seen,
     format_mtime,
-    verification_stale,
+    resolution_state,
 )
 
 PAGE_SIZE = 500
+# Status-marker colors: green is an ADS link, purple is usable local metadata
+# without one, and amber means the record still needs an ADS lookup.
+RESOLUTION_COLORS = {
+    ResolutionState.CHANGED: "#d97706",
+    ResolutionState.ADS_LINKED: "#2e7d32",
+    ResolutionState.LOCAL_METADATA: "#7b1fa2",
+    ResolutionState.UNRESOLVED: "#d97706",
+}
+COUNT_COLUMN_TOOLTIPS = {
+    "author_count": SAVED_AUTHOR_COUNT_TOOLTIP,
+    "citation_count": SAVED_CITATION_COUNT_TOOLTIP,
+}
+
+
+def resolution_tooltip(record: dict[str, Any]) -> str:
+    """Return the status-marker description for one record."""
+    state = resolution_state(record)
+    if state is ResolutionState.CHANGED:
+        return STALE_VERIFICATION_TOOLTIP
+    if state is ResolutionState.ADS_LINKED:
+        return "ADS record linked"
+    if state is ResolutionState.LOCAL_METADATA:
+        return "Local metadata ready for renaming. No ADS record linked."
+    if record.get("bibcode"):
+        return (
+            "Bibcode present. ADS lookup is pending. "
+            "Run Identify to check it in a batch. Existing metadata is retained."
+        )
+    return "No completed ADS lookup. Run Identify or enter metadata."
 
 
 class LibraryTableView(QTreeView):
-    """Scroll horizontally in smaller steps while Shift is held."""
+    """Scroll horizontally in smaller steps for discrete wheels and while Shift is held."""
 
     def __init__(self, parent: Any = None) -> None:
         super().__init__(parent)
@@ -64,41 +95,75 @@ class LibraryTableView(QTreeView):
         ):
             widget.installEventFilter(self)
 
+    @staticmethod
+    def _is_precise(event: QWheelEvent) -> bool:
+        """Return whether wheel input comes from a precise trackpad or touch device."""
+        return (
+            event.phase() != Qt.NoScrollPhase
+            or event.source() == Qt.MouseEventSynthesizedBySystem
+            or (
+                sys.platform != "darwin"
+                and bool(
+                    event.pointingDevice().capabilities()
+                    & QInputDevice.Capability.PixelScroll
+                )
+            )
+        )
+
     def eventFilter(self, watched: QObject, event: QEvent) -> bool:
-        """Apply the same Shift-wheel speed over the header and scrollbars."""
-        if event.type() == QEvent.Wheel and event.modifiers() & Qt.ShiftModifier:
-            self.wheelEvent(event)
-            return True
+        """Apply the same discrete horizontal speed over the header and scrollbars."""
+        if event.type() == QEvent.Wheel:
+            is_shift = bool(event.modifiers() & Qt.ShiftModifier)
+            angle = event.angleDelta()
+            is_discrete_horizontal = angle.x() != 0 and not self._is_precise(event)
+            if is_shift or is_discrete_horizontal:
+                self.wheelEvent(event)
+                return True
         return super().eventFilter(watched, event)
 
     def wheelEvent(self, event: QWheelEvent) -> None:
-        """Use one tenth of a wheel page or trackpad pixel displacement."""
-        if not event.modifiers() & Qt.ShiftModifier:
+        """Use one tenth of a wheel page for discrete horizontal or Shift scrolling."""
+        is_shift = bool(event.modifiers() & Qt.ShiftModifier)
+        angle = event.angleDelta()
+        precise = self._is_precise(event)
+        is_discrete_horizontal = angle.x() != 0 and not precise
+        if not is_shift and not is_discrete_horizontal:
             self._shift_wheel_remainder = 0
             super().wheelEvent(event)
             return
         if event.phase() == Qt.ScrollBegin:
             self._shift_wheel_remainder = 0
+        pixels = event.pixelDelta()
+        has_vertical = pixels.y() != 0 or angle.y() != 0
+        if not is_shift and has_vertical:
+            vertical_event = QWheelEvent(
+                event.position(),
+                event.globalPosition(),
+                QPoint(0, pixels.y()),
+                QPoint(0, angle.y()),
+                event.buttons(),
+                event.modifiers(),
+                event.phase(),
+                event.inverted(),
+                event.source(),
+                event.pointingDevice(),
+            )
+            super().wheelEvent(vertical_event)
         scrollbar = self.horizontalScrollBar()
         pixels = event.pixelDelta()
         angle = event.angleDelta()
-        precise = (
-            event.phase() != Qt.NoScrollPhase
-            or event.source() == Qt.MouseEventSynthesizedBySystem
-            or (
-                sys.platform != "darwin"
-                and event.pointingDevice().capabilities()
-                & QInputDevice.Capability.PixelScroll
-            )
-        )
-        # Cocoa also supplies estimated pixel deltas for ordinary mouse wheels.
-        if not pixels.isNull() and (precise or angle.isNull()):
-            delta = pixels.x() if abs(pixels.x()) > abs(pixels.y()) else pixels.y()
-            distance = delta * 120
+        if is_shift:
+            # Cocoa also supplies estimated pixel deltas for ordinary mouse wheels.
+            if not pixels.isNull() and (precise or angle.isNull()):
+                delta = pixels.x() if abs(pixels.x()) > abs(pixels.y()) else pixels.y()
+                distance = delta * 120
+            else:
+                page = scrollbar.pageStep()
+                delta = angle.x() if abs(angle.x()) > abs(angle.y()) else angle.y()
+                distance = max(-120 * page, min(120 * page, delta * page))
         else:
             page = scrollbar.pageStep()
-            delta = angle.x() if abs(angle.x()) > abs(angle.y()) else angle.y()
-            distance = max(-120 * page, min(120 * page, delta * page))
+            distance = max(-120 * page, min(120 * page, angle.x() * page))
         if scrollbar.invertedControls():
             distance = -distance
         if (
@@ -253,7 +318,7 @@ class LinkDelegate(RowHeightDelegate):
 
 
 class ResolutionDelegate(RowHeightDelegate):
-    """Draw a compact green marker for records resolved through ADS."""
+    """Draw a compact marker for a record's ADS link or local-metadata state."""
 
     def paint(
         self,
@@ -276,7 +341,8 @@ class ResolutionDelegate(RowHeightDelegate):
         if marker_size <= 0:
             return
         marker = styled.rect.center()
-        if verification_stale(record):
+        state = resolution_state(record)
+        if state is ResolutionState.CHANGED:
             half = marker_size / 2.0
             triangle = QPolygonF(
                 [
@@ -292,12 +358,10 @@ class ResolutionDelegate(RowHeightDelegate):
             painter.drawPolygon(triangle)
             painter.restore()
             return
-        if not (is_resolved_record(record) or metadata_ready(record)):
-            return
         painter.save()
         painter.setRenderHint(QPainter.Antialiasing, True)
         painter.setPen(Qt.NoPen)
-        painter.setBrush(QColor("#2e7d32"))
+        painter.setBrush(QColor(RESOLUTION_COLORS[state]))
         painter.drawEllipse(
             marker.x() - marker_size // 2,
             marker.y() - marker_size // 2,
@@ -433,18 +497,16 @@ class FileTableModel(QAbstractTableModel):
             if role == Qt.DisplayRole:
                 return ""
             if role in (Qt.ToolTipRole, Qt.AccessibleTextRole):
-                if verification_stale(record):
-                    return STALE_VERIFICATION_TOOLTIP
-                if is_resolved_record(record):
-                    return "ADS record linked"
-                if metadata_ready(record):
-                    return "Metadata ready for renaming. No completed ADS lookup."
-                if record.get("bibcode"):
-                    return (
-                        "Bibcode present. ADS lookup is pending. "
-                        "Run Identify to check it in a batch. Existing metadata is retained."
-                    )
-                return "No completed ADS lookup. Run Identify or enter metadata."
+                return resolution_tooltip(record)
+        if column.key in COUNT_COLUMN_TOOLTIPS:
+            if role == Qt.ToolTipRole:
+                if column.getter(record):
+                    return COUNT_COLUMN_TOOLTIPS[column.key]
+                return "No count is saved for this record."
+            if role == Qt.TextAlignmentRole:
+                return int(Qt.AlignRight | Qt.AlignVCenter)
+            if role == Qt.AccessibleTextRole:
+                return f"{column.header}: {column.getter(record) or 'not saved'}"
         if role in (Qt.ToolTipRole, Qt.AccessibleTextRole) and column.key in {
             "bibcode",
             "arxiv",
@@ -482,11 +544,13 @@ class FileTableModel(QAbstractTableModel):
         role: int = Qt.DisplayRole,
     ) -> Any:
         """Return column headers."""
-        if role != Qt.DisplayRole or orientation != Qt.Horizontal:
+        if orientation != Qt.Horizontal or not 0 <= section < len(self._columns):
             return None
-        return (
-            self._columns[section].header if 0 <= section < len(self._columns) else None
-        )
+        if role == Qt.ToolTipRole:
+            return COUNT_COLUMN_TOOLTIPS.get(self._columns[section].key)
+        if role != Qt.DisplayRole:
+            return None
+        return self._columns[section].header
 
     def canFetchMore(self, parent: QModelIndex = QModelIndex()) -> bool:
         """Return whether the snapshot holds rows not yet shown."""

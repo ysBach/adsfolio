@@ -58,6 +58,12 @@ from ..pdf.annotation_merge import (
 from ..pdf.doi_providers import DOI_PROVIDER_LABELS, DoiProvider
 from ..pdf.files import sha256_file
 from ..pdf.identify_settings import IdentifySettings
+from ..pdf.identity import (
+    IDENTITY_KEY,
+    IdentityValidationError,
+    assert_mutation_allowed,
+    extract_pdf_own_identity,
+)
 from ..pdf.readiness import (
     METADATA_SHA256_KEY,
     metadata_ready,
@@ -99,7 +105,13 @@ from .edition_merge import (
     edition_candidates,
     edition_role,
 )
-from .icons import RoundIconButton
+from .icons import (
+    ICON_SIZE,
+    ActionIconBinder,
+    BadgeToolButton,
+    RoundIconButton,
+    vector_icon,
+)
 from .jobs import CommandJob, cli_argv
 from .library import (
     Column,
@@ -469,14 +481,47 @@ class MainWindow(QMainWindow):
         self.status.addPermanentWidget(self.job_progress)
         self._build_actions()
         toolbar.addSeparator()
+        toolbar.setToolButtonStyle(Qt.ToolButtonIconOnly)
+        toolbar.setIconSize(ICON_SIZE)
+        self._toolbar_icons = ActionIconBinder(toolbar)
+        self._toolbar_icons.bind(self.refresh_action, "refresh")
+        self._toolbar_icons.bind(self.identify_action, "identify")
+        self._toolbar_icons.bind(self.rename_action, "rename")
+        for action in (self.refresh_action, self.identify_action, self.rename_action):
+            # Menus keep their text-only labels.
+            action.setIconVisibleInMenu(False)
+        self._set_action_tooltip(
+            self.refresh_action,
+            "Refresh: scan local PDFs in the current library and reconcile "
+            "added, changed, moved, and missing files",
+        )
+        self._set_action_tooltip(
+            self.rename_action,
+            "Rename: preview and apply saved rename rules to PDFs in the "
+            "current library",
+        )
         toolbar.addAction(self.refresh_action)
-        toolbar.addAction(self.identify_action)
+        self.identify_button = BadgeToolButton(self)
+        self.identify_button.setDefaultAction(self.identify_action)
+        self.identify_button.setToolButtonStyle(Qt.ToolButtonIconOnly)
+        self.identify_button.setIconSize(ICON_SIZE)
+        self.identify_button.setAutoRaise(True)
+        toolbar.addWidget(self.identify_button)
+        self._set_identify_badge(None)
         toolbar.addAction(self.rename_action)
         self.ads_refresh_button = QToolButton(self)
         self.ads_refresh_button.setText("ADS Refresh")
+        self.ads_refresh_button.setIcon(
+            vector_icon("ads_refresh", self.ads_refresh_button)
+        )
+        self.ads_refresh_button.setToolButtonStyle(Qt.ToolButtonIconOnly)
+        self.ads_refresh_button.setIconSize(ICON_SIZE)
+        self.ads_refresh_button.setAutoRaise(True)
+        self.ads_refresh_button.setAccessibleName("ADS Refresh")
         self.ads_refresh_button.setPopupMode(QToolButton.InstantPopup)
         self.ads_refresh_button.setToolTip(
-            "Look up stored bibcodes, update ADS metadata, or apply saved rename rules"
+            "ADS Refresh menu: look up stored bibcodes, update ADS metadata, "
+            "or apply saved rename rules"
         )
         ads_menu = QMenu(self.ads_refresh_button)
         ads_menu.addAction(self.refresh_selected_ads_action)
@@ -929,7 +974,10 @@ class MainWindow(QMainWindow):
         self.config.detail_visible = visible
         self.detail.setVisible(visible)
         if visible and self.splitter.sizes()[2] == 0:
-            self.splitter.setSizes(self.config.splitter_sizes)
+            sizes = list(self.config.splitter_sizes)
+            if sizes[2] == 0:
+                sizes[2] = DEFAULT_SPLITTER_SIZES[2]
+            self.splitter.setSizes(sizes)
 
     def _find_bar_visibility_changed(self, visible: bool) -> None:
         """Keep keyboard focus usable after hiding Find."""
@@ -988,8 +1036,13 @@ class MainWindow(QMainWindow):
         self.watch_controller.outcome.connect(self._handle_watch_outcome)
         self.watch_controller.failed.connect(self._handle_watch_failure)
         self.watch_controller.paused.connect(self._handle_watch_paused)
+        reconciled = getattr(self.watch_controller, "reconciled", None)
+        if reconciled is not None:
+            reconciled.connect(self._schedule_watch_refresh)
         self.notice_bar.action_requested.connect(self._handle_notice_action)
         self.notice_bar.manual_entry_requested.connect(self._enter_manual_metadata)
+        self.notice_bar.update_by_id_requested.connect(self._update_notice_by_id)
+        self.notice_bar.open_requested.connect(self._open_notice_pdf)
         self.notice_bar.reveal_requested.connect(self._reveal_notice_path)
         self.notice_bar.dismiss_requested.connect(self._handle_notice_dismiss)
         self.notice_bar.action_all_requested.connect(self._handle_notice_actions)
@@ -1038,6 +1091,63 @@ class MainWindow(QMainWindow):
         if hasattr(self, "export_ads_library_action"):
             self.export_ads_library_action.setEnabled(self._can_export_ads_library())
         self._sync_refresh_actions()
+
+    @staticmethod
+    def _set_action_tooltip(
+        action: QAction, description: str, detail: str = ""
+    ) -> None:
+        """Set an action tooltip that ends its first line with the shortcut.
+
+        Parameters
+        ----------
+        action : QAction
+            Action whose tooltip is replaced.
+        description : str
+            First tooltip line.
+        detail : str, optional
+            Extra lines shown below the first line.
+        """
+        shortcuts = action.shortcuts()
+        if shortcuts:
+            shortcut = shortcuts[0].toString(QKeySequence.NativeText)
+            description = f"{description} ({shortcut})"
+        action.setToolTip(f"{description}\n{detail}" if detail else description)
+
+    def _set_identify_badge(
+        self, count: int | None, *, unavailable: bool = False
+    ) -> None:
+        """Show how many catalogued PDFs need ADS lookup on the Identify button.
+
+        Parameters
+        ----------
+        count : int or None
+            Stored records without an ADS link in the whole current library,
+            or `None` when no library is open or the count is unavailable.
+        unavailable : bool, optional
+            Say in the tooltip that the count could not be read.
+        """
+        if not hasattr(self, "identify_button"):
+            return
+        detail = ""
+        if unavailable:
+            detail = (
+                "The number of catalogued PDFs that need ADS lookup is unavailable."
+            )
+        elif count is not None:
+            subject = "catalogued PDF needs" if count == 1 else "catalogued PDFs need"
+            detail = (
+                f"{count} {subject} ADS lookup (no saved ADS link). Identify can "
+                "skip PDFs that already have usable metadata or are in the "
+                "configured unresolved folder, and also checks PDFs that are "
+                "not catalogued yet."
+            )
+        self._set_action_tooltip(
+            self.identify_action,
+            "Identify: find publication details for PDFs in the current library",
+            detail,
+        )
+        self.identify_button.set_badge(count)
+        self.identify_button.setAccessibleDescription(self.identify_action.toolTip())
 
     def _sync_refresh_actions(self) -> None:
         """Enable refresh controls only when their root and selection are usable."""
@@ -1343,6 +1453,7 @@ class MainWindow(QMainWindow):
                 payload=event if current else failure,
                 root=failure.root,
                 manual_entry=current,
+                update_by_id=current,
                 reveal_path=event.path if event is not None else None,
             )
         )
@@ -1444,13 +1555,7 @@ class MainWindow(QMainWindow):
                         else "warning"
                     )
                 ),
-                action=(
-                    NoticeAction.RETRY
-                    if state is WatchState.FAILED
-                    else NoticeAction.IDENTIFY
-                    if state is WatchState.UNRESOLVED
-                    else None
-                ),
+                action=(NoticeAction.RETRY if state is WatchState.FAILED else None),
                 payload=(
                     replace(event, path=destination)
                     if state in {WatchState.UNRESOLVED, WatchState.FAILED}
@@ -1459,6 +1564,7 @@ class MainWindow(QMainWindow):
                 root=event.root,
                 details=str(destination),
                 manual_entry=state in {WatchState.UNRESOLVED, WatchState.FAILED},
+                update_by_id=state in {WatchState.UNRESOLVED, WatchState.FAILED},
                 reveal_path=destination,
             )
         )
@@ -1595,6 +1701,20 @@ class MainWindow(QMainWindow):
         if not reveal_in_file_manager(path):
             self.status.showMessage(f"Could not reveal file: {path}")
 
+    def _open_notice_pdf(self, path: Path) -> None:
+        """Open the notice's file with the configured PDF viewer."""
+        if not path.is_file() or not open_path(path, self.config.pdf_viewer_command):
+            self.status.showMessage(f"Could not open PDF: {path}")
+
+    def _update_notice_by_id(self, payload: object) -> None:
+        """Look up the notice's PDF independently of the selected library row."""
+        if not isinstance(payload, WatchEvent) or not self._is_current_watch_event(
+            payload
+        ):
+            return
+        if self._update_from_identifier("", root=payload.root, path=payload.path):
+            self.notice_bar.dismiss(self._watch_notice_key(payload))
+
     def _handle_notice_action(self, payload: object) -> None:
         if isinstance(payload, EditionMergeRequest):
             if payload.event is not None and self._is_current_watch_event(
@@ -1617,8 +1737,7 @@ class MainWindow(QMainWindow):
         elif payload.state is WatchState.DETECTED:
             self._process_watch_event(payload)
         elif payload.state is WatchState.UNRESOLVED:
-            if self._update_from_identifier("", root=payload.root, path=payload.path):
-                self.notice_bar.dismiss(self._watch_notice_key(payload))
+            self._update_notice_by_id(payload)
 
     def _handle_notice_dismiss(self, payload: object) -> None:
         if isinstance(payload, EditionMergeRequest) and payload.event is not None:
@@ -1666,6 +1785,20 @@ class MainWindow(QMainWindow):
             and self.current_root is not None
             and self.current_root.resolve() in roots
         ):
+            registry = self.registries[str(self.current_root)]
+            if registry.find_location_by_id(selection_id) is None:
+                previous = registry.catalog.query_files(
+                    root=self.current_root,
+                    location_id=selection_id,
+                    include_missing=True,
+                )
+                if previous:
+                    current = registry.catalog.query_files(
+                        root=self.current_root,
+                        attachment_id=previous[0]["attachment_id"],
+                    )
+                    if len(current) == 1:
+                        selection_id = int(current[0]["location_id"])
             self._select_file_id(selection_id)
 
     def _update_root_watch_labels(self) -> None:
@@ -2056,7 +2189,7 @@ class MainWindow(QMainWindow):
         return None
 
     def _table_clicked(self, index: QModelIndex) -> None:
-        """Copy generated cells and, if configured, activate links on single click."""
+        """Show status details, copy citations, or open links for a table click."""
         if not index.isValid():
             return
         record = self.model.record_at(index.row())
@@ -2071,6 +2204,14 @@ class MainWindow(QMainWindow):
             if display_text is not None and str(display_text) != "":
                 self._copy_text(str(display_text))
                 self.status.showMessage("Copied", 1500)
+            return
+        if column.key == "status" and QApplication.keyboardModifiers() == Qt.NoModifier:
+            self.table.selectionModel().setCurrentIndex(
+                index,
+                QItemSelectionModel.ClearAndSelect | QItemSelectionModel.Rows,
+            )
+            self.detail_action.setChecked(True)
+            self._toggle_detail(True)
             return
         if self.config.link_activation != "single":
             return
@@ -3152,6 +3293,7 @@ class MainWindow(QMainWindow):
             self.current_root = None
             self.model.set_registry(None)
             self.views_item.takeChildren()
+            self._update_status()
         self._sync_config_roots()
         self._sync_watch_actions()
         self._sync_ads_library_action()
@@ -3198,6 +3340,7 @@ class MainWindow(QMainWindow):
         if self.current_root is None:
             self.status.setToolTip("")
             self.status.showMessage("No library selected")
+            self._set_identify_badge(None)
             return
         total = self.model.total
         loaded = self.model.rowCount()
@@ -3207,6 +3350,16 @@ class MainWindow(QMainWindow):
         unresolved_filters = {**filters, "resolved": False}
         resolved = self._safe_count(registry, **resolved_filters)
         unresolved = self._safe_count(registry, **unresolved_filters)
+        # The badge counts the whole library. The status counts above share the
+        # current view and search, so reuse them only when no other filter applies.
+        library_unresolved = (
+            unresolved
+            if set(filters) <= {"resolved"}
+            else self._safe_count(registry, resolved=False)
+        )
+        self._set_identify_badge(
+            library_unresolved, unavailable=library_unresolved is None
+        )
         if resolved is None or unresolved is None:
             return
         self.status.showMessage(
@@ -3564,6 +3717,7 @@ class MainWindow(QMainWindow):
                 "Wait for the current operation before identifying a PDF."
             )
             return False
+        untracked = False
         if path is None:
             record = self._selected_record()
         else:
@@ -3574,13 +3728,16 @@ class MainWindow(QMainWindow):
             record = self.registries[str(target_root)].find_file_by_current_path(
                 target_root, relative_path
             )
-            if record is None or record.get("missing_at") or not path.is_file():
+            if not path.is_file() or (record is not None and record.get("missing_at")):
                 QMessageBox.information(
                     self,
                     "PDF unavailable",
                     f"This PDF is no longer available at {path}. Refresh the library.",
                 )
                 return False
+            if record is None:
+                record = {"relative_path": relative_path, "current_path": relative_path}
+                untracked = True
         if record is None:
             return False
         bibcode, accepted = QInputDialog.getText(
@@ -3609,11 +3766,62 @@ class MainWindow(QMainWindow):
         normalized = bibcode.strip()
         if not accepted or not normalized:
             return False
-        self._start_ads_refresh(
+        pdf_path = target_root / str(
+            record.get("current_path") or record["relative_path"]
+        )
+        try:
+            own_identity = extract_pdf_own_identity(pdf_path)
+        except IdentityValidationError as exc:
+            QMessageBox.warning(self, "PDF identity unavailable", str(exc))
+            return False
+        arguments = [
             "--identifier",
             normalized,
             "--relative-path",
             str(record["relative_path"]),
+        ]
+        if not own_identity.has_identifier:
+            confirmation = QMessageBox.question(
+                self,
+                "Confirm PDF identity",
+                f"PDF: {record['relative_path']}\n\n"
+                "This PDF's identity could not be verified from trusted metadata fields.\n"
+                f"Confirm only after checking that {normalized} identifies this PDF.\n\n"
+                "Apply the lookup result and saved Rename settings?",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No,
+            )
+            if confirmation != QMessageBox.Yes:
+                return False
+            arguments.append("--confirm-identity")
+        if untracked:
+            try:
+                if sha256_file(pdf_path) != own_identity.sha256:
+                    raise ValueError(
+                        "The PDF changed during review. Open Update by ID again."
+                    )
+                registry = self.registries[str(target_root)]
+                registry.upsert_file(
+                    root=target_root,
+                    relative_path=str(record["relative_path"]),
+                    current_path=str(record["current_path"]),
+                    sha256=own_identity.sha256,
+                    size_bytes=own_identity.size,
+                    mtime_ns=own_identity.mtime_ns,
+                    status="unresolved",
+                )
+                record = registry.find_file_by_current_path(
+                    target_root, str(record["current_path"])
+                )
+                if record is None:
+                    raise ValueError(
+                        "The PDF could not be registered for the identifier lookup."
+                    )
+            except (OSError, ValueError, sqlite3.Error) as exc:
+                QMessageBox.warning(self, "Could not update PDF", str(exc))
+                return False
+        self._start_ads_refresh(
+            *arguments,
             selection_id=int(record["location_id"]),
             ambiguous_relative_path=str(record["relative_path"]),
             root=target_root,
@@ -3691,6 +3899,17 @@ class MainWindow(QMainWindow):
                 metadata[LOCKED_METADATA_FIELDS_KEY] = sorted(
                     set(metadata.get(LOCKED_METADATA_FIELDS_KEY, [])) | set(changes)
                 )
+                bibcode = self._scalar_metadata_value(metadata.get("bibcode"))
+                provider_document = (
+                    registry.find_ads_document_by_bibcode(bibcode) if bibcode else None
+                )
+                metadata[IDENTITY_KEY] = assert_mutation_allowed(
+                    path,
+                    metadata,
+                    expected_sha256=opened_digest,
+                    manual_confirmation=True,
+                    provider_document=provider_document,
+                )
                 if latest is None:
                     digest = sha256_file(path)
                     if (
@@ -3757,6 +3976,27 @@ class MainWindow(QMainWindow):
             return
         relative_path = str(latest["relative_path"])
         try:
+            identity_fields = (
+                "bibcode",
+                "doi",
+                "arxiv",
+                "arxiv_id",
+                "identifier",
+                "alternate_bibcode",
+            )
+            previous = latest.get("metadata") or {}
+            if any(metadata.get(key) != previous.get(key) for key in identity_fields):
+                bibcode = self._scalar_metadata_value(metadata.get("bibcode"))
+                provider_document = (
+                    registry.find_ads_document_by_bibcode(bibcode) if bibcode else None
+                )
+                metadata = deepcopy(metadata)
+                metadata[IDENTITY_KEY] = assert_mutation_allowed(
+                    self.current_root / str(latest["current_path"]),
+                    metadata,
+                    expected_sha256=str(latest.get("sha256") or "") or None,
+                    provider_document=provider_document,
+                )
             saved = registry.replace_file_metadata(
                 self.current_root, relative_path, metadata
             )
@@ -4049,11 +4289,56 @@ class MainWindow(QMainWindow):
         if not accepted:
             return
         bibcode = candidates[labels.index(choice)]["bibcode"]
-        self._start_ads_refresh(
+        arguments = [
             "--bibcode",
             bibcode,
             "--relative-path",
             relative_path,
+        ]
+        target_root = (
+            root.expanduser().resolve()
+            if root is not None
+            else (
+                self.current_root.expanduser().resolve() if self.current_root else None
+            )
+        )
+        if target_root is not None and str(target_root) in self.registries:
+            record = self.registries[str(target_root)].find_file_by_relative_path(
+                target_root, relative_path
+            )
+            pdf_path = target_root / str(
+                (record.get("current_path") if record else None) or relative_path
+            )
+            if pdf_path.is_file():
+                try:
+                    own_identity = extract_pdf_own_identity(pdf_path)
+                except IdentityValidationError as exc:
+                    QMessageBox.warning(self, "PDF identity unavailable", str(exc))
+                    return
+                if not own_identity.has_identifier:
+                    msg = (
+                        f"PDF: {relative_path}"
+                        + chr(10)
+                        + chr(10)
+                        + "This PDF's identity could not be verified from trusted metadata fields."
+                        + chr(10)
+                        + f"Confirm only after checking that {bibcode} identifies this PDF."
+                        + chr(10)
+                        + chr(10)
+                        + "Apply the lookup result and saved Rename settings?"
+                    )
+                    confirmation = QMessageBox.question(
+                        self,
+                        "Confirm PDF identity",
+                        msg,
+                        QMessageBox.Yes | QMessageBox.No,
+                        QMessageBox.No,
+                    )
+                    if confirmation != QMessageBox.Yes:
+                        return
+                    arguments.append("--confirm-identity")
+        self._start_ads_refresh(
+            *arguments,
             selection_id=selection_id,
             root=root,
         )

@@ -3,12 +3,15 @@
 import json
 import logging
 import shutil
+import tempfile
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from ..config import Config
 from .annotations import PortingReport, port_annotations
+from .cli_common import unique_destination
+from .identity import IDENTITY_KEY, IdentityValidationError, assert_mutation_allowed
 from .sidecar import Sidecar
 from .upgrade_utils import (
     PublishedMatch,
@@ -41,6 +44,17 @@ __all__ = [
 ]
 
 _UNSET_PUBLISHED_MATCH = object()
+
+# Identifier fields of the old record that must not survive onto the published one.
+_PUBLISHED_ID_KEYS = ("arxiv", "arxiv_id", "identifier", "alternate_bibcode")
+_STALE_IDENTIFIER_KEYS = (
+    "doi",
+    "arxiv",
+    "arxiv_id",
+    "identifier",
+    "alternate_bibcode",
+    IDENTITY_KEY,
+)
 
 
 class PdfUpgrader:
@@ -78,6 +92,28 @@ class PdfUpgrader:
                 shutil.copy2(source_path, candidate)
                 return candidate
             counter += 1
+
+    def _copy_exclusive(self, source: Path, directory: Path, filename: str) -> Path:
+        """Copy 'source' to a new file in 'directory' without replacing any file."""
+        stem, suffix = Path(filename).stem, Path(filename).suffix
+        candidate = unique_destination(directory, filename)
+        counter = 1
+        while True:
+            try:
+                handle = candidate.open("xb")
+            except FileExistsError:
+                candidate = directory / f"{stem}_{counter}{suffix}"
+                counter += 1
+                continue
+            break
+        try:
+            with handle, source.open("rb") as src:
+                shutil.copyfileobj(src, handle)
+            shutil.copystat(source, candidate)
+        except BaseException:
+            candidate.unlink(missing_ok=True)
+            raise
+        return candidate
 
     def _merge_document_fields(
         self, entry: dict[str, Any], document: dict[str, Any]
@@ -185,71 +221,126 @@ class PdfUpgrader:
                 message="Upgrade preview only.",
             )
 
-        downloaded = self.client.download_pdf(
-            published.bibcode,
-            output_dir=sidecar.directory,
-        )
-        if downloaded is None:
+        def failed(message: str) -> UpgradeResult:
             return UpgradeResult(
                 original_filename=original_filename,
                 current_filename=current_filename,
                 old_bibcode=old_bibcode,
                 new_bibcode=published.bibcode,
                 status="failed",
-                message="Failed to download official PDF.",
+                message=message,
             )
 
-        temp_ported_path = (
-            sidecar.directory / f"{downloaded.stem}__ported{downloaded.suffix}"
-        )
-        merge_source = downloaded
-        annotations_ported = 0
-        annotations_failed = 0
-        unported_file_path: Path | None = None
-        if not skip_annotation_port:
+        # The authoritative ADS record must vouch for the PDF being replaced.
+        # `force` re-runs an upgrade; it is never identity consent.
+        try:
+            assert_mutation_allowed(
+                current_path,
+                {"bibcode": old_bibcode},
+                manual_confirmation=False,
+                provider_document=published.document,
+            )
+        except IdentityValidationError as exc:
+            return failed(f"Identity check failed for the tracked PDF: {exc}")
+
+        updated = {
+            key: value
+            for key, value in entry.items()
+            if key not in _STALE_IDENTIFIER_KEYS
+        }
+        updated = self._merge_document_fields(updated, published.document)
+        updated["bibcode"] = published.bibcode
+        for key in _PUBLISHED_ID_KEYS:
+            value = published.document.get(key)
+            if value not in (None, "", []):
+                updated[key] = value
+        # The record that will be saved is the record that must be proven: its
+        # identifier fields come only from the published document.
+        target_metadata = {
+            key: updated[key]
+            for key in ("bibcode", "doi", *_PUBLISHED_ID_KEYS)
+            if key in updated
+        }
+        target_metadata["bibcode"] = published.bibcode
+        with tempfile.TemporaryDirectory(prefix="adsfolio-upgrade-") as scratch_name:
+            scratch = Path(scratch_name)
+            downloaded = self.client.download_pdf(
+                published.bibcode,
+                output_dir=scratch,
+            )
+            if downloaded is None:
+                return failed("Failed to download official PDF.")
+            downloaded = Path(downloaded)
+
             try:
-                report: PortingReport = port_annotations(
-                    source_path=current_path,
-                    target_path=downloaded,
-                    output_path=temp_ported_path,
+                assert_mutation_allowed(
+                    downloaded,
+                    target_metadata,
+                    manual_confirmation=False,
+                    provider_document=published.document,
                 )
-                merge_source = Path(report.output_path)
-                annotations_ported = report.ported
-                annotations_failed = report.failed
-                unported_file_path = self._write_unported_annotations(
-                    sidecar.directory,
-                    published.bibcode,
-                    report.unported,
+            except IdentityValidationError as exc:
+                return failed(f"Downloaded PDF rejected: {exc}")
+
+            merge_source = downloaded
+            annotations_ported = 0
+            annotations_failed = 0
+            unported: list[dict[str, Any]] = []
+            if not skip_annotation_port:
+                try:
+                    report: PortingReport = port_annotations(
+                        source_path=current_path,
+                        target_path=downloaded,
+                        output_path=scratch / f"{downloaded.stem}__ported.pdf",
+                    )
+                    merge_source = Path(report.output_path)
+                    annotations_ported = report.ported
+                    annotations_failed = report.failed
+                    unported = report.unported
+                except RuntimeError as exc:
+                    self.logger.warning("Skipping annotation porting: %s", exc)
+
+            # Prove the exact bytes that will enter the library.
+            try:
+                provenance = assert_mutation_allowed(
+                    merge_source,
+                    target_metadata,
+                    manual_confirmation=False,
+                    provider_document=published.document,
                 )
-            except RuntimeError as exc:
-                self.logger.warning("Skipping annotation porting: %s", exc)
+            except IdentityValidationError as exc:
+                return failed(f"Upgraded PDF rejected: {exc}")
 
-        backup_path: Path | None = None
-        final_filename = current_filename
-        if overwrite_arxiv_with_official:
-            if arxiv_backup_if_overwritten is not None:
-                backup_path = self._backup_original(
-                    current_path, arxiv_backup_if_overwritten
+            # Every check has passed; the library is touched only from here on.
+            unported_file_path = self._write_unported_annotations(
+                sidecar.directory, published.bibcode, unported
+            )
+            backup_path: Path | None = None
+            if overwrite_arxiv_with_official:
+                if arxiv_backup_if_overwritten is not None:
+                    backup_path = self._backup_original(
+                        current_path, arxiv_backup_if_overwritten
+                    )
+                final_path = current_path
+            else:
+                final_path = unique_destination(sidecar.directory, downloaded.name)
+            final_filename = final_path.name
+            if overwrite_arxiv_with_official:
+                shutil.copy2(merge_source, final_path)
+            else:
+                final_path = self._copy_exclusive(
+                    merge_source, sidecar.directory, downloaded.name
                 )
-            shutil.copy2(merge_source, current_path)
-            final_filename = current_filename
-            if downloaded != current_path and downloaded.exists():
-                downloaded.unlink()
-        else:
-            final_filename = downloaded.name
-            if merge_source != downloaded:
-                shutil.copy2(merge_source, downloaded)
+                final_filename = final_path.name
 
-        if merge_source == temp_ported_path and temp_ported_path.exists():
-            temp_ported_path.unlink()
-
-        updated = self._merge_document_fields(entry, published.document)
-        updated["original_bibcode"] = updated.get("original_bibcode") or old_bibcode
+        updated["original_bibcode"] = entry.get("original_bibcode") or old_bibcode
         updated["bibcode"] = published.bibcode
         updated["source"] = "published"
         updated["upgrade_status"] = "upgraded"
         updated["upgraded_at"] = _utc_now_iso()
         updated["current_filename"] = final_filename
+        updated["sha256"] = provenance["sha256"]
+        updated[IDENTITY_KEY] = provenance
         updated["annotations_ported"] = annotations_ported
         updated["annotations_failed"] = annotations_failed
         if backup_path is not None:
@@ -269,7 +360,7 @@ class PdfUpgrader:
             new_bibcode=published.bibcode,
             status="upgraded",
             message="Official PDF downloaded and sidecar updated.",
-            downloaded_path=str(downloaded),
+            downloaded_path=str(final_path),
             backup_path=_relative_path(sidecar.directory, backup_path),
             annotations_ported=annotations_ported,
             annotations_failed=annotations_failed,

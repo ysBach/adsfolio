@@ -6,6 +6,7 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 METADATA_STALE_KEY = "_adsfolio_metadata_stale"
+WATCH_PENDING_KEY = "_adsfolio_watch_pending"
 METADATA_SHA256_KEY = "_adsfolio_metadata_sha256"
 EXTERNAL_METADATA_KEY = "_adsfolio_external_metadata"
 REFERENCE_METADATA_KEY = "_adsfolio_reference"

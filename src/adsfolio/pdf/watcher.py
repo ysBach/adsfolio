@@ -17,15 +17,17 @@ from .cli_common import is_resolved_record
 from .doi_providers import DEFAULT_DOI_PROVIDERS, DoiProvider, ProviderError
 from .files import iter_pdf_paths
 from .identifier import PdfIdentifier
+from .identify import build_cached_candidate_lookup
 from .identify_settings import (
     RECOMMENDED_IDENTIFY_STRATEGIES,
     IdentifySettings,
     IdentifyStrategy,
 )
-from .readiness import metadata_ready
+from .identity import IDENTITY_KEY, IdentityValidationError
+from .readiness import WATCH_PENDING_KEY, metadata_ready
 from .registry import CentralPdfRegistryState
 from .rename_settings import RenameSettings
-from .renamer import DEFAULT_SCHEME, PdfRenamer
+from .renamer import DEFAULT_SCHEME, PdfRenamer, verify_record_identity
 from .sidecar import Sidecar
 from .tracked_move import move_tracked_file, resolved_file_directory
 from .upgrade import PdfUpgrader
@@ -207,7 +209,17 @@ class PdfWatcher:
         author_separator: str = "+",
         author_truncation_suffix: str = "+",
     ) -> dict | None:
-        """Identify and rename a single PDF, returning resolved metadata."""
+        """Identify and rename a single PDF, returning resolved metadata.
+
+        Every stored record is checked against the PDF's own identity before
+        the catalog is written or the file is renamed, including a dry run.
+
+        Raises
+        ------
+        IdentityValidationError
+            If a stored or newly found identity conflicts with the PDF or
+            cannot be independently verified. Nothing is written or moved.
+        """
         path = Path(pdf_path)
         if path.suffix.lower() != ".pdf" or not path.exists():
             return None
@@ -234,7 +246,13 @@ class PdfWatcher:
                 refreshed = dict(record)
                 refreshed["current_filename"] = relative_path
                 refreshed["sha256"] = sha256
+                refreshed[WATCH_PENDING_KEY] = False
                 if is_resolved_record(refreshed):
+                    refreshed[IDENTITY_KEY] = verify_record_identity(
+                        path, refreshed, sha256=sha256, state=sidecar
+                    )
+                    if apply and isinstance(sidecar, CentralPdfRegistryState):
+                        refreshed = sidecar.upsert_file(_current_path, refreshed)
                     target = self.renamer.rename_tracked_file(
                         state=sidecar,
                         source_path=path,
@@ -260,6 +278,7 @@ class PdfWatcher:
         existing = sidecar.find_by_sha256(sha256)
         if existing is not None and is_resolved_record(existing[1]):
             record = dict(existing[1])
+            verify_record_identity(path, record, sha256=sha256, state=sidecar)
         else:
             record = self.identifier.resolve_many(
                 [path],
@@ -267,7 +286,16 @@ class PdfWatcher:
                 strategies=strategies,
                 providers=providers,
                 sha256_by_path={path: sha256},
+                cached_candidate_lookup=(
+                    build_cached_candidate_lookup(self.identifier, sidecar.registry, [])
+                    if isinstance(sidecar, CentralPdfRegistryState)
+                    else None
+                ),
             ).get(path)
+            # Identifiers without failure tracking report no failures.
+            failure = getattr(self.identifier, "identity_failures", {}).get(path)
+            if failure is not None:
+                raise failure
         if record is None:
             if apply:
                 sidecar.upsert_file(
@@ -276,6 +304,7 @@ class PdfWatcher:
                         "current_filename": relative_path,
                         "sha256": sha256,
                         "status": "unresolved",
+                        WATCH_PENDING_KEY: False,
                     },
                 )
                 sidecar.save()
@@ -285,10 +314,16 @@ class PdfWatcher:
         stored_record = dict(record)
         stored_record["current_filename"] = relative_path
         stored_record["sha256"] = sha256
+        stored_record[WATCH_PENDING_KEY] = False
+        stored_record[IDENTITY_KEY] = verify_record_identity(
+            path, stored_record, sha256=sha256, state=sidecar
+        )
         if existing is not None:
             self.logger.info("Registering another location for tracked PDF: %s", path)
         if apply:
-            sidecar.upsert_file(relative_path, stored_record)
+            persisted = sidecar.upsert_file(relative_path, stored_record)
+            if isinstance(persisted, dict):
+                stored_record = persisted
             sidecar.save()
         if not (is_resolved_record(stored_record) or metadata_ready(stored_record)):
             return stored_record
@@ -365,6 +400,11 @@ class PdfWatcher:
                 apply=True,
                 strategies=identify_settings.strategies,
                 providers=identify_settings.providers,
+            )
+        except IdentityValidationError as exc:
+            return WatchOutcome(
+                event=replace(event, state=WatchState.FAILED),
+                message=f"Identity not verified; file left unchanged: {exc}",
             )
         except PdfNotReadyError as exc:
             return WatchOutcome(

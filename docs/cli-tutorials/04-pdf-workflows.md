@@ -49,7 +49,7 @@ Key PDF options:
 | `upgrade --force` | Re-check entries already marked as published | Force re-scan after manual registry edits |
 | `push-library --apply` | Push resolved bibcodes to ADS library | Synchronize local PDF collection with ADS library |
 | `obsidian --notes-dir` | Write `.md` notes to a directory other than the PDFs | Keep notes separate from the PDF folder |
-| `obsidian --force` | Overwrite existing notes | Refresh notes after re-running `identify` |
+| `obsidian --force` | Regenerate existing notes and replace manual edits | Refresh metadata after re-running `identify` |
 | `obsidian --apply` | Fetch/cache missing abstracts and write notes | Always run after dry-run verification |
 
 ## Prerequisite
@@ -258,6 +258,14 @@ adsfolio pdf identify ~/Papers --recursive --ai-csv ~/Papers/unresolved_ai.csv
 ## 3) Rename safely: dry-run then apply
 
 `adsfolio pdf refresh-ads` also renames successfully updated PDFs immediately.
+An update succeeds only when the record passes the
+[PDF identity check](../gui.md#pdf-identity-checks). A conflict between the
+record and the PDF's own arXiv stamp or metadata DOI always stops the update.
+When the PDF states no identifier that can confirm the record, pass
+`--confirm-identity` with `--relative-path` after you check the paper.
+The flag applies to that one PDF. The confirmation is
+stored with the file's SHA-256 hash and applies only to that file content and
+record.
 It uses the library's saved Rename settings, or global settings when no library
 override exists. To use global settings explicitly, pass `--rename-scope global`.
 
@@ -274,7 +282,7 @@ For example, `Last-2020-Natur` means author Last, year 2020, and journal
 *Nature*. `Sci-123-45` means journal *Science*, volume 123, and starting
 page 45. These illustrate the input format.
 
-These reference formats query ADS only; other sites are not searched.
+These reference formats query ADS only. They do not search other sites.
 DOI and arXiv lookups can also use Crossref or DataCite.
 Quote references that contain spaces:
 
@@ -535,8 +543,17 @@ travel in the request body, so large libraries do not need long query URLs:
 adsfolio pdf obsidian ~/Papers --apply
 ```
 
-On re-runs, `pdf obsidian` leaves existing notes untouched, so your manual edits in Obsidian
-stay. To overwrite existing notes, pass `--force`:
+The export reads PDF highlights, underlines, strikeouts, squiggles, and text
+comments. It places them in a marked `PDF annotations` section. The export
+updates that section when annotations change. It preserves other note text.
+It does not rewrite a note when the output is unchanged. Image-only highlights
+may have no selectable text. Drawings and ink are not converted to text.
+
+The export requires PyMuPDF from the `full` extra. An unreadable PDF or a note
+with invalid section markers produces a skip. Check the warning before retrying.
+
+To regenerate the entire note, pass `--force`. This replaces manual edits
+outside the annotation section:
 
 ```bash
 adsfolio pdf obsidian ~/Papers --apply --force
