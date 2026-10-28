@@ -24,6 +24,8 @@ for the steps.
   LaTeX or Overleaf.
 - **Watch a folder:** ADSfolio identifies each new PDF and renames it when the
   PDF's own arXiv ID or DOI confirms the match.
+- **Keep Identify defaults:** save ADS fallback and provider choices for all
+  libraries or one library.
 - **Make your CV:** write your publication list in LaTeX, HTML, Markdown, or
   your own format.
 

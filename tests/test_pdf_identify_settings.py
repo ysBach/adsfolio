@@ -8,6 +8,18 @@ from adsfolio.pdf.identify_settings import (
 )
 
 
+def test_identify_settings_preserves_ads_permission_and_explicit_false():
+    saved = IdentifySettings.from_mapping({"allow_ads": True})
+    assert saved.allow_ads
+    assert IdentifySettings.from_mapping(saved.to_mapping()) == saved
+    assert not saved.with_overrides(allow_ads=False).allow_ads
+    assert not IdentifySettings.from_mapping(
+        {"allow_ads": False}, fallback=saved
+    ).allow_ads
+    assert IdentifySettings.from_mapping({"allow_ads": "yes"}, fallback=saved).allow_ads
+    assert not IdentifySettings.from_mapping({}).allow_ads
+
+
 def test_identify_settings_normalizes_behavior_and_invalid_fields():
     fallback = IdentifySettings(recursive=True, output_unresolved="pending")
 

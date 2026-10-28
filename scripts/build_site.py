@@ -7,6 +7,8 @@ import shutil
 import subprocess
 from pathlib import Path
 
+from adsfolio import __version__
+
 
 def main() -> None:
     """Copy site assets and build strict Sphinx documentation under /docs."""
@@ -20,7 +22,18 @@ def main() -> None:
     output.mkdir(parents=True, exist_ok=True)
     for source in (root / "website").iterdir():
         if source.is_file():
-            shutil.copy2(source, output / source.name)
+            destination = output / source.name
+            if source.suffix == ".html":
+                text = source.read_text(encoding="utf-8").replace(
+                    "__ADSFOLIO_VERSION__", __version__
+                )
+                if (
+                    not destination.exists()
+                    or destination.read_text(encoding="utf-8") != text
+                ):
+                    destination.write_text(text, encoding="utf-8")
+            else:
+                shutil.copy2(source, destination)
     shutil.copy2(root / "src/adsfolio/gui/assets/adsfolio.svg", output / "adsfolio.svg")
     (output / ".nojekyll").touch()
     subprocess.run(

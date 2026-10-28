@@ -141,6 +141,8 @@ class IdentifySettings:
     `recursive` and `verbose` configure foreground/bulk Identify runs. Watch
     processing handles one typed arrival at a time and reports its outcome via
     GUI notices, so those two fields do not alter single-file watch behavior.
+    `allow_ads` permits fallback in foreground Identify runs. Watching keeps
+    its separate permission for automatic processing.
     """
 
     strategies: tuple[IdentifyStrategy, ...] = RECOMMENDED_IDENTIFY_STRATEGIES
@@ -149,6 +151,7 @@ class IdentifySettings:
     output_unresolved: str | None = None
     skip_unresolved_directory: bool = False
     verbose: bool = False
+    allow_ads: bool = False
 
     def __post_init__(self) -> None:
         if not isinstance(self.strategies, Iterable) or isinstance(
@@ -261,6 +264,11 @@ class IdentifySettings:
                 base.verbose,
                 "verbose",
             ),
+            allow_ads=_boolean(
+                payload.get("allow_ads", base.allow_ads),
+                base.allow_ads,
+                "allow_ads",
+            ),
         )
 
     def to_mapping(self) -> dict[str, object]:
@@ -272,6 +280,7 @@ class IdentifySettings:
             "output_unresolved": self.output_unresolved,
             "skip_unresolved_directory": self.skip_unresolved_directory,
             "verbose": self.verbose,
+            "allow_ads": self.allow_ads,
         }
 
     def with_overrides(
@@ -283,6 +292,7 @@ class IdentifySettings:
         output_unresolved: str | None | object = _UNSET,
         skip_unresolved_directory: bool | object = _UNSET,
         verbose: bool | object = _UNSET,
+        allow_ads: bool | object = _UNSET,
     ) -> IdentifySettings:
         """Return a copy with supplied fields, including explicit clears."""
         changes: dict[str, Any] = {}
@@ -304,6 +314,8 @@ class IdentifySettings:
             changes["skip_unresolved_directory"] = skip_unresolved_directory
         if verbose is not _UNSET:
             changes["verbose"] = verbose
+        if allow_ads is not _UNSET:
+            changes["allow_ads"] = allow_ads
         return replace(self, **changes)
 
 

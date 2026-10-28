@@ -23,6 +23,11 @@ the user action, result, and recovery path. Keep implementation details in the
 maintainer or API reference. Run the ASD-STE100 structural linter on edited prose.
 Review each finding. Fix ambiguity without deleting necessary facts.
 
+Use the package version for current documentation labels. Keep historical
+migration versions fixed. In Markdown, use the Sphinx `sub-ref` role for
+`release`. Keep screenshot examples independent of release numbers when possible.
+Render changed UI media with isolated fictional data. Preserve unchanged assets.
+
 ## Scope and data preservation
 
 Fix application defects in application code. Preserve user documents and their

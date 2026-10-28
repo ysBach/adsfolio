@@ -105,6 +105,61 @@ def test_identify_dialog_defaults_global_and_keeps_profile_fields_out(applicatio
     dialog.close()
 
 
+@pytest.mark.parametrize("scope", ["global", "library"])
+def test_identify_dialog_restores_ads_permission_after_save_and_reopen(
+    application, tmp_path, scope
+):
+    from adsfolio.config import Config
+    from adsfolio.pdf.registry import open_registry_state
+
+    root = tmp_path / "library"
+    root.mkdir()
+    state = open_registry_state(root)
+
+    def save(selected_scope, settings):
+        if selected_scope == "global":
+            Config.save_identify_settings(settings)
+        else:
+            state.set_identify_settings(settings)
+
+    try:
+        for enabled in (True, False):
+            dialog = IdentifyDialog(
+                root,
+                Config.load_identify_settings(),
+                state.identify_settings,
+                initial_scope=scope,
+                save_settings=save,
+            )
+            dialog.allow_ads.setChecked(enabled)
+            dialog.save_defaults()
+            dialog.close()
+            state.close()
+            state = open_registry_state(root)
+            reopened = IdentifyDialog(
+                root,
+                Config.load_identify_settings(),
+                state.identify_settings,
+                initial_scope=scope,
+            )
+            assert reopened.allow_ads.isChecked() is enabled
+            assert (
+                "--allow-ads" if enabled else "--no-allow-ads"
+            ) in reopened.build_argv()
+            reopened.close()
+    finally:
+        state.close()
+
+
+def test_identify_dialog_unchecked_ads_overrides_saved_true_for_this_run(application):
+    dialog = IdentifyDialog(Path("/papers"), IdentifySettings(allow_ads=True))
+    dialog.allow_ads.setChecked(False)
+
+    assert "--no-allow-ads" in dialog.build_argv()
+    assert "--allow-ads" not in dialog.build_argv()
+    dialog.close()
+
+
 def test_identify_dialog_switches_scope_and_copies_global_for_new_library(
     application,
 ):

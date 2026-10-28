@@ -13,7 +13,7 @@ Learning path:
 
 ## Install
 
-ADSfolio requires Python 3.10 or newer. Version 0.5.1 and later are on PyPI:
+ADSfolio requires Python 3.10 or newer. Install the current PyPI release:
 
 ```sh
 pip install adsfolio            # CLI and Python client

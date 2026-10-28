@@ -14,7 +14,18 @@ ADSfolio helps with three tasks that researchers repeat often:
   <source src="_static/tutorial/workflows.mp4" type="video/mp4">
 </video>
 
-The 17-second video shows these windows with fictional sample data.
+The video shows these windows with fictional sample data. It also shows how
+to save ADS fallback for repeated Identify runs.
+
+## Keep ADS fallback enabled
+
+1. Open **Identify → Advanced options…**.
+2. Choose **All libraries** or **This library only**.
+3. Enable **Allow ADS fallback**.
+4. Choose **Save Defaults**.
+
+Later Identify runs restore the saved choice. To change only the current run,
+change the checkbox without saving. See [Identify defaults](gui.md#save-ads-fallback-for-later-runs).
 
 ## Keep a BibTeX file for your paper
 

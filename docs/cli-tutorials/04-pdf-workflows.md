@@ -186,9 +186,12 @@ adsfolio pdf identify ~/Papers --clear-output-unresolved
 ```
 
 Use `--debut-year`, `--end-year`, `--clear-debut-year`, or `--clear-end-year` to
-override the global profile's prefetch window for one run. `--refresh-cache`,
-`--allow-ads`, and `--apply` are never inherited.
-You must supply them each time.
+override the global profile's prefetch window for one run. `--refresh-cache`
+and `--apply` are never inherited. Supply them each time.
+
+ADS fallback follows the saved Identify setting. Use `--allow-ads` to permit
+fallback without confirmation for one run. Use `--no-allow-ads` to restore
+confirmation for one run. Neither flag changes the saved value.
 
 Library exports now include the canonical
 `identify_settings` payload. Older adsfolio releases ignore that new payload but
@@ -204,8 +207,8 @@ adsfolio pdf export ~/Papers -o pdfs-backup.json
 If many files remain unmatched after cache/profile matching,
 `identify` asks you to approve the fallback query batches before it starts them.
 It also prints an estimated count of DOI batch queries.
-In non-interactive runs, `identify` skips fallback ADS queries by default. To run them
-without a prompt, use `--allow-ads`.
+In non-interactive runs, `identify` skips fallback ADS queries unless the saved
+setting or `--allow-ads` permits them. Query-count limits still apply.
 
 Use `adsfolio rate-limit` to inspect the limits that ADS returns for your account.
 Request allowances and reset times depend on the endpoint and server response.

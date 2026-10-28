@@ -125,12 +125,11 @@ DMGs contain the application and an Applications shortcut. During the build, the
 workflow verifies each image and mounts it read-only. DMGs do not provide code
 signing or notarization.
 
-Version 0.1.0 has ZIP downloads only. Version 0.2.0 adds DMGs. macOS archives
-use `ditto`. Linux archives use `tar` to preserve required symbolic links.
+macOS archives use `ditto`. Linux archives use `tar` to preserve required symbolic links.
 Ordinary ZIP creation can lose these links. See
 [PyInstaller's distribution notes](https://pyinstaller.org/en/stable/common-issues-and-pitfalls.html#requirements-imposed-by-symbolic-links-in-frozen-application).
 
-Version 0.6.0 ships unsigned bundles. macOS Developer ID signing/notarization and
+Release bundles are unsigned. macOS Developer ID signing/notarization and
 Windows publisher signing require release credentials and are not configured.
 Downloaded builds may trigger operating-system security prompts.
 

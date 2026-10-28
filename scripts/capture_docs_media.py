@@ -1,7 +1,7 @@
 """Render documentation screenshots and the first-run video from sample data.
 
-The script runs ADSfolio offscreen with a temporary home directory, so it never
-reads or changes the user's settings, token, or library catalog. All papers,
+The script runs ADSfolio offscreen with temporary configuration and sample files.
+It does not read or change the user's settings, token, or library catalog. All papers,
 authors, journals, and bibcodes below are fictional. It drives the real
 windows: the welcome page, the folder flow, and the dialogs.
 
@@ -36,7 +36,15 @@ SIZE = (1440, 700)
 VIDEO_FPS = 10
 HOLD_SECONDS = 3.0
 FADE_SECONDS = 0.5
-VISIBLE_COLUMNS = ("title", "author", "year", "pub", "status")
+VISIBLE_COLUMNS = (
+    "title",
+    "author",
+    "author_count",
+    "year",
+    "pub",
+    "citation_count",
+    "status",
+)
 VISIBLE_DETAIL_ROWS = (
     "title",
     "author",
@@ -60,6 +68,9 @@ PAPERS = (
             "year": "2024",
             "pub": "Astronomy research",
             "bibcode": "2024DEMO....1....1R",
+            "doi": ["10.5555/adsfolio-demo-comet"],
+            "author_count": 2,
+            "citation_count": 12,
             "abstract": "Illustrative sample data. Select a paper to inspect "
             "metadata. Identify checks publication records. Rename shows a "
             "preview before files change.",
@@ -74,6 +85,9 @@ PAPERS = (
             "year": "2023",
             "pub": "Planetary science",
             "bibcode": "2023DEMO....2....2M",
+            "doi": ["10.5555/adsfolio-demo-small-bodies"],
+            "author_count": 2,
+            "citation_count": 0,
         },
     },
     {
@@ -84,16 +98,15 @@ PAPERS = (
             "author": ["Taylor, J."],
             "year": "2025",
             "pub": "Local reference",
+            "author_count": 1,
+            "_adsfolio_locked_fields": ["title", "author", "year", "pub"],
         },
     },
     {
         "path": "2023/Light scattering.pdf",
         "status": "unresolved",
         "metadata": {
-            "title": ["Light scattering from planetary surfaces"],
-            "author": ["Kim, S."],
-            "year": "2025",
-            "pub": "Optics",
+            "title": ["Unidentified download"],
         },
     },
 )
@@ -106,7 +119,7 @@ SAMPLE_RELEASE_NOTES = """## 9.9.0 (sample)
 """
 
 
-def _write_pdf(path: Path, title: str) -> None:
+def _write_pdf(path: Path, title: str, doi: str | None = None) -> None:
     """Write a one-page PDF so the catalog sees a real, distinct file."""
     import fitz
 
@@ -114,6 +127,9 @@ def _write_pdf(path: Path, title: str) -> None:
     document = fitz.open()
     page = document.new_page()
     page.insert_text((72, 72), title)
+    if doi is not None:
+        page.insert_text((72, 100), f"doi:{doi}")
+        document.set_metadata({"title": title, "subject": f"doi:{doi}"})
     document.save(path)
     document.close()
 
@@ -127,11 +143,21 @@ class Recorder:
 
     def save(self, image: Any, name: str) -> None:
         """Save `image` under the static directory, or raise on failure."""
+        from PySide6.QtCore import QBuffer, QIODevice
+
         target = self.static / name
         target.parent.mkdir(parents=True, exist_ok=True)
-        if not image.save(str(target)):
+        buffer = QBuffer()
+        buffer.open(QIODevice.WriteOnly)
+        if not image.save(buffer, "PNG"):
             raise RuntimeError(f"Could not save {target}")
-        logger.info("Saved %s", target)
+        data = bytes(buffer.data())
+        buffer.close()
+        if target.exists() and target.read_bytes() == data:
+            logger.info("Unchanged %s", target)
+        else:
+            target.write_bytes(data)
+            logger.info("Saved %s", target)
 
     def frame(self, image: Any, caption: str, video: str = "first-run") -> None:
         """Add one captioned frame to the named video."""
@@ -240,9 +266,19 @@ def _config(**overrides: Any) -> Any:
         detail_hidden_rows=[
             *DEFAULT_HIDDEN_DETAIL_ROWS,
             *(row for row in DEFAULT_ROW_ORDER if row not in VISIBLE_DETAIL_ROWS),
+            "citation_count",
+            "publisher",
         ],
         citation_styles=[],
-        column_widths={"pub": 170},
+        column_widths={
+            "title": 290,
+            "author": 120,
+            "author_count": 65,
+            "year": 55,
+            "pub": 150,
+            "citation_count": 70,
+            "status": 28,
+        },
         splitter_sizes=[210, 840, 390],
         **overrides,
     )
@@ -254,18 +290,48 @@ def capture(recorder: Recorder) -> None:
 
     application = QApplication.instance() or QApplication([])
     from adsfolio.config import Config
+
+    capture_home = Path(os.environ["ADSFOLIO_CAPTURE_HOME"])
+    Config.get_config_dir = classmethod(lambda cls: capture_home / "config")
+    Config.get_token_paths = classmethod(
+        lambda cls: [capture_home / "config" / "token"]
+    )
+
     from adsfolio.gui import main_window as main_window_module
     from adsfolio.gui.config import save_config
     from adsfolio.gui.main_window import MainWindow
     from adsfolio.gui.token_dialog import TokenDialog
     from adsfolio.gui.updates import InstallationKind, parse_release
+    from adsfolio.pdf.catalog import PdfCatalog
+    from adsfolio.pdf.files import sha256_file
 
-    home = Path(os.environ["HOME"])
-    if not Config.get_config_dir().is_relative_to(home):
+    if not Config.get_config_dir().is_relative_to(capture_home):
         raise RuntimeError("The configuration directory is not isolated")
-    library = home / "Demo library"
+    library = capture_home / "Demo library"
     for paper in PAPERS:
-        _write_pdf(library / paper["path"], paper["metadata"]["title"][0])
+        dois = paper["metadata"].get("doi", [])
+        _write_pdf(
+            library / paper["path"],
+            paper["metadata"]["title"][0],
+            dois[0] if dois else None,
+        )
+    catalog = PdfCatalog()
+    try:
+        for paper in PAPERS:
+            path = library / paper["path"]
+            facts = path.stat()
+            catalog.observe_file(
+                library,
+                paper["path"],
+                sha256=sha256_file(path),
+                size_bytes=facts.st_size,
+                mtime_ns=facts.st_mtime_ns,
+                device=facts.st_dev,
+                inode=facts.st_ino,
+                status="unresolved",
+            )
+    finally:
+        catalog.close()
     save_config(_config())
 
     window = MainWindow()
@@ -312,16 +378,39 @@ def capture(recorder: Recorder) -> None:
     # results that a finished lookup would show.
     root = library.resolve()
     registry = window.registries[str(root)]
+    from adsfolio.pdf.identifier import PdfIdentifier
+
     for paper in PAPERS:
-        registry.replace_file_metadata(root, paper["path"], paper["metadata"])
-        registry.update_file_status(root, paper["path"], paper["status"])
+        metadata = paper["metadata"]
+        if paper["status"] == "resolved":
+            metadata = {
+                **PdfIdentifier(None).build_record(metadata, root / paper["path"]),
+                **metadata,
+            }
+        path = root / paper["path"]
+        facts = path.stat()
+        registry.upsert_file(
+            root=root,
+            relative_path=paper["path"],
+            current_path=paper["path"],
+            sha256=sha256_file(path),
+            size_bytes=facts.st_size,
+            mtime_ns=facts.st_mtime_ns,
+            metadata=metadata,
+            status=paper["status"],
+        )
     window.refresh(root)
     application.processEvents()
     title = PAPERS[0]["metadata"]["title"][0]
+    title_column = next(
+        index
+        for index, column in enumerate(window.model.columns)
+        if column.key == "title"
+    )
     row = next(
         row
         for row in range(window.model.rowCount())
-        if window.model.index(row, 0).data() == title
+        if window.model.index(row, title_column).data() == title
     )
     window.table.setCurrentIndex(window.model.index(row, 0))
     application.processEvents()
@@ -384,11 +473,35 @@ def _capture_workflows(
     from PySide6.QtCore import QObject, QPoint, Qt, Signal
     from PySide6.QtWidgets import QMenu, QTabWidget
 
+    from adsfolio.config import Config
     from adsfolio.gui import main_window as main_window_module
     from adsfolio.gui.ads_library_export_dialog import ExportAdsLibraryDialog
     from adsfolio.gui.ads_library_jobs import AdsLibraryOperation
     from adsfolio.gui.cv_dialog import CVDialog
+    from adsfolio.gui.dialogs import IdentifyDialog
     from adsfolio.library_sync import LibraryDestination
+    from adsfolio.pdf.readiness import metadata_ready
+
+    identify = IdentifyDialog(
+        root,
+        Config.load_identify_settings(),
+        save_settings=lambda scope, settings: Config.save_identify_settings(settings),
+    )
+    identify.allow_ads.setChecked(True)
+    identify.save_defaults()
+    identify.close()
+    identify = IdentifyDialog(root, Config.load_identify_settings())
+    if not identify.allow_ads.isChecked():
+        raise RuntimeError("Saved ADS fallback did not survive reopening Identify")
+    identify.show()
+    application.processEvents()
+    recorder.save(identify.grab(), "tutorial/identify-settings.png")
+    recorder.frame(
+        _composite(window, identify, at=QPoint((SIZE[0] - identify.width()) // 2, 8)),
+        "Enable ADS fallback and choose Save Defaults to keep it enabled",
+        video="workflows",
+    )
+    identify.close()
 
     libraries = (
         LibraryDestination(
@@ -468,12 +581,13 @@ def _capture_workflows(
 
     selection = window.table.selectionModel()
     selection.clearSelection()
-    for row in range(window.model.rowCount() - 1):
-        selection.select(
-            window.model.index(row, 0),
-            QItemSelectionModel.SelectionFlag.Select
-            | QItemSelectionModel.SelectionFlag.Rows,
-        )
+    for row in range(window.model.rowCount()):
+        if metadata_ready(window.model.record_at(row)):
+            selection.select(
+                window.model.index(row, 0),
+                QItemSelectionModel.SelectionFlag.Select
+                | QItemSelectionModel.SelectionFlag.Rows,
+            )
     application.processEvents()
     main_window_module.QMenu = CapturedMenu
     try:
@@ -495,7 +609,7 @@ def _capture_workflows(
     )
     export = CVDialog(
         window,
-        settings_path=Path(os.environ["HOME"]) / "cv-selection.yaml",
+        settings_path=Path(os.environ["ADSFOLIO_CAPTURE_HOME"]) / "cv-selection.yaml",
         records=window._selected_records(),
     )
     export.me_target.setText("Rivera, A.")
@@ -568,11 +682,12 @@ def _capture_workflows(
         raise RuntimeError("The sample papers should need citation keys.")
 
     # A fictional profile; the window fills its fields from it.
-    from adsfolio.config import Config
     from adsfolio.user_profile import UserProfile
 
     Config.save_user_profile(UserProfile(author_names=("Okafor, Nia",)))
-    cv = CVDialog(window, settings_path=Path(os.environ["HOME"]) / "cv.yaml")
+    cv = CVDialog(
+        window, settings_path=Path(os.environ["ADSFOLIO_CAPTURE_HOME"]) / "cv.yaml"
+    )
     cv.format_choice.setCurrentIndex(cv.format_choice.count() - 1)
     cv.preset.setCurrentIndex(cv.preset.findData("html"))
     cv._apply_preset()
@@ -644,30 +759,34 @@ def write_video(frames: list[tuple[Any, str]], output: Path) -> None:
                 "26",
                 "-movflags",
                 "+faststart",
-                str(output),
+                str(Path(folder) / output.name),
             ],
             check=True,
         )
+        data = (Path(folder) / output.name).read_bytes()
+        if output.exists() and output.read_bytes() == data:
+            logger.info("Unchanged %s", output)
+            return
+        output.write_bytes(data)
     logger.info("Saved %s (%d frames)", output, index)
 
 
 def main() -> None:
-    """Re-run in an isolated home directory, then capture the media."""
+    """Render the media with isolated configuration and sample files."""
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--static", type=Path, default=ROOT / "docs/_static")
     parser.add_argument("--no-video", action="store_true")
     args = parser.parse_args()
     if os.environ.get("ADSFOLIO_CAPTURE_HOME") is None:
-        with tempfile.TemporaryDirectory(prefix="adsfolio-capture-") as home:
+        with tempfile.TemporaryDirectory(prefix="adsfolio-capture-") as capture_home:
             environment = {
                 key: value
                 for key, value in os.environ.items()
                 if key not in {"ADS_API_TOKEN", "ADSFOLIO_SOURCE_LAUNCH"}
             }
             environment |= {
-                "HOME": home,
-                "ADSFOLIO_CAPTURE_HOME": home,
+                "ADSFOLIO_CAPTURE_HOME": capture_home,
                 "QT_QPA_PLATFORM": "offscreen",
             }
             command = [sys.executable, __file__, "--static", str(args.static.resolve())]
@@ -675,7 +794,7 @@ def main() -> None:
                 command.append("--no-video")
             raise SystemExit(
                 subprocess.run(
-                    command, env=environment, cwd=home, check=False
+                    command, env=environment, cwd=capture_home, check=False
                 ).returncode
             )
     recorder = Recorder(args.static)

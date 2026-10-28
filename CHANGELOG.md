@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.7.3 (2026-10-28)
+
+- **Keep ADS fallback enabled.** Save the choice for all libraries or one
+  library with **Save Defaults**. Identify restores it after reopening or
+  restarting the app. Query-count limits and PDF identity checks still apply.
+- **Override one CLI run.** Identify inherits the saved ADS preference.
+  `--allow-ads` permits fallback without confirmation. `--no-allow-ads` restores
+  confirmation. Neither option changes saved defaults.
+- **Read current documentation.** Updated screenshots and walkthrough videos
+  show the current controls. Documentation and website version labels now
+  use the package version automatically. Historical migration versions stay fixed.
+
 ## 0.7.2 (2026-10-28)
 
 - Keep unchanged catalog paths free of write transactions. A refused move

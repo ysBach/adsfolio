@@ -200,6 +200,7 @@ def test_identify_command_inherits_library_settings_and_allows_clears(
         output_unresolved="pending",
         skip_unresolved_directory=True,
         verbose=True,
+        allow_ads=True,
     )
     monkeypatch.setattr(
         "adsfolio.pdf.cli.load_library_identify_settings",
@@ -242,8 +243,32 @@ def test_identify_command_inherits_library_settings_and_allows_clears(
     assert captured["skip_unresolved_directory"] is True
     assert captured["verbose"] == 1
     assert captured["refresh_cache"] is False
-    assert captured["allow_ads"] is False
+    assert captured["allow_ads"] is True
     assert captured["apply"] is False
+
+
+@pytest.mark.parametrize(
+    "flags,expected",
+    [([], True), (["--no-allow-ads"], False), (["--allow-ads"], True)],
+)
+def test_identify_command_inherits_or_overrides_saved_ads_permission(
+    tmp_path, monkeypatch, flags, expected
+):
+    captured = {}
+    monkeypatch.setattr(
+        Config, "load_identify_settings", lambda: IdentifySettings(allow_ads=True)
+    )
+    monkeypatch.setattr("adsfolio.pdf.cli._get_client", lambda ctx: object())
+    monkeypatch.setattr(
+        "adsfolio.pdf.cli.run_identify",
+        lambda client, directory, *, helpers, **options: captured.update(options),
+    )
+
+    result = CliRunner().invoke(pdf, ["identify", str(tmp_path), *flags])
+
+    assert result.exit_code == 0, result.output
+    assert captured["allow_ads"] is expected
+    assert Config.load_identify_settings().allow_ads
 
 
 def test_identify_command_quiet_overrides_reusable_verbose(tmp_path, monkeypatch):

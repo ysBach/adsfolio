@@ -1686,9 +1686,12 @@ def ocr_command(
     help="Enabled identification strategy; repeat in priority order.",
 )
 @click.option(
-    "--allow-ads",
-    is_flag=True,
-    help="Allow ADS fallback queries without interactive confirmation.",
+    "--allow-ads/--no-allow-ads",
+    default=None,
+    help=(
+        "Allow ADS fallback without confirmation, or require confirmation. "
+        "Otherwise use the saved Identify setting."
+    ),
 )
 @click.option(
     "--ai-csv",
@@ -1744,7 +1747,7 @@ def identify_command(
     strategy_ids: tuple[str, ...],
     provider_ids: tuple[str, ...],
     file_paths: tuple[Path, ...],
-    allow_ads: bool,
+    allow_ads: bool | None,
     ai_csv: Path | None,
     verbose: int,
     quiet: bool,
@@ -1771,6 +1774,8 @@ def identify_command(
             else None
         ) or Config.load_identify_settings()
         overrides: dict[str, Any] = {}
+        if allow_ads is not None:
+            overrides["allow_ads"] = allow_ads
         if provider_ids:
             overrides["providers"] = tuple(DoiProvider(p) for p in provider_ids)
         if recursive is not None:
@@ -1846,7 +1851,7 @@ def identify_command(
             verbose_parser=verbose_parser,
             strategies=settings.strategies,
             providers=settings.providers,
-            allow_ads=allow_ads,
+            allow_ads=settings.allow_ads,
             ai_csv=ai_csv,
             verbose=0 if quiet else int(settings.verbose) + verbose,
             profile=profile,

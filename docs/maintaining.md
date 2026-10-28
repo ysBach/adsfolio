@@ -277,6 +277,26 @@ Remote-changing commands print a preview unless you supply `--apply`. The
 repository scripts prepare GitHub repositories, native application releases, a
 Homebrew tap, and a static website. Installing the package publishes nothing.
 
+### Keep documentation and media current
+
+Sphinx reads `release` and `version` from `adsfolio.__version__`. In Markdown,
+use ``{sub-ref}`release` `` for a current version. In reStructuredText, use
+`|release|`. The website builder replaces `__ADSFOLIO_VERSION__` from the same
+package version. Release builds update these labels without editing page text.
+
+Keep migration boundaries, OS requirements, and changelog versions fixed.
+Use `VERSION` for commands that require the next release number as input.
+
+After changing visible controls, regenerate the affected screenshots and videos:
+
+```sh
+uv run --no-sync python scripts/capture_docs_media.py
+```
+
+The renderer uses temporary configuration and fictional papers. It does not
+capture the user's desktop or library. It preserves files when their contents
+are unchanged. Inspect each changed screenshot and each video before publication.
+
 ## Repository setup
 
 1. Install Git, [uv](https://docs.astral.sh/uv/), and the
@@ -319,10 +339,10 @@ After you verify the new repository, you can delete the old Git remote.
 
 **Prepare the version**
 
-1. Set the version. This example is the first stable release:
+1. Set the version. Replace `VERSION` with the next release version:
 
    ```sh
-   uv run --no-sync python scripts/release.py version 0.1.0 --apply
+   uv run --no-sync python scripts/release.py version VERSION --apply
    ```
 
 2. Update `CHANGELOG.md`.
@@ -385,8 +405,8 @@ Run this after a stable GitHub Release exists. Ruby must be available for the
 cask syntax check. Git commits use your configured Git identity.
 
 ```sh
-uv run --no-sync python scripts/publish_tap.py 0.1.0 --create
-uv run --no-sync python scripts/publish_tap.py 0.1.0 --create --apply
+uv run --no-sync python scripts/publish_tap.py VERSION --create
+uv run --no-sync python scripts/publish_tap.py VERSION --create --apply
 ```
 
 This creates `ysBach/homebrew-adsfolio`, downloads the release checksums,
@@ -443,7 +463,7 @@ into the ADSfolio directories if the destination does not exist. SQLite uses the
 backup API, including committed WAL data. Directory migration never merges or
 overwrites an existing destination.
 
-Version 0.6.3 no longer converts reserved metadata keys from the earlier
+Current versions no longer convert reserved metadata keys from the earlier
 application. Copying an unconverted catalog retains its data, but manual field
 locks, author text, and local references under those keys are not honoured.
 Provider refreshes can overwrite fields whose earlier locks are not recognised.
@@ -453,11 +473,11 @@ Before upgrading from the earlier application:
 1. Close the earlier application.
 2. Open ADSfolio **0.6.0** once to convert the catalog and import its per-library
    files. Verify the metadata, manual locks, and local references there.
-3. Install version 0.6.3. Keep the original directories until you verify the
+3. Install ADSfolio {sub-ref}`release`. Keep the original directories until you verify the
    converted library.
 
-If you already used ADSfolio 0.6.0, the catalog conversion is complete. Version
-0.6.3 does not read per-library files under the earlier application name.
+If you already used ADSfolio 0.6.0, the catalog conversion is complete. Current
+versions do not read per-library files under the earlier application name.
 
 ADSfolio-named per-library sidecars and registries remain readable. The
 rename keeps old Git history. It does not rewrite commits or change

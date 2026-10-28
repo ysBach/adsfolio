@@ -2,6 +2,8 @@
 
 ## Install
 
+This guide covers ADSfolio {sub-ref}`release`.
+
 1. Download the file for your system from
    [GitHub Releases](https://github.com/ysBach/adsfolio/releases/latest).
 2. Install it as the table shows.
@@ -35,7 +37,7 @@ version keeps your library, settings, and token.
   <source src="_static/tutorial/first-run.mp4" type="video/mp4">
 </video>
 
-The 28-second video shows these steps with fictional sample papers:
+The video shows these steps with fictional sample papers:
 
 1. A new installation opens with three setup steps.
 2. **Add PDF Folder…** selects a folder of papers.
@@ -79,6 +81,10 @@ search request to ADS and shows whether ADS accepts the token.
 ![NASA ADS token window with Save, Test Token, and Cancel](_static/tutorial/token-dialog.png)
 
 Select **Advanced options…** to change evidence sources or DOI provider order.
+To keep ADS fallback enabled, choose **All libraries** or **This library only**.
+Enable **Allow ADS fallback**. Choose **Save Defaults**. Later Identify runs
+restore that choice. See [saved Identify defaults](gui.md#save-ads-fallback-for-later-runs).
+
 The lookup keeps filenames and file locations. Locked fields and history stay
 intact. Identification can update unlocked publication fields.
 
@@ -126,7 +132,7 @@ Replacing the application does not delete that catalog.
 If you are upgrading from the earlier application, close it and open ADSfolio
 **0.6.0** once before installing the current version. Version 0.6.0 converts the catalog
 and imports earlier per-library files. Current versions copy earlier data
-directories but no longer converts their reserved metadata keys. Without that
+directories but no longer convert their reserved metadata keys. Without that
 conversion, earlier manual locks, author text, and local references are not
 honoured. Keep the original data until you check the converted library.
 If you already used ADSfolio 0.6.0, you can upgrade directly.

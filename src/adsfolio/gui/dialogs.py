@@ -432,7 +432,10 @@ class IdentifyDialog(QDialog):
             "scope": "Choose whether reusable Identify behavior applies globally or only to this library.",
             "recursive": "Scan PDFs in subdirectories as well as the library root.",
             "refresh_cache": "Rebuild your publication-profile cache for this run. This performs ADS network requests.",
-            "allow_ads": "Allow fallback ADS requests without a separate interactive confirmation.",
+            "allow_ads": (
+                "Allow ADS fallback without another confirmation. "
+                "Save Defaults keeps this choice for the selected scope."
+            ),
             "strategies": "Check the evidence sources to use and drag them, or use Up and Down, to set priority. The first unique validated ADS match wins.",
             "providers": "Check the metadata providers to query and drag them, or use Up and Down, to set priority. Defaults to NASA/ADS, Crossref, DataCite.",
             "output": "Destination for unresolved PDFs. Relative paths use the library root; moves occur only when Apply is enabled.",
@@ -575,6 +578,7 @@ class IdentifyDialog(QDialog):
         self.output.setText(settings.output_unresolved or "")
         self.skip_unresolved.setChecked(settings.skip_unresolved_directory)
         self.verbose.setChecked(settings.verbose)
+        self.allow_ads.setChecked(settings.allow_ads)
 
     def selected_settings(self) -> IdentifySettings:
         """Return normalized reusable values shown in the dialog."""
@@ -585,6 +589,7 @@ class IdentifyDialog(QDialog):
             output_unresolved=self.output.text().strip() or None,
             skip_unresolved_directory=self.skip_unresolved.isChecked(),
             verbose=self.verbose.isChecked(),
+            allow_ads=self.allow_ads.isChecked(),
         )
 
     def save_defaults(self) -> None:
@@ -726,12 +731,9 @@ class IdentifyDialog(QDialog):
             else "--include-unresolved-directory"
         )
         flags.append("--verbose" if settings.verbose else "--quiet")
-        for checkbox, flag in (
-            (self.refresh_cache, "--refresh-cache"),
-            (self.allow_ads, "--allow-ads"),
-        ):
-            if checkbox.isChecked():
-                flags.append(flag)
+        if self.refresh_cache.isChecked():
+            flags.append("--refresh-cache")
+        flags.append("--allow-ads" if settings.allow_ads else "--no-allow-ads")
         if self.apply_moves.isChecked():
             flags.append("--apply")
         if self.verbose_parser.isChecked():

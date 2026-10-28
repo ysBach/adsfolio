@@ -1,6 +1,7 @@
 """Sphinx configuration for adsfolio documentation."""
 
 import sys
+from importlib import import_module
 from pathlib import Path
 
 from docutils import nodes
@@ -12,6 +13,8 @@ SRC_ROOT = PROJECT_ROOT / "src"
 sys.path.insert(0, str(SRC_ROOT))
 
 project = "ADSfolio"
+release = import_module("adsfolio").__version__
+version = release
 author = "Yoonsoo P. Bach"
 copyright = "2026, Yoonsoo P. Bach"
 

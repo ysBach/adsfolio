@@ -1,6 +1,8 @@
 ADSfolio documentation
 ======================
 
+This guide covers ADSfolio |release|.
+
 ADSfolio (package adsfolio) is a scientific literature workflow suite,
 desktop PDF library browser, and Python/CLI client for NASA ADS / SciXplorer
 and connected bibliographic discovery services.

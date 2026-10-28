@@ -602,15 +602,28 @@ states no own identifier, you can instead review and confirm the association.
 **Save Defaults** saves the reusable controls for the selected scope. It does
 not run Identify or close the dialog. **Run Identify** uses the controls as
 currently displayed, without saving them. Parser warnings and the optional AI
-CSV are one-run inputs. **Refresh publication cache**, **Allow ADS fallback**,
-and **Apply file moves** are one-run actions on purpose. They always reopen
-disabled.
+CSV are one-run inputs. **Refresh publication cache** and **Apply file moves**
+are one-run actions. They always reopen disabled.
 
-**Allow ADS fallback** authorizes the current advanced batch run. It differs
-from the saved DOI provider selection and the watcher's automatic-processing
-setting. **Automatically Identify & Rename** permits ADS lookups for new
-arrivals while watching. **Autowatch at Start** restores watching after restart.
-An ADS match can still fail the separate PDF identity check.
+### Save ADS fallback for later runs
+
+1. Open **Identify → Advanced options…**.
+2. Choose **All libraries** or **This library only**.
+3. Enable **Allow ADS fallback**.
+4. Choose **Save Defaults**.
+5. Reopen Identify to check the saved choice.
+
+![Identify settings with ADS fallback enabled and Save Defaults available](_static/tutorial/identify-settings.png)
+
+The saved choice survives app restarts. A library-specific choice takes
+precedence over the global choice. New installations keep ADS fallback disabled
+until you enable it. Uncheck the box and save again to restore confirmation.
+For a temporary change, edit the box and choose **Run Identify** without saving.
+
+ADS fallback permits online requests when ADS is among the selected providers.
+It does not change provider order or bypass query-count limits or PDF identity
+checks. The watcher's **Automatically Identify & Rename** remains a separate
+setting for new arrivals. **Autowatch at Start** restores watching after restart.
 
 **Skip unresolved directory** excludes the configured unresolved destination
 before hashing, metadata extraction, or ADS queries. Without a destination it
@@ -665,6 +678,14 @@ Rename preview and Apply use the same effective Identify destination for the
 selected library. ADSfolio never overwrites existing destination files. The log
 reports collisions, and the identified source stays in place. ADSfolio updates
 file moves and catalog locations together, with rollback on catalog failure.
+Equivalent filename spellings for the same file need no move. For example,
+macOS can store an accented letter differently from its displayed spelling.
+ADSfolio does not treat that spelling difference as a second PDF.
+For a watched rename conflict between different files, select **Show Both PDFs**
+in the notice. The main panel selects the source and the existing destination.
+Compare the files before deciding which copy to keep. If their contents differ,
+use **Merge Selected PDFs…** to review annotation transfers. A filename conflict
+alone does not establish that two PDFs contain the same paper.
 Automatic return applies only to an unresolved subtree inside the library root.
 When you select an external folder as a root, ADSfolio infers no parent library.
 
