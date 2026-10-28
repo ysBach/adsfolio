@@ -12,7 +12,6 @@ undone. PDF bytes are never modified or overwritten.
 from __future__ import annotations
 
 import copy
-import fcntl
 import json
 import logging
 import os
@@ -23,7 +22,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, BinaryIO
 
 from .catalog import LOCKED_METADATA_FIELDS_KEY, REFERENCE_METADATA_KEY, PdfCatalog
 from .cli_common import unique_destination
@@ -489,7 +488,11 @@ def build_plan(
 
 
 def _write_journal(path: Path, journal: dict[str, Any]) -> None:
-    """Replace the journal atomically, with data and directory entry fsynced."""
+    """Replace the journal atomically after flushing its data.
+
+    POSIX also flushes the parent directory. Windows does not support directory
+    handles through `os.open`.
+    """
     journal["updated_at"] = _now()
     temporary = path.with_name(path.name + ".tmp")
     with temporary.open("w", encoding="utf-8") as handle:
@@ -497,15 +500,17 @@ def _write_journal(path: Path, journal: dict[str, Any]) -> None:
         handle.flush()
         os.fsync(handle.fileno())
     os.replace(temporary, path)
-    fd = os.open(path.parent, os.O_RDONLY)
-    try:
-        os.fsync(fd)
-    finally:
-        os.close(fd)
+    if os.name == "posix":
+        fd = os.open(path.parent, os.O_RDONLY)
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
 
 
 def _fsync_file(path: Path) -> None:
-    with path.open("rb") as handle:
+    """Flush a writable backup file through the operating system."""
+    with path.open("r+b") as handle:
         os.fsync(handle.fileno())
 
 
@@ -523,14 +528,35 @@ def _assert_no_other_writer(catalog: PdfCatalog) -> None:
         probe.close()
 
 
-def _acquire_lock(directory: Path) -> Any:
-    handle = (directory / ".repair.lock").open("w")
+def _acquire_lock(directory: Path) -> BinaryIO:
+    """Acquire an exclusive repair lock without waiting or truncating its file."""
+    handle = (directory / ".repair.lock").open("a+b")
     try:
-        fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        if os.name == "nt":
+            import msvcrt
+
+            handle.seek(0)
+            msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except OSError as exc:
         handle.close()
         raise IdentityRepairError("Another repair is running") from exc
     return handle
+
+
+def _release_lock(handle: BinaryIO) -> None:
+    """Release the repair lock and close its file."""
+    try:
+        if os.name == "nt":
+            import msvcrt
+
+            handle.seek(0)
+            msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+    finally:
+        handle.close()
 
 
 def _move_no_overwrite(source: Path, destination: Path) -> None:
@@ -570,8 +596,12 @@ def _backup(
     root = Path(plan["root"])
     for item in plan["items"]:
         copy_path = directory / "pdfs" / f"{item['index']:02d}-{item['sha256']}.pdf"
-        shutil.copy2(root / item["old_rel"], copy_path)
-        _fsync_file(copy_path)
+        source_path = root / item["old_rel"]
+        with source_path.open("rb") as source, copy_path.open("xb") as target:
+            shutil.copyfileobj(source, target)
+            target.flush()
+            os.fsync(target.fileno())
+        shutil.copystat(source_path, copy_path)
         if sha256_file(copy_path) != item["sha256"]:
             raise IdentityRepairError(f"Backup of {item['old_rel']} differs")
         pdfs[str(item["index"])] = str(copy_path)
@@ -880,7 +910,7 @@ def apply_repairs(
         _write_journal(journal_path, journal)
         return journal_path
     finally:
-        lock.close()
+        _release_lock(lock)
 
 
 def _undo_problems(
@@ -969,4 +999,4 @@ def undo_repair(catalog: PdfCatalog, journal_path: Path) -> Path:
             raise IdentityRepairError("Undo incomplete: " + "; ".join(remaining))
         return journal_path
     finally:
-        lock.close()
+        _release_lock(lock)

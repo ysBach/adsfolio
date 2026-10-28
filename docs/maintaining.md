@@ -246,6 +246,11 @@ uv run python scripts/repair_pdf_identities.py --catalog CATALOG --undo DIR/repa
 Close ADSfolio before apply or undo. Stop every watcher. The repair requires
 exclusive catalog access. Its writer check does not hold a lock across the
 whole operation.
+A separate operating-system lock prevents concurrent repairs in the same
+journal directory. ADSfolio flushes journal data before atomic replacement.
+POSIX also flushes the parent directory. Windows has no equivalent directory
+flush through Python's file API.
+
 Pause file sync for the library as well. The manifest's `proposed_ads_record`
 serves as the provider record for the identity check, so build it from a fresh
 ADS response and do not edit it by hand.

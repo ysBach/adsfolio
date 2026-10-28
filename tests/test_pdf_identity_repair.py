@@ -1,6 +1,9 @@
 import copy
 import hashlib
 import json
+import subprocess
+import sys
+import textwrap
 from pathlib import Path
 from typing import Any
 
@@ -18,6 +21,8 @@ from adsfolio.pdf.identity import (
 from adsfolio.pdf.identity_repair import (
     IdentityRepairError,
     RepairEntry,
+    _acquire_lock,
+    _release_lock,
     apply_repairs,
     build_plan,
     load_manifest,
@@ -29,6 +34,42 @@ SETTINGS = RenameSettings(
     template="{authors}_{bibcode}-{title}", max_authors=2, authors_when_truncated=1
 )
 TABLES = ("attachments", "file_locations", "documents", "content_versions")
+
+
+def test_repair_lock_excludes_another_process_until_released(tmp_path: Path) -> None:
+    code = textwrap.dedent(
+        """\
+        import sys
+        from pathlib import Path
+        from adsfolio.pdf.identity_repair import (
+            IdentityRepairError, _acquire_lock, _release_lock,
+        )
+
+        try:
+            lock = _acquire_lock(Path(sys.argv[1]))
+        except IdentityRepairError:
+            sys.exit(2)
+        _release_lock(lock)
+        """
+    )
+
+    def probe() -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [sys.executable, "-c", code, str(tmp_path)],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+
+    lock = _acquire_lock(tmp_path)
+    try:
+        blocked = probe()
+        assert blocked.returncode == 2, blocked.stderr
+    finally:
+        _release_lock(lock)
+    available = probe()
+    assert available.returncode == 0, available.stderr
 
 
 def _make_pdf(path: Path, doi: str, notes: int = 0) -> bytes:

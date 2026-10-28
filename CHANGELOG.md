@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.7.1 (2026-10-28)
+
+- Fix Windows imports and catalog recovery locking. Recovery now uses the
+  operating system's file lock without truncating the lock file.
+- Flush journal data before atomic replacement on all supported systems.
+  POSIX also flushes the parent directory.
+- Include the 0.7.0 changes below. Version 0.7.0 did not publish because
+  Windows release checks failed.
+
 ## 0.7.0 (2026-10-28)
 
 ### Identify papers without changing PDF contents
