@@ -85,12 +85,20 @@ def edition_candidates(
 ) -> tuple[tuple[dict[str, Any], ...], bool]:
     """Find other records with a shared bibcode, DOI, or version-free arXiv ID."""
     path = arrival.get("current_path") or arrival.get("relative_path")
+    dev = arrival.get("device")
+    ino = arrival.get("inode")
     identifiers = edition_identifiers(arrival)
     linked = tuple(
         record
         for record in records
         if (record.get("current_path") or record.get("relative_path")) != path
         and not record.get("missing_at")
+        and not (
+            dev is not None
+            and ino is not None
+            and record.get("device") == dev
+            and record.get("inode") == ino
+        )
         and identifiers & edition_identifiers(record)
     )
     return linked, bool(linked)

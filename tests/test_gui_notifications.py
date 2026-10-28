@@ -4,6 +4,8 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from PySide6.QtCore import QCoreApplication, QEvent, Qt
+from PySide6.QtWidgets import QToolButton, QToolTip
 
 from adsfolio.gui import notifications
 from adsfolio.gui.notifications import Notice, NoticeAction, NoticeBar
@@ -76,15 +78,15 @@ def test_notice_reveal_tracks_displayed_path_without_dismissal(
     bar.enqueue(Notice("first", "New PDF", reveal_path=first))
     bar.enqueue(Notice("second", "Another PDF", reveal_path=second))
     assert not button.isHidden()
-    assert button.toolTip() == str(first)
+    assert button.toolTip() == f"{button.accessibleName()}\n{first}"
     button.click()
     assert bar.queued_keys() == ("first", "second")
 
     bar.enqueue(Notice("first", "No match", reveal_path=moved))
-    assert button.toolTip() == str(moved)
+    assert button.toolTip() == f"{button.accessibleName()}\n{moved}"
     button.click()
     bar.dismiss("first")
-    assert button.toolTip() == str(second)
+    assert button.toolTip() == f"{button.accessibleName()}\n{second}"
     button.click()
     bar.dismiss("second")
     assert button.isHidden()
@@ -129,6 +131,121 @@ def test_failed_notice_offers_identifier_lookup_without_retry_or_manual_entry(
     assert bar.update_by_id_button.isHidden()
     bar.update_by_id_button.click()
     assert updates == [payload]
+
+
+def test_ads_entry_tracks_candidate_queue_and_never_confirms_or_dismisses(qtbot):
+    bar = NoticeBar()
+    qtbot.addWidget(bar)
+    entries, actions, updates, dismissals = [], [], [], []
+    bar.ads_entry_requested.connect(entries.append)
+    bar.action_requested.connect(actions.append)
+    bar.update_by_id_requested.connect(updates.append)
+    bar.dismiss_requested.connect(dismissals.append)
+    first = "2013A&A...552A.137R"
+    replacement = "2025A&A...693A.258K"
+    second = "2026A&A...712A.162B"
+    bar.enqueue(Notice("first", "Review first", candidate_bibcode=first))
+    bar.enqueue(Notice("second", "Review second", candidate_bibcode=second))
+    assert not bar.ads_entry_button.isHidden()
+    assert bar.ads_entry_button.text() == "View ADS Entry"
+    assert first in bar.ads_entry_button.toolTip()
+    bar.ads_entry_button.click()
+    bar.enqueue(Notice("first", "New candidate", candidate_bibcode=replacement))
+    assert replacement in bar.ads_entry_button.toolTip()
+    assert first not in bar.ads_entry_button.toolTip()
+    bar.ads_entry_button.click()
+    assert bar.queued_keys() == ("first", "second")
+    bar.dismiss("first")
+    assert second in bar.ads_entry_button.toolTip()
+    bar.ads_entry_button.click()
+    bar.dismiss("second")
+    assert bar.ads_entry_button.isHidden()
+    assert bar.ads_entry_button.toolTip() == ""
+    bar.ads_entry_button.click()
+    bar.enqueue(Notice("general", "No proposed record"))
+    assert bar.ads_entry_button.isHidden()
+    bar.ads_entry_button.click()
+    assert entries == [first, replacement, second]
+    assert actions == updates == dismissals == []
+
+
+def test_use_id_tracks_the_exact_displayed_review_without_dismissal(qtbot):
+    bar = NoticeBar()
+    qtbot.addWidget(bar)
+    reviews = []
+    bar.use_id_requested.connect(reviews.append)
+    first = Notice(
+        "first",
+        "Review first",
+        candidate_bibcode="2013A&A...552A.137R",
+        candidate_sha256="a" * 64,
+        candidate_fingerprint="b" * 64,
+        candidate_confirmable=True,
+    )
+    second = Notice(
+        "second",
+        "Review second",
+        candidate_bibcode="2025A&A...693A.258K",
+        candidate_sha256="c" * 64,
+        candidate_fingerprint="d" * 64,
+        candidate_confirmable=True,
+    )
+    bar.enqueue(first)
+    bar.enqueue(second)
+    assert not bar.use_id_button.isHidden()
+    assert first.candidate_bibcode in bar.use_id_button.toolTip()
+    bar.use_id_button.click()
+    assert bar.queued_keys() == ("first", "second")
+    bar.dismiss("first")
+    assert second.candidate_bibcode in bar.use_id_button.toolTip()
+    bar.use_id_button.click()
+    bar.enqueue(
+        Notice(
+            "second",
+            "Candidate no longer confirmable",
+            candidate_bibcode=second.candidate_bibcode,
+        )
+    )
+    assert bar.use_id_button.isHidden()
+    bar.use_id_button.click()
+    assert reviews == [first, second]
+
+
+@pytest.mark.parametrize("event_type", [QEvent.Enter, QEvent.FocusIn])
+def test_notice_actions_are_icons_with_immediate_tooltips(
+    monkeypatch, qtbot, event_type
+):
+    bar = NoticeBar()
+    qtbot.addWidget(bar)
+    bar.enqueue(
+        Notice(
+            "review",
+            "Review the candidate",
+            action=NoticeAction.RETRY,
+            manual_entry=True,
+            update_by_id=True,
+            reveal_path=Path("/sample.pdf"),
+            candidate_bibcode="2013A&A...552A.137R",
+            candidate_sha256="a" * 64,
+            candidate_fingerprint="b" * 64,
+            candidate_confirmable=True,
+        )
+    )
+    shown = []
+    monkeypatch.setattr(QToolTip, "showText", lambda *args: shown.append(args))
+    buttons = [
+        button for button in bar.findChildren(QToolButton) if not button.isHidden()
+    ]
+    assert len(buttons) >= 8
+    for button in buttons:
+        assert button.toolButtonStyle() == Qt.ToolButtonIconOnly
+        assert button.width() == button.height() == 28
+        assert button.accessibleName()
+        assert button.toolTip()
+        assert not button.icon().isNull()
+        shown.clear()
+        QCoreApplication.sendEvent(button, QEvent(event_type))
+        assert shown and shown[-1][1] == button.toolTip()
 
 
 def test_failed_notice_offers_manual_entry_beside_retry(qtbot) -> None:

@@ -8,7 +8,12 @@ malformed inputs, and multiple conflicting subject DOIs.
 
 from __future__ import annotations
 
-from adsfolio.pdf.document_identity_evidence import corroborate_document_doi_evidence
+import pytest
+
+from adsfolio.pdf.document_identity_evidence import (
+    check_document_doi_evidence,
+    corroborate_document_doi_evidence,
+)
 
 
 def _create_synthetic_pdf(
@@ -47,6 +52,53 @@ def test_synthetic_pdf_full_mutual_corroboration() -> None:
     }
     res = corroborate_document_doi_evidence(pdf_bytes, provider_doc)
     assert res == "10.1051/0004-6361/202611111"
+
+
+@pytest.mark.parametrize("separator", [" - ", " – ", " — "])
+def test_quote_typography_and_subtitle_separator_do_not_reject_matching_doi(
+    separator: str,
+) -> None:
+    pdf_bytes = _create_synthetic_pdf(
+        title=f"Ice grains show ‘dust’ release{separator}A model for activity"
+    )
+    provider = {
+        "title": ["Ice grains show 'dust' release: A model for activity"],
+        "doi": ["10.1051/0004-6361/202612345"],
+    }
+
+    assert corroborate_document_doi_evidence(pdf_bytes, provider) == provider["doi"][0]
+
+
+@pytest.mark.parametrize(
+    "pdf_title,provider_title",
+    [
+        ("A+B emission", "A-B emission"),
+        ("A-B emission", "A B emission"),
+        ("CO+ emission", "CO emission"),
+        ("1.2 mm grains", "12 mm grains"),
+        ("H₂O grains", "H2O grains"),
+        ("A/B emission", "A B emission"),
+        ("Model x - y", "Model x + y"),
+    ],
+)
+def test_title_normalization_preserves_words_numbers_and_other_symbols(
+    pdf_title: str, provider_title: str
+) -> None:
+    data = _create_synthetic_pdf(title=pdf_title)
+    provider = {"title": [provider_title], "doi": ["10.1051/0004-6361/202612345"]}
+
+    assert corroborate_document_doi_evidence(data, provider) is None
+
+
+def test_diagnostic_names_title_mismatch_after_doi_matches() -> None:
+    provider = {"title": ["Another Title"], "doi": ["10.1051/0004-6361/202612345"]}
+
+    result = check_document_doi_evidence(_create_synthetic_pdf(), provider)
+
+    assert result.doi is None
+    assert "10.1051/0004-6361/202612345" in result.reason
+    assert "document titles differ" in result.reason
+    assert "no readable identifier" not in result.reason
 
 
 def test_refuses_when_provider_title_mismatches() -> None:

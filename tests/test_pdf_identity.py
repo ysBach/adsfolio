@@ -160,9 +160,17 @@ def test_pdf_without_own_identifier_is_unverified_until_manual(tmp_path):
     with pytest.raises(UnverifiedIdentityError) as info:
         verify(pdf, ROBITAILLE)
     assert info.value.manually_confirmable
+    assert info.value.candidate_bibcode == ROBITAILLE["bibcode"]
     provenance = verify(pdf, ROBITAILLE, manual_confirmation=True)
     assert provenance["status"] == "manual_confirmed"
     assert provenance["authority"] == "manual"
+
+
+def test_non_ads_candidate_does_not_offer_an_ads_entry(tmp_path):
+    pdf = make_pdf(tmp_path / "paper.pdf")
+    with pytest.raises(UnverifiedIdentityError) as info:
+        verify(pdf, {"doi": ["10.5555/example"]})
+    assert info.value.candidate_bibcode is None
 
 
 @pytest.mark.parametrize("payload", [b"", b"not a pdf", b"%PDF-1.7\n1 0 obj<<"])

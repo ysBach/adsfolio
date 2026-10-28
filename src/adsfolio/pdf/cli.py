@@ -40,7 +40,7 @@ from .identifier import (
 )
 from .identify import IdentifyWorkflowHelpers, build_checked_record, run_identify
 from .identify_settings import IdentifySettings, IdentifyStrategy
-from .identity import IDENTITY_KEY, IdentityValidationError
+from .identity import IDENTITY_KEY, IdentityValidationError, target_identity
 from .obsidian import ObsidianNoteWriter
 from .readiness import metadata_ready, stored_bibcode_matches_file
 from .registry import (
@@ -248,15 +248,22 @@ def _refresh_file_metadata(
     preserve_existing: bool = False,
     manual_confirmation: bool = False,
     refusals: dict[str, str] | None = None,
+    expected_sha256: str | None = None,
+    expected_identity: str | None = None,
 ) -> bool:
     """Apply one ADS document to an existing file, respecting locked fields.
 
-    The fresh ADS document and the merged result must both be proven by the
-    PDF itself. When either is not, nothing is written and the reason is added
-    to `refusals` under `relative_path`.
+    Check both the fresh ADS document and the merged result against the PDF.
+    On refusal, retain publication metadata and add the reason to `refusals`
+    under `relative_path`.
 
     `manual_confirmation` records an explicit, user-reviewed confirmation of an
     unknown identity. It never overrides a known conflict.
+
+    `expected_sha256` and `expected_identity` bind a reviewed notice to the
+    inspected PDF and proposed record. A mismatch leaves publication metadata
+    unchanged. Fresh checked provider metadata clears a stale association
+    through the catalog's observation path.
     """
     record = registry.find_file_by_relative_path(root, relative_path)
     if record is None:
@@ -290,6 +297,17 @@ def _refresh_file_metadata(
     if metadata.get(IDENTITY_KEY):
         claimed[IDENTITY_KEY] = metadata[IDENTITY_KEY]
     try:
+        if expected_sha256 is not None and sha256 != expected_sha256:
+            raise IdentityValidationError(
+                "The PDF catalog record changed after review. Retry identification."
+            )
+        if (
+            expected_identity is not None
+            and target_identity(document).fingerprint != expected_identity
+        ):
+            raise IdentityValidationError(
+                "The ADS candidate changed after review. Retry identification."
+            )
         verify_record_identity(
             pdf_path,
             claimed,
@@ -314,6 +332,29 @@ def _refresh_file_metadata(
             manual_confirmation=manual_confirmation,
             provider_document=document,
         )
+        if metadata.get("_adsfolio_metadata_stale") or record.get(
+            "_adsfolio_metadata_stale"
+        ):
+            # Ordinary edits retain stale status. A provider record checked
+            # against these exact bytes can establish a fresh association.
+            digest = str(merged[IDENTITY_KEY]["sha256"])
+            if sha256_file(pdf_path) != digest:
+                raise IdentityValidationError(
+                    "The PDF changed while applying the reviewed record."
+                )
+            stat = pdf_path.stat()
+            merged["_adsfolio_metadata_sha256"] = digest
+            registry.upsert_file(
+                root=root,
+                relative_path=relative_path,
+                current_path=str(record["current_path"]),
+                sha256=digest,
+                size_bytes=stat.st_size,
+                mtime_ns=stat.st_mtime_ns,
+                status="resolved",
+                metadata=merged,
+            )
+            return True
     except (IdentityValidationError, OSError) as exc:
         LOGGER.warning(
             "Metadata retained; identity not verified: %s: %s", pdf_path, exc
@@ -479,6 +520,8 @@ def _refresh_bibcode_metadata(
         "--relative-path. A PDF that contradicts the record is still refused."
     ),
 )
+@click.option("--expected-sha256", hidden=True)
+@click.option("--expected-identity", hidden=True)
 @click.pass_context
 def refresh_ads_command(
     ctx: click.Context,
@@ -493,6 +536,8 @@ def refresh_ads_command(
     rename_scope: str,
     output_unresolved: Path | None,
     confirm_identity: bool,
+    expected_sha256: str | None,
+    expected_identity: str | None,
 ) -> None:
     """Refresh ADS metadata, rename PDFs, and return them from unresolved."""
     directory = directory.expanduser().resolve()
@@ -507,6 +552,17 @@ def refresh_ads_command(
         raise click.UsageError("--identifier requires --relative-path.")
     if confirm_identity and relative_path is None:
         raise click.UsageError("--confirm-identity requires --relative-path.")
+    if (expected_sha256 is not None or expected_identity is not None) and not (
+        expected_sha256
+        and expected_identity
+        and confirm_identity
+        and relative_path is not None
+        and identifier_input is None
+    ):
+        raise click.UsageError(
+            "Reviewed candidates require --bibcode, --relative-path, --confirm-identity, "
+            "--expected-sha256, and --expected-identity."
+        )
     if refresh_all:
         requested.extend(_record_bibcodes(directory, pending_only=pending_only))
     requested = list(dict.fromkeys(requested))
@@ -683,6 +739,8 @@ def refresh_ads_command(
                     preserve_existing=not rename,
                     manual_confirmation=confirm_identity,
                     refusals=refusals,
+                    expected_sha256=expected_sha256,
+                    expected_identity=expected_identity,
                 ):
                     raise click.UsageError(
                         _metadata_skipped_message(relative_path, refusals)

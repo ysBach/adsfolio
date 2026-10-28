@@ -1,5 +1,37 @@
 # Changelog
 
+## 0.7.4 (2026-10-29)
+
+### Notifications without layout movement
+
+- Move warnings and sidebar-view explanations into **Notifications** in the
+  toolbar. Scroll long messages without moving the main panes. Keep pending
+  messages visible through a count and severity indicator.
+- Use compact icon buttons for notice actions. Display tooltips immediately
+  on hover or keyboard focus. Keep action names available to screen readers.
+
+### Review and identify PDFs
+
+- Add **Use This ID** to confirm a displayed candidate without entering its
+  bibcode again. Apply saved Rename settings while preserving PDF contents.
+  Changed PDFs, changed candidates, and conflicting identifiers still stop the update.
+- Add **View ADS Entry** to unverified ADS candidate notices. Open the proposed
+  record beside **Open PDF** to compare metadata before confirming a match.
+  The link follows the notice and does not update metadata or rename the PDF.
+- Accept matching document DOIs when PDF and provider titles differ only in
+  quote typography or subtitle separators. Metadata, page 1, and the provider
+  must still agree on the exact DOI. PDF contents remain unchanged.
+- Explain why a candidate needs review. Notices name failed DOI or title
+  checks and offer a recovery action without repeating the filename.
+
+### Safe filename conflicts
+
+- Treat equivalent filename spellings for the same file as an unchanged rename.
+  This prevents false destination conflicts on macOS with accented author names.
+- Review watched rename conflicts with **Show Both PDFs**. Compare the selected
+  files before choosing which copy to keep or reviewing an annotation merge.
+  Clear search filters and select only the two exact paths.
+
 ## 0.7.3 (2026-10-28)
 
 - **Keep ADS fallback enabled.** Save the choice for all libraries or one

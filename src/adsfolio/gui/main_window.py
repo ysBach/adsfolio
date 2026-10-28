@@ -36,7 +36,6 @@ from PySide6.QtWidgets import (
     QMenu,
     QMessageBox,
     QPlainTextEdit,
-    QPushButton,
     QSplitter,
     QToolBar,
     QToolButton,
@@ -48,6 +47,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..citations import CitationStyle, citation_preference_key
+from ..client import ADSClient
 from ..config import AuthenticationError, Config
 from ..pdf.annotation_merge import (
     AnnotationMergeError,
@@ -130,7 +130,7 @@ from .models import (
     ResolutionDelegate,
     RowHeightDelegate,
 )
-from .notifications import Notice, NoticeAction, NoticeBar
+from .notifications import Notice, NoticeAction, NotificationButton, NotificationPanel
 from .osint import open_path, open_url, reveal_in_file_manager
 from .references_dialog import ReferencesDialog
 from .refresh_job import LibraryRefreshJob
@@ -247,6 +247,16 @@ class _SettingsPersistenceCoordinator(Generic[_SettingsT]):
 
 
 @dataclass(frozen=True)
+class RenameConflictRequest:
+    """Store source and collision destination paths for UI comparison."""
+
+    root: Path
+    source_path: Path
+    conflict_path: Path
+    event: WatchEvent | None = None
+
+
+@dataclass(frozen=True)
 class _LibraryViewContext:
     """Retain the originating view while a library job runs."""
 
@@ -311,6 +321,7 @@ class MainWindow(QMainWindow):
         self._ads_library_export_dialog: ExportAdsLibraryDialog | None = None
         self._close_requested = False
         self._refresh_selection_id: int | None = None
+        self._candidate_update_notice: Notice | None = None
         self._ads_match_candidates: list[dict[str, str]] = []
         self._ambiguous_ads_match_context: tuple[Path, str, int | None] | None = None
         self._pending_watch_refresh_roots: set[Path] = set()
@@ -422,23 +433,16 @@ class MainWindow(QMainWindow):
         splitter.setStretchFactor(0, 0)
         splitter.setStretchFactor(1, 1)
         splitter.setStretchFactor(2, 0)
-        self.notice_bar = NoticeBar(self)
+        self.notification_panel = NotificationPanel(self)
+        self.notice_bar = self.notification_panel.notice_bar
+        self.lookup_guidance = self.notification_panel.guidance
+        self.view_explanation = self.notification_panel.view_explanation
+        self.check_papers_button = self.notification_panel.identify_button
+        self.check_papers_button.clicked.connect(lambda: self._guide_identification())
         central = QWidget(self)
         central_layout = QVBoxLayout(central)
         central_layout.setContentsMargins(0, 0, 0, 0)
         central_layout.setSpacing(0)
-        central_layout.addWidget(self.notice_bar)
-        self.lookup_guidance = QWidget(central)
-        guidance_layout = QHBoxLayout(self.lookup_guidance)
-        guidance_layout.setContentsMargins(8, 4, 8, 4)
-        self.view_explanation = QLabel(self.lookup_guidance)
-        self.view_explanation.setWordWrap(True)
-        guidance_layout.addWidget(self.view_explanation, 1)
-        self.check_papers_button = QPushButton("Identify papers…", self.lookup_guidance)
-        self.check_papers_button.clicked.connect(lambda: self._guide_identification())
-        guidance_layout.addWidget(self.check_papers_button)
-        self.lookup_guidance.hide()
-        central_layout.addWidget(self.lookup_guidance)
         self.welcome = WelcomePanel(central)
         self.welcome.add_folder_requested.connect(self._add_root)
         self.welcome.token_requested.connect(self._edit_token)
@@ -532,6 +536,11 @@ class MainWindow(QMainWindow):
         ads_menu.addAction(self.refresh_all_citation_metrics_action)
         self.ads_refresh_button.setMenu(ads_menu)
         toolbar.addWidget(self.ads_refresh_button)
+        self.notifications_button = NotificationButton(self)
+        self.notifications_button.clicked.connect(self._toggle_notifications)
+        toolbar.addWidget(self.notifications_button)
+        self.notice_bar.changed.connect(self._sync_notifications)
+        self._sync_notifications()
         # Round icon buttons sit together at the toolbar's end with a small gap.
         round_buttons = QWidget(self)
         round_layout = QHBoxLayout(round_buttons)
@@ -1043,6 +1052,8 @@ class MainWindow(QMainWindow):
         self.notice_bar.manual_entry_requested.connect(self._enter_manual_metadata)
         self.notice_bar.update_by_id_requested.connect(self._update_notice_by_id)
         self.notice_bar.open_requested.connect(self._open_notice_pdf)
+        self.notice_bar.ads_entry_requested.connect(self._open_notice_ads_entry)
+        self.notice_bar.use_id_requested.connect(self._use_notice_id)
         self.notice_bar.reveal_requested.connect(self._reveal_notice_path)
         self.notice_bar.dismiss_requested.connect(self._handle_notice_dismiss)
         self.notice_bar.action_all_requested.connect(self._handle_notice_actions)
@@ -1537,11 +1548,36 @@ class MainWindow(QMainWindow):
             return
         state = event.state
         destination = outcome.destination or event.path
-        message = (
-            f"{destination.name}: {outcome.message}"
-            if outcome.message
-            else f"{state.value.title()}: {destination.name}"
-        )
+        message = outcome.message or f"{state.value.title()}: {destination.name}"
+        if outcome.message and not message.startswith(
+            (f"{destination.name}:", f"{destination.name} ")
+        ):
+            message = f"{destination.name}: {message}"
+        conflict_request: RenameConflictRequest | None = None
+        if outcome.conflict_path is not None:
+            conflict_request = RenameConflictRequest(
+                root=event.root,
+                source_path=destination,
+                conflict_path=outcome.conflict_path,
+                event=event,
+            )
+            # Conservative recommendation: check whether hashes match
+            try:
+                from ..pdf.files import sha256_file
+
+                src_hash = sha256_file(destination)
+                dst_hash = sha256_file(outcome.conflict_path)
+                same_hash = src_hash == dst_hash
+            except OSError:
+                same_hash = False
+
+            recommendation = (
+                " Both copies share identical content hash; one can be safely discarded."
+                if same_hash
+                else " Both copies exist with distinct content; review both to keep or merge annotations."
+            )
+            message = f"{destination.name}: destination already exists ({outcome.conflict_path.name}).{recommendation}"
+
         self.notice_bar.enqueue(
             Notice(
                 self._watch_notice_key(event),
@@ -1555,23 +1591,40 @@ class MainWindow(QMainWindow):
                         else "warning"
                     )
                 ),
-                action=(NoticeAction.RETRY if state is WatchState.FAILED else None),
+                action=(
+                    NoticeAction.SHOW_CONFLICT
+                    if conflict_request is not None
+                    else (NoticeAction.RETRY if state is WatchState.FAILED else None)
+                ),
                 payload=(
-                    replace(event, path=destination)
-                    if state in {WatchState.UNRESOLVED, WatchState.FAILED}
-                    else event
+                    conflict_request
+                    if conflict_request is not None
+                    else (
+                        replace(event, path=destination)
+                        if state in {WatchState.UNRESOLVED, WatchState.FAILED}
+                        else event
+                    )
                 ),
                 root=event.root,
-                details=str(destination),
+                details=(
+                    f"{destination} | {outcome.conflict_path}"
+                    if outcome.conflict_path
+                    else str(destination)
+                ),
                 manual_entry=state in {WatchState.UNRESOLVED, WatchState.FAILED},
                 update_by_id=state in {WatchState.UNRESOLVED, WatchState.FAILED},
                 reveal_path=destination,
+                candidate_bibcode=outcome.candidate_bibcode,
+                candidate_sha256=outcome.candidate_sha256,
+                candidate_fingerprint=outcome.candidate_fingerprint,
+                candidate_confirmable=outcome.candidate_confirmable,
             )
         )
         if state in {
             WatchState.RESOLVED,
             WatchState.RENAMED,
             WatchState.UNRESOLVED,
+            WatchState.FAILED,
         }:
             self._schedule_watch_refresh(event.root)
         if state in {WatchState.RESOLVED, WatchState.RENAMED}:
@@ -1706,6 +1759,29 @@ class MainWindow(QMainWindow):
         if not path.is_file() or not open_path(path, self.config.pdf_viewer_command):
             self.status.showMessage(f"Could not open PDF: {path}")
 
+    def _open_notice_ads_entry(self, bibcode: str) -> None:
+        """Open the proposed ADS record for comparison with the notice's PDF."""
+        self._open_external_url(ADSClient.abstract_url(bibcode))
+
+    def _use_notice_id(self, notice: Notice) -> None:
+        """Apply the displayed candidate without asking the user to enter its ID."""
+        event = notice.payload
+        if (
+            not isinstance(event, WatchEvent)
+            or not self._is_current_watch_event(event)
+            or not notice.candidate_confirmable
+            or not notice.candidate_bibcode
+            or not notice.candidate_sha256
+            or not notice.candidate_fingerprint
+        ):
+            return
+        self._update_from_identifier(
+            notice.candidate_bibcode,
+            root=event.root,
+            path=event.path,
+            reviewed_candidate=notice,
+        )
+
     def _update_notice_by_id(self, payload: object) -> None:
         """Look up the notice's PDF independently of the selected library row."""
         if not isinstance(payload, WatchEvent) or not self._is_current_watch_event(
@@ -1715,7 +1791,69 @@ class MainWindow(QMainWindow):
         if self._update_from_identifier("", root=payload.root, path=payload.path):
             self.notice_bar.dismiss(self._watch_notice_key(payload))
 
+    def _show_collision_pair(self, request: RenameConflictRequest) -> None:
+        """Select the two exact conflict paths in the main table."""
+        root = request.root.expanduser().resolve()
+        if str(root) not in self.registries:
+            return
+        try:
+            paths = {
+                request.source_path.resolve().relative_to(root).as_posix(),
+                request.conflict_path.resolve().relative_to(root).as_posix(),
+            }
+        except ValueError:
+            self.status.showMessage(
+                "Both PDFs must be inside this library for comparison."
+            )
+            return
+        self._select_root(root)
+        self._select_view(LibraryView.ALL)
+        if self.search.text():
+            self.search.clear()
+        self.search_timer.stop()
+        self._search_changed()
+
+        # Register a destination added after the last catalog refresh.
+        registry = self.registries.get(str(root))
+        if registry is not None:
+            try:
+                registry.reconcile_file_facts(root)
+                self.model.set_registry(registry, self.current_query)
+            except (OSError, sqlite3.Error) as exc:
+                self.status.showMessage(f"Could not reconcile files: {exc}")
+                return
+
+        selection = self.table.selectionModel()
+        selection.clearSelection()
+
+        # A requested path can be outside the model's first page.
+        while self.model.canFetchMore():
+            self.model.fetchMore()
+
+        first_index = None
+        for row in range(self.model.rowCount()):
+            rec = self.model.record_at(row)
+            if not rec:
+                continue
+            rec_path = str(rec.get("current_path") or rec.get("relative_path") or "")
+            if rec_path in paths:
+                idx = self.model.index(row, 0)
+                selection.select(
+                    idx, QItemSelectionModel.Select | QItemSelectionModel.Rows
+                )
+                if first_index is None:
+                    first_index = idx
+
+        if first_index is not None:
+            selection.setCurrentIndex(first_index, QItemSelectionModel.NoUpdate)
+            self.table.scrollTo(first_index)
+        self._sync_detail_and_selection_actions()
+        self.notification_panel.hide()
+
     def _handle_notice_action(self, payload: object) -> None:
+        if isinstance(payload, RenameConflictRequest):
+            self._show_collision_pair(payload)
+            return
         if isinstance(payload, EditionMergeRequest):
             if payload.event is not None and self._is_current_watch_event(
                 payload.event
@@ -3322,21 +3460,63 @@ class MainWindow(QMainWindow):
             self._populate_views(self.registries[key])
             self._update_status()
 
+    def _toggle_notifications(self) -> None:
+        """Open or close notifications without resizing the main panes."""
+        if self.notification_panel.isVisible():
+            self.notification_panel.hide()
+        else:
+            self.notification_panel.show_for(self.notifications_button)
+
+    def _sync_notifications(self) -> None:
+        """Update the permanent notification indicator without opening its panel."""
+        notices = self.notice_bar.queued_notices()
+        count = len(notices)
+        severities = {notice.severity for notice in notices}
+        icon = (
+            "error"
+            if "error" in severities
+            else "warning"
+            if "warning" in severities
+            else "info"
+            if not count and self.view_explanation.text()
+            else "notifications"
+        )
+        self.notifications_button.setIcon(vector_icon(icon, self.notifications_button))
+        self.notifications_button.set_badge(count)
+        summary = (
+            "Errors need review."
+            if "error" in severities
+            else "Warnings need review."
+            if "warning" in severities
+            else "Open messages and current-view help."
+        )
+        self.notifications_button.setAccessibleName(
+            f"Notifications: {count} pending. {summary}"
+        )
+        tooltip = f"Notifications: {count} pending.\n{summary}"
+        if self.view_explanation.text():
+            tooltip += f"\n{self.view_explanation.text()}"
+        self.notifications_button.setToolTip(tooltip)
+
     def _update_status(self) -> None:
         self._sync_welcome()
         explains_ads_group = self.current_root is not None and self.current_view in {
             LibraryView.RESOLVED,
             LibraryView.UNRESOLVED,
         }
-        self.lookup_guidance.setVisible(explains_ads_group)
-        self.view_explanation.setVisible(explains_ads_group)
-        self.check_papers_button.setVisible(self.current_view is LibraryView.UNRESOLVED)
-        if explains_ads_group:
-            self.view_explanation.setText(
+        explanation = (
+            (
                 "ADS linked: these papers have saved ADS records. Changed PDFs need identification again."
                 if self.current_view is LibraryView.RESOLVED
                 else "These papers have no saved ADS link. A bibcode or usable non-ADS metadata may already be present. Select Identify papers… to check them."
             )
+            if explains_ads_group
+            else ""
+        )
+        self.notification_panel.set_guidance(
+            explanation, identify=self.current_view is LibraryView.UNRESOLVED
+        )
+        self._sync_notifications()
         if self.current_root is None:
             self.status.setToolTip("")
             self.status.showMessage("No library selected")
@@ -3681,6 +3861,7 @@ class MainWindow(QMainWindow):
         *,
         root: Path | None = None,
         path: Path | None = None,
+        reviewed_candidate: Notice | None = None,
     ) -> bool:
         """Ask for an identifier to update and rename one PDF.
 
@@ -3692,6 +3873,9 @@ class MainWindow(QMainWindow):
             Library that owns the PDF. Default is the current library.
         path
             PDF path inside `root`. Default is the selected file.
+        reviewed_candidate
+            Explicit Use This ID action bound to the reviewed PDF and candidate.
+            Skip text entry and the duplicate identity confirmation.
 
         Returns
         -------
@@ -3740,29 +3924,32 @@ class MainWindow(QMainWindow):
                 untracked = True
         if record is None:
             return False
-        bibcode, accepted = QInputDialog.getText(
-            self,
-            "Update by identifier",
-            f"PDF: {record['relative_path']}\n\n"
-            "Enter a Bibcode, DOI, arXiv ID, or one of these reference formats:\n\n"
-            "1. {authorLastName}-{year}-{bibstem}\n"
-            "   {authorLastName} = an author's last name\n"
-            "   {year} = the four-digit publication year\n"
-            "   {bibstem} = the ADS journal abbreviation\n"
-            "   Example: Last-2020-Natur (Natur means Nature)\n\n"
-            "2. {bibstem}-{volume}-{page}\n"
-            "   {volume} = the journal volume number\n"
-            "   {page} = the starting page or article number\n"
-            "   Example: Sci-123-45 (Sci means Science)\n\n"
-            "You can replace {bibstem} with the full journal name in either format.\n"
-            "Examples: Last-2020-Nature or Science-123-45\n"
-            "Separate fields with hyphens, underscores, or spaces.\n"
-            "These reference formats query ADS only; other sites are not searched.\n"
-            "If several papers match, select the correct one.\n\n"
-            "The update applies saved Rename settings to this PDF.\n"
-            "DOI and arXiv lookups can use Crossref or DataCite if ADS has no match.",
-            text=initial_identifier,
-        )
+        if reviewed_candidate is None:
+            bibcode, accepted = QInputDialog.getText(
+                self,
+                "Update by identifier",
+                f"PDF: {record['relative_path']}\n\n"
+                "Enter a Bibcode, DOI, arXiv ID, or one of these reference formats:\n\n"
+                "1. {authorLastName}-{year}-{bibstem}\n"
+                "   {authorLastName} = an author's last name\n"
+                "   {year} = the four-digit publication year\n"
+                "   {bibstem} = the ADS journal abbreviation\n"
+                "   Example: Last-2020-Natur (Natur means Nature)\n\n"
+                "2. {bibstem}-{volume}-{page}\n"
+                "   {volume} = the journal volume number\n"
+                "   {page} = the starting page or article number\n"
+                "   Example: Sci-123-45 (Sci means Science)\n\n"
+                "You can replace {bibstem} with the full journal name in either format.\n"
+                "Examples: Last-2020-Nature or Science-123-45\n"
+                "Separate fields with hyphens, underscores, or spaces.\n"
+                "These reference formats query ADS only; other sites are not searched.\n"
+                "If several papers match, select the correct one.\n\n"
+                "The update applies saved Rename settings to this PDF.\n"
+                "DOI and arXiv lookups can use Crossref or DataCite if ADS has no match.",
+                text=initial_identifier,
+            )
+        else:
+            bibcode, accepted = initial_identifier, True
         normalized = bibcode.strip()
         if not accepted or not normalized:
             return False
@@ -3774,13 +3961,33 @@ class MainWindow(QMainWindow):
         except IdentityValidationError as exc:
             QMessageBox.warning(self, "PDF identity unavailable", str(exc))
             return False
+        if reviewed_candidate is not None and (
+            normalized != reviewed_candidate.candidate_bibcode
+            or own_identity.sha256 != reviewed_candidate.candidate_sha256
+        ):
+            QMessageBox.warning(
+                self,
+                "PDF changed",
+                "The PDF changed after this candidate was found. Retry identification before using its ID.",
+            )
+            return False
         arguments = [
-            "--identifier",
+            "--bibcode" if reviewed_candidate is not None else "--identifier",
             normalized,
             "--relative-path",
             str(record["relative_path"]),
         ]
-        if not own_identity.has_identifier:
+        if reviewed_candidate is not None:
+            arguments.extend(
+                [
+                    "--confirm-identity",
+                    "--expected-sha256",
+                    str(reviewed_candidate.candidate_sha256),
+                    "--expected-identity",
+                    str(reviewed_candidate.candidate_fingerprint),
+                ]
+            )
+        elif not own_identity.has_identifier:
             confirmation = QMessageBox.question(
                 self,
                 "Confirm PDF identity",
@@ -3794,7 +4001,10 @@ class MainWindow(QMainWindow):
             if confirmation != QMessageBox.Yes:
                 return False
             arguments.append("--confirm-identity")
-        if untracked:
+        if untracked or (
+            reviewed_candidate is not None
+            and record.get("sha256") != own_identity.sha256
+        ):
             try:
                 if sha256_file(pdf_path) != own_identity.sha256:
                     raise ValueError(
@@ -3820,13 +4030,17 @@ class MainWindow(QMainWindow):
             except (OSError, ValueError, sqlite3.Error) as exc:
                 QMessageBox.warning(self, "Could not update PDF", str(exc))
                 return False
+        self._candidate_update_notice = reviewed_candidate
         self._start_ads_refresh(
             *arguments,
             selection_id=int(record["location_id"]),
             ambiguous_relative_path=str(record["relative_path"]),
             root=target_root,
         )
-        return self.job is not None or self._pending_ads_refresh is not None
+        started = self.job is not None or self._pending_ads_refresh is not None
+        if not started:
+            self._candidate_update_notice = None
+        return started
 
     def _enter_manual_metadata(self, payload: object = None) -> None:
         """Open local metadata entry for a warned or selected PDF."""
@@ -4449,6 +4663,8 @@ class MainWindow(QMainWindow):
             self.close()
 
     def _job_finished(self, code: int) -> None:
+        candidate_notice = self._candidate_update_notice
+        self._candidate_update_notice = None
         identify_context = self._guided_identify_context
         self._guided_identify_context = None
         self._guided_identify_commands.clear()
@@ -4525,6 +4741,25 @@ class MainWindow(QMainWindow):
                 )
             )
         self._sync_refresh_actions()
+        if (
+            candidate_notice is not None
+            and code == 0
+            and refresh_root is not None
+            and str(refresh_root) in self.registries
+            and self._refresh_selection_id is not None
+        ):
+            saved = self.registries[str(refresh_root)].find_location_by_id(
+                self._refresh_selection_id
+            )
+            metadata = saved.get("metadata", {}) if saved is not None else {}
+            proof = metadata.get(IDENTITY_KEY, {})
+            if (
+                saved is not None
+                and saved.get("status") == "resolved"
+                and proof.get("sha256") == candidate_notice.candidate_sha256
+                and proof.get("identity") == candidate_notice.candidate_fingerprint
+            ):
+                self.notice_bar.dismiss(candidate_notice.key)
         if self._refresh_selection_id is not None and (
             refresh_root is None or refresh_root == self.current_root
         ):

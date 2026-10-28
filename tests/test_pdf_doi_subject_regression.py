@@ -26,6 +26,7 @@ from adsfolio.pdf.identity import (
     IdentityValidationError,
     UnverifiedIdentityError,
     assert_mutation_allowed,
+    target_identity,
 )
 from adsfolio.pdf.registry import open_registry_state
 from adsfolio.pdf.rename_settings import RenameSettings
@@ -168,6 +169,100 @@ def setup_isolated_env(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(
         "adsfolio.pubcache.cache_path", lambda: tmp_path / "cache" / "publications.json"
     )
+
+
+def test_publisher_title_typography_automatically_identifies_and_renames(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "library"
+    pdf = make_subject_doi_pdf(
+        root / "publisher.pdf",
+        title="Ice grains show ‘dust’ release - A model for activity",
+    )
+    original = pdf.read_bytes()
+    digest = sha256_file(pdf)
+    doc = {
+        **MATCHING_DOC,
+        "title": ["Ice grains show 'dust' release: A model for activity"],
+    }
+    engine = PdfIdentifier(FakeADSClient([doc]))
+    resolved = engine.resolve_many([pdf], allow_network_lookup=True)[pdf]
+    assert resolved is not None
+    assert resolved[IDENTITY_KEY]["status"] == "verified"
+    stat = pdf.stat()
+    event = WatchEvent(
+        root=root,
+        session_id="publisher-typography",
+        identity=ArrivalIdentity(stat.st_dev, stat.st_ino, None, 0),
+        path=pdf,
+        state=WatchState.DETECTED,
+    )
+    with closing(open_registry_state(root)) as state:
+        state.registry.upsert_ads_documents([doc], source="test")
+        outcome = PdfWatcher(engine, PdfRenamer()).process_event(
+            event, state, RenameSettings(template="{bibcode}"), IdentifySettings()
+        )
+        assert outcome.event.state is WatchState.RENAMED, outcome.message
+        assert outcome.destination is not None
+        assert outcome.destination.name == f"{BIBCODE}.pdf"
+        assert outcome.destination.read_bytes() == original
+        saved = state.registry.find_file_by_current_path(root, outcome.destination.name)
+        assert saved is not None
+        assert saved["sha256"] == digest
+        assert saved["metadata"][IDENTITY_KEY]["status"] == "verified"
+
+
+def test_unverified_candidate_reports_the_failed_doi_check(tmp_path: Path) -> None:
+    pdf = make_subject_doi_pdf(tmp_path / "paper.pdf", title="A Different Article")
+
+    with pytest.raises(UnverifiedIdentityError) as info:
+        PdfIdentifier(None).build_record(MATCHING_DOC, pdf)
+
+    message = str(info.value)
+    assert BIBCODE in message
+    assert DOI in message
+    assert "document titles differ" in message
+    assert "Update by ID" in message
+    assert "no readable identifier" not in message
+    assert message.count(pdf.name) == 1
+    assert info.value.candidate_bibcode == BIBCODE
+
+
+def test_unverified_watcher_preserves_candidate_for_review_and_pdf_bytes(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "library"
+    pdf = make_subject_doi_pdf(root / "publisher.pdf")
+    writer = PdfWriter(clone_from=PdfReader(io.BytesIO(pdf.read_bytes())))
+    writer.add_metadata({"/Subject": "Astronomy & Astrophysics"})
+    buffer = io.BytesIO()
+    writer.write(buffer)
+    pdf.write_bytes(buffer.getvalue())
+    original = pdf.read_bytes()
+    stat = pdf.stat()
+    event = WatchEvent(
+        root=root,
+        session_id="candidate-review",
+        identity=ArrivalIdentity(stat.st_dev, stat.st_ino, None, 0),
+        path=pdf,
+        state=WatchState.DETECTED,
+    )
+    with closing(open_registry_state(root)) as state:
+        state.registry.upsert_ads_documents([MATCHING_DOC], source="test")
+        outcome = PdfWatcher(PdfIdentifier(None), PdfRenamer()).process_event(
+            event, state, RenameSettings(template="{bibcode}"), IdentifySettings()
+        )
+        assert outcome.event.state is WatchState.FAILED
+        assert outcome.candidate_bibcode == BIBCODE
+        assert outcome.candidate_sha256 == sha256_file(pdf)
+        assert (
+            outcome.candidate_fingerprint == target_identity(MATCHING_DOC).fingerprint
+        )
+        assert outcome.candidate_confirmable
+        assert outcome.bibcode is None
+        assert "no explicitly labelled DOI" in outcome.message
+        assert pdf.read_bytes() == original
+        assert not (root / f"{BIBCODE}.pdf").exists()
 
 
 def test_complete_title_doi_automatically_identifies_and_renames(

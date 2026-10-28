@@ -137,14 +137,25 @@ class WatchEvent:
 
 @dataclass(frozen=True)
 class WatchOutcome:
-    """Final or intermediate processing result of a watched event."""
+    """Store a watch result and its optional unverified ADS candidate.
+
+    `bibcode` identifies a resolved record. `candidate_bibcode` identifies a
+    proposed record that still needs review.
+    """
 
     event: WatchEvent
     destination: Path | None = None
     bibcode: str | None = None
     message: str | None = None
+    conflict_path: Path | None = None
+    candidate_bibcode: str | None = None
+    candidate_sha256: str | None = None
+    candidate_fingerprint: str | None = None
+    candidate_confirmable: bool = False
 
     def __post_init__(self) -> None:
+        if self.conflict_path is not None and not isinstance(self.conflict_path, Path):
+            object.__setattr__(self, "conflict_path", Path(self.conflict_path))
         if self.destination is not None and not isinstance(self.destination, Path):
             object.__setattr__(self, "destination", Path(self.destination))
 

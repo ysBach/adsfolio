@@ -83,18 +83,42 @@ class IdentityConflictError(IdentityValidationError):
 class UnverifiedIdentityError(IdentityValidationError):
     """The PDF's own identifiers do not confirm the proposed metadata.
 
+    Parameters
+    ----------
+    message : str
+        Failed identity check and recovery instructions.
+    manually_confirmable : bool
+        Whether explicit review can establish the association.
+    candidate_bibcode : str or None
+        Proposed ADS record for review. This does not establish PDF identity.
+    candidate_sha256 : str or None
+        Content hash of the PDF inspected for this candidate.
+    candidate_fingerprint : str or None
+        Identifier fingerprint of the exact proposed record.
+
     Notes
     -----
     The 'manually_confirmable' attribute is True only when a person can settle
     the question: the PDF states no identifier of its own, or the metadata
     claims no stable identifier. It is False when the PDF names itself and the
-    provider does not corroborate that identifier; manual confirmation cannot
+    provider does not corroborate that identifier. Manual confirmation cannot
     override that.
     """
 
-    def __init__(self, message: str, *, manually_confirmable: bool = False) -> None:
+    def __init__(
+        self,
+        message: str,
+        *,
+        manually_confirmable: bool = False,
+        candidate_bibcode: str | None = None,
+        candidate_sha256: str | None = None,
+        candidate_fingerprint: str | None = None,
+    ) -> None:
         super().__init__(message)
         self.manually_confirmable = manually_confirmable
+        self.candidate_bibcode = candidate_bibcode
+        self.candidate_sha256 = candidate_sha256
+        self.candidate_fingerprint = candidate_fingerprint
 
 
 @dataclass(frozen=True)
@@ -783,6 +807,7 @@ def assert_mutation_allowed(
                     "verified", "stored_proof", corroborated_evidence, target
                 )
 
+    document_evidence_reason = ""
     if (
         authority is not None
         and provider_document is not None
@@ -798,11 +823,11 @@ def assert_mutation_allowed(
             raise IdentityValidationError(
                 f"{name} changed while checking document evidence"
             )
-        from .document_identity_evidence import corroborate_document_doi_evidence
+        from .document_identity_evidence import check_document_doi_evidence
 
-        corroborated_doi = corroborate_document_doi_evidence(
-            pdf_bytes, provider_document
-        )
+        document_evidence = check_document_doi_evidence(pdf_bytes, provider_document)
+        corroborated_doi = document_evidence.doi
+        document_evidence_reason = document_evidence.reason
         if corroborated_doi is not None and (
             not target.dois or corroborated_doi in target.dois
         ):
@@ -834,23 +859,40 @@ def assert_mutation_allowed(
     elif uncorroborated:
         reason = f"the provider record does not corroborate {', '.join(uncorroborated)}"
     elif not evidence.has_identifier:
-        reason = "no readable identifier"
+        reason = (
+            document_evidence_reason
+            or "No document identifier could be verified from the PDF."
+        )
     else:
         reason = "no authoritative provider record"
-    message = (
-        f"{name} cannot be verified as {target_label or 'the proposed record'}: "
-        f"{reason}"
+    candidate = target_label.removeprefix("bibcode:") or "the proposed record"
+    candidate_bibcode = (
+        target_label.removeprefix("bibcode:")
+        if target.primary.startswith("bibcode:")
+        else None
     )
+    message = f"{name}: Candidate {candidate} needs review. {reason}"
+    if not message.endswith((".", "!", "?")):
+        message += "."
     if (
         evidence.warnings
         and not evidence.has_identifier
         and not evidence.blocking_errors
     ):
-        message += (
-            ". Some embedded metadata could not be read. "
-            "Use Update by ID to review and confirm the match. The PDF was left unchanged."
-        )
+        message += " Some embedded metadata could not be read."
+    if confirmable:
+        message += " Open PDF to check the paper."
+        if candidate_bibcode:
+            message += " Use This ID to confirm this candidate, or Update by ID to choose another record."
+        else:
+            message += " Use Update by ID to review and confirm this candidate."
+    else:
+        message += " Run Update by ID with an identifier printed in the PDF."
+    message += " The PDF contents and filename are unchanged."
     raise UnverifiedIdentityError(
         message,
         manually_confirmable=confirmable,
+        candidate_bibcode=candidate_bibcode,
+        candidate_sha256=evidence.sha256,
+        candidate_fingerprint=target.fingerprint,
     )

@@ -48,6 +48,17 @@ Existing registry aliases remain available for compatibility.
 `REGISTRY_FILENAME` names the legacy per-directory database.
 `CATALOG_FILENAME` names the central catalog.
 
+## Notification layout
+
+Keep queued notices and view guidance outside the central pane layout.
+`NotificationPanel` displays them in a scrollable popup. The permanent toolbar
+button displays the queue count and severity. Queue changes must not open
+the popup automatically. Closing it must not dismiss messages.
+
+Measure sidebar, table, and detail geometry across view changes, long warnings,
+and queue dismissal. Preserve table selection and scroll position when notices
+change. Keep candidate actions bound to their notice after moving the controls.
+
 ## Documentation Check
 
 Run this before committing:
@@ -187,7 +198,9 @@ provenance under `IDENTITY_KEY`.
   A DOI mentioned within an ordinary title does not count.
 - Subject evidence requires three agreements. Subject must state one labeled
   DOI. The first page must repeat it with exact DOI boundaries. DocInfo Title
-  must equal the provider title after whitespace and case normalization.
+  must equal the provider title after formatting normalization. This includes
+  case, whitespace, canonical Unicode, quotation marks, and spaced subtitle
+  separators. Words, numbers, and other punctuation remain significant.
   The provider must explicitly list the same DOI.
 
 A new verified result needs `provider_document`, a fresh provider record.
@@ -202,6 +215,18 @@ That provenance must match the same file hash, identifiers, and PDF evidence.
 - Missing or unconfirmable evidence raises `UnverifiedIdentityError`.
   Automatic actions must stop there. A warning from optional XMP does not
   invalidate readable matching identifiers or corroborated Subject evidence.
+  `check_document_doi_evidence` reports which corroboration check failed.
+  Include that reason in the refusal. Do not report missing identifiers when
+  the PDF contains a DOI that failed a different check.
+  `UnverifiedIdentityError.candidate_bibcode` carries the proposed ADS record.
+  The watcher passes it through `WatchOutcome` to the notice's **View ADS Entry**
+  action. Keep this candidate separate from the resolved bibcode. Do not extract
+  identifiers from error prose or use the currently selected row for this link.
+  **Use This ID** is explicit consent for a manually confirmable candidate.
+  Pass the inspected PDF hash and candidate identifier fingerprint to the
+  refresh command. Recheck both before applying publication metadata.
+  Keep the notice until the requested association succeeds. Hover and keyboard
+  focus display icon tooltips without the platform delay.
 - An unreadable file, a file that changes while it is read, or a hash that
   differs from the caller's expected hash raises `IdentityValidationError`.
 

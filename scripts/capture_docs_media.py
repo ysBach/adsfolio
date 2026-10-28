@@ -708,6 +708,45 @@ def _capture_workflows(
     )
     cv.hide()
 
+    from adsfolio.gui.library import LibraryView
+    from adsfolio.gui.notifications import Notice
+    from adsfolio.pdf.files import sha256_file
+    from adsfolio.pdf.identity import target_identity
+
+    window._select_view(LibraryView.UNRESOLVED)
+    candidate = "2025DEMO....3....3T"
+    sample_pdf = root / "Photometry notes.pdf"
+    window.notice_bar.enqueue(
+        Notice(
+            "demo-candidate",
+            f"Photometry notes.pdf: Candidate {candidate} needs review. "
+            "The PDF metadata has no explicitly labelled DOI. "
+            "Compare the ADS entry with the PDF. Use This ID confirms the match.",
+            severity="warning",
+            reveal_path=sample_pdf,
+            update_by_id=True,
+            manual_entry=True,
+            candidate_bibcode=candidate,
+            candidate_sha256=sha256_file(sample_pdf),
+            candidate_fingerprint=target_identity({"bibcode": candidate}).fingerprint,
+            candidate_confirmable=True,
+        )
+    )
+    window.notification_panel.show_for(window.notifications_button)
+    application.processEvents()
+    recorder.save(window.notification_panel.grab(), "tutorial/notifications.png")
+    recorder.frame(
+        _composite(
+            window,
+            window.notification_panel,
+            at=QPoint((SIZE[0] - window.notification_panel.width()) // 2, 70),
+        ),
+        "Open Notifications to review a proposed ID without moving the library panes",
+        video="workflows",
+    )
+    window.notification_panel.hide()
+    window.notice_bar.dismiss("demo-candidate")
+
 
 def write_video(frames: list[tuple[Any, str]], output: Path) -> None:
     """Encode the captioned frames with cross-fades into an H.264 MP4."""

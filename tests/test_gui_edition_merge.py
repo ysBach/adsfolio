@@ -450,3 +450,31 @@ def test_unrelated_preprint_does_not_prompt_for_watched_published_arrival(
     assert window._pending_edition_merges == {}
     assert window._edition_merge_target is None
     assert controller.pause_calls == []
+
+
+def test_edition_candidates_excludes_same_file_device_and_inode():
+    from adsfolio.gui.edition_merge import edition_candidates
+
+    arrival = {
+        "current_path": "a.pdf",
+        "bibcode": "2026SciA...12i9107S",
+        "device": 16777233,
+        "inode": 123456,
+    }
+    alias_record = {
+        "current_path": "b.pdf",
+        "bibcode": "2026SciA...12i9107S",
+        "device": 16777233,
+        "inode": 123456,
+    }
+    distinct_record = {
+        "current_path": "c.pdf",
+        "bibcode": "2026SciA...12i9107S",
+        "device": 16777233,
+        "inode": 999999,
+    }
+
+    candidates, linked = edition_candidates(arrival, [alias_record, distinct_record])
+    assert linked is True
+    assert len(candidates) == 1
+    assert candidates[0]["current_path"] == "c.pdf"

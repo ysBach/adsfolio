@@ -13,7 +13,7 @@ from .files import sha256_file
 from .identity import IDENTITY_KEY, IdentityValidationError, assert_mutation_allowed
 from .readiness import METADATA_SHA256_KEY, metadata_ready
 from .sidecar import Sidecar
-from .tracked_move import move_tracked_file
+from .tracked_move import is_same_file_alias, move_tracked_file
 
 if TYPE_CHECKING:
     from ..client import ADSClient
@@ -494,6 +494,8 @@ class PdfRenamer:
             target_path = target_directory / new_name
             if target_path == source_path:
                 continue
+            if is_same_file_alias(source_path, target_path):
+                continue
             if target_path.exists() and target_path != source_path:
                 self.logger.warning("Skipping existing target: %s", target_path)
                 continue
@@ -554,7 +556,9 @@ class PdfRenamer:
             author_separator=author_separator,
             author_truncation_suffix=author_truncation_suffix,
         )
-        if target == source or dry_run:
+        if target == source or is_same_file_alias(source, target):
+            return source
+        if dry_run:
             return target
         return move_tracked_file(state, source, target)
 

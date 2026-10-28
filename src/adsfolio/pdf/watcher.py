@@ -23,13 +23,17 @@ from .identify_settings import (
     IdentifySettings,
     IdentifyStrategy,
 )
-from .identity import IDENTITY_KEY, IdentityValidationError
+from .identity import IDENTITY_KEY, IdentityValidationError, UnverifiedIdentityError
 from .readiness import WATCH_PENDING_KEY, metadata_ready
 from .registry import CentralPdfRegistryState
 from .rename_settings import RenameSettings
 from .renamer import DEFAULT_SCHEME, PdfRenamer, verify_record_identity
 from .sidecar import Sidecar
-from .tracked_move import move_tracked_file, resolved_file_directory
+from .tracked_move import (
+    TrackedMoveConflictError,
+    move_tracked_file,
+    resolved_file_directory,
+)
 from .upgrade import PdfUpgrader
 from .watch_session import WatchEvent, WatchOutcome, WatchState
 
@@ -404,7 +408,33 @@ class PdfWatcher:
         except IdentityValidationError as exc:
             return WatchOutcome(
                 event=replace(event, state=WatchState.FAILED),
-                message=f"Identity not verified; file left unchanged: {exc}",
+                message=str(exc),
+                candidate_bibcode=(
+                    exc.candidate_bibcode
+                    if isinstance(exc, UnverifiedIdentityError)
+                    else None
+                ),
+                candidate_sha256=(
+                    exc.candidate_sha256
+                    if isinstance(exc, UnverifiedIdentityError)
+                    else None
+                ),
+                candidate_fingerprint=(
+                    exc.candidate_fingerprint
+                    if isinstance(exc, UnverifiedIdentityError)
+                    else None
+                ),
+                candidate_confirmable=(
+                    isinstance(exc, UnverifiedIdentityError)
+                    and exc.manually_confirmable
+                ),
+            )
+        except TrackedMoveConflictError as exc:
+            return WatchOutcome(
+                event=replace(event, state=WatchState.FAILED),
+                destination=source,
+                conflict_path=exc.destination,
+                message=str(exc),
             )
         except PdfNotReadyError as exc:
             return WatchOutcome(

@@ -1247,3 +1247,49 @@ def test_recorded_manual_consent_allows_rename_of_pdf_without_identifier(
     assert outcome.event.state is WatchState.RENAMED
     assert (root / "B7.pdf").read_bytes() == data
     state.close()
+
+
+def test_process_event_catches_tracked_move_conflict_error(tmp_path):
+    from adsfolio.pdf.identify_settings import IdentifySettings
+    from adsfolio.pdf.rename_settings import RenameSettings
+    from adsfolio.pdf.sidecar import Sidecar
+    from adsfolio.pdf.tracked_move import TrackedMoveConflictError
+    from adsfolio.pdf.watch_session import ArrivalIdentity, WatchEvent, WatchState
+    from adsfolio.pdf.watcher import PdfWatcher
+
+    root = tmp_path / "root"
+    root.mkdir()
+    pdf = root / "paper.pdf"
+    pdf.write_bytes(b"%PDF-1.4 test")
+    conflict = root / "already_exists.pdf"
+    conflict.write_bytes(b"%PDF-1.4 existing")
+
+    sidecar = Sidecar(root)
+    event = WatchEvent(
+        root=root,
+        session_id="test-session",
+        identity=ArrivalIdentity(1, 10, None, 0),
+        path=pdf,
+        state=WatchState.PROCESSING,
+    )
+
+    class MockRenamer:
+        def rename_tracked_file(self, *args, **kwargs):
+            raise TrackedMoveConflictError(pdf, conflict)
+
+    watcher = PdfWatcher(object(), MockRenamer())
+    # monkeypatch process_new_pdf to raise TrackedMoveConflictError
+    watcher.process_new_pdf = lambda *args, **kwargs: (_ for _ in ()).throw(
+        TrackedMoveConflictError(pdf, conflict)
+    )
+
+    outcome = watcher.process_event(
+        event,
+        sidecar,
+        RenameSettings(),
+        IdentifySettings(),
+    )
+    assert outcome.event.state == WatchState.FAILED
+    assert outcome.conflict_path == conflict
+    assert outcome.destination == pdf
+    assert "already exists" in outcome.message

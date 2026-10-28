@@ -994,6 +994,7 @@ def test_failed_watch_outcome_offers_retry_only_for_current_session(
     assert window.notice_bar.action_button.text() == "Retry"
     assert window.notice_bar.message.text() == f"{current.path.name}: ADS unavailable"
     assert window.notice_bar.message.toolTip() == str(current.path)
+    assert window.notice_bar.ads_entry_button.isHidden()
     assert controller.retry_calls == [failed.event]
 
     obsolete = WatchOutcome(
@@ -1009,6 +1010,86 @@ def test_failed_watch_outcome_offers_retry_only_for_current_session(
     controller.outcome.emit(obsolete)
 
     assert "obsolete failure" not in window.notice_bar.message.text()
+
+
+def test_watch_notice_preserves_specific_reason_without_repeating_filename(
+    monkeypatch, qtbot, tmp_path
+):
+    root = tmp_path / "library"
+    root.mkdir()
+    window, controller, _ = _window_factory(
+        monkeypatch, qtbot, GuiConfig(roots=[RootEntry(str(root))])
+    )
+    window.show()
+    window.watch_current_action.trigger()
+    event = replace(_event(root, controller.session_id(root)), state=WatchState.FAILED)
+    message = (
+        f"{event.path.name}: Candidate 2026A&A...712A.162B needs review. "
+        "The document titles differ. Use Update by ID to confirm this candidate."
+    )
+
+    controller.outcome.emit(WatchOutcome(event, message=message))
+
+    assert window.notice_bar.message.text() == message
+    assert window.notice_bar.message.text().count(event.path.name) == 1
+    assert not window.notification_panel.isVisible()
+    window.notifications_button.click()
+    assert window.notice_bar.update_by_id_button.isVisible()
+
+
+@pytest.mark.parametrize("browser_opens", [False, True])
+def test_candidate_notice_opens_its_ads_record_without_applying_metadata(
+    monkeypatch, qtbot, tmp_path, browser_opens
+) -> None:
+    import adsfolio.gui.main_window as main_window_module
+
+    root, other = tmp_path / "library", tmp_path / "other"
+    root.mkdir()
+    other.mkdir()
+    window, controller, _ = _window_factory(
+        monkeypatch,
+        qtbot,
+        GuiConfig(roots=[RootEntry(str(root)), RootEntry(str(other))]),
+    )
+    window.show()
+    window._select_root(root)
+    window.watch_current_action.trigger()
+    event = replace(_event(root, controller.session_id(root)), state=WatchState.FAILED)
+    original = b"Original PDF contents"
+    event.path.write_bytes(original)
+    bibcode = "2013A&A...552A.137R"
+    # Link routing must use the structured candidate, independent of error prose.
+    message = "Another identifier 2025A&A...693A.258K appears in this error."
+    opened, warnings = [], []
+    window.config.web_browser_command = "configured-browser"
+    monkeypatch.setattr(
+        main_window_module,
+        "open_url",
+        lambda url, application: opened.append((url, application)) or browser_opens,
+    )
+    monkeypatch.setattr(QMessageBox, "warning", lambda *args: warnings.append(args[1:]))
+    controller.outcome.emit(
+        WatchOutcome(event, message=message, candidate_bibcode=bibcode)
+    )
+    window._select_root(other)
+    before = window.notice_bar.queued_keys()
+    window.notifications_button.click()
+    assert window.notice_bar.ads_entry_button.isVisible()
+
+    window.notice_bar.ads_entry_button.click()
+
+    url = "https://ui.adsabs.harvard.edu/abs/2013A%26A...552A.137R/abstract"
+    assert opened == [(url, "configured-browser")]
+    assert warnings == (
+        [] if browser_opens else [("Cannot open link", f"Could not open:\n{url}")]
+    )
+    assert window.notice_bar.queued_keys() == before
+    assert controller.retry_calls == controller.process_calls == []
+    assert event.path.read_bytes() == original
+    assert (
+        window.registries[str(root)].find_file_by_current_path(root, event.path.name)
+        is None
+    )
 
 
 @pytest.mark.parametrize("relocated", [False, True])
@@ -2745,3 +2826,152 @@ def test_watch_refresh_follows_selected_attachment_to_its_replacement(
     )
     assert window._selected_record()["attachment_id"] == original["attachment_id"]
     assert window._selected_record()["metadata"]["notes"] == "Keep"
+
+
+def test_watch_rename_collision_shows_notice_and_selects_both_rows(
+    monkeypatch, qtbot, tmp_path
+):
+    from adsfolio.gui.main_window import RenameConflictRequest
+    from adsfolio.gui.notifications import NoticeAction
+
+    root = tmp_path / "library"
+    root.mkdir()
+    source_pdf = root / "incoming.pdf"
+    source_pdf.write_bytes(b"%PDF-1.4 source")
+    conflict_pdf = root / "existing.pdf"
+    conflict_pdf.write_bytes(b"%PDF-1.4 different content")
+
+    window, controller, _ = _window_factory(
+        monkeypatch, qtbot, GuiConfig(roots=[RootEntry(str(root))])
+    )
+    window.show()
+    session_id = controller.start_root(root, recursive=False)
+    assert window.model.rowCount() == 2
+
+    # Emit a watch outcome with a conflict_path
+    event = WatchEvent(
+        root=root.resolve(),
+        session_id=session_id,
+        identity=ArrivalIdentity(1, 100, None, 0),
+        path=source_pdf,
+        state=WatchState.FAILED,
+    )
+    outcome = WatchOutcome(
+        event=event,
+        destination=source_pdf,
+        conflict_path=conflict_pdf,
+        message=f"Tracked move destination already exists: {conflict_pdf}",
+    )
+    controller.outcome.emit(outcome)
+
+    assert window.notifications_button.isVisible()
+    assert not window.notification_panel.isVisible()
+    window.notifications_button.click()
+    assert window.notice_bar.isVisible()
+    notice = window.notice_bar._current()
+    assert notice is not None
+    assert notice.action == NoticeAction.SHOW_CONFLICT
+    assert notice.action_label == "Show Both PDFs"
+    assert "destination already exists" in notice.message
+    assert isinstance(notice.payload, RenameConflictRequest)
+
+    # Trigger action to show both PDFs
+    window.notice_bar.action_button.click()
+
+    selected = window._selected_records()
+    assert len(selected) == 2
+    selected_paths = {r["current_path"] for r in selected}
+    assert "incoming.pdf" in selected_paths
+    assert "existing.pdf" in selected_paths
+
+
+@pytest.mark.parametrize("filtered", [False, True])
+def test_collision_review_selects_exact_paths_and_clears_search(
+    monkeypatch, qtbot, tmp_path, filtered
+):
+    from adsfolio.gui.main_window import RenameConflictRequest
+
+    root = tmp_path / "library"
+    paths = ("incoming.pdf", "existing.pdf", "other/incoming.pdf", "other/existing.pdf")
+    for name in paths:
+        path = root / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(f"PDF sample: {name}".encode())
+    original = {name: (root / name).read_bytes() for name in paths}
+    window, _, _ = _window_factory(
+        monkeypatch, qtbot, GuiConfig(roots=[RootEntry(str(root), recursive=True)])
+    )
+    if filtered:
+        window.search.setText("nothing matches this search")
+        window._search_changed()
+        assert window.model.rowCount() == 0
+    window._show_collision_pair(
+        RenameConflictRequest(root, root / paths[0], root / paths[1])
+    )
+    assert {record["current_path"] for record in window._selected_records()} == set(
+        paths[:2]
+    )
+    assert window.search.text() == ""
+    assert not window.search_timer.isActive()
+    assert {name: (root / name).read_bytes() for name in paths} == original
+
+
+def test_collision_review_does_not_substitute_an_outside_path_by_basename(
+    monkeypatch, qtbot, tmp_path
+):
+    from adsfolio.gui.main_window import RenameConflictRequest
+
+    root = tmp_path / "library"
+    root.mkdir()
+    for name in ("incoming.pdf", "existing.pdf"):
+        (root / name).write_bytes(name.encode())
+    outside = tmp_path / "existing.pdf"
+    outside.write_bytes(b"Outside paper")
+    window, _, _ = _window_factory(
+        monkeypatch, qtbot, GuiConfig(roots=[RootEntry(str(root))])
+    )
+    window._show_collision_pair(
+        RenameConflictRequest(root, root / "incoming.pdf", outside)
+    )
+    assert window._selected_records() == ()
+    assert "inside this library" in window.status.currentMessage()
+    assert outside.read_bytes() == b"Outside paper"
+
+
+def test_watch_rename_collision_identical_hash_recommendation(
+    monkeypatch, qtbot, tmp_path
+):
+    from adsfolio.gui.notifications import NoticeAction
+
+    root = tmp_path / "library"
+    root.mkdir()
+    source_pdf = root / "incoming.pdf"
+    source_pdf.write_bytes(b"%PDF-1.4 identical content")
+    conflict_pdf = root / "existing.pdf"
+    conflict_pdf.write_bytes(b"%PDF-1.4 identical content")
+
+    window, controller, _ = _window_factory(
+        monkeypatch, qtbot, GuiConfig(roots=[RootEntry(str(root))])
+    )
+    window.show()
+    session_id = controller.start_root(root, recursive=False)
+
+    event = WatchEvent(
+        root=root.resolve(),
+        session_id=session_id,
+        identity=ArrivalIdentity(1, 100, None, 0),
+        path=source_pdf,
+        state=WatchState.FAILED,
+    )
+    outcome = WatchOutcome(
+        event=event,
+        destination=source_pdf,
+        conflict_path=conflict_pdf,
+        message=f"Tracked move destination already exists: {conflict_pdf}",
+    )
+    controller.outcome.emit(outcome)
+
+    notice = window.notice_bar._current()
+    assert notice is not None
+    assert notice.action == NoticeAction.SHOW_CONFLICT
+    assert "identical content hash" in notice.message

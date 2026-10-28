@@ -336,7 +336,8 @@ def test_watcher_fails_without_touching_record_or_file_for_wrong_identity(
             event, state, RenameSettings(), IdentifySettings()
         )
     assert outcome.event.state is WatchState.FAILED
-    assert "Identity not verified" in (outcome.message or "")
+    assert OTHER_ARXIV in (outcome.message or "")
+    assert "contradicts the proposed record" in (outcome.message or "")
     assert (root / "paper.pdf").exists()
     assert stored(root, "paper.pdf")["metadata"] == before["metadata"]
 

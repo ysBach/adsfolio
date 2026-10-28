@@ -3,15 +3,70 @@
 from __future__ import annotations
 
 import os
+import unicodedata
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Protocol
 
 __all__ = [
+    "TrackedMoveConflictError",
     "TrackedMoveRollbackError",
+    "is_same_file_alias",
     "move_tracked_file",
     "resolved_file_directory",
 ]
+
+
+class TrackedMoveConflictError(FileExistsError):
+    """Report a move destination that already exists as a distinct file."""
+
+    def __init__(self, source: Path, destination: Path) -> None:
+        self.source = Path(source)
+        self.destination = Path(destination)
+        super().__init__(f"Tracked move destination already exists: {self.destination}")
+
+
+def is_same_file_alias(source_path: Path, destination_path: Path) -> bool:
+    """Check whether two paths name the exact same directory entry.
+
+    Returns True when both paths reference the same device and inode in the
+    same parent directory, neither path is a symlink, and the destination name
+    is not an independently existing directory entry (such as a hard link).
+    """
+    raw_source = Path(source_path).expanduser()
+    raw_destination = Path(destination_path).expanduser()
+    if raw_source.is_symlink() or raw_destination.is_symlink():
+        return False
+
+    source = Path(source_path).expanduser().resolve()
+    destination = Path(destination_path).expanduser()
+    destination_parent = destination.parent.resolve()
+    destination = destination_parent / destination.name
+
+    if source == destination:
+        return True
+    try:
+        if not os.path.samefile(source, destination):
+            return False
+        if not os.path.samefile(source.parent, destination_parent):
+            return False
+    except OSError:
+        return False
+
+    try:
+        entries = set(os.listdir(destination_parent))
+    except OSError:
+        return False
+    if (
+        source.name in entries
+        and destination.name in entries
+        and source.name != destination.name
+    ):
+        return False
+    return (
+        unicodedata.normalize("NFC", source.name).casefold()
+        == unicodedata.normalize("NFC", destination.name).casefold()
+    )
 
 
 class TrackedMoveRollbackError(RuntimeError):
@@ -96,6 +151,8 @@ def move_tracked_file(
 
     if source == destination:
         return destination
+    if is_same_file_alias(source, destination):
+        return source
     if not source.is_file():
         raise FileNotFoundError(f"Tracked source file does not exist: {source}")
     try:
@@ -103,7 +160,7 @@ def move_tracked_file(
     except FileNotFoundError:
         pass
     else:
-        raise FileExistsError(f"Tracked move destination already exists: {destination}")
+        raise TrackedMoveConflictError(source, destination)
 
     registry = getattr(state, "registry", None)
     if registry is not None:

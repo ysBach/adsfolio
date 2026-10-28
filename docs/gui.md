@@ -118,6 +118,8 @@ These groups use the catalog's saved link status. A stored bibcode can exist
 before the app links the file to its ADS record. Complete non-ADS metadata can
 also appear under **Needs ADS lookup**. Metadata readiness is a separate state.
 An ADS link alone does not prove that the PDF contains the correct paper.
+Open **Notifications** in the toolbar for help with the selected group.
+The explanation does not change the main panes' positions.
 
 The table and detail pane check for changed PDFs before they show verification.
 A stored bibcode can remain visible after a PDF changes.
@@ -555,8 +557,22 @@ stamp and DOI properties in DocInfo and XMP metadata.
 A metadata title that contains only a labeled DOI or DOI URL also identifies
 the PDF. A Subject DOI needs additional agreement: the first page must repeat
 it, and the metadata title must match the provider title. These comparisons
-ignore title case and whitespace. A DOI mentioned in an ordinary title or a
-reference does not establish identity.
+ignore title case, whitespace, canonical Unicode differences, and curly versus
+straight quotation marks. A spaced dash and a colon followed by whitespace
+count as equivalent subtitle separators. Words, numbers, and other punctuation
+must still agree. A DOI mentioned in an ordinary title or a reference does not
+establish identity.
+
+A displayed bibcode can be a lookup candidate that still needs verification.
+If corroboration fails, the notice names the failed check. For example, it can
+report that a DOI matches but the document titles differ. When a proposed ADS
+record is available, choose **View ADS Entry** to open that exact record.
+Choose **Open PDF** to inspect the local paper. Compare the title, authors,
+year, and DOI. Choose **Use This ID** to confirm the displayed candidate
+without typing its bibcode or answering another confirmation dialog.
+This updates catalog metadata and applies your saved Rename settings.
+Use **Update by ID** to choose a different record.
+A readable conflicting identifier still blocks the association.
 
 The check has three outcomes:
 
@@ -958,10 +974,38 @@ its sidebar context menu:
   Automatic renaming applies only to PDFs that pass the
   [PDF identity check](#pdf-identity-checks) as verified. Unverified and
   conflicting arrivals stay in place with a warning. It
-  is off by default. When it is off, the non-modal notice bar offers
+  is off by default. When it is off, **Notifications** offers
   **Identify & Rename** and **Dismiss** for each new arrival.
 
+### Notifications and view help
+
+![Notifications with a fictional candidate awaiting review](_static/tutorial/notifications.png)
+
+Choose the permanent **Notifications** toolbar icon to open pending messages
+and help for the selected sidebar group. Its badge counts pending messages.
+Its symbol indicates errors or warnings. New messages update this indicator
+without opening the panel or moving the library panes.
+
+The panel scrolls long messages and keeps their full text available for copying.
+Choose the panel's close icon or press **Escape** to close it.
+Closing the panel keeps its messages queued. Use **Dismiss** to remove a message.
+View changes, new warnings, and dismissed messages do not resize the library panes.
+
 Failed and unresolved PDF notices offer **Open PDF** and **Update by ID…**.
+An unverified ADS candidate also offers **View ADS Entry**. This opens its ADS
+record in your configured browser. Compare that record with **Open PDF** before
+confirming the association with **Use This ID**. Opening either document leaves the notice available
+and does not apply metadata or rename the PDF. The link follows the displayed
+notice, even when you select another library or row. If the browser cannot
+open it, the error dialog displays the URL.
+
+Notice actions use compact icons. Hover over an icon to display its tooltip
+immediately. Keyboard focus also displays the tooltip. **Use This ID** confirms
+the displayed candidate and starts the update and rename. It uses the notice's
+PDF even when you select another row. A changed PDF or changed candidate stops
+the update. A failed update keeps the notice available. Readable conflicting
+identifiers still block the association. The PDF contents stay unchanged.
+
 **Open PDF** opens the notice's local file in your configured PDF viewer or
 the system default. Choose **Update by ID…** to enter a
 Bibcode, DOI, arXiv ID, `{authorLastName}-{year}-{bibstem}`, or `{bibstem}-{volume}-{page}`.
