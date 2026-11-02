@@ -29,6 +29,11 @@ When code changes, update docs in the same commit.
 The identity module retains the shared mutation checks. Neither a cached document
 nor a filename supplies proof of PDF identity.
 
+Private settings saves use independent temporary files. Final replacements run
+in sequence within one process to avoid concurrent Windows move failures.
+A failed replacement preserves the existing file and removes the temporary file.
+The caller can report the error and retry the save.
+
 All rename paths use the exact selected template. Do not replace missing
 fields with other fields or select an implicit alternate template.
 

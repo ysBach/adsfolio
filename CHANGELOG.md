@@ -64,6 +64,8 @@
 ### Settings and selected actions
 
 - Use independent private temporary files for simultaneous settings saves.
+  Serialize final replacements within one process to prevent concurrent Windows move failures.
+  A failed replacement keeps the existing file. Retry the save after resolving the error.
 - Add **Identify & Rename Selected PDF** to the table's right-click menu.
   Process one or several selected PDFs with saved Identify and Rename settings.
   Leave unverified files, existing destinations, and unselected PDFs unchanged.

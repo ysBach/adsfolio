@@ -651,6 +651,9 @@ currently displayed, without saving them. Parser warnings and the optional AI
 CSV are one-run inputs. **Refresh publication cache** and **Apply file moves**
 are one-run actions. They always reopen disabled.
 
+If saving global defaults fails, ADSfolio keeps the existing setup file.
+Check folder access, then retry **Save Defaults**.
+
 The job log counts verified saved metadata as **Already identified PDFs (verified)**.
 These files do not enter the **Resolved PDFs** or **Unresolved PDFs** counts
 for this run. Verified metadata from another provider can still appear under

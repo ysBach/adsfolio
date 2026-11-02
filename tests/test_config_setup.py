@@ -18,8 +18,9 @@ def _use_tmp_config(monkeypatch, tmp_path):
     )
 
 
+@pytest.mark.parametrize("attempt", range(5))
 def test_simultaneous_private_writes_use_independent_temporary_files(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, attempt
 ):
     from concurrent.futures import ThreadPoolExecutor
     from threading import Barrier
@@ -28,14 +29,13 @@ def test_simultaneous_private_writes_use_independent_temporary_files(
 
     destination = tmp_path / "config/setup.json"
     ready = Barrier(2)
-    real_replace = os.replace
+    real_fsync = os.fsync
 
-    def replace(source, target):
-        if Path(target) == destination:
-            ready.wait(timeout=5)
-        return real_replace(source, target)
+    def fsync(descriptor):
+        real_fsync(descriptor)
+        ready.wait(timeout=5)
 
-    monkeypatch.setattr(os, "replace", replace)
+    monkeypatch.setattr(os, "fsync", fsync)
     with ThreadPoolExecutor(max_workers=2) as workers:
         futures = [
             workers.submit(write_private_text, destination, value)
@@ -44,8 +44,32 @@ def test_simultaneous_private_writes_use_independent_temporary_files(
         for future in futures:
             future.result(timeout=10)
     assert destination.read_text() in {"first", "second"}
+    assert not list(destination.parent.glob("*.tmp"))
     if os.name != "nt":
         assert destination.stat().st_mode & 0o777 == 0o600
+
+
+def test_failed_private_replacement_preserves_contents_and_allows_retry(
+    tmp_path, monkeypatch
+):
+    from adsfolio.config import write_private_text
+
+    destination = tmp_path / "setup.json"
+    destination.write_text("previous")
+    real_replace = os.replace
+
+    def reject(source, target):
+        raise PermissionError("destination unavailable")
+
+    monkeypatch.setattr(os, "replace", reject)
+    with pytest.raises(PermissionError, match="destination unavailable"):
+        write_private_text(destination, "new")
+    assert destination.read_text() == "previous"
+    assert not list(tmp_path.glob("*.tmp"))
+
+    monkeypatch.setattr(os, "replace", real_replace)
+    write_private_text(destination, "retried")
+    assert destination.read_text() == "retried"
 
 
 def test_save_and_load_user_setup_roundtrip(monkeypatch, tmp_path):

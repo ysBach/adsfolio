@@ -15,6 +15,7 @@ import logging
 import os
 import sys
 import tempfile
+import threading
 from collections.abc import Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar
@@ -24,6 +25,7 @@ import platformdirs
 from .data_migration import copy_data_directory
 
 logger = logging.getLogger(__name__)
+_PRIVATE_REPLACE_LOCK = threading.Lock()
 
 if TYPE_CHECKING:
     from .citekeys import KeyPolicy
@@ -52,10 +54,10 @@ def make_private_directory(path: Path) -> None:
 
 
 def write_private_text(path: Path, text: str) -> None:
-    """Atomically replace `path` with `text` that only its owner can read.
+    """Atomically replace `path` with `text` through a private temporary file.
 
-    The temporary file is created with mode ``0o600``, so the text is never
-    readable by other users, even before the final rename.
+    POSIX temporary files use mode ``0o600`` from creation. Final replacements
+    run in sequence within this process to avoid concurrent Windows moves.
     """
     make_private_directory(path.parent)
     descriptor, temporary = tempfile.mkstemp(
@@ -67,7 +69,8 @@ def write_private_text(path: Path, text: str) -> None:
             handle.write(text)
             handle.flush()
             os.fsync(handle.fileno())
-        os.replace(tmp_path, path)
+        with _PRIVATE_REPLACE_LOCK:
+            os.replace(tmp_path, path)
     except OSError:
         tmp_path.unlink(missing_ok=True)
         raise
