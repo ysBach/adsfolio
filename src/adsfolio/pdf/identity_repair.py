@@ -37,7 +37,7 @@ from .identity import (
 )
 from .readiness import EXTERNAL_METADATA_KEY, METADATA_SHA256_KEY, METADATA_STALE_KEY
 from .rename_settings import RenameSettings
-from .renamer import PdfRenamer, _resolve_rename_template
+from .renamer import PdfRenamer
 
 __all__ = [
     "AUTOMATIC_FIELDS",
@@ -396,7 +396,7 @@ def _plan_item(
             "no bibcode; the catalog would edit that document in place"
         )
     rendered = PdfRenamer().render(
-        _resolve_rename_template(settings.template, after),
+        settings.template,
         after,
         author_format=settings.author_format,
         max_authors=settings.max_authors,

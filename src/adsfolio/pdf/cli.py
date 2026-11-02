@@ -28,21 +28,28 @@ from .cli_common import get_client as _get_client
 from .cli_common import handle_unresolved as _handle_unresolved
 from .cli_common import is_resolved_record
 from .cli_common import iter_pdf_paths as _iter_pdf_paths
+from .cli_common import unique_destination
 from .cli_common import validate_author_format as _validate_author_format
 from .cli_common import validate_char_policy as _validate_char_policy
 from .cli_upgrade import upgrade_command
 from .doi_providers import DoiProvider, ProviderError
 from .files import sha256_file
 from .identifier import (
+    AdsQueryResult,
     PdfIdentifier,
     extract_first_page_text_pdf,
-    fetch_external_identifier,
 )
 from .identify import IdentifyWorkflowHelpers, build_checked_record, run_identify
 from .identify_settings import IdentifySettings, IdentifyStrategy
-from .identity import IDENTITY_KEY, IdentityValidationError, target_identity
+from .identity import (
+    IDENTITY_KEY,
+    IdentityValidationError,
+    extract_pdf_own_identity,
+    target_identity,
+)
 from .obsidian import ObsidianNoteWriter
 from .readiness import metadata_ready, stored_bibcode_matches_file
+from .reference_lookup import lookup_exact_identifier, match_reference_to_pdf
 from .registry import (
     PdfRegistry,
     merge_ads_metadata,
@@ -180,7 +187,8 @@ def _parse_ads_identifier(value: str) -> tuple[str, str]:
     `year` is the four-digit publication year. `bibstem` is the ADS journal
     abbreviation and can be replaced with the full journal name. A numeric
     volume and page take precedence over the author-year format. These
-    references query ADS only; other providers are not searched.
+    reference hints search ADS. Recovery can query enabled providers with
+    identifiers taken from the current PDF.
 
     An arXiv ID is returned without its version. A legacy arXiv bibcode such
     as ``2024arXiv240112345B`` stays a bibcode.
@@ -470,7 +478,8 @@ def _refresh_bibcode_metadata(
         "{bibstem} is the ADS journal abbreviation. The full journal name also works. "
         "{volume} is the journal volume number. {page} is the starting page or article number. "
         "Examples: Last-2020-Natur or Sci-123-45. "
-        "These reference formats query ADS only; other sites are not searched."
+        "Reference hints search ADS. If no candidate matches the PDF, "
+        "its own DOI or arXiv ID can use the enabled providers."
     ),
 )
 @click.option(
@@ -507,6 +516,13 @@ def _refresh_bibcode_metadata(
     help="Use global Rename settings or this library's settings with global fallback.",
 )
 @click.option(
+    "--identify-scope",
+    type=click.Choice(["global", "library"]),
+    default="library",
+    show_default=True,
+    help="Choose the saved Identify settings for metadata provider order.",
+)
+@click.option(
     "--output-unresolved",
     type=click.Path(path_type=Path),
     help="Override the saved unresolved directory when returning identified PDFs.",
@@ -534,6 +550,7 @@ def refresh_ads_command(
     citation_metrics: bool,
     rename: bool,
     rename_scope: str,
+    identify_scope: str,
     output_unresolved: Path | None,
     confirm_identity: bool,
     expected_sha256: str | None,
@@ -555,12 +572,13 @@ def refresh_ads_command(
     if (expected_sha256 is not None or expected_identity is not None) and not (
         expected_sha256
         and expected_identity
-        and confirm_identity
         and relative_path is not None
         and identifier_input is None
+        and not refresh_all
+        and len(requested) == 1
     ):
         raise click.UsageError(
-            "Reviewed candidates require --bibcode, --relative-path, --confirm-identity, "
+            "Reviewed candidates require --bibcode, --relative-path, "
             "--expected-sha256, and --expected-identity."
         )
     if refresh_all:
@@ -581,28 +599,42 @@ def refresh_ads_command(
         )
 
     state = open_registry_state(directory)
-    identify_settings = state.identify_settings or Config.load_identify_settings()
-    identifier_kind, identifier_value = (
-        _parse_ads_identifier(identifier_input)
-        if identifier_input is not None
-        else ("", "")
-    )
-    external_lookup = identifier_kind in {"doi", "arxiv"}
-    if pending_only or (
-        external_lookup and DoiProvider.ADS not in identify_settings.providers
-    ):
-        client = None
-    elif external_lookup:
-        try:
-            client = _get_client(ctx)
-        except AuthenticationError:
-            # Crossref and DataCite need no token.
-            LOGGER.info("No ADS token; looking up %s outside ADS.", identifier_value)
-            client = None
-    else:
-        client = _get_client(ctx)
-    external_document: dict[str, Any] | None = None
     try:
+        identify_settings = Config.load_identify_settings()
+        if identify_scope == "library":
+            identify_settings = state.identify_settings or identify_settings
+        identifier_kind, identifier_value = (
+            _parse_ads_identifier(identifier_input)
+            if identifier_input is not None
+            else ("", "")
+        )
+        external_lookup = identifier_kind in {"doi", "arxiv"}
+        reference_path = None
+        recover_reference = False
+        reference_providers = identify_settings.providers
+        if identifier_kind == "query":
+            tracked = state.registry.find_file_by_relative_path(
+                directory, relative_path
+            )
+            if tracked is None:
+                raise click.UsageError(f"PDF is not catalogued: {relative_path}")
+            reference_path = directory / str(tracked["current_path"])
+            recover_reference = extract_pdf_own_identity(reference_path).has_identifier
+        if pending_only or (
+            external_lookup and DoiProvider.ADS not in identify_settings.providers
+        ):
+            client = None
+        elif external_lookup or recover_reference:
+            try:
+                client = _get_client(ctx)
+            except AuthenticationError:
+                if identify_settings.providers == (DoiProvider.ADS,):
+                    raise
+                LOGGER.warning("ADS token unavailable; trying enabled DOI providers.")
+                client = None
+        else:
+            client = _get_client(ctx)
+        external_document: dict[str, Any] | None = None
         pdf_identifier = PdfIdentifier(client)
         if identifier_input is not None:
 
@@ -619,10 +651,59 @@ def refresh_ads_command(
                     )
                 else:
                     query = identifier_value
-                result = pdf_identifier.query_documents(
-                    query,
-                    ads_documents_callback=callback,
-                )
+                if external_lookup:
+                    tracked = state.registry.find_file_by_relative_path(
+                        directory, relative_path
+                    )
+                    result = lookup_exact_identifier(
+                        pdf_identifier,
+                        identifier_kind,
+                        identifier_value,
+                        identify_settings.providers,
+                        callback,
+                        path=directory / str(tracked["current_path"])
+                        if tracked
+                        else None,
+                    )
+                else:
+                    try:
+                        result = pdf_identifier.query_documents(query, callback)
+                    except ADSError as exc:
+                        reference_providers = tuple(
+                            provider
+                            for provider in identify_settings.providers
+                            if provider is not DoiProvider.ADS
+                        )
+                        if not recover_reference or not reference_providers:
+                            raise
+                        LOGGER.warning(
+                            "ADS reference lookup failed; using PDF identifiers: %s",
+                            exc,
+                        )
+                        result = AdsQueryResult(0, ())
+                if identifier_kind == "query":
+                    lookup = match_reference_to_pdf(
+                        pdf_identifier,
+                        reference_path,
+                        result,
+                        reference_providers,
+                        callback,
+                    )
+                    result = lookup.matches
+                    if lookup.rejected:
+                        click.echo(
+                            f"Discarded {len(lookup.rejected)} reference candidate(s) "
+                            "that do not match this PDF."
+                        )
+                    if lookup.used_own_identifiers:
+                        click.echo("Reference recovery used the PDF's own identifiers.")
+                    if result.num_found == 0:
+                        click.echo(
+                            "No reference result matches this PDF. "
+                            "No verified provider metadata was found."
+                        )
+                if result.num_found == 1 and not result.documents[0].get("bibcode"):
+                    external_document = result.documents[0]
                 if result.num_found > 1:
                     _report_ambiguous_ads_matches(result.documents)
                     return
@@ -633,23 +714,19 @@ def refresh_ads_command(
                         else None
                     )
                 }
-                if external_lookup and documents[identifier_value] is None:
-                    external_document = fetch_external_identifier(
-                        identifier_kind,
-                        identifier_value,
-                        identify_settings.providers,
+                if (
+                    external_lookup
+                    and documents[identifier_value] is None
+                    and external_document is None
+                    and identifier_kind == "arxiv"
+                    and DoiProvider.DATACITE not in identify_settings.providers
+                ):
+                    # DataCite registers arXiv DOIs; Crossref does not.
+                    click.secho(
+                        "arXiv IDs outside ADS need DataCite. Add DataCite "
+                        "to the metadata providers in Identify settings.",
+                        fg="yellow",
                     )
-                    if (
-                        external_document is None
-                        and identifier_kind == "arxiv"
-                        and DoiProvider.DATACITE not in identify_settings.providers
-                    ):
-                        # DataCite registers arXiv DOIs; Crossref does not.
-                        click.secho(
-                            "arXiv IDs outside ADS need DataCite. Add DataCite "
-                            "to the metadata providers in Identify settings.",
-                            fg="yellow",
-                        )
             else:
                 documents = pdf_identifier.query_docs_for_bibcodes(
                     [identifier_value],
@@ -686,6 +763,7 @@ def refresh_ads_command(
             bibcode for bibcode, document in documents.items() if document is None
         ]
         refreshed = 0
+        external_refreshed = 0
         rename_candidates: set[str] = set()
         progress_step = max(
             1,
@@ -718,8 +796,12 @@ def refresh_ads_command(
                         _metadata_skipped_message(relative_path, refusals)
                     )
                 provider = external_document.get("provider", "external")
-                click.echo(f"Found {identifier_value} at {provider} (not in ADS).")
-                refreshed += 1
+                external_identifier = (
+                    pdf_identifier._first_scalar(external_document.get("doi"))
+                    or identifier_value
+                )
+                click.echo(f"Found {external_identifier} at {provider} (not in ADS).")
+                external_refreshed += 1
                 rename_candidates.add(relative_path)
                 continue
             if bibcode in missing_documents:
@@ -771,7 +853,7 @@ def refresh_ads_command(
                     refreshed -= 1
             if index % progress_step == 0 or index == len(requested):
                 click.echo(f"Refresh ADS: {index}/{len(requested)}")
-        settings = state.identify_settings or Config.load_identify_settings()
+        settings = identify_settings
         unresolved_directory = output_unresolved
         if unresolved_directory is None and settings.output_unresolved:
             unresolved_directory = Path(settings.output_unresolved)
@@ -836,6 +918,8 @@ def refresh_ads_command(
                 f"Updated metadata for {len(rename_candidates)} file(s); no files were renamed or moved."
             )
         click.echo(f"Refreshed ADS metadata for {refreshed} bibcode(s).")
+        if external_refreshed:
+            click.echo(f"Updated external metadata for {external_refreshed} PDF(s).")
         if refusals:
             click.secho(
                 f"Refused {len(refusals)} file(s): the PDF does not prove the "
@@ -870,6 +954,10 @@ def refresh_ads_command(
             click.echo(
                 f"Refreshed citation metrics for {len(metric_bibcodes)} bibcode(s)."
             )
+    except ValueError as exc:
+        raise click.UsageError(str(exc)) from exc
+    except (ADSError, ProviderError, OSError, sqlite3.Error) as exc:
+        raise click.ClickException(str(exc)) from exc
     finally:
         state.close()
 
@@ -1376,7 +1464,14 @@ def _write_unresolved_csv(
 
     csv_path = directory / "unresolved.csv"
     try:
-        with csv_path.open("w", newline="", encoding="utf-8") as handle:
+        while True:
+            csv_path = unique_destination(directory, "unresolved.csv")
+            try:
+                handle = csv_path.open("x", newline="", encoding="utf-8")
+            except FileExistsError:
+                continue
+            break
+        with handle:
             writer = csv.writer(handle)
             writer.writerow(["filename", "relative_path", "first_page_text"])
             for path in sorted(unresolved_paths, key=str):
@@ -1425,7 +1520,7 @@ done
 def _print_unresolved_ai_prompt(csv_path: Path) -> None:
     click.secho(f"Generated unresolved filename list: {csv_path}", fg="yellow")
     click.secho(
-        "Use any AI tool you prefer. Attach unresolved.csv and paste this prompt:",
+        f"Use any AI tool you prefer. Attach {csv_path.name} and paste this prompt:",
         fg="yellow",
     )
     click.echo(
@@ -1915,7 +2010,7 @@ def identify_command(
             profile=profile,
             paths=_files_inside(directory, file_paths) if file_paths else None,
         )
-    except (ADSError, ProviderError) as exc:
+    except (ADSError, ProviderError, OSError, sqlite3.Error) as exc:
         click.secho(f"Error: {exc}", fg="red", err=True)
         sys.exit(1)
 
@@ -1981,9 +2076,16 @@ def identify_command(
 @click.option(
     "--allow-ads",
     is_flag=True,
-    help="Identify pending PDFs recursively through ADS before renaming.",
+    help="Identify pending PDFs before renaming. --file limits both steps.",
 )
 @click.option("--apply", is_flag=True, help="Apply renames. Default is dry-run.")
+@click.option(
+    "--file",
+    "file_paths",
+    multiple=True,
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    help="Rename only this PDF inside DIRECTORY. Repeat for more files.",
+)
 @click.pass_context
 def rename_command(
     ctx: click.Context,
@@ -1998,11 +2100,14 @@ def rename_command(
     output_unresolved: Path | None,
     allow_ads: bool,
     apply: bool,
+    file_paths: tuple[Path, ...],
 ) -> None:
     """Rename resolved PDFs using sidecar metadata and a naming scheme."""
+    sidecar = None
     try:
         if authors_when_truncated > max_authors:
             raise click.UsageError("authors_when_truncated cannot exceed max_authors")
+        selected_paths = _files_inside(directory, file_paths) if file_paths else None
         client = (
             _get_client(ctx)
             if allow_ads or author_format.startswith("ads_custom:")
@@ -2028,9 +2133,11 @@ def rename_command(
                 debut_year=None,
                 end_year=None,
                 refresh_cache=False,
-                output_unresolved=resolved_output_unresolved,
+                output_unresolved=(
+                    resolved_output_unresolved if selected_paths is None else None
+                ),
                 skip_unresolved_directory=False,
-                apply=apply,
+                apply=apply and selected_paths is None,
                 verbose_parser=False,
                 strategies=identify_settings.strategies,
                 providers=identify_settings.providers,
@@ -2038,6 +2145,7 @@ def rename_command(
                 ai_csv=None,
                 verbose=0,
                 prompt_for_ai_csv=False,
+                **({"paths": selected_paths} if selected_paths is not None else {}),
             )
 
         sidecar = open_registry_state(directory)
@@ -2058,6 +2166,11 @@ def rename_command(
             "author_separator": author_separator,
             "author_truncation_suffix": author_truncation_suffix,
         }
+        if selected_paths is not None:
+            rename_options["current_filenames"] = [
+                path.relative_to(sidecar.directory).as_posix()
+                for path in selected_paths
+            ]
         if (
             unresolved_directory.is_dir()
             and sidecar.directory in unresolved_directory.parents
@@ -2067,13 +2180,20 @@ def rename_command(
                 move_resolved_to=sidecar.directory,
             )
         plans = renamer.batch_rename(**rename_options)
+        for current_name, target_name in sorted(renamer.unchanged.items()):
+            click.echo(f"Already matches rename rule: {current_name}")
+            if target_name != Path(current_name).name:
+                click.echo(f"  Same file as target: {target_name}")
+        for current_name, reason in sorted(renamer.skipped.items()):
+            click.secho(f"Not renamed: {current_name}: {reason}", fg="yellow")
         for refused_name, reason in sorted(renamer.identity_refused.items()):
             click.secho(
                 f"Not renamed; identity not verified: {refused_name}: {reason}",
                 fg="yellow",
             )
         if not plans:
-            click.echo("No files to rename.")
+            if not (renamer.unchanged or renamer.skipped or renamer.identity_refused):
+                click.echo("No files to rename.")
             return
 
         for old_name, new_name in plans:
@@ -2086,6 +2206,9 @@ def rename_command(
     except ValueError as exc:
         click.secho(f"Error: {exc}", fg="red", err=True)
         sys.exit(1)
+    finally:
+        if sidecar is not None:
+            sidecar.close()
 
 
 @pdf.command("obsidian")

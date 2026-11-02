@@ -4,6 +4,7 @@ Base HTTP client for NASA ADS with rate limiting and caching.
 
 import json
 import logging
+import os
 import re
 import tempfile
 import threading
@@ -384,6 +385,22 @@ class ADSClient:
         return pattern.findall(html)
 
     @staticmethod
+    def _publish_download(staging_path: Path, output_path: Path) -> Path:
+        """Publish staged bytes without replacing an existing download."""
+        candidate = output_path
+        suffix = 0
+        while True:
+            try:
+                os.link(staging_path, candidate)
+            except FileExistsError:
+                suffix += 1
+                candidate = output_path.with_name(
+                    f"{output_path.stem}_{suffix}{output_path.suffix}"
+                )
+                continue
+            return candidate
+
+    @staticmethod
     def _save_stream_to_file(
         response: requests.Response,
         output_path: Path,
@@ -391,7 +408,7 @@ class ADSClient:
         validate_pdf: bool = False,
     ) -> Path | None:
         """
-        Save streamed response content to disk atomically.
+        Save streamed content without replacing an existing file.
 
         Parameters
         ----------
@@ -402,12 +419,13 @@ class ADSClient:
         chunk_size : int, optional
             Read chunk size in bytes.
         validate_pdf : bool, optional
-            When True, requires %PDF- magic bytes before replacing target file.
+            When True, require a PDF header before publishing the download.
 
         Returns
         -------
         pathlib.Path or None
-            Output path on success, or None if validation fails.
+            Output path on success, or None if validation fails. Existing
+            names receive a numeric suffix on the new download.
         """
         output_path.parent.mkdir(parents=True, exist_ok=True)
         temp_path: Path | None = None
@@ -432,8 +450,7 @@ class ADSClient:
                 except OSError:
                     return None
 
-            temp_path.replace(output_path)
-            return output_path
+            return ADSClient._publish_download(temp_path, output_path)
         finally:
             if temp_path is not None and temp_path.exists():
                 try:
@@ -568,7 +585,14 @@ class ADSClient:
         Returns
         -------
         pathlib.Path or None
-            Saved PDF path on success, else None.
+            Saved PDF path on success, else None. Existing direct and printed
+            downloads remain unchanged. A new download receives a numeric suffix
+            when its intended filename exists.
+
+        Notes
+        -----
+        Direct responses require a PDF header. An HTML error response causes
+        the downloader to try its next source instead of saving HTML as PDF.
         """
         bibcode = (bibcode or "").strip()
         if not bibcode:
@@ -609,7 +633,12 @@ class ADSClient:
                     continue
 
                 if self._is_pdf_response(response):
-                    return self._save_stream_to_file(response, direct_pdf_path)
+                    saved = self._save_stream_to_file(
+                        response, direct_pdf_path, validate_pdf=True
+                    )
+                    if saved is not None:
+                        return saved
+                    continue
 
                 content_type = (response.headers.get("Content-Type") or "").lower()
                 if "text/html" not in content_type:
@@ -636,7 +665,12 @@ class ADSClient:
                         )
                     if candidate.status_code == 200:
                         if self._is_pdf_response(candidate):
-                            return self._save_stream_to_file(candidate, direct_pdf_path)
+                            saved = self._save_stream_to_file(
+                                candidate, direct_pdf_path, validate_pdf=True
+                            )
+                            if saved is not None:
+                                return saved
+                            continue
                         saved = self._save_stream_to_file(
                             candidate, direct_pdf_path, validate_pdf=True
                         )
@@ -648,13 +682,19 @@ class ADSClient:
                     if candidate is not None:
                         candidate.close()
 
-            if force_print_html and self._print_webpage_to_pdf(
-                response.url,
-                printed_pdf_path,
-                timeout=timeout,
-                html_content=html,
-            ):
-                return printed_pdf_path
+            if force_print_html:
+                output_dir.mkdir(parents=True, exist_ok=True)
+                with tempfile.TemporaryDirectory(
+                    prefix=".adsfolio-print-", dir=output_dir
+                ) as scratch:
+                    staging = Path(scratch) / printed_pdf_path.name
+                    if self._print_webpage_to_pdf(
+                        response.url,
+                        staging,
+                        timeout=timeout,
+                        html_content=html,
+                    ):
+                        return self._publish_download(staging, printed_pdf_path)
 
         return None
 

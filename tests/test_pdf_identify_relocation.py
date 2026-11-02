@@ -81,6 +81,9 @@ def test_identify_moves_new_and_cached_matches(
     assert (
         "Moved resolved PDF" if apply else "[dry-run] move resolved PDF"
     ) in result.output
+    if not apply:
+        assert "Previewed file moves: 1" in result.output
+        assert "--apply" in result.output
 
 
 def test_identify_collision_keeps_both_files_and_resolved_catalog(
@@ -688,8 +691,8 @@ def test_ads_refresh_metrics_error_leaves_successfully_moved_pdf(
         ],
     )
 
-    assert result.exit_code != 0
-    assert isinstance(result.exception, ADSError)
+    assert result.exit_code == 1
+    assert "Error: citation metrics unavailable" in result.output
     assert "Renamed resolved PDF" in result.output
     target = root / "B1.pdf"
     assert target.read_bytes() == source_content

@@ -18,6 +18,36 @@ def _use_tmp_config(monkeypatch, tmp_path):
     )
 
 
+def test_simultaneous_private_writes_use_independent_temporary_files(
+    tmp_path, monkeypatch
+):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier
+
+    from adsfolio.config import write_private_text
+
+    destination = tmp_path / "config/setup.json"
+    ready = Barrier(2)
+    real_replace = os.replace
+
+    def replace(source, target):
+        if Path(target) == destination:
+            ready.wait(timeout=5)
+        return real_replace(source, target)
+
+    monkeypatch.setattr(os, "replace", replace)
+    with ThreadPoolExecutor(max_workers=2) as workers:
+        futures = [
+            workers.submit(write_private_text, destination, value)
+            for value in ("first", "second")
+        ]
+        for future in futures:
+            future.result(timeout=10)
+    assert destination.read_text() in {"first", "second"}
+    if os.name != "nt":
+        assert destination.stat().st_mode & 0o777 == 0o600
+
+
 def test_save_and_load_user_setup_roundtrip(monkeypatch, tmp_path):
     monkeypatch.setattr(
         Config,
@@ -196,13 +226,13 @@ def test_save_user_setup_replaces_atomically(monkeypatch, tmp_path):
 
     Config.save_user_setup(orcid="0000")
 
-    assert replace_calls == [
-        (
-            Config.get_setup_path().with_name("setup.json.tmp"),
-            Config.get_setup_path(),
-        )
-    ]
-    assert not Config.get_setup_path().with_name("setup.json.tmp").exists()
+    assert len(replace_calls) == 1
+    source, destination = replace_calls[0]
+    assert destination == Config.get_setup_path()
+    assert source.parent == destination.parent
+    assert source.name.startswith(".setup.json.")
+    assert source.name.endswith(".tmp")
+    assert not source.exists()
 
 
 def test_global_rename_settings_preserve_other_setup_sections(monkeypatch, tmp_path):
@@ -272,4 +302,4 @@ def test_token_and_profile_are_private_from_creation(monkeypatch) -> None:
     assert token_path.stat().st_mode & 0o777 == 0o600
     assert setup_path.stat().st_mode & 0o777 == 0o600
     assert config_dir.stat().st_mode & 0o777 == 0o700
-    assert not stale.exists()
+    assert stale.read_text() == "old"

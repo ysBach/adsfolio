@@ -253,7 +253,12 @@ class PdfWatcher:
                 refreshed[WATCH_PENDING_KEY] = False
                 if is_resolved_record(refreshed):
                     refreshed[IDENTITY_KEY] = verify_record_identity(
-                        path, refreshed, sha256=sha256, state=sidecar
+                        path,
+                        refreshed,
+                        sha256=sha256,
+                        state=sidecar,
+                        client=getattr(self.identifier, "client", None),
+                        providers=providers,
                     )
                     if apply and isinstance(sidecar, CentralPdfRegistryState):
                         refreshed = sidecar.upsert_file(_current_path, refreshed)
@@ -282,7 +287,14 @@ class PdfWatcher:
         existing = sidecar.find_by_sha256(sha256)
         if existing is not None and is_resolved_record(existing[1]):
             record = dict(existing[1])
-            verify_record_identity(path, record, sha256=sha256, state=sidecar)
+            record[IDENTITY_KEY] = verify_record_identity(
+                path,
+                record,
+                sha256=sha256,
+                state=sidecar,
+                client=getattr(self.identifier, "client", None),
+                providers=providers,
+            )
         else:
             record = self.identifier.resolve_many(
                 [path],

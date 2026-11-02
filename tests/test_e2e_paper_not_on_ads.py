@@ -83,7 +83,7 @@ def test_typed_doi_renames_the_pdf_and_exports_bibtex(qtbot, monkeypatch, tmp_pa
     # 2. The file is renamed from the Crossref metadata.
     assert not scan.exists()
     [renamed] = list(root.glob("*.pdf"))
-    assert renamed.name == "RoeA+KimS_2019-Grain_Growth_in_Cold_Clouds.pdf"
+    assert renamed.name == "RoeA+KimS_-Grain_Growth_in_Cold_Clouds.pdf"
 
     # 3. Copy its BibTeX from the main table, with the DOI as the key.
     window = MainWindow()

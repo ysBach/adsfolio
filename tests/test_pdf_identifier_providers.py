@@ -192,6 +192,68 @@ def test_external_network_error_propagates_without_negative_cache(tmp_path: Path
             )
 
 
+def test_external_provider_failure_tries_the_next_enabled_provider(tmp_path: Path):
+    pdf = _pdf(tmp_path / "paper.pdf", "10.5555/example")
+    document = {
+        "doi": ["10.5555/example"],
+        "title": ["Example paper"],
+        "author": ["Example, A."],
+        "year": "2026",
+    }
+    with (
+        patch(
+            "adsfolio.pdf.identifier.fetch_crossref_doi",
+            side_effect=ProviderNetworkError("Crossref unavailable"),
+        ),
+        patch("adsfolio.pdf.identifier.fetch_datacite_doi", return_value=document),
+    ):
+        record = PdfIdentifier(None).resolve(
+            pdf,
+            strategies=(IdentifyStrategy.PDF_METADATA_DOI,),
+            providers=(DoiProvider.CROSSREF, DoiProvider.DATACITE),
+        )
+    assert record is not None
+    assert record["_adsfolio_external_metadata"]["provider"] == "datacite"
+
+
+@pytest.mark.parametrize("cached", [False, True])
+def test_unverified_ads_candidate_does_not_block_a_verified_external_record(
+    tmp_path, cached
+):
+    path = tmp_path / "paper.pdf"
+    writer = PdfWriter()
+    writer.add_blank_page(200, 200)
+    writer.add_metadata({"/DOI": "10.5555/example", "/arXiv": "arXiv:2601.12345"})
+    with path.open("wb") as handle:
+        writer.write(handle)
+    ads_document = {"bibcode": "2026ApJ...900..100E", "doi": ["10.5555/example"]}
+    external_document = {
+        "doi": ["10.5555/example"],
+        "identifier": ["arXiv:2601.12345"],
+        "title": ["Example paper"],
+        "author": ["Example, A."],
+        "year": "2026",
+    }
+    client = MagicMock()
+    client.search.query.return_value = MagicMock(num_found=1, docs=[ads_document])
+    cached_lookup = (lambda kind, value: (True, ads_document)) if cached else None
+
+    with patch(
+        "adsfolio.pdf.identifier.fetch_crossref_doi", return_value=external_document
+    ):
+        identifier = PdfIdentifier(client)
+        record = identifier.resolve(
+            path,
+            strategies=(IdentifyStrategy.PDF_METADATA_DOI,),
+            providers=(DoiProvider.ADS, DoiProvider.CROSSREF),
+            cached_candidate_lookup=cached_lookup,
+        )
+
+    assert record is not None
+    assert record["_adsfolio_external_metadata"]["provider"] == "crossref"
+    assert identifier.identity_failures == {}
+
+
 def test_ads_error_propagates_when_queried(tmp_path: Path):
     pdf = _pdf(tmp_path / "10.1038_sample.pdf", "10.1038/sample")
 

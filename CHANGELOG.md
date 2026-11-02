@@ -1,5 +1,88 @@
 # Changelog
 
+## Unreleased
+
+## 0.8.0 (2026-11-02)
+
+### Automatic candidate verification
+
+- Fetch the exact ADS candidate automatically when the watcher or Identify cannot verify a saved association locally.
+  Matching PDF identifiers save verified provenance and continue normal processing without a notification approval step.
+- Reuse saved proofs and cached provider records when they verify the PDF.
+  Preserve notes, locked fields, PDF contents, and the selected Rename template.
+- Retain review or retry actions for candidates that remain unverifiable.
+  Disabled providers, unavailable records, service failures, changed files, and conflicting identifiers do not grant an association.
+
+### Complete, persistent Notifications
+
+- Keep Notifications open after action icons, review dialogs, and clicks elsewhere.
+  Close it with its close icon, **Escape**, or the toolbar toggle.
+- Show every queued notification in the scrollable panel with its own actions.
+  Remove the collapsed “more” queue display. Preserve per-file action routing.
+- Offer **Verify This ID** as a retry when automatic candidate verification cannot finish.
+  Fetch its ADS record and check the current PDF before updating or renaming.
+  Preserve manual **Use This ID** review and identifier-conflict checks.
+
+### Merge defaults and rename outcomes
+
+- Enable **Move originals to Trash after merge** by default in annotation review.
+  After a complete, verified save, keep only the merged PDF in the active library.
+  Clear the option before saving to keep inputs in place. Partial merges keep their inputs.
+  Cleanup failures retain failed inputs and open the retry dialog.
+- Report filenames that already match the selected Rename rule.
+  Report missing files, changed contents, unavailable metadata, and existing destinations individually.
+- Use the exact selected Rename template in batch, single-file, and identity-repair operations.
+  Remove the hidden substitution of `{year}` for `{bibcode}` when no ADS bibcode exists.
+  Keep missing fields as empty components, consistent with custom-template rendering.
+
+### Lookup and recovery
+
+- Check reference-search candidates against the selected PDF before applying
+  metadata. Recover from a coauthor match through the PDF's own DOI or arXiv ID.
+  Keep explicit conflicting identifiers blocked.
+- Try later enabled providers after outages or rejected DOI candidates.
+  Apply saved provider order to manual updates and automatic identification.
+  Report service failures instead of claiming that no record exists.
+- Read complete ADS identifier results before deciding uniqueness. Stop an
+  incomplete or changing response from producing an automatic association.
+- Honor the GUI's Identify scope during Update by ID. Count external metadata
+  separately from ADS bibcodes in the job log.
+
+### Preserve files and inputs
+
+- Preserve existing direct and printed PDF downloads. Give new downloads
+  numeric suffixes. Reject HTML error pages and try the next download source.
+- Prevent unresolved-file moves from replacing a destination created during
+  processing. Retain missing-location history for files moved outside the
+  library. Roll the move back if the catalog update fails.
+- Create upgrade backups exclusively so another backup cannot be overwritten.
+- Stage complete Obsidian notes before replacing an unchanged existing note.
+  Preserve manual text after a write failure. Skip notes that changed during export.
+- Preserve existing unresolved CSV reports and selected AI inputs. Number new
+  reports and print their actual paths in the job log.
+
+### Settings and selected actions
+
+- Use independent private temporary files for simultaneous settings saves.
+- Add **Identify & Rename Selected PDF** to the table's right-click menu.
+  Process one or several selected PDFs with saved Identify and Rename settings.
+  Leave unverified files, existing destinations, and unselected PDFs unchanged.
+  Use the job log and **Update by ID…** to review skipped files.
+- Add repeatable `pdf rename --file` selection. Keep the same selection through
+  optional identification and renaming, including files in subfolders.
+- Allow newly verified external metadata to clear stale status after a scan.
+  Recheck the current PDF before clearing it. Missing or conflicting identity
+  proof still prevents renaming.
+
+### Identify results
+
+- Report verified saved metadata separately in Identify results. This includes
+  PDFs with metadata from other providers and no ADS bibcode.
+- Show file-move advice only when Identify previews moves. Report when no
+  moves are planned. For a preview, enable **Apply file moves** in Identify
+  or rerun the CLI command with `--apply`.
+- Count unreadable PDFs separately instead of omitting them from the summary.
+
 ## 0.7.4 (2026-10-29)
 
 ### Notifications without layout movement

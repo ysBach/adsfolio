@@ -11,7 +11,7 @@ from adsfolio.gui import notifications
 from adsfolio.gui.notifications import Notice, NoticeAction, NoticeBar
 
 
-def test_notice_bar_shows_one_item_and_pending_count(qtbot):
+def test_notice_bar_shows_all_items_and_total_count(qtbot):
     bar = NoticeBar()
     qtbot.addWidget(bar)
 
@@ -19,7 +19,36 @@ def test_notice_bar_shows_one_item_and_pending_count(qtbot):
     bar.enqueue(Notice("two", "Two", action_label="Identify & Rename"))
 
     assert bar.message.text() == "One"
-    assert bar.pending_count.text() == "1 more"
+    assert bar.pending_count.text() == "2 notifications"
+    assert any(row.message.text() == "Two" for row in bar.findChildren(NoticeBar))
+
+
+def test_every_notice_has_its_own_actions_without_queue_truncation(qtbot):
+    bar = NoticeBar()
+    qtbot.addWidget(bar)
+    opened, dismissed = [], []
+    bar.open_requested.connect(opened.append)
+    bar.dismiss_requested.connect(dismissed.append)
+    for index in range(25):
+        bar.enqueue(
+            Notice(
+                str(index),
+                f"Notice {index}",
+                payload=index,
+                reveal_path=Path(f"/{index}.pdf"),
+            )
+        )
+    rows = [bar, *bar.findChildren(NoticeBar)]
+    assert [row.message.text() for row in rows] == [
+        f"Notice {index}" for index in range(25)
+    ]
+    last = rows[-1]
+    last.open_button.click()
+    assert opened == [Path("/24.pdf")]
+    last.dismiss_button.click()
+    assert dismissed == [24]
+    assert bar.queued_keys() == tuple(str(index) for index in range(24))
+    assert bar.message.text() == "Notice 0"
 
 
 def test_notice_bar_exposes_paths_for_current_and_queued_files(qtbot, tmp_path) -> None:

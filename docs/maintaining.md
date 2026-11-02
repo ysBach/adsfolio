@@ -11,6 +11,27 @@ When code changes, update docs in the same commit.
 2. If CLI behavior changes, update `docs/cli.rst`.
 3. If you add or delete public API modules, update `docs/api/index.rst`.
 
+## Lookup and document invariants
+
+1. Treat bibliographic references as search hints. Require current PDF evidence
+   before applying a candidate. Never replace an explicit conflicting ID automatically.
+2. Keep provider order consistent across manual updates, Identify, and the watcher.
+   A rejected candidate does not prevent a later provider from supplying verified metadata.
+   A failed service request does not establish that a record is missing.
+3. Read complete identifier results before deciding uniqueness. Stop changed or
+   incomplete pages. Cache provider documents independently of PDF associations.
+4. Use exclusive file moves and downloads. Roll moves back after catalog failure.
+   Mark an external move's old location missing while retaining attachment history.
+5. Stage notes and private settings before replacement. Recheck existing note
+   contents before publication. Create CSV reports exclusively and preserve selected inputs.
+
+`pdf.reference_lookup` owns reference recovery and manual provider ordering.
+The identity module retains the shared mutation checks. Neither a cached document
+nor a filename supplies proof of PDF identity.
+
+All rename paths use the exact selected template. Do not replace missing
+fields with other fields or select an implicit alternate template.
+
 ## Release checks and API boundaries
 
 For changed Python files, run these commands in this order:
@@ -51,13 +72,27 @@ Existing registry aliases remain available for compatibility.
 ## Notification layout
 
 Keep queued notices and view guidance outside the central pane layout.
-`NotificationPanel` displays them in a scrollable popup. The permanent toolbar
+`NotificationPanel` displays them in a scrollable overlay. The permanent toolbar
 button displays the queue count and severity. Queue changes must not open
-the popup automatically. Closing it must not dismiss messages.
+the panel automatically. Closing it must not dismiss messages.
+Keep the panel open across action dialogs and focus changes.
+Render every queued notice with controls bound to that notice's payload.
+Use explicit close controls rather than the automatic dismissal of `Qt.Popup`.
 
 Measure sidebar, table, and detail geometry across view changes, long warnings,
 and queue dismissal. Preserve table selection and scroll position when notices
 change. Keep candidate actions bound to their notice after moving the controls.
+
+**Verify This ID** fetches and validates provider metadata without manual confirmation.
+Bind that check to the same PDF digest and candidate fingerprint used by reviewed candidates.
+Reserve **Use This ID** for candidates that permit manual confirmation.
+
+For stored ADS candidates, verify locally first. If that fails without a conflict,
+fetch the exact candidate through the enabled ADS provider and repeat the existing identity checks.
+Do not request manual confirmation for a successful automatic check.
+Persist repaired proof even when an obsolete proof key already exists.
+Reconcile a relocated catalog path before saving its repaired proof.
+Keep exact-record verification separate from broader fallback-search permission.
 
 ## Documentation Check
 
@@ -154,8 +189,9 @@ discovery.
 
 Annotation review saves a separate PDF. For library PDFs, saving the copy
 inside an open library folder registers it with the canonical PDF's metadata.
-After a complete, verified merge, users can choose which
-unchanged originals to move to Trash. Keeping originals is the default.
+After a complete, verified merge, the checked default moves unchanged inputs to Trash.
+Users can clear that option before saving to keep inputs in place.
+Partial merges keep all inputs. Cleanup failures retain failed inputs and open the retry dialog.
 Catalog history remains available. See the [annotation workflow](gui.md) for
 supported types and limits.
 

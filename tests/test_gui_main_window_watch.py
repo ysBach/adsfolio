@@ -1994,6 +1994,178 @@ def _argv_value(argv: list[str], option: str) -> str:
     return argv[argv.index(option) + 1]
 
 
+@pytest.mark.parametrize("exit_code", [0, 1])
+def test_selected_identify_rename_waits_for_pause_and_keeps_original_root(
+    monkeypatch, qtbot, tmp_path, exit_code
+):
+    from adsfolio.pdf.doi_providers import DoiProvider
+
+    first, second = tmp_path / "first", tmp_path / "second"
+    first.mkdir()
+    second.mkdir()
+    key = str(first.resolve())
+    config = GuiConfig(
+        roots=[RootEntry(str(first)), RootEntry(str(second))],
+        identify_scopes={key: "library"},
+        rename_scopes={key: "library"},
+    )
+    window, controller, _saves = _window_factory(monkeypatch, qtbot, config)
+    state = CentralPdfRegistryState(window.registries[key])
+    state.set_identify_settings(
+        IdentifySettings(providers=(DoiProvider.CROSSREF,), output_unresolved="pending")
+    )
+    state.set_rename_settings(RenameSettings(template="{year}-{title}"))
+    window.current_root = first.resolve()
+    window.watch_current_action.trigger()
+    controller.auto_ack_pause = False
+    jobs = []
+    _ads_refresh_job_factory(monkeypatch, jobs)
+    files = [first / "a.pdf", first / "nested/b.pdf"]
+
+    window._identify_and_rename(files)
+
+    assert jobs == []
+    assert controller.pause_calls == [first.resolve()]
+    window.current_root = second.resolve()
+    controller.paused.emit(controller.session_id(first))
+    assert len(jobs) == 1
+    job = jobs[0]
+    assert job.working_directory == first.resolve()
+    assert _argv_value(job.argv, "--settings-scope") == "library"
+    assert "--apply" not in job.argv
+    assert "--clear-output-unresolved" in job.argv
+    (rename,) = job.follow_up_argv
+    assert _argv_value(rename, "--scheme") == "{year}-{title}"
+    assert _argv_value(rename, "--output-unresolved") == str(first / "pending")
+    assert "--apply" in rename
+    for argv in (job.argv, rename):
+        assert [argv[i + 1] for i, value in enumerate(argv) if value == "--file"] == [
+            str(path) for path in files
+        ]
+    job.finished.emit(exit_code)
+    assert controller.resume_calls == [first.resolve()]
+    assert window._identify_rename_context is None
+    assert window._identify_rename_files == ()
+    assert window.current_root == second.resolve()
+
+
+def test_selected_identify_rename_resumes_watcher_after_start_failure(
+    monkeypatch, qtbot, tmp_path
+):
+    root = tmp_path / "library"
+    root.mkdir()
+    window, controller, _saves = _window_factory(
+        monkeypatch, qtbot, GuiConfig(roots=[RootEntry(str(root))])
+    )
+    window.watch_current_action.trigger()
+    jobs = []
+    _ads_refresh_job_factory(monkeypatch, jobs)
+
+    window._identify_and_rename([root / "paper.pdf"])
+    jobs[0].failed.emit("Could not start")
+
+    assert controller.resume_calls == [root.resolve()]
+    assert window._identify_rename_context is None
+    assert window._identify_rename_files == ()
+    assert window.job is None
+
+
+def test_selected_identify_rename_runs_lookup_and_rename_without_touching_other_files(
+    monkeypatch, qtbot, tmp_path
+):
+    from click.testing import CliRunner
+
+    from adsfolio.cli.commands import main
+    from adsfolio.pdf.doi_providers import DoiProvider
+    from adsfolio.pdf.files import sha256_file
+    from adsfolio.pdf.identifier import PdfIdentifier
+
+    root = tmp_path / "library"
+    root.mkdir()
+    paths = {}
+    digests = {}
+    documents = {}
+    for name in ("fresh", "cached", "conflict", "collision", "unknown", "unselected"):
+        path = root / f"{name}.pdf"
+        writer = PdfWriter()
+        writer.add_blank_page(200, 200)
+        if name != "unknown":
+            writer.add_metadata({"/DOI": f"10.1234/{name}"})
+        with path.open("wb") as handle:
+            writer.write(handle)
+        paths[name] = path
+        digests[name] = sha256_file(path)
+        documents[name] = {
+            "doi": [f"10.1234/{name}"],
+            "title": [name.title()],
+            "author": ["Example, A."],
+            "year": "2024",
+            "provider": "crossref",
+        }
+    target = root / "2024-Collision.pdf"
+    target.write_bytes(b"Keep the existing destination")
+    monkeypatch.setattr(
+        Config,
+        "load_identify_settings",
+        classmethod(
+            lambda cls: IdentifySettings(
+                strategies=(IdentifyStrategy.PDF_METADATA_DOI,),
+                providers=(DoiProvider.CROSSREF,),
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        Config,
+        "load_rename_settings",
+        classmethod(lambda cls: RenameSettings(template="{year}-{title}")),
+    )
+    window, _controller, _saves = _window_factory(
+        monkeypatch, qtbot, GuiConfig(roots=[RootEntry(str(root))])
+    )
+    state = CentralPdfRegistryState(window.registries[str(root.resolve())])
+    for name in ("cached", "unselected"):
+        record = PdfIdentifier(None).build_record(documents[name], paths[name])
+        record["notes"] = "Keep my notes"
+        state.upsert_file(paths[name].name, record)
+    from adsfolio.pdf.readiness import metadata_ready
+
+    assert metadata_ready(state.get_file(paths["cached"].name))
+    unselected_before = state.get_file(paths["unselected"].name)
+    lookups = []
+
+    def fetch(doi):
+        name = doi.rsplit("/", 1)[-1]
+        lookups.append(name)
+        document = dict(documents[name])
+        if name == "conflict":
+            document["doi"] = ["10.1234/different"]
+        return document
+
+    monkeypatch.setattr("adsfolio.pdf.identifier.fetch_crossref_doi", fetch)
+    jobs = []
+    _ads_refresh_job_factory(monkeypatch, jobs)
+    window._identify_and_rename(
+        [path for name, path in paths.items() if name != "unselected"]
+    )
+    (job,) = jobs
+
+    for argv in (job.argv, *job.follow_up_argv):
+        result = CliRunner().invoke(main, argv[3:])
+        assert result.exit_code == 0, result.output
+
+    assert set(lookups) == {"fresh", "conflict", "collision"}
+    for name, source in paths.items():
+        destination = (
+            root / f"2024-{name.title()}.pdf" if name in {"fresh", "cached"} else source
+        )
+        assert sha256_file(destination) == digests[name]
+        if destination != source:
+            assert not source.exists()
+    assert target.read_bytes() == b"Keep the existing destination"
+    assert state.get_file(paths["unselected"].name) == unselected_before
+    job.finished.emit(0)
+
+
 def test_ads_refresh_waits_for_watcher_pause_before_starting_job(
     monkeypatch, qtbot, tmp_path
 ):
@@ -2072,6 +2244,7 @@ def test_ads_refresh_keeps_origin_root_and_settings_after_root_switch(
     job = jobs[0]
     assert job.working_directory == first.resolve()
     assert _argv_value(job.argv, "--rename-scope") == "library"
+    assert _argv_value(job.argv, "--identify-scope") == "library"
     assert _argv_value(job.argv, "--output-unresolved") == str(first / "first-pending")
     assert "--all" in job.argv
     job.finished.emit(0)

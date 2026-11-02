@@ -19,7 +19,7 @@ if TYPE_CHECKING:
     from ..client import ADSClient
 
 from ..api.search import escape_query_phrase
-from ..config import AuthenticationError, RequestTooLongError
+from ..config import ADSError, RequestTooLongError
 from .arxiv import normalize_arxiv_id
 from .doi_providers import (
     DEFAULT_DOI_PROVIDERS,
@@ -87,8 +87,15 @@ def fetch_external_identifier(
     dict or None
         Document metadata with a ``provider`` key, or `None` when no provider
         knows the identifier.
+
+    Raises
+    ------
+    ProviderError or ValueError
+        Lookup failed and no later provider returned metadata. A failed
+        request does not establish that the identifier is missing.
     """
     doi = value if kind == "doi" else f"10.48550/arXiv.{value}"
+    last_error = None
     for provider in providers:
         if provider is DoiProvider.ADS:
             continue
@@ -96,11 +103,14 @@ def fetch_external_identifier(
             doc = _fetch_external_doi(provider, doi)
         except (ValueError, ProviderError) as exc:
             _LOGGER.warning("%s lookup failed for %s: %s", provider.value, doi, exc)
+            last_error = exc
             continue
         if doc is not None:
             if kind == "arxiv":
                 doc["arxiv"] = value
             return doc
+    if last_error is not None:
+        raise last_error
     return None
 
 
@@ -730,6 +740,38 @@ class PdfIdentifier:
     def _chunked(self, items: list[str], chunk_size: int) -> list[list[str]]:
         return [items[i : i + chunk_size] for i in range(0, len(items), chunk_size)]
 
+    def _query_exact_documents(self, query: str, rows: int) -> list[dict[str, Any]]:
+        """Read complete, stable ADS results before deciding identifier uniqueness."""
+        result = self.client.search.query(q=query, fl=self.SEARCH_FIELDS, rows=rows)
+        documents = list(result.docs)
+        total = int(result.num_found)
+        while len(documents) < total:
+            start = len(documents)
+            page = self.client.search.query(
+                q=query, fl=self.SEARCH_FIELDS, rows=rows, start=start
+            )
+            page_documents = list(page.docs)
+            if (
+                int(page.num_found) != total
+                or page.start != start
+                or not page_documents
+                or len(documents) + len(page_documents) > total
+                or {
+                    self._first_scalar(doc.get("bibcode")) for doc in documents
+                }.intersection(
+                    self._first_scalar(doc.get("bibcode")) for doc in page_documents
+                )
+            ):
+                raise ADSError(
+                    "ADS returned incomplete or changing identifier results. Retry the lookup."
+                )
+            documents.extend(page_documents)
+        if len(documents) != total:
+            raise ADSError(
+                "ADS returned incomplete identifier results. Retry the lookup."
+            )
+        return documents
+
     def _analysis_worker_count(self, task_count: int) -> int:
         if task_count <= 1:
             return 1
@@ -811,12 +853,7 @@ class PdfIdentifier:
             terms = [f'doi:"{escape_query_phrase(doi)}"' for doi in chunk]
             query = " OR ".join(terms)
             rows = min(max(len(chunk) * 5, 10), 2000)
-            result = self.client.search.query(
-                q=query,
-                fl=self.SEARCH_FIELDS,
-                rows=rows,
-            )
-            documents = list(result.docs)
+            documents = self._query_exact_documents(query, rows)
             if ads_documents_callback is not None:
                 ads_documents_callback(documents)
 
@@ -876,12 +913,7 @@ class PdfIdentifier:
             terms = [f'bibcode:"{code.replace(chr(34), " ")}"' for code in chunk]
             query = " OR ".join(terms)
             rows = min(max(len(chunk) * 2, 10), 2000)
-            result = self.client.search.query(
-                q=query,
-                fl=self.SEARCH_FIELDS,
-                rows=rows,
-            )
-            documents = list(result.docs)
+            documents = self._query_exact_documents(query, rows)
             if ads_documents_callback is not None:
                 ads_documents_callback(documents)
 
@@ -1273,10 +1305,9 @@ class PdfIdentifier:
             query = " OR ".join(
                 f'identifier:"arXiv:{escape_query_phrase(i)}"' for i in chunk
             )
-            result = self.client.search.query(
-                q=query, fl=self.SEARCH_FIELDS, rows=min(max(len(chunk) * 5, 10), 2000)
+            documents = self._query_exact_documents(
+                query, min(max(len(chunk) * 5, 10), 2000)
             )
-            documents = list(result.docs)
             if ads_documents_callback is not None:
                 ads_documents_callback(documents)
             for arxiv_id in chunk:
@@ -1416,6 +1447,7 @@ class PdfIdentifier:
             return
 
         remaining = set(pending)
+        provider_errors = {}
         for provider in providers:
             if not remaining:
                 break
@@ -1445,12 +1477,13 @@ class PdfIdentifier:
                         ),
                         ads_documents_callback=ads_documents_callback,
                     )
-                except AuthenticationError as exc:
+                except ADSError as exc:
                     if len(providers) > 1:
                         self.logger.warning(
-                            "ADS authentication token unavailable; skipping ADS provider: %s",
+                            "ADS lookup unavailable; trying the next provider: %s",
                             exc,
                         )
+                        provider_errors.update(dict.fromkeys(remaining, exc))
                         continue
                     raise
 
@@ -1464,6 +1497,15 @@ class PdfIdentifier:
                 for normalized in list(remaining):
                     try:
                         doc = _fetch_external_doi(provider, normalized)
+                    except ProviderError as exc:
+                        self.logger.warning(
+                            "%s lookup failed for %s; trying the next provider: %s",
+                            provider.value,
+                            normalized,
+                            exc,
+                        )
+                        provider_errors[normalized] = exc
+                        continue
                     except ValueError:
                         continue
                     if doc is not None:
@@ -1471,6 +1513,8 @@ class PdfIdentifier:
                         remaining.remove(normalized)
 
         for normalized in remaining:
+            if normalized in provider_errors:
+                raise provider_errors[normalized]
             candidate_cache[("doi", normalized)] = None
 
     def _query_structured_candidates(
@@ -1672,6 +1716,61 @@ class PdfIdentifier:
         normalized = self._normalized_title(str(candidate))
         return ("title", normalized) if normalized else None
 
+    def _recover_doi_record(
+        self,
+        path: Path,
+        doi: str,
+        rejected_document: Mapping[str, Any],
+        providers: Sequence[DoiProvider],
+        candidate_cache: dict[tuple[str, Any], dict[str, Any] | None],
+        sha256: str | None,
+        ads_documents_callback: AdsDocumentsCallback | None,
+        cached_candidate_lookup: CachedCandidateLookup | None,
+        allow_network_lookup: bool,
+    ) -> dict[str, Any] | None:
+        """Try later DOI providers after one candidate fails the PDF identity check."""
+        source = (
+            DoiProvider.ADS.value
+            if rejected_document.get("bibcode")
+            else str(rejected_document.get("provider") or "")
+        )
+        remaining = list(providers)
+        for index, provider in enumerate(providers):
+            if provider.value == source:
+                remaining = list(providers[index + 1 :])
+                break
+        normalized = _normalize_doi(doi)
+        for provider in remaining:
+            key = ("doi_provider", (provider.value, normalized))
+            if key not in candidate_cache:
+                documents = {}
+                try:
+                    self._query_doi_candidates(
+                        {path: normalized},
+                        documents,
+                        None,
+                        ads_documents_callback,
+                        cached_candidate_lookup,
+                        allow_network_lookup,
+                        providers=(provider,),
+                    )
+                except (ADSError, ProviderError) as exc:
+                    self.logger.warning(
+                        "%s recovery failed for %s: %s", provider.value, path, exc
+                    )
+                    continue
+                candidate_cache[key] = documents.get(("doi", normalized))
+            document = candidate_cache[key]
+            if document is None:
+                continue
+            try:
+                return self.build_record(document, path, sha256=sha256)
+            except IdentityValidationError as exc:
+                self.logger.warning(
+                    "Rejected %s recovery for %s: %s", provider.value, path, exc
+                )
+        return None
+
     def _resolve_strategy_candidates(
         self,
         strategy: IdentifyStrategy,
@@ -1780,8 +1879,26 @@ class PdfIdentifier:
                     self.identity_failures.get(path), IdentityConflictError
                 ):
                     self.identity_failures[path] = exc
-                unresolved.append(path)
-                continue
+                record = None
+                if strategy in {
+                    IdentifyStrategy.FILENAME_DOI,
+                    IdentifyStrategy.PDF_METADATA_DOI,
+                    IdentifyStrategy.FIRST_PAGE_DOI,
+                }:
+                    record = self._recover_doi_record(
+                        path,
+                        str(candidate),
+                        doc,
+                        providers,
+                        candidate_cache,
+                        sha256_by_path.get(path) if sha256_by_path else None,
+                        ads_documents_callback,
+                        cached_candidate_lookup,
+                        allow_network_lookup,
+                    )
+                if record is None:
+                    unresolved.append(path)
+                    continue
             self.identity_failures.pop(path, None)
             record["resolution_strategy"] = strategy.value
             resolved[path] = record

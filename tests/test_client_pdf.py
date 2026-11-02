@@ -65,6 +65,72 @@ class TestDownloadPdf(unittest.TestCase):
             self.assertTrue(path.exists())
             self.assertEqual(path.read_bytes(), b"%PDF-direct")
 
+    def test_download_pdf_preserves_existing_annotated_copy(self):
+        response = FakeResponse(
+            headers={"Content-Type": "application/pdf"},
+            url="https://example.org/paper.pdf",
+            content=b"%PDF-new-download",
+        )
+        self.client._base._session.get = MagicMock(return_value=response)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            existing = Path(tmpdir) / "2020ApJ...900..100S.pdf"
+            existing.write_bytes(b"%PDF-existing-with-annotations")
+
+            saved = self.client.download_pdf("2020ApJ...900..100S", output_dir=tmpdir)
+
+            self.assertNotEqual(saved, existing)
+            self.assertEqual(existing.read_bytes(), b"%PDF-existing-with-annotations")
+            self.assertEqual(saved.read_bytes(), b"%PDF-new-download")
+
+    def test_printed_download_preserves_existing_copy(self):
+        response = FakeResponse(
+            headers={"Content-Type": "text/html"},
+            url="https://example.org/paper",
+            text="<html>Article</html>",
+        )
+        self.client._base._session.get = MagicMock(return_value=response)
+
+        def render(url, output_path, **kwargs):
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            output_path.write_bytes(b"%PDF-new-print")
+            return True
+
+        with (
+            tempfile.TemporaryDirectory() as tmpdir,
+            patch.object(ADSClient, "_print_webpage_to_pdf", side_effect=render),
+        ):
+            existing = Path(tmpdir) / "2020ApJ...900..100S__printed.pdf"
+            existing.write_bytes(b"%PDF-existing-print")
+            saved = self.client.download_pdf(
+                "2020ApJ...900..100S", output_dir=tmpdir, force_print_html=True
+            )
+            self.assertNotEqual(saved, existing)
+            self.assertEqual(existing.read_bytes(), b"%PDF-existing-print")
+            self.assertEqual(saved.read_bytes(), b"%PDF-new-print")
+
+    def test_invalid_direct_pdf_response_tries_the_next_gateway(self):
+        responses = [
+            FakeResponse(
+                headers={"Content-Type": "application/pdf"},
+                url="https://example.org/blocked.pdf",
+                content=b"<html>Access denied</html>",
+            ),
+            FakeResponse(
+                headers={"Content-Type": "application/pdf"},
+                url="https://example.org/real.pdf",
+                content=b"%PDF-real",
+            ),
+        ]
+        self.client._base._session.get = MagicMock(side_effect=responses)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            saved = self.client.download_pdf(
+                "2020ApJ...900..100S",
+                output_dir=tmpdir,
+                link_types=("PUB_PDF", "EPRINT_PDF"),
+            )
+            self.assertEqual(saved.read_bytes(), b"%PDF-real")
+            self.assertEqual(self.client._base._session.get.call_count, 2)
+
     def test_download_pdf_from_html_embedded_link(self):
         html_resp = FakeResponse(
             status_code=200,

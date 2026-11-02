@@ -3,14 +3,20 @@
 import logging
 import re
 import unicodedata
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from ..formatting import html_to_text
 from .cli_common import is_resolved_record
+from .doi_providers import DEFAULT_DOI_PROVIDERS, DoiProvider
 from .files import sha256_file
-from .identity import IDENTITY_KEY, IdentityValidationError, assert_mutation_allowed
+from .identity import (
+    IDENTITY_KEY,
+    IdentityValidationError,
+    UnverifiedIdentityError,
+    assert_mutation_allowed,
+)
 from .readiness import METADATA_SHA256_KEY, metadata_ready
 from .sidecar import Sidecar
 from .tracked_move import is_same_file_alias, move_tracked_file
@@ -19,6 +25,8 @@ if TYPE_CHECKING:
     from ..client import ADSClient
 
 DEFAULT_SCHEME = "{authors}_{bibcode}-{title}"
+# Retain the exported legacy preset for callers that explicitly select it.
+# Rename operations never substitute this value for the selected template.
 DEFAULT_NONBIBCODE_SCHEME = "{authors}_{year}-{title}"
 _INVALID_FILENAME_CHARS = re.compile(r'[\\/:*?"<>|\x00-\x1f]')
 _ALLOWED_COMPONENT_PUNCT = {".", "_", "+", ",", "-"}
@@ -101,6 +109,8 @@ def verify_record_identity(
     manual_confirmation: bool = False,
     provider_document: Mapping[str, Any] | None = None,
     state: Any = None,
+    client: "ADSClient | None" = None,
+    providers: Sequence[DoiProvider] = DEFAULT_DOI_PROVIDERS,
 ) -> dict[str, Any]:
     """Check that a stored record is proven to describe the PDF's bytes.
 
@@ -121,6 +131,11 @@ def verify_record_identity(
         ADS document for the record's primary Bibcode is used when available.
     state : Sidecar or CentralPdfRegistryState, optional
         Catalog state used to look up the cached document.
+    client : ADSClient, optional
+        Client for automatically fetching an unverifiable stored ADS candidate.
+        Valid stored proofs need no request. An omitted client keeps checks local.
+    providers : sequence of DoiProvider, optional
+        Enabled providers. Automatic ADS requests require ADS in this sequence.
 
     Returns
     -------
@@ -131,6 +146,8 @@ def verify_record_identity(
     ------
     IdentityValidationError
         If the identity is conflicting or cannot be independently verified.
+    adsfolio.config.ADSError
+        An enabled ADS record lookup failed.
     """
     view = identity_view(record)
     expected = sha256 or str(view.get("sha256") or "").strip() or None
@@ -152,22 +169,45 @@ def verify_record_identity(
             pass
     if provider_document is None and state is not None:
         provider_document = cached_provider_document(state, view)
-    return assert_mutation_allowed(
-        Path(pdf_path),
-        view,
-        expected_sha256=expected,
-        manual_confirmation=manual_confirmation,
-        provider_document=provider_document,
-    )
+    try:
+        return assert_mutation_allowed(
+            Path(pdf_path),
+            view,
+            expected_sha256=expected,
+            manual_confirmation=manual_confirmation,
+            provider_document=provider_document,
+        )
+    except UnverifiedIdentityError:
+        if client is None or DoiProvider.ADS not in providers:
+            raise
+        bibcode = view.get("bibcode")
+        if isinstance(bibcode, (list, tuple)):
+            bibcode = bibcode[0] if bibcode else ""
+        bibcode = str(bibcode or "").strip()
+        if not bibcode:
+            raise
+        from .identifier import PdfIdentifier
 
-
-def _resolve_rename_template(template: str, metadata: Mapping[str, Any]) -> str:
-    has_bibcode = bool(
-        str(metadata.get("bibcode") or "").strip()
-    ) and is_resolved_record(dict(metadata))
-    if not has_bibcode and template == DEFAULT_SCHEME:
-        return DEFAULT_NONBIBCODE_SCHEME
-    return template
+        registry = getattr(state, "registry", None)
+        cache = getattr(registry, "upsert_ads_documents", None)
+        documents = PdfIdentifier(client).query_docs_for_bibcodes(
+            [bibcode],
+            ads_documents_callback=(
+                (lambda values: cache(values, source="identity:automatic"))
+                if cache is not None
+                else None
+            ),
+        )
+        document = documents.get(bibcode)
+        if document is None:
+            raise
+        return assert_mutation_allowed(
+            Path(pdf_path),
+            view,
+            expected_sha256=expected,
+            manual_confirmation=manual_confirmation,
+            provider_document=document,
+        )
 
 
 class PdfRenamer:
@@ -177,6 +217,8 @@ class PdfRenamer:
         self.client = client
         self.logger = logging.getLogger(__name__)
         self.identity_refused: dict[str, str] = {}
+        self.unchanged: dict[str, str] = {}
+        self.skipped: dict[str, str] = {}
 
     def sanitize_filename(self, name: str, max_bytes: int = 240) -> str:
         """Normalize a filename to a filesystem-safe form."""
@@ -419,6 +461,7 @@ class PdfRenamer:
         move_resolved_to: Path | None = None,
         author_separator: str = "+",
         author_truncation_suffix: str = "+",
+        current_filenames: Sequence[str] | None = None,
     ) -> list[tuple[str, str]]:
         """Rename tracked PDFs with verified ADS or ready local metadata.
 
@@ -429,17 +472,33 @@ class PdfRenamer:
         Records whose identity is not proven by the PDF itself are skipped,
         including in a dry run. Their tracked names and reasons are kept in
         ``identity_refused`` until the next call.
+
+        `current_filenames`, when supplied, limits processing to these current
+        paths relative to the catalog root. An empty sequence selects no files.
+
+        Use the selected template without substitution. Missing fields render
+        as empty components. Record unchanged targets in ``unchanged`` and
+        other skipped reasons in ``skipped``. Clear these mappings for each call.
         """
         self._validate_author_limits(max_authors, authors_when_truncated)
         self.identity_refused = {}
+        self.unchanged = {}
+        self.skipped = {}
         plans: list[tuple[str, str]] = []
+        selected = set(current_filenames) if current_filenames is not None else None
         for original_name, metadata in sidecar.files.items():
-            if not (is_resolved_record(dict(metadata)) or metadata_ready(metadata)):
-                continue
             current_name = metadata.get("current_filename", original_name)
+            if selected is not None and current_name not in selected:
+                continue
+            if not (is_resolved_record(dict(metadata)) or metadata_ready(metadata)):
+                self.skipped[str(current_name)] = (
+                    "Metadata is not ready for renaming. Run Identify or Update by ID."
+                )
+                continue
             source_path = sidecar.directory / current_name
             if not source_path.exists():
                 self.logger.warning("Missing file for rename: %s", source_path)
+                self.skipped[str(current_name)] = "PDF is missing. Refresh the library."
                 continue
 
             stored_sha = str(
@@ -448,11 +507,15 @@ class PdfRenamer:
             if stored_sha:
                 try:
                     actual_sha = sha256_file(source_path)
-                except OSError:
+                except OSError as exc:
+                    self.skipped[str(current_name)] = f"Cannot read PDF: {exc}"
                     continue
                 if actual_sha != stored_sha:
                     self.logger.warning(
                         "Skipping rename due to hash mismatch: %s", source_path
+                    )
+                    self.skipped[str(current_name)] = (
+                        "PDF content changed. Run Identify to check the current file."
                     )
                     continue
 
@@ -467,9 +530,8 @@ class PdfRenamer:
                 self.identity_refused[str(current_name)] = str(exc)
                 continue
 
-            effective_template = _resolve_rename_template(template, metadata)
             new_name = self.render(
-                effective_template,
+                template,
                 metadata,
                 author_format,
                 max_authors,
@@ -493,11 +555,16 @@ class PdfRenamer:
 
             target_path = target_directory / new_name
             if target_path == source_path:
+                self.unchanged[str(current_name)] = new_name
                 continue
             if is_same_file_alias(source_path, target_path):
+                self.unchanged[str(current_name)] = new_name
                 continue
             if target_path.exists() and target_path != source_path:
                 self.logger.warning("Skipping existing target: %s", target_path)
+                self.skipped[str(current_name)] = (
+                    f"Destination exists: {target_path}. Review both PDFs before choosing a filename."
+                )
                 continue
 
             plans.append((current_name, new_name))
@@ -540,14 +607,13 @@ class PdfRenamer:
 
         verify_record_identity(source, metadata, sha256=stored_sha or None, state=state)
 
-        effective_template = _resolve_rename_template(template, metadata)
         destination_directory = (
             source.parent
             if target_directory is None
             else Path(target_directory).expanduser().resolve()
         )
         target = destination_directory / self.render(
-            effective_template,
+            template,
             metadata,
             author_format=author_format,
             max_authors=max_authors,

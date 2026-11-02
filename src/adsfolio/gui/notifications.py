@@ -134,7 +134,7 @@ class NotificationButton(BadgeToolButton):
 
 
 class NoticeBar(QFrame):
-    """Show one notice from an insertion-ordered replacement queue."""
+    """Show every queued notice with independently routed action controls."""
 
     action_requested = Signal(object)
     manual_entry_requested = Signal(object)
@@ -156,7 +156,9 @@ class NoticeBar(QFrame):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._notices: dict[str, Notice] = {}
+        self._additional_bars: dict[str, NoticeBar] = {}
         layout = QVBoxLayout(self)
+        self._layout = layout
         layout.setContentsMargins(8, 4, 8, 4)
         message_row = QHBoxLayout()
         actions = QHBoxLayout()
@@ -325,14 +327,13 @@ class NoticeBar(QFrame):
     @staticmethod
     def _can_use_id(notice: Notice) -> bool:
         return bool(
-            notice.candidate_confirmable
-            and notice.candidate_bibcode
+            notice.candidate_bibcode
             and notice.candidate_sha256
             and notice.candidate_fingerprint
         )
 
     def _request_use_id(self) -> None:
-        """Confirm the displayed candidate for the exact PDF that produced it."""
+        """Request verification or confirmation of the exact displayed candidate."""
         notice = self._current()
         if notice is not None and self._can_use_id(notice):
             self.use_id_requested.emit(notice)
@@ -351,8 +352,47 @@ class NoticeBar(QFrame):
         self._notices.clear()
         self._render()
 
+    def _dismiss_additional(self, key: str, payload: object) -> None:
+        self.dismiss_requested.emit(payload)
+        self.dismiss(key)
+
+    def _render_additional(self, notices: tuple[Notice, ...]) -> None:
+        """Show every queued notice with actions bound to its own payload."""
+        keys = {notice.key for notice in notices}
+        for key in tuple(self._additional_bars):
+            if key not in keys:
+                bar = self._additional_bars.pop(key)
+                self._layout.removeWidget(bar)
+                bar.hide()
+                bar.setParent(None)
+                bar.deleteLater()
+        for notice in notices:
+            bar = self._additional_bars.get(notice.key)
+            if bar is None:
+                bar = NoticeBar(self)
+                self._additional_bars[notice.key] = bar
+                self._layout.addWidget(bar)
+                for name in (
+                    "action_requested",
+                    "manual_entry_requested",
+                    "update_by_id_requested",
+                    "open_requested",
+                    "ads_entry_requested",
+                    "use_id_requested",
+                    "reveal_requested",
+                ):
+                    getattr(bar, name).connect(getattr(self, name).emit)
+                bar.dismiss_requested.connect(
+                    lambda payload, key=notice.key: self._dismiss_additional(
+                        key, payload
+                    )
+                )
+            if bar._current() is not notice:
+                bar.enqueue(notice)
+
     def _render(self) -> None:
         notice = self._current()
+        self._render_additional(self.queued_notices()[1:])
         self.setVisible(notice is not None)
         if notice is None:
             self.message.clear()
@@ -375,7 +415,9 @@ class NoticeBar(QFrame):
         self.message.setText(notice.message)
         self.message.setToolTip(notice.details or notice.message)
         remaining = len(self._notices) - 1
-        self.pending_count.setText(f"{remaining} more" if remaining else "")
+        self.pending_count.setText(
+            f"{len(self._notices)} notifications" if remaining else ""
+        )
         self.pending_count.setToolTip(
             "\n\n".join(
                 f"{item.message}\n{item.details}" if item.details else item.message
@@ -408,12 +450,18 @@ class NoticeBar(QFrame):
             else ""
         )
         self.use_id_button.setVisible(self._can_use_id(notice))
+        self.use_id_button.setText(
+            "Use This ID" if notice.candidate_confirmable else "Verify This ID"
+        )
+        self.use_id_button.setAccessibleName(self.use_id_button.text())
         self.use_id_button.setToolTip(
             f"Use This ID: {notice.candidate_bibcode}\n"
             "Confirm this record matches the PDF. Update its catalog metadata and apply saved Rename settings. "
             "The PDF contents stay unchanged."
-            if self._can_use_id(notice)
-            else ""
+            if notice.candidate_confirmable
+            else f"Verify This ID: {notice.candidate_bibcode}\n"
+            "Fetch this ADS record and check it against the PDF before updating metadata or renaming. "
+            "A conflicting identifier still stops the update."
         )
         self.update_by_id_button.setVisible(notice.update_by_id)
         self.manual_entry_button.setVisible(notice.manual_entry)
@@ -475,7 +523,7 @@ class NotificationPanel(QFrame):
     """Display queued notices and view help outside the main pane layout."""
 
     def __init__(self, parent: QWidget | None = None) -> None:
-        super().__init__(parent, Qt.Popup)
+        super().__init__(parent)
         self.setObjectName("notification_panel")
         self.setAccessibleName("Notifications and view help")
         self.setFocusPolicy(Qt.StrongFocus)
@@ -550,7 +598,7 @@ class NotificationPanel(QFrame):
         Parameters
         ----------
         anchor
-            Toolbar control whose screen and position place the popup.
+            Toolbar control whose screen and position place the panel.
         """
         available = anchor.screen().availableGeometry()
         width = min(720, anchor.window().width(), available.width())
@@ -559,10 +607,15 @@ class NotificationPanel(QFrame):
         point = anchor.mapToGlobal(QPoint(0, anchor.height()))
         x = max(available.left(), min(point.x(), available.right() - width + 1))
         y = max(available.top(), min(point.y(), available.bottom() - height + 1))
+        parent = self.parentWidget()
+        if parent is not None:
+            point = parent.mapFromGlobal(QPoint(x, y))
+            x = max(0, min(point.x(), parent.width() - width))
+            y = max(0, min(point.y(), parent.height() - height))
         self.move(x, y)
         self.show()
         self.raise_()
-        self.setFocus(Qt.PopupFocusReason)
+        self.setFocus(Qt.OtherFocusReason)
 
     def keyPressEvent(self, event: QKeyEvent) -> None:
         """Close the panel on Escape without dismissing queued notices."""

@@ -21,6 +21,7 @@ from PySide6.QtCore import (
 from PySide6.QtGui import QColor, QImage, QMouseEvent, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
+    QCheckBox,
     QComboBox,
     QDialog,
     QFileDialog,
@@ -400,6 +401,14 @@ class AnnotationMergeDialog(QDialog):
             "Choose originals to move to Trash after a complete, verified merge."
         )
         self.cleanup_button.hide()
+        self.move_originals = QCheckBox("Move originals to Trash after merge", self)
+        self.move_originals.setChecked(True)
+        self.move_originals.setToolTip(
+            "Keep only the verified merged PDF in the library. "
+            "Restore input PDFs from Trash if needed. "
+            "Clear this option to keep the input PDFs in place. "
+            "Partial merges always keep their inputs."
+        )
         self.status = QLabel(self)
         self.status.setWordWrap(True)
 
@@ -472,6 +481,7 @@ class AnnotationMergeDialog(QDialog):
         side.addWidget(self.retry_button)
         side.addWidget(self.status)
         side.addWidget(self.cleanup_button)
+        side.addWidget(self.move_originals)
         finish_row = QHBoxLayout()
         finish_row.addWidget(self.save_button)
         finish_row.addWidget(self.close_button)
@@ -1174,29 +1184,23 @@ class AnnotationMergeDialog(QDialog):
         return self.report
 
     def _show_saved_result(self) -> None:
-        """Offer cleanup only after a complete merged copy is verified."""
+        """Apply the selected cleanup option only after a verified complete save."""
         if self.report is None:
             return
         if not self.report.complete:
             QMessageBox.information(self, "Merged copy saved", self.report.summary())
             return
-        message = QMessageBox(self)
-        message.setWindowTitle("Merged copy saved")
-        message.setIcon(QMessageBox.Information)
-        message.setText("The complete merged PDF is saved and verified.")
-        message.setInformativeText(
-            "Keep the originals, or choose which original PDFs to move to Trash."
-        )
-        message.setDetailedText(self.report.summary())
-        keep = message.addButton("Keep originals", QMessageBox.RejectRole)
-        cleanup = message.addButton("Remove original PDFs…", QMessageBox.ActionRole)
-        message.setDefaultButton(keep)
-        message.exec()
-        if message.clickedButton() is cleanup:
-            self.cleanup_originals()
+        if self.move_originals.isChecked():
+            self._cleanup_originals(automatic=True)
+        else:
+            QMessageBox.information(self, "Merged copy saved", self.report.summary())
 
     def cleanup_originals(self) -> None:
         """Let the reader remove originals after verifying the saved output."""
+        self._cleanup_originals(automatic=False)
+
+    def _cleanup_originals(self, *, automatic: bool) -> None:
+        """Move verified inputs automatically or open the explicit cleanup review."""
         from .merge_cleanup import MergeCleanupDialog
 
         if self.report is None or not self.report.complete:
@@ -1205,7 +1209,10 @@ class AnnotationMergeDialog(QDialog):
             )
             return
         cleanup = MergeCleanupDialog(self.report, self)
-        cleanup.exec()
+        if automatic:
+            cleanup.move_selected_to_trash()
+        if not automatic or cleanup.result() != QDialog.Accepted:
+            cleanup.exec()
         if cleanup.trashed_paths:
             self.originals_trashed.emit(tuple(cleanup.trashed_paths))
             # The review pages may now be in Trash. Return to the library.

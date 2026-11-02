@@ -61,3 +61,73 @@ def test_iter_pdf_paths_propagates_listing_failure(
     with pytest.raises(PermissionError):
         list(iter_pdf_paths(tmp_path, recursive=True))
     assert [p.name for p in iter_pdf_paths(tmp_path, recursive=False)] == ["a.pdf"]
+
+
+def test_unresolved_move_does_not_overwrite_a_racing_destination(tmp_path, monkeypatch):
+    from adsfolio.pdf import cli_common
+
+    source = tmp_path / "paper.pdf"
+    source.write_bytes(b"Original PDF bytes")
+    output = tmp_path / "unresolved"
+    output.mkdir()
+    destination = output / source.name
+
+    def racing_destination(directory, filename):
+        destination.write_bytes(b"Other PDF bytes")
+        return destination
+
+    monkeypatch.setattr(cli_common, "unique_destination", racing_destination)
+
+    with pytest.raises(FileExistsError):
+        cli_common.handle_unresolved(source, output, apply=True)
+    assert source.read_bytes() == b"Original PDF bytes"
+    assert destination.read_bytes() == b"Other PDF bytes"
+
+
+def test_exclusive_move_preserves_source_when_unlink_fails(tmp_path, monkeypatch):
+    source = tmp_path / "source.pdf"
+    destination = tmp_path / "destination.pdf"
+    source.write_bytes(b"Original bytes")
+    real_unlink = Path.unlink
+
+    def unlink(path, *args, **kwargs):
+        if path == source:
+            raise PermissionError("Source is busy")
+        return real_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", unlink)
+    with pytest.raises(PermissionError):
+        files.move_file_exclusive(source, destination)
+    assert source.read_bytes() == b"Original bytes"
+    assert not destination.exists()
+
+
+def test_external_tracked_move_rolls_back_when_history_update_fails(
+    tmp_path, monkeypatch
+):
+    from adsfolio.pdf.registry import open_registry_state
+    from adsfolio.pdf.tracked_move import move_tracked_file_outside_root
+
+    root = tmp_path / "library"
+    root.mkdir()
+    source = root / "paper.pdf"
+    source.write_bytes(b"Keep original bytes")
+    destination = tmp_path / "outside/paper.pdf"
+    state = open_registry_state(root)
+    state.upsert_file(
+        source.name, {"sha256": files.sha256_file(source), "status": "unresolved"}
+    )
+    before = state.get_file(source.name)
+
+    def fail(*args):
+        raise RuntimeError("Catalog write failed")
+
+    monkeypatch.setattr(state.registry.catalog, "mark_location_missing", fail)
+    try:
+        with pytest.raises(RuntimeError, match="Catalog write failed"):
+            move_tracked_file_outside_root(state, source, destination)
+        assert source.read_bytes() == b"Keep original bytes"
+        assert not destination.exists()
+        assert state.get_file(source.name) == before
+    finally:
+        state.close()

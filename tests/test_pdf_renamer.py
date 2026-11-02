@@ -242,6 +242,39 @@ def test_batch_rename_uses_authors_when_truncated(tmp_path):
     assert plans == [("old.pdf", "SmithJ+DoeA+.pdf")]
 
 
+@pytest.mark.parametrize("single", [False, True])
+@pytest.mark.parametrize("dry_run", [False, True])
+def test_rename_does_not_replace_selected_bibcode_field_with_year(
+    tmp_path, single, dry_run
+):
+    source = tmp_path / "old.pdf"
+    write_pdf(source, doi="10.1234/example")
+    from adsfolio.pdf.files import sha256_file
+    from adsfolio.pdf.identifier import PdfIdentifier
+
+    metadata = PdfIdentifier(None).build_record(
+        _sample_metadata(bibcode="", doi=["10.1234/example"]), source
+    )
+    digest = sha256_file(source)
+    sidecar = Sidecar(tmp_path)
+    sidecar.upsert_file(source.name, metadata)
+    expected = tmp_path / "SmithJ+DoeA+LeeC_-Paper_Title.pdf"
+    renamer = PdfRenamer()
+
+    if single:
+        assert (
+            renamer.rename_tracked_file(
+                sidecar, source, metadata, template=DEFAULT_SCHEME, dry_run=dry_run
+            )
+            == expected
+        )
+    else:
+        assert renamer.batch_rename(
+            sidecar, template=DEFAULT_SCHEME, dry_run=dry_run
+        ) == [(source.name, expected.name)]
+    assert sha256_file(source if dry_run else expected) == digest
+
+
 def test_pdf_renamer_strips_ads_html_markup_from_title():
     """ADS subscript markup never leaks into a generated filename."""
     result = PdfRenamer().render(

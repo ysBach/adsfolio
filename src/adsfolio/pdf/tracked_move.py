@@ -6,13 +6,19 @@ import os
 import unicodedata
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
+
+from .files import move_file_exclusive
+
+if TYPE_CHECKING:
+    from .registry import CentralPdfRegistryState
 
 __all__ = [
     "TrackedMoveConflictError",
     "TrackedMoveRollbackError",
     "is_same_file_alias",
     "move_tracked_file",
+    "move_tracked_file_outside_root",
     "resolved_file_directory",
 ]
 
@@ -226,5 +232,69 @@ def move_tracked_file(
                 "Catalog update failed and rollback was incomplete: "
                 f"catalog={catalog_error!r}; rollback={rollback_errors!r}"
             ) from rollback_errors[-1]
+        raise
+    return destination
+
+
+def move_tracked_file_outside_root(
+    state: CentralPdfRegistryState, source_path: Path, destination_path: Path
+) -> Path:
+    """Move a selected PDF outside its library and retain its location history.
+
+    Parameters
+    ----------
+    state : CentralPdfRegistryState
+        Open catalog state for the source library.
+    source_path : Path
+        Current path of the tracked PDF inside the library root.
+    destination_path : Path
+        New path outside the root on the same filesystem.
+
+    Returns
+    -------
+    Path
+        Destination after the catalog marks the old location missing.
+
+    Raises
+    ------
+    ValueError
+        The source lies outside the root or the destination lies inside it.
+    KeyError
+        The source has no tracked location.
+    OSError
+        The exclusive file move failed.
+    TrackedMoveRollbackError
+        A catalog failure also prevented filesystem rollback.
+
+    Notes
+    -----
+    Catalog failure rolls the file move back without replacing another file.
+    """
+    root = Path(state.directory).resolve()
+    source = Path(source_path).resolve()
+    raw_destination = Path(destination_path).expanduser()
+    destination = raw_destination.parent.resolve() / raw_destination.name
+    source_relative = _relative_to_root(root, source)
+    if destination.is_relative_to(root):
+        raise ValueError(
+            "Use an internal tracked move for a destination inside the root."
+        )
+    if state.find_by_current_filename(source_relative) is None:
+        raise KeyError(f"Source is not tracked in the catalog: {source_relative}")
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    move_file_exclusive(source, destination)
+    try:
+        if not state.registry.catalog.mark_location_missing(root, source_relative):
+            raise RuntimeError(
+                "Catalog did not retain the moved file's location history."
+            )
+    except Exception as catalog_error:
+        try:
+            move_file_exclusive(destination, source)
+        except OSError as rollback_error:
+            raise TrackedMoveRollbackError(
+                "External move failed and filesystem rollback was incomplete: "
+                f"catalog={catalog_error!r}; rollback={rollback_error!r}"
+            ) from rollback_error
         raise
     return destination

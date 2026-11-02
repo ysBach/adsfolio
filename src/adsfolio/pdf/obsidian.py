@@ -1,7 +1,10 @@
 """Obsidian-friendly Markdown note generation for tracked PDFs."""
 
 import logging
+import os
 import re
+import stat
+import tempfile
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -43,6 +46,42 @@ class ObsidianNoteWriter:
 
     def _chunked(self, items: list[str], chunk_size: int) -> list[list[str]]:
         return [items[i : i + chunk_size] for i in range(0, len(items), chunk_size)]
+
+    def _write_note_atomic(
+        self, path: Path, content: bytes, expected: bytes | None
+    ) -> bool:
+        """Stage a complete note and check its original content before replacement."""
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="wb",
+                dir=path.parent,
+                prefix=f".{path.name}.",
+                suffix=".tmp",
+                delete=False,
+            ) as handle:
+                temporary = Path(handle.name)
+                handle.write(content)
+                handle.flush()
+                os.fsync(handle.fileno())
+            if expected is None:
+                try:
+                    os.link(temporary, path)
+                except FileExistsError:
+                    return False
+            else:
+                try:
+                    if path.is_symlink() or path.read_bytes() != expected:
+                        return False
+                    temporary.chmod(stat.S_IMODE(path.stat().st_mode))
+                except FileNotFoundError:
+                    return False
+                os.replace(temporary, path)
+            return True
+        finally:
+            if temporary is not None:
+                temporary.unlink(missing_ok=True)
 
     def fetch_missing_abstracts(self, bibcodes: list[str]) -> dict[str, str]:
         """Batch-fetch abstracts for `bibcodes` from ADS. Returns bibcode -> abstract."""
@@ -317,23 +356,17 @@ class ObsidianNoteWriter:
             if content == existing.get(plan.original_filename):
                 plan.action = "skip-unchanged"
                 continue
-            if plan.note_path.exists():
-                if (
-                    plan.original_filename not in existing
-                    or plan.note_path.read_bytes()
-                    != existing[plan.original_filename].encode("utf-8")
-                ):
-                    self.logger.warning(
-                        "Note changed during export: %s", plan.note_path
-                    )
-                    plan.action = "skip-changed"
-                    continue
-            elif plan.original_filename in existing:
-                self.logger.warning("Note removed during export: %s", plan.note_path)
+            expected = (
+                existing[plan.original_filename].encode("utf-8")
+                if plan.original_filename in existing
+                else None
+            )
+            if not self._write_note_atomic(
+                plan.note_path, content.encode("utf-8"), expected
+            ):
+                self.logger.warning("Note changed during export: %s", plan.note_path)
                 plan.action = "skip-changed"
                 continue
-            plan.note_path.parent.mkdir(parents=True, exist_ok=True)
-            plan.note_path.write_bytes(content.encode("utf-8"))
 
         if changed:
             state.save()

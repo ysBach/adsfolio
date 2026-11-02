@@ -340,6 +340,8 @@ class MainWindow(QMainWindow):
         self._ads_refresh_root: Path | None = None
         # PDFs that the next Identify dialog targets; empty means the library.
         self._identify_files: tuple[Path, ...] = ()
+        self._identify_rename_files: tuple[Path, ...] = ()
+        self._identify_rename_context: _LibraryViewContext | None = None
         self._local_refresh_context: _LibraryViewContext | None = None
         self._local_refresh_result: LibraryRefresh | None = None
         self._guided_identify_context: _LibraryViewContext | None = None
@@ -1441,6 +1443,8 @@ class MainWindow(QMainWindow):
             self._launch_local_refresh(root)
         elif kind == "identify":
             self._open_identify_dialog(root)
+        elif kind == "identify_rename":
+            self._launch_identify_and_rename(root)
         elif kind == "guided_identify":
             self._launch_guided_identification(root)
         elif kind == "manual_metadata":
@@ -1769,7 +1773,6 @@ class MainWindow(QMainWindow):
         if (
             not isinstance(event, WatchEvent)
             or not self._is_current_watch_event(event)
-            or not notice.candidate_confirmable
             or not notice.candidate_bibcode
             or not notice.candidate_sha256
             or not notice.candidate_fingerprint
@@ -1848,7 +1851,6 @@ class MainWindow(QMainWindow):
             selection.setCurrentIndex(first_index, QItemSelectionModel.NoUpdate)
             self.table.scrollTo(first_index)
         self._sync_detail_and_selection_actions()
-        self.notification_panel.hide()
 
     def _handle_notice_action(self, payload: object) -> None:
         if isinstance(payload, RenameConflictRequest):
@@ -2572,6 +2574,19 @@ class MainWindow(QMainWindow):
             "Identify only these PDFs, with the strategies and providers you choose"
         )
         identify.setEnabled(self.identify_action.isEnabled())
+        identify_rename = menu.addAction(
+            "Identify && Rename Selected PDF"
+            if count == 1
+            else f"Identify && Rename {count} Selected PDFs",
+            lambda: self._identify_and_rename(paths),
+        )
+        identify_rename.setToolTip(
+            "Identify these PDFs, then rename verified matches with saved settings. "
+            "Leave unverified files unchanged."
+        )
+        identify_rename.setEnabled(
+            self.identify_action.isEnabled() and self.rename_action.isEnabled()
+        )
         if count == 1:
             menu.addAction(self.refresh_selected_ads_action)
             menu.addAction(self.update_selected_ads_action)
@@ -3708,6 +3723,78 @@ class MainWindow(QMainWindow):
         self._identify_files = tuple(files)
         self._request_foreground_dialog("identify", root)
 
+    def _identify_and_rename(self, files: Sequence[Path]) -> None:
+        """Identify and rename selected PDFs with saved settings."""
+        if (
+            self.current_root is None
+            or not files
+            or self.job is not None
+            or self._pending_watch_dialog is not None
+            or self._pending_ads_refresh is not None
+        ):
+            return
+        root = self.current_root.resolve()
+        self._refresh_selection_id = None
+        self._identify_rename_files = tuple(files)
+        self._identify_rename_context = _LibraryViewContext(
+            root=root,
+            selected=self._selected_records(),
+            current=deepcopy(self._selected_record()),
+            query=self.current_query,
+            loaded=self.model.rowCount(),
+            scroll=self.table.verticalScrollBar().value(),
+        )
+        self._request_foreground_dialog("identify_rename", root)
+
+    def _launch_identify_and_rename(self, root: Path) -> None:
+        """Run selected identification and renaming after watcher writes pause."""
+        files = self._identify_rename_files
+        self._identify_rename_files = ()
+        if self._close_requested or str(root) not in self.registries or not files:
+            self._identify_rename_context = None
+            self._resume_foreground_watch()
+            return
+        file_flags = [argument for path in files for argument in ("--file", str(path))]
+        identify = cli_argv(
+            "pdf",
+            "identify",
+            str(root),
+            "--settings-scope",
+            self.config.identify_scopes.get(str(root), "global"),
+            "--clear-output-unresolved",
+            *file_flags,
+        )
+        settings = self._effective_rename_settings(root)
+        rename = cli_argv(
+            "pdf",
+            "rename",
+            str(root),
+            "--scheme",
+            settings.template,
+            "--author-format",
+            settings.author_format,
+            "--max-authors",
+            str(settings.max_authors),
+            "--authors-when-truncated",
+            str(settings.authors_when_truncated),
+            "--char-policy",
+            settings.char_policy,
+            "--author-separator",
+            settings.author_separator,
+            "--author-truncation-suffix",
+            settings.author_truncation_suffix,
+            "--output-unresolved",
+            str(self._effective_unresolved_directory(root)),
+            *file_flags,
+            "--apply",
+        )
+        job = CommandJob(
+            identify, follow_up_argv=[rename], parent=self, working_directory=root
+        )
+        self._watch_job(job)
+        self.status.showMessage(f"Identifying and renaming {len(files)} selected PDFs…")
+        job.start()
+
     def _request_foreground_dialog(
         self,
         kind: str,
@@ -3738,6 +3825,8 @@ class MainWindow(QMainWindow):
             self._launch_local_refresh(root)
         elif kind == "identify":
             self._open_identify_dialog(root)
+        elif kind == "identify_rename":
+            self._launch_identify_and_rename(root)
         elif kind == "guided_identify":
             self._launch_guided_identification(root)
         elif kind == "manual_metadata":
@@ -3942,7 +4031,8 @@ class MainWindow(QMainWindow):
                 "You can replace {bibstem} with the full journal name in either format.\n"
                 "Examples: Last-2020-Nature or Science-123-45\n"
                 "Separate fields with hyphens, underscores, or spaces.\n"
-                "These reference formats query ADS only; other sites are not searched.\n"
+                "Reference hints search ADS. Candidates must match this PDF.\n"
+                "If none match, its own DOI or arXiv ID can use the enabled providers.\n"
                 "If several papers match, select the correct one.\n\n"
                 "The update applies saved Rename settings to this PDF.\n"
                 "DOI and arXiv lookups can use Crossref or DataCite if ADS has no match.",
@@ -3978,9 +4068,10 @@ class MainWindow(QMainWindow):
             str(record["relative_path"]),
         ]
         if reviewed_candidate is not None:
+            if reviewed_candidate.candidate_confirmable:
+                arguments.append("--confirm-identity")
             arguments.extend(
                 [
-                    "--confirm-identity",
                     "--expected-sha256",
                     str(reviewed_candidate.candidate_sha256),
                     "--expected-identity",
@@ -4364,6 +4455,8 @@ class MainWindow(QMainWindow):
         common = (
             "--rename-scope",
             rename_scope,
+            "--identify-scope",
+            self.config.identify_scopes.get(str(refresh_root), "global"),
             "--output-unresolved",
             str(output_unresolved),
         )
@@ -4641,6 +4734,8 @@ class MainWindow(QMainWindow):
         self.job = None
         self._local_refresh_context = None
         self._local_refresh_result = None
+        self._identify_rename_context = None
+        self._identify_rename_files = ()
         if self._guided_identify_context is not None:
             root = self._guided_identify_context.root
             self.notice_bar.enqueue(
@@ -4663,6 +4758,9 @@ class MainWindow(QMainWindow):
             self.close()
 
     def _job_finished(self, code: int) -> None:
+        identify_rename_context = self._identify_rename_context
+        self._identify_rename_context = None
+        self._identify_rename_files = ()
         candidate_notice = self._candidate_update_notice
         self._candidate_update_notice = None
         identify_context = self._guided_identify_context
@@ -4675,7 +4773,9 @@ class MainWindow(QMainWindow):
         candidates = self._ads_match_candidates
         context = self._ambiguous_ads_match_context
         refresh_root = (
-            identify_context.root
+            identify_rename_context.root
+            if identify_rename_context
+            else identify_context.root
             if identify_context
             else local_context.root
             if local_context
@@ -4699,6 +4799,16 @@ class MainWindow(QMainWindow):
         self._resume_foreground_watch()
         if refresh_root is None or str(refresh_root) in self.registries:
             self.refresh(refresh_root)
+        if (
+            identify_rename_context is not None
+            and str(identify_rename_context.root) in self.registries
+        ):
+            self._restore_library_selection(identify_rename_context)
+            self.status.showMessage(
+                "Identify and rename finished. See the job log for changes and skipped files."
+                if code == 0
+                else "Identify and rename stopped. See the job log for details."
+            )
         if local_context is not None and str(local_context.root) in self.registries:
             self._restore_library_selection(local_context)
             if local_result is not None:

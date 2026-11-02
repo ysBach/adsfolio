@@ -322,7 +322,11 @@ def test_ads_bibcode_lookup_accepts_only_unique_aliases(
     if ambiguous:
         documents.append({"bibcode": "2026ApJ..1009...42C", field: [alias]})
     client = SimpleNamespace(
-        search=SimpleNamespace(query=lambda **kwargs: SimpleNamespace(docs=documents))
+        search=SimpleNamespace(
+            query=lambda **kwargs: SimpleNamespace(
+                docs=documents, num_found=len(documents), start=0
+            )
+        )
     )
 
     result = PdfIdentifier(client).query_docs_for_bibcodes([old])

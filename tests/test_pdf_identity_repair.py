@@ -553,7 +553,7 @@ def test_doi_provider_record_without_bibcode_round_trip(tmp_path: Path) -> None:
     item = plan["items"][0]
     assert item["after_bibcode"] == ""
     assert item["after_status"] == "unresolved"
-    assert item["new_rel"] == "CurieM+CurieP_2021-Crossref_Title_0.pdf"
+    assert item["new_rel"] == "CurieM+CurieP_-Crossref_Title_0.pdf"
 
     journal = env.apply()
     record = env.catalog.get_file(env.root, item["new_rel"])

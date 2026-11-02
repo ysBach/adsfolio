@@ -887,7 +887,10 @@ def assert_mutation_allowed(
         else:
             message += " Use Update by ID to review and confirm this candidate."
     else:
-        message += " Run Update by ID with an identifier printed in the PDF."
+        if candidate_bibcode:
+            message += " Verify This ID to fetch and check this candidate. Use Update by ID to choose another record."
+        else:
+            message += " Run Update by ID with an identifier printed in the PDF."
     message += " The PDF contents and filename are unchanged."
     raise UnverifiedIdentityError(
         message,

@@ -1,13 +1,14 @@
 """Keep the library panes stationary while notices and view help change."""
 
 import pytest
-from PySide6.QtCore import QPoint, Qt
+from PySide6.QtCore import QPoint, Qt, QTimer
+from PySide6.QtWidgets import QDialog
 from test_gui_main_window_watch import _window_factory
 
 from adsfolio.config import Config
 from adsfolio.gui.config import GuiConfig, RootEntry
 from adsfolio.gui.library import LibraryView
-from adsfolio.gui.notifications import Notice
+from adsfolio.gui.notifications import Notice, NoticeBar
 
 
 def library_window(monkeypatch, qtbot, tmp_path, width):
@@ -142,3 +143,68 @@ def test_reading_position_stays_stable_until_the_displayed_message_changes(
     window.notice_bar.dismiss("first")
     qtbot.wait(1)
     assert scroll.value() == 0
+
+
+def test_notification_panel_stays_open_after_an_action_and_outside_click(
+    monkeypatch, qtbot, tmp_path
+):
+    window = library_window(monkeypatch, qtbot, tmp_path, 1200)
+    bar = window.notice_bar
+    notice = Notice(
+        "candidate",
+        "Review this candidate",
+        reveal_path=tmp_path / "paper.pdf",
+        candidate_bibcode="2026ApJ..1009L..41B",
+        candidate_sha256="a" * 64,
+        candidate_fingerprint="b" * 64,
+        candidate_confirmable=True,
+    )
+    bar.enqueue(notice)
+    window.notifications_button.click()
+    panel = window.notification_panel
+    bar.open_requested.disconnect()
+
+    def open_review(_path):
+        dialog = QDialog(window)
+        QTimer.singleShot(0, dialog.accept)
+        dialog.exec()
+
+    bar.open_requested.connect(open_review)
+    qtbot.mouseClick(bar.open_button, Qt.LeftButton)
+    assert panel.isVisible()
+    qtbot.mouseClick(window.table.viewport(), Qt.LeftButton)
+    assert panel.isVisible()
+    confirmations = []
+    bar.use_id_requested.connect(confirmations.append)
+    qtbot.mouseClick(bar.use_id_button, Qt.LeftButton)
+    assert confirmations == [notice]
+    assert panel.isVisible()
+    qtbot.keyClick(panel, Qt.Key_Escape)
+    assert not panel.isVisible()
+
+
+def test_last_notification_action_is_accessible_by_scrolling(
+    monkeypatch, qtbot, tmp_path
+):
+    window = library_window(monkeypatch, qtbot, tmp_path, 1200)
+    baseline = pane_rectangles(window)
+    for index in range(25):
+        window.notice_bar.enqueue(
+            Notice(str(index), f"Item {index}", reveal_path=tmp_path / f"{index}.pdf")
+        )
+    window.notifications_button.click()
+    panel = window.notification_panel
+    row = next(
+        bar
+        for bar in window.notice_bar.findChildren(NoticeBar)
+        if bar.message.text() == "Item 24"
+    )
+    qtbot.waitUntil(lambda: panel.scroll_area.verticalScrollBar().maximum() > 0)
+    panel.scroll_area.ensureWidgetVisible(row.open_button)
+    opened = []
+    window.notice_bar.open_requested.disconnect()
+    window.notice_bar.open_requested.connect(opened.append)
+    qtbot.mouseClick(row.open_button, Qt.LeftButton)
+    assert opened == [tmp_path / "24.pdf"]
+    assert panel.isVisible()
+    assert pane_rectangles(window) == baseline

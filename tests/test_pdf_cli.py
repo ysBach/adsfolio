@@ -374,7 +374,219 @@ def test_identify_unresolved_move_is_dry_run_without_apply(tmp_path, monkeypatch
     )
     assert result.exit_code == 0
     assert "[dry-run] move unresolved" not in result.output
+    assert "Previewed file moves: 1" in result.output
+    assert "--apply" in result.output
     assert pdf_path.exists()
+
+
+def test_identify_external_unresolved_move_retains_missing_location_history(
+    tmp_path, monkeypatch
+):
+    root = tmp_path / "library"
+    root.mkdir()
+    source = root / "paper.pdf"
+    digest = _write_pdf(source, doi="")
+    output = tmp_path / "outside"
+    monkeypatch.setattr(PdfIdentifier, "resolve_many", lambda *args, **kwargs: {})
+
+    result = CliRunner().invoke(
+        pdf,
+        [
+            "identify",
+            str(root),
+            "--output-unresolved",
+            str(output),
+            "--apply",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert not source.exists()
+    assert sha256_file(output / source.name) == digest
+    state = open_registry_state(root)
+    try:
+        assert list(state.registry.iter_files()) == []
+        historical = list(state.registry.iter_files(include_missing=True))
+        assert len(historical) == 1
+        assert historical[0]["missing_at"] is not None
+        assert historical[0]["sha256"] == digest
+    finally:
+        state.close()
+
+
+@pytest.mark.parametrize("has_ads", [False, True])
+def test_identify_reports_verified_existing_metadata_without_move_advice(
+    tmp_path, monkeypatch, has_ads
+):
+    source = tmp_path / "known.pdf"
+    digest = _write_pdf(source)
+    record = _proven_metadata(source, bibcode="2024ApJ...900..100S" if has_ads else "")
+    record["notes"] = "Keep my notes"
+    state = open_registry_state(tmp_path)
+    state.upsert_file(source.name, record)
+    before = state.get_file(source.name)
+    state.close()
+    monkeypatch.setattr(
+        PdfIdentifier,
+        "resolve_many",
+        lambda *args, **kwargs: pytest.fail("Verified metadata needs no new lookup"),
+    )
+
+    result = CliRunner().invoke(
+        pdf,
+        [
+            "identify",
+            str(tmp_path),
+            "--file",
+            str(source),
+            "--output-unresolved",
+            "unresolved",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "Already identified PDFs (verified): 1" in result.output
+    assert "No file moves planned." in result.output
+    assert "--apply" not in result.output
+    assert "Resolved PDFs: 0" in result.output
+    assert "Unresolved PDFs: 0" in result.output
+    assert sha256_file(source) == digest
+    assert not (tmp_path / "unresolved").exists()
+    state = open_registry_state(tmp_path)
+    try:
+        assert state.get_file(source.name) == before
+    finally:
+        state.close()
+
+
+def test_identify_does_not_offer_moves_for_empty_scan(tmp_path):
+    result = CliRunner().invoke(
+        pdf, ["identify", str(tmp_path), "--output-unresolved", "unresolved"]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "No file moves planned." in result.output
+    assert "--apply" not in result.output
+    assert not (tmp_path / "unresolved").exists()
+
+
+def test_rename_uses_exact_selected_template_without_substituting_year(tmp_path):
+    source = tmp_path / "SmithJ_2024-Paper_Title.pdf"
+    digest = _write_pdf(source)
+    state = open_registry_state(tmp_path)
+    state.upsert_file(source.name, _proven_metadata(source, bibcode=""))
+    state.close()
+
+    result = CliRunner().invoke(
+        pdf, ["rename", str(tmp_path), "--file", str(source), "--apply"]
+    )
+
+    assert result.exit_code == 0, result.output
+    target = tmp_path / "SmithJ_-Paper_Title.pdf"
+    assert f"{source.name} -> {target.name}" in result.output
+    assert "non-ADS rename rule" not in result.output
+    assert sha256_file(target) == digest
+    assert not source.exists()
+
+    changed = CliRunner().invoke(
+        pdf,
+        [
+            "rename",
+            str(tmp_path),
+            "--file",
+            str(target),
+            "--scheme",
+            "{year}_{authors}-{title}",
+            "--apply",
+        ],
+    )
+
+    explicit_year_target = tmp_path / "2024_SmithJ-Paper_Title.pdf"
+    assert changed.exit_code == 0, changed.output
+    assert f"{target.name} -> {explicit_year_target.name}" in changed.output
+    assert sha256_file(explicit_year_target) == digest
+    assert not target.exists()
+
+
+@pytest.mark.parametrize("blocked", ["hash", "missing", "metadata", "destination"])
+def test_rename_reports_why_a_catalogued_file_cannot_be_renamed(tmp_path, blocked):
+    source = tmp_path / "paper.pdf"
+    digest = _write_pdf(source)
+    record = _proven_metadata(source)
+    state = open_registry_state(tmp_path)
+    state.upsert_file(source.name, record)
+    if blocked == "metadata":
+        state.upsert_file(source.name, {"_adsfolio_metadata_stale": True})
+    state.close()
+    if blocked == "hash":
+        source.write_bytes(source.read_bytes() + b"\nchanged")
+    elif blocked == "missing":
+        source.unlink()
+    elif blocked == "destination":
+        (tmp_path / "2024ApJ...900..100S.pdf").write_bytes(b"Keep existing target")
+
+    result = CliRunner().invoke(
+        pdf, ["rename", str(tmp_path), "--scheme", "{bibcode}", "--apply"]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "Not renamed: paper.pdf:" in result.output
+    assert {
+        "hash": "PDF content changed",
+        "missing": "PDF is missing",
+        "metadata": "Metadata is not ready",
+        "destination": "Destination exists",
+    }[blocked] in result.output
+    assert "No files to rename." not in result.output
+    if blocked == "destination":
+        assert sha256_file(source) == digest
+        assert (
+            tmp_path / "2024ApJ...900..100S.pdf"
+        ).read_bytes() == b"Keep existing target"
+
+
+def test_identify_does_not_offer_move_for_pdf_already_in_destination(
+    tmp_path, monkeypatch
+):
+    destination = tmp_path / "unresolved"
+    destination.mkdir()
+    source = destination / "unknown.pdf"
+    digest = _write_pdf(source)
+    monkeypatch.setattr(PdfIdentifier, "resolve_many", lambda self, paths, **kwargs: {})
+
+    result = CliRunner().invoke(
+        pdf,
+        [
+            "identify",
+            str(tmp_path),
+            "--recursive",
+            "--output-unresolved",
+            "unresolved",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "Unresolved PDFs: 1" in result.output
+    assert "No file moves planned." in result.output
+    assert "--apply" not in result.output
+    assert sha256_file(source) == digest
+
+
+def test_identify_counts_unreadable_pdfs(tmp_path, monkeypatch):
+    source = tmp_path / "unreadable.pdf"
+    digest = _write_pdf(source)
+
+    def unreadable(self, path):
+        raise PermissionError("PDF cannot be read")
+
+    monkeypatch.setattr(PdfIdentifier, "compute_sha256", unreadable)
+
+    result = CliRunner().invoke(pdf, ["identify", str(tmp_path)])
+
+    assert result.exit_code == 0, result.output
+    assert "Unreadable PDFs (skipped): 1" in result.output
+    assert "Already identified PDFs" not in result.output
+    assert sha256_file(source) == digest
 
 
 def test_identify_persists_unresolved_pdf_before_enrichment(tmp_path, monkeypatch):
@@ -1140,6 +1352,71 @@ def test_watch_rejects_retained_count_above_max_authors(tmp_path):
     assert "authors_when_truncated cannot exceed max_authors" in result.output
 
 
+@pytest.mark.parametrize("apply", [False, True])
+def test_rename_selected_paths_excludes_unselected_same_basename(tmp_path, apply):
+    sources = [tmp_path / "paper.pdf", tmp_path / "nested/paper.pdf"]
+    state = open_registry_state(tmp_path)
+    before = {}
+    for index, source in enumerate(sources):
+        source.parent.mkdir(parents=True, exist_ok=True)
+        doi = f"10.1234/paper{index}"
+        digest = _write_pdf(source, doi=doi)
+        name = source.relative_to(tmp_path).as_posix()
+        state.upsert_file(
+            name,
+            _proven_metadata(
+                source,
+                doi=[doi],
+                bibcode=f"2024ApJ...900..10{index}S",
+                title=[f"Paper {index}"],
+                current_filename=name,
+            ),
+        )
+        before[name] = (digest, state.get_file(name))
+    state.close()
+    flags = ["--apply"] if apply else []
+
+    result = CliRunner().invoke(
+        pdf,
+        [
+            "rename",
+            str(tmp_path),
+            "--file",
+            str(sources[1]),
+            "--scheme",
+            "{year}-{title}",
+            *flags,
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    target = tmp_path / "nested/2024-Paper_1.pdf"
+    assert target.exists() == apply
+    assert sources[1].exists() != apply
+    assert sha256_file(target if apply else sources[1]) == before["nested/paper.pdf"][0]
+    assert sha256_file(sources[0]) == before["paper.pdf"][0]
+    state = open_registry_state(tmp_path)
+    try:
+        assert state.get_file("paper.pdf") == before["paper.pdf"][1]
+    finally:
+        state.close()
+
+
+def test_rename_rejects_selected_file_outside_root(tmp_path):
+    root = tmp_path / "library"
+    root.mkdir()
+    outside = tmp_path / "outside.pdf"
+    digest = _write_pdf(outside)
+
+    result = CliRunner().invoke(
+        pdf, ["rename", str(root), "--file", str(outside), "--apply"]
+    )
+
+    assert result.exit_code == 2
+    assert "is not inside" in result.output
+    assert sha256_file(outside) == digest
+
+
 def test_rename_dry_run_then_apply(tmp_path):
     source = tmp_path / "old.pdf"
     _write_pdf(source)
@@ -1654,6 +1931,29 @@ def test_pdf_ocr_make_ocr_sh_writes_script_with_output_dir(tmp_path, monkeypatch
     assert f"outdir={shlex.quote(str(non_ocr_dir) + '_ocred')}" in script_body
 
 
+def test_identify_does_not_overwrite_the_selected_ai_csv_input(tmp_path, monkeypatch):
+    source = tmp_path / "paper.pdf"
+    _write_pdf(source)
+    ai_csv = tmp_path / "unresolved.csv"
+    original = "relative_path,ads_bibcode\npaper.pdf,2024ApJ...900..100S\n"
+    ai_csv.write_text(original)
+    monkeypatch.setattr(PdfIdentifier, "resolve_many", lambda *args, **kwargs: {})
+
+    def import_hints(identifier, directory, unresolved_paths, selected_csv):
+        assert selected_csv.read_text() == original
+        return {source: _proven_metadata(source)}
+
+    monkeypatch.setattr("adsfolio.pdf.cli._resolve_from_ai_csv", import_hints)
+
+    result = CliRunner().invoke(
+        pdf, ["identify", str(tmp_path), "--ai-csv", str(ai_csv)]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert ai_csv.read_text() == original
+    assert "Resolved PDFs: 1" in result.output
+
+
 def test_identify_can_import_ai_csv_resolutions(tmp_path, monkeypatch):
     pdf_path = tmp_path / "unresolved.pdf"
     _write_pdf(pdf_path)
@@ -1836,7 +2136,8 @@ def test_identify_rejects_skipping_unresolved_ancestor_of_scan_root(tmp_path):
     assert "because it contains the Identify scan root" in result.output
 
 
-def test_rename_allow_ads_identifies_pending_pdfs(tmp_path, monkeypatch):
+@pytest.mark.parametrize("selected", [False, True])
+def test_rename_allow_ads_identifies_pending_pdfs(tmp_path, monkeypatch, selected):
     pdf_path = tmp_path / "paper.pdf"
     pdf_path.write_bytes(b"%PDF")
     captured = {}
@@ -1849,7 +2150,8 @@ def test_rename_allow_ads_identifies_pending_pdfs(tmp_path, monkeypatch):
     monkeypatch.setattr("adsfolio.pdf.cli.run_identify", fake_run_identify)
 
     runner = CliRunner()
-    result = runner.invoke(pdf, ["rename", str(tmp_path), "--allow-ads"])
+    flags = ["--file", str(pdf_path)] if selected else []
+    result = runner.invoke(pdf, ["rename", str(tmp_path), "--allow-ads", *flags])
 
     assert result.exit_code == 0
     assert "Identifying pending PDFs before rename..." in result.output
@@ -1869,6 +2171,7 @@ def test_rename_allow_ads_identifies_pending_pdfs(tmp_path, monkeypatch):
         "ai_csv": None,
         "verbose": 0,
         "prompt_for_ai_csv": False,
+        **({"paths": [pdf_path]} if selected else {}),
     }
 
 
@@ -2544,7 +2847,7 @@ def test_external_identify_then_rename_without_ads_token(tmp_path, monkeypatch):
     assert result.exit_code == 0, result.output
     renamed = list(root.glob("*.pdf"))
     assert len(renamed) == 1
-    assert renamed[0].name == "CurieM_2024-External_Paper.pdf"
+    assert renamed[0].name == "CurieM_-External_Paper.pdf"
     state = open_registry_state(root)
     after = state.registry.find_file_by_current_path(root, renamed[0].name)
     assert after["id"] == identity

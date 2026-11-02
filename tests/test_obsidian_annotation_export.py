@@ -90,6 +90,49 @@ def test_corrupt_pdf_does_not_replace_existing_note(tmp_path):
     assert note.read_text() == "Keep this note"
 
 
+def test_note_write_failure_preserves_existing_manual_text(tmp_path, monkeypatch):
+    import io
+
+    pdf = tmp_path / "paper.pdf"
+    make_pdf(pdf)
+    state = Sidecar(tmp_path)
+    state.upsert_file(
+        "paper.pdf",
+        {"bibcode": "2024ApJ...900..100S", "title": "Example", "abstract": "Cached"},
+    )
+    note = tmp_path / "paper.md"
+    original = b"Keep my manually written notes\n"
+    note.write_bytes(original)
+    real_open = io.open
+
+    class FailingWrite:
+        def __init__(self, handle):
+            self.handle = handle
+
+        def __getattr__(self, name):
+            return getattr(self.handle, name)
+
+        def __enter__(self):
+            self.handle.__enter__()
+            return self
+
+        def __exit__(self, *args):
+            return self.handle.__exit__(*args)
+
+        def write(self, content):
+            self.handle.write(content[: len(content) // 2])
+            raise OSError("Storage full")
+
+    def failing_open(file, mode="r", *args, **kwargs):
+        handle = real_open(file, mode, *args, **kwargs)
+        return FailingWrite(handle) if "w" in mode else handle
+
+    monkeypatch.setattr(io, "open", failing_open)
+    with pytest.raises(OSError, match="Storage full"):
+        ObsidianNoteWriter().generate(tmp_path, state, apply=True)
+    assert note.read_bytes() == original
+
+
 def test_force_does_not_rewrite_identical_note(tmp_path):
     pdf = tmp_path / "paper.pdf"
     make_pdf(pdf)

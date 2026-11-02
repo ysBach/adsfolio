@@ -11,6 +11,8 @@ from adsfolio.config import Config
 from adsfolio.pdf.catalog import PdfCatalog
 from adsfolio.pdf.cli_common import is_resolved_record
 from adsfolio.pdf.files import sha256_file
+from adsfolio.pdf.identifier import PdfIdentifier
+from adsfolio.pdf.identity import IDENTITY_KEY
 from adsfolio.pdf.readiness import (
     EXTERNAL_METADATA_KEY,
     METADATA_SHA256_KEY,
@@ -193,6 +195,54 @@ def test_fresh_ads_identification_with_matching_digest_clears_stale(
     catalog.close()
 
 
+@pytest.mark.parametrize("proof_state", ["verified", "missing", "conflicting"])
+def test_fresh_external_metadata_clears_stale_only_with_current_identity_proof(
+    tmp_path: Path, proof_state: str
+) -> None:
+    root = tmp_path / "lib"
+    root.mkdir()
+    source = root / "paper.pdf"
+    write_pdf(source, doi="10.1234/external")
+    digest = sha256_file(source)
+    catalog = PdfCatalog(tmp_path / "catalog.sqlite")
+    facts = {
+        "sha256": digest,
+        "size_bytes": source.stat().st_size,
+        "mtime_ns": source.stat().st_mtime_ns,
+        "status": "unresolved",
+    }
+    catalog.observe_file(
+        root,
+        source.name,
+        **facts,
+        metadata={METADATA_STALE_KEY: True, "notes": "Keep my notes"},
+    )
+    incoming = PdfIdentifier(None).build_record(
+        {
+            "doi": ["10.1234/external"],
+            "title": ["External paper"],
+            "author": ["Example, A."],
+            "year": "2024",
+            "provider": "crossref",
+        },
+        source,
+    )
+    if proof_state == "missing":
+        incoming.pop(IDENTITY_KEY)
+    elif proof_state == "conflicting":
+        incoming["doi"] = "10.1234/different"
+
+    catalog.observe_file(root, source.name, **facts, metadata=incoming)
+
+    record = catalog.get_file(root, source.name)
+    assert metadata_ready(record) == (proof_state == "verified")
+    assert bool(record.get(METADATA_STALE_KEY)) == (proof_state != "verified")
+    assert record["status"] == "unresolved"
+    assert record["metadata"]["notes"] == "Keep my notes"
+    assert sha256_file(source) == digest
+    catalog.close()
+
+
 def test_renamer_non_ads_metadata_ready_default_and_custom_scheme(
     tmp_path: Path,
 ) -> None:
@@ -215,12 +265,12 @@ def test_renamer_non_ads_metadata_ready_default_and_custom_scheme(
 
     renamer = PdfRenamer()
 
-    # Default scheme falls back to {authors}_{year}-{title} for non-bibcode
+    # The selected bibcode field stays empty when no bibcode exists.
     plans = renamer.batch_rename(sidecar, template=DEFAULT_SCHEME, dry_run=True)
     assert len(plans) == 1
     old_name, new_name = plans[0]
     assert old_name == "paper.pdf"
-    assert new_name == "CurieM_1903-Non-ADS_Title.pdf"
+    assert new_name == "CurieM_-Non-ADS_Title.pdf"
 
     # Custom scheme is respected
     custom_plans = renamer.batch_rename(

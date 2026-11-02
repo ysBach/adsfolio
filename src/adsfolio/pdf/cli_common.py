@@ -5,7 +5,7 @@ from pathlib import Path
 import click
 
 from ..client import ADSClient
-from .files import iter_pdf_paths
+from .files import iter_pdf_paths, move_file_exclusive
 from .readiness import METADATA_STALE_KEY
 
 __all__ = [
@@ -77,7 +77,7 @@ def handle_unresolved(
 
     output_dir.mkdir(parents=True, exist_ok=True)
     target = unique_destination(output_dir, pdf_path.name)
-    pdf_path.rename(target)
+    move_file_exclusive(pdf_path, target)
     if report:
         click.echo(f"Moved {label}: {pdf_path.name} -> {target}")
     return target

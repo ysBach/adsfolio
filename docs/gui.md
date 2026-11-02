@@ -123,6 +123,11 @@ The explanation does not change the main panes' positions.
 
 The table and detail pane check for changed PDFs before they show verification.
 A stored bibcode can remain visible after a PDF changes.
+
+The watcher and Identify first check saved proof and cached provider metadata.
+If a saved candidate remains unverified, they fetch its exact ADS record automatically when ADS is enabled and available.
+Matching PDF identifiers establish verification without an approval click.
+Only cases that remain unverifiable need review or retry.
 Status tooltips explain changed files, ADS links, and metadata readiness.
 External references can be ready for renaming without an ADS link.
 
@@ -139,6 +144,7 @@ Linux), then right-click. Each action covers every selected row:
 - **Copy N Bibcodes**, **Copy N DOIs**, and **Copy N Paths** copy one value per
   line. Each copy omits rows without the value, and the tooltip gives the count.
 - **Identify N Selected PDFs…** identifies only those files.
+  **Identify & Rename N Selected PDFs** runs both steps with saved settings.
   **Refresh N Selected ADS Records** refreshes each paper with a bibcode.
   **Update and Rename Selected by Identifier…** needs one row, because it asks
   for one identifier.
@@ -149,6 +155,20 @@ Linux), then right-click. Each action covers every selected row:
   selection's BibTeX. See [Export BibTeX](local-references.md#export-bibtex).
 
 ![Context menu for three selected papers](_static/tutorial/selection-menu.png)
+
+To identify and rename in one run:
+
+1. Select the PDF rows.
+2. Right-click and choose **Identify & Rename Selected PDF** or its multiple-file equivalent.
+
+This action starts immediately. It uses the saved Identify and Rename scopes
+for the current library. Saved ADS fallback permission still applies. The
+job log reports metadata results and filename changes.
+
+Unverified files and existing destinations keep their paths. PDF contents
+remain unchanged. A failed command or cancellation stops the remaining step.
+For a skipped file, review its job-log message before trying **Update by ID…**.
+To preview filenames separately, use **Tools → Rename…** after identification.
 
 ## Browsing files and editing metadata
 
@@ -305,8 +325,15 @@ For example, `Last-2020-Natur` specifies author Last, year 2020, and journal
 starting page 45. These illustrate the input format. `Last-2020-Nature`
 and `Science-123-45` use the full journal names instead.
 
-These reference formats query ADS only. They do not search other sites.
-DOI and arXiv lookups can also use Crossref or DataCite, as described below.
+Reference hints search ADS. An author can be a coauthor of a different paper.
+ADSfolio checks candidates against identifiers from the selected PDF before
+applying metadata. It discards conflicting candidates.
+
+If no candidate matches, ADSfolio tries the PDF's own DOI or arXiv ID with
+the enabled providers. For example, a coauthor search can recover through
+Crossref when ADS has no record for the PDF's published DOI.
+The job log explains this recovery. Explicit DOI and bibcode inputs remain
+literal requests. A conflicting explicit identifier stops the update.
 
 Spaces and underscores can also separate the reference fields. Author and
 journal names can contain spaces or hyphens. A numeric volume and page take
@@ -534,6 +561,9 @@ defaults and is the default selection. **This library only** stores portable
 overrides in that library's catalog metadata. Switching the scope immediately
 loads its values.
 
+**All libraries** selects shared settings. The table displays one library at
+a time. ADSfolio currently has no combined view of all libraries.
+
 The **Identification priority** list contains every supported evidence source.
 Check the sources to enable. Drag them, or use **Up** and **Down**, to set
 their order.
@@ -621,6 +651,23 @@ currently displayed, without saving them. Parser warnings and the optional AI
 CSV are one-run inputs. **Refresh publication cache** and **Apply file moves**
 are one-run actions. They always reopen disabled.
 
+The job log counts verified saved metadata as **Already identified PDFs (verified)**.
+These files do not enter the **Resolved PDFs** or **Unresolved PDFs** counts
+for this run. Verified metadata from another provider can still appear under
+**Needs ADS lookup** because it has no ADS bibcode.
+
+Verified metadata does not mean that ADS supplies a bibcode.
+Rename uses the exact template shown in its controls.
+It does not substitute another template when metadata has no ADS bibcode.
+Missing fields render as empty components. Select a different template explicitly to use different fields.
+**Already matches rename rule** means that the current filename equals the rendered target.
+Other skipped files receive individual reasons and recovery actions.
+
+**No file moves planned** means there are no moves to apply. Identify shows
+move advice only when it previews moves. To perform those moves, enable
+**Apply file moves** in the advanced dialog before running Identify again.
+To change filenames, use **Rename…**.
+
 ### Save ADS fallback for later runs
 
 1. Open **Identify → Advanced options…**.
@@ -658,6 +705,10 @@ AI service:
 2. Ask for exact identifiers only.
 3. Save the response as CSV.
 4. Choose **AI CSV (this run)** in Identify.
+
+Identify preserves existing CSV files. If `unresolved.csv` exists, the new
+report receives a numeric suffix. Attach the filename shown in the job log.
+The selected AI CSV remains unchanged during import.
 
 The current importer verifies bibcodes and DOIs with ADS. It does not apply
 AI-written title or author fields directly. Normal Identify still provides DOI
@@ -917,7 +968,7 @@ and refuses to overwrite an existing one.
 
 Before writing, ADSfolio re-reads the copy. It checks every transferred
 annotation and every annotation already in the target. If any check fails,
-ADSfolio saves nothing. Saving leaves both original PDFs in place. For library
+ADSfolio saves nothing. For library
 PDFs, saving the copy inside an open library folder registers it with the
 canonical PDF's metadata. An active watcher
 will not prompt again to merge that same output.
@@ -925,14 +976,15 @@ will not prompt again to merge that same output.
 If any annotation is neither placed nor waived, the dialog says so. The result
 is then a partial merge, not a full consolidation.
 
-After a complete, verified save, choose **Keep originals** or **Remove original
-PDFs…**. The removal dialog lists the original paths with checkboxes. Select
-**Move … original PDF(s) to Trash** to leave the final merged PDF and remove
-the checked originals. Unchecked originals remain. **Keep originals** is the
-default. The dialog states how many annotations you waived and explains that
-other editions contribute annotations, not their pages, bookmarks, attachments,
-or form data. You can also use **Remove original PDFs…** in the review window
-later.
+**Move originals to Trash after merge** starts checked.
+After a complete, verified save, ADSfolio moves unchanged inputs to Trash automatically.
+Only the final merged PDF remains in the active library.
+Clear this option before saving to keep the inputs in place.
+You can then use **Remove original PDFs…** for selective cleanup later.
+
+Other editions contribute annotations, not their pages, bookmarks, attachments,
+or form data. The canonical PDF supplies the retained pages and existing content.
+The original PDFs remain recoverable from Trash.
 
 Sequential complete merges retain their input history, including intermediate
 merged copies. A later cleanup can remove three or more originals together. This
@@ -945,7 +997,7 @@ contents used for the merge. A changed or missing result blocks cleanup.
 Changed originals remain for another review. Files go to the system Trash,
 where they can be restored. If a move fails, the dialog names the failed file
 and allows a retry. Trashed originals leave the active library list.
-The catalog retains their history. Partial merges do not offer cleanup.
+The catalog retains their history. Partial merges always keep their inputs.
 
 When you merge a source again into a copy that already holds a merge from that
 source, ADSfolio skips annotations that are already present. A private key in each
@@ -986,8 +1038,11 @@ and help for the selected sidebar group. Its badge counts pending messages.
 Its symbol indicates errors or warnings. New messages update this indicator
 without opening the panel or moving the library panes.
 
-The panel scrolls long messages and keeps their full text available for copying.
+The panel shows every queued message with its own action icons.
+It scrolls long lists and keeps the full message text available for copying.
+Action icons, review dialogs, and clicks elsewhere leave the panel open.
 Choose the panel's close icon or press **Escape** to close it.
+The toolbar icon also toggles the panel.
 Closing the panel keeps its messages queued. Use **Dismiss** to remove a message.
 View changes, new warnings, and dismissed messages do not resize the library panes.
 
@@ -1005,6 +1060,14 @@ the displayed candidate and starts the update and rename. It uses the notice's
 PDF even when you select another row. A changed PDF or changed candidate stops
 the update. A failed update keeps the notice available. Readable conflicting
 identifiers still block the association. The PDF contents stay unchanged.
+
+If the warning says **no authoritative provider record**, the app lacks a checked
+provider record for that candidate. This does not establish that the bibcode is wrong.
+Normal processing attempts that fetch and check automatically.
+If it cannot finish, **Verify This ID** lets you retry after restoring access or correcting the record.
+Matching identifiers allow the update and saved Rename rule to run.
+Changed files, changed candidates, and conflicting identifiers still stop the update.
+This action does not apply a manual identity override.
 
 **Open PDF** opens the notice's local file in your configured PDF viewer or
 the system default. Choose **Update by ID…** to enter a

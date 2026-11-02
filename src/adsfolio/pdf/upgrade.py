@@ -78,20 +78,7 @@ class PdfUpgrader:
 
     def _backup_original(self, source_path: Path, backup_dir: Path) -> Path:
         backup_dir.mkdir(parents=True, exist_ok=True)
-        target = backup_dir / source_path.name
-        if not target.exists():
-            shutil.copy2(source_path, target)
-            return target
-
-        stem = source_path.stem
-        suffix = source_path.suffix
-        counter = 1
-        while True:
-            candidate = backup_dir / f"{stem}_{counter}{suffix}"
-            if not candidate.exists():
-                shutil.copy2(source_path, candidate)
-                return candidate
-            counter += 1
+        return self._copy_exclusive(source_path, backup_dir, source_path.name)
 
     def _copy_exclusive(self, source: Path, directory: Path, filename: str) -> Path:
         """Copy 'source' to a new file in 'directory' without replacing any file."""

@@ -14,7 +14,7 @@ from typing import Any
 import click
 
 from .. import pubcache
-from ..config import Config
+from ..config import ADSError, Config
 from .cli_common import is_resolved_record
 from .cli_common import iter_pdf_paths as _iter_pdf_paths
 from .cli_common import unique_destination
@@ -30,7 +30,11 @@ from .prefetch import PublicationProfile, load_profile, query_publications
 from .readiness import metadata_ready
 from .registry import open_registry_state
 from .renamer import verify_record_identity
-from .tracked_move import move_tracked_file, resolved_file_directory
+from .tracked_move import (
+    move_tracked_file,
+    move_tracked_file_outside_root,
+    resolved_file_directory,
+)
 from .upgrade_utils import _normalize_doi
 
 LOGGER = logging.getLogger(__name__)
@@ -252,6 +256,9 @@ def run_identify(
     report_unresolved_moves = verbose > 0
     resolved = 0
     unresolved = 0
+    already_identified = 0
+    unreadable = 0
+    planned_unresolved = 0
     sidecar_dirty = False
     pending_paths: list[Path] = []
     pending_sha256: dict[Path, str] = {}
@@ -353,6 +360,7 @@ def run_identify(
     for pdf_path in scanned_paths:
         sha256 = scanned_sha.get(pdf_path)
         if not sha256:
+            unreadable += 1
             continue
 
         sidecar_key = helpers.to_sidecar_key(pdf_path, sidecar_directory)
@@ -396,9 +404,14 @@ def run_identify(
                 # A matching digest is not proof; the PDF must prove the record.
                 try:
                     verify_record_identity(
-                        pdf_path, existing[1], sha256=sha256, state=sidecar
+                        pdf_path,
+                        existing[1],
+                        sha256=sha256,
+                        state=sidecar,
+                        client=client,
+                        providers=providers,
                     )
-                except (IdentityValidationError, OSError) as exc:
+                except (IdentityValidationError, ADSError, OSError) as exc:
                     identity_skipped[pdf_path] = str(exc)
                     continue
             if existing is not None:
@@ -418,13 +431,25 @@ def run_identify(
             if is_resolved_record(record) or metadata_ready(record):
                 try:
                     proof = verify_record_identity(
-                        pdf_path, record, sha256=sha256, state=sidecar
+                        pdf_path,
+                        record,
+                        sha256=sha256,
+                        state=sidecar,
+                        client=client,
+                        providers=providers,
                     )
-                except (IdentityValidationError, OSError) as exc:
+                except (IdentityValidationError, ADSError, OSError) as exc:
                     # Keep the saved record and the file where they are.
                     identity_skipped[pdf_path] = str(exc)
                     continue
-                if IDENTITY_KEY not in record:
+                if record.get("current_filename") != sidecar_key:
+                    sidecar.set_current_filename(original_name, sidecar_key)
+                    sidecar_dirty = True
+                previous_proof = record.get(IDENTITY_KEY)
+                if not isinstance(previous_proof, dict) or any(
+                    previous_proof.get(key) != proof.get(key)
+                    for key in ("status", "sha256", "identity", "own_doi", "own_arxiv")
+                ):
                     sidecar.upsert_file(
                         sidecar_key,
                         {
@@ -434,9 +459,7 @@ def run_identify(
                         },
                     )
                     sidecar_dirty = True
-                if record.get("current_filename") != sidecar_key:
-                    sidecar.set_current_filename(original_name, sidecar_key)
-                    sidecar_dirty = True
+                already_identified += 1
                 continue
             pending_original_names[pdf_path] = original_name
             if record.get("current_filename") != sidecar_key:
@@ -608,12 +631,14 @@ def run_identify(
             unresolved_path = pdf_path
             if output_unresolved is not None and pdf_path.parent != output_unresolved:
                 target = unique_destination(output_unresolved, pdf_path.name)
+                if not apply:
+                    planned_unresolved += 1
                 try:
                     target.resolve().relative_to(sidecar_directory)
                 except ValueError:
                     if apply:
                         output_unresolved.mkdir(parents=True, exist_ok=True)
-                        pdf_path.rename(target)
+                        move_tracked_file_outside_root(sidecar, pdf_path, target)
                         unresolved_path = target
                         if report_unresolved_moves:
                             click.echo(f"Moved unresolved: {pdf_path.name} -> {target}")
@@ -819,6 +844,10 @@ def run_identify(
     click.echo(f"Scanned directory: {directory}")
     click.echo(f"Resolved PDFs: {resolved}")
     click.echo(f"Unresolved PDFs: {unresolved}")
+    if already_identified:
+        click.echo(f"Already identified PDFs (verified): {already_identified}")
+    if unreadable:
+        click.secho(f"Unreadable PDFs (skipped): {unreadable}", fg="yellow")
     if identity_skipped:
         click.secho(
             f"Identity not verified (left unchanged): {len(identity_skipped)}",
@@ -828,5 +857,13 @@ def run_identify(
             click.echo(f"  {skipped_path}: {reason}")
     if moved_resolved:
         click.echo(f"Resolved PDFs moved out of unresolved: {moved_resolved}")
-    if (output_unresolved or planned_resolved) and not apply:
-        click.echo("Use --apply to perform the previewed file moves.")
+    if not apply:
+        planned_moves = planned_unresolved + planned_resolved
+        if planned_moves:
+            click.echo(f"Previewed file moves: {planned_moves}")
+            click.echo(
+                "To move these files, enable Apply file moves in Identify "
+                "or rerun with --apply."
+            )
+        else:
+            click.echo("No file moves planned.")

@@ -215,6 +215,10 @@ Request allowances and reset times depend on the endpoint and server response.
 
 If unresolved files remain at the end, `identify` writes `unresolved.csv` in the scan
 root. The file contains `filename`, `relative_path`, and a `first_page_text` preview.
+
+Existing CSV files remain unchanged. New reports receive a numeric suffix when
+the default filename exists. Use the report path printed by the command.
+An AI CSV selected for import is never replaced by a generated report.
 `identify` also prints an LLM prompt template so you can parse metadata with your
 preferred AI.
 
@@ -245,8 +249,15 @@ adsfolio pdf identify ~/Papers --recursive \
   --skip-unresolved-directory
 ```
 
-Identify updates catalog records even without `--apply`. It may also make ADS requests
-or export an unresolved CSV without `--apply`. That flag controls the unresolved-file moves.
+Identify updates catalog records even without `--apply`. It may also make ADS
+requests or export an unresolved CSV without `--apply`. That flag controls file
+moves, including identified PDFs returning from the unresolved subtree.
+
+Identify counts verified saved metadata as **Already identified PDFs (verified)**.
+These files do not enter the **Resolved PDFs** or **Unresolved PDFs** counts
+for this run. The summary also counts unreadable PDFs separately.
+**No file moves planned** means there are no moves to apply. Identify suggests
+`--apply` only when it previews moves.
 
 The skip is path-based and happens before hashing or ADS work. It does not skip
 unresolved-status records elsewhere. If you omit `--output-unresolved`, the
@@ -285,8 +296,14 @@ For example, `Last-2020-Natur` means author Last, year 2020, and journal
 *Nature*. `Sci-123-45` means journal *Science*, volume 123, and starting
 page 45. These illustrate the input format.
 
-These reference formats query ADS only. They do not search other sites.
-DOI and arXiv lookups can also use Crossref or DataCite.
+Reference hints search ADS. Candidates must match identifiers from the current
+PDF. A coauthor match alone does not establish identity.
+If none match, recovery uses the PDF's own DOI or arXiv ID with enabled
+providers. Explicit identifier conflicts still stop the update.
+
+`--identify-scope global` selects global provider settings for an update.
+The default `library` scope uses library overrides with global fallback.
+The GUI forwards its selected Identify scope automatically.
 Quote references that contain spaces:
 
 ```bash
@@ -306,6 +323,23 @@ with their new name. Other PDFs stay in their current directory. The
 renames. Those files keep the refreshed ADS metadata. Optional citation-metrics
 requests run after these renames. A metrics failure does not undo completed file
 updates.
+
+To rename only selected files, repeat `--file` with paths inside the library:
+
+```bash
+adsfolio pdf rename ~/Papers --file ~/Papers/first.pdf \
+  --file ~/Papers/subfolder/second.pdf --apply
+```
+
+Omit `--apply` to preview those filenames. With `--allow-ads`, identification
+also targets only those files. Failed matches keep their current paths.
+PDF identity checks and destination-conflict checks still apply.
+
+Rename uses the exact selected template, including when metadata has no ADS bibcode.
+It does not replace `{bibcode}` with `{year}`. Missing fields render as empty components.
+**Already matches rename rule** means the current filename already equals its target.
+The log reports other skipped files individually.
+Identification alone does not establish an ADS bibcode.
 
 Available template variables: `{bibcode}`, `{year}`, `{title}`,
 `{first_author}`, `{first_author_full}`, `{authors}`, `{authors_N}`, `{journal}`,
@@ -554,6 +588,10 @@ may have no selectable text. Drawings and ink are not converted to text.
 
 The export requires PyMuPDF from the `full` extra. An unreadable PDF or a note
 with invalid section markers produces a skip. Check the warning before retrying.
+
+ADSfolio stages the complete note before replacing the original. A write failure
+keeps the original note intact. A note changed during export produces a skip.
+Review the job log before retrying.
 
 To regenerate the entire note, pass `--force`. This replaces manual edits
 outside the annotation section:

@@ -153,7 +153,9 @@ class EditionMergeDialog(QDialog):
         form.addRow("Copy annotations from (source)", self.source_combo)
         layout.addLayout(form)
         note = QLabel(
-            "Next, review annotation placements side by side. Existing target annotations are retained. Save the result as a new PDF; both original PDFs remain intact.",
+            "Next, review annotation placements side by side. Existing target annotations remain. "
+            "Save the result as a new PDF. Complete merges move originals to Trash by default. "
+            "Clear that option in the review to keep the originals in place.",
             self,
         )
         note.setWordWrap(True)

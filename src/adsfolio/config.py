@@ -14,6 +14,7 @@ import json
 import logging
 import os
 import sys
+import tempfile
 from collections.abc import Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar
@@ -57,14 +58,15 @@ def write_private_text(path: Path, text: str) -> None:
     readable by other users, even before the final rename.
     """
     make_private_directory(path.parent)
-    tmp_path = path.with_name(f"{path.name}.tmp")
+    descriptor, temporary = tempfile.mkstemp(
+        prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
+    )
+    tmp_path = Path(temporary)
     try:
-        descriptor = os.open(tmp_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        # A stale temporary file keeps its old mode when it is reopened.
-        if os.name != "nt":
-            os.fchmod(descriptor, 0o600)
         with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
             handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
         os.replace(tmp_path, path)
     except OSError:
         tmp_path.unlink(missing_ok=True)

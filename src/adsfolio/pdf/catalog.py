@@ -18,7 +18,12 @@ from typing import Any
 from ..config import Config
 from .arxiv import normalize_arxiv_id
 from .files import sha256_file
-from .identity import IDENTITY_KEY, assert_mutation_allowed, target_identity
+from .identity import (
+    IDENTITY_KEY,
+    IdentityValidationError,
+    assert_mutation_allowed,
+    target_identity,
+)
 from .readiness import (
     EXTERNAL_METADATA_KEY,
     METADATA_SHA256_KEY,
@@ -161,6 +166,10 @@ class PdfCatalog:
         risk: a reused inode then inherits that attachment).
         Ambiguous matches create a new attachment instead of silently merging
         records.
+
+        Fresh external metadata clears stale status only when its identity
+        proof matches the current PDF and stored identifiers. It does not
+        create an ADS link.
         """
         normalized_root = self._normalize_root(root)
         normalized_path = self._normalize_relative_path(relative_path)
@@ -256,11 +265,28 @@ class PdfCatalog:
             and bool(normalized_sha)
             and incoming_metadata.get(METADATA_SHA256_KEY) == normalized_sha
         )
-        if stale and not fresh_ads:
+        fresh_external = False
+        if (
+            stale
+            and merged_metadata.get(EXTERNAL_METADATA_KEY)
+            and normalized_sha
+            and incoming_metadata.get(METADATA_SHA256_KEY) == normalized_sha
+        ):
+            try:
+                proof = assert_mutation_allowed(
+                    Path(normalized_root) / normalized_path,
+                    merged_metadata,
+                    expected_sha256=normalized_sha,
+                )
+            except (IdentityValidationError, OSError):
+                pass
+            else:
+                fresh_external = proof["status"] == "verified"
+        if stale and not (fresh_ads or fresh_external):
             merged_metadata[METADATA_STALE_KEY] = True
             document_id = None
             next_status = "unresolved"
-        elif fresh_ads:
+        elif fresh_ads or fresh_external:
             merged_metadata.pop(METADATA_STALE_KEY, None)
         self._update_attachment(
             attachment_id,
@@ -1341,6 +1367,29 @@ class PdfCatalog:
                 ),
             )
         return True
+
+    def mark_location_missing(self, root: Path, relative_path: str) -> bool:
+        """Retain one absent file location as history after an external move.
+
+        The path must no longer exist. Filesystem access errors stop the update.
+        Return False when no active catalog location owns the path.
+        """
+        normalized_root = self._normalize_root(root)
+        normalized_path = self._normalize_relative_path(relative_path)
+        try:
+            (Path(normalized_root) / normalized_path).lstat()
+        except FileNotFoundError:
+            pass
+        else:
+            raise ValueError(f"Cannot mark an existing path missing: {relative_path}")
+        with self._connection:
+            cursor = self._connection.execute(
+                "UPDATE file_locations SET missing_at = ? WHERE relative_path = ? "
+                "AND missing_at IS NULL AND root_id = "
+                "(SELECT id FROM library_roots WHERE canonical_path = ?)",
+                (self._utc_timestamp(), normalized_path, normalized_root),
+            )
+        return cursor.rowcount == 1
 
     def mark_missing_locations(
         self, root: Path, seen_paths: set[str], recursive: bool = True

@@ -7,7 +7,37 @@ import os
 from collections.abc import Iterator
 from pathlib import Path
 
-__all__ = ["iter_pdf_paths", "sha256_file"]
+__all__ = ["iter_pdf_paths", "move_file_exclusive", "sha256_file"]
+
+
+def move_file_exclusive(source: Path, destination: Path) -> Path:
+    """Move a file without replacing a destination created by another process.
+
+    Parameters
+    ----------
+    source : Path
+        Existing file entry to move.
+    destination : Path
+        New path on the same filesystem. Its parent must already exist.
+
+    Returns
+    -------
+    Path
+        Destination after the source entry is removed.
+
+    Raises
+    ------
+    OSError
+        Linking or removing a directory entry failed. An existing destination
+        remains unchanged. If source removal fails, remove the new link.
+    """
+    os.link(source, destination, follow_symlinks=False)
+    try:
+        source.unlink()
+    except OSError:
+        destination.unlink()
+        raise
+    return destination
 
 
 def iter_pdf_paths(directory: Path, recursive: bool) -> Iterator[Path]:

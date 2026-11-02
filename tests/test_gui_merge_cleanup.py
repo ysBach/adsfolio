@@ -178,30 +178,76 @@ def test_partial_trash_failure_names_files_and_can_be_retried(
     assert dialog.result() == QDialog.Accepted
 
 
-def test_complete_save_offers_cleanup_and_partial_save_does_not(
-    qtbot, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize("keep_originals", [False, True])
+def test_complete_save_moves_originals_by_default_with_explicit_opt_out(
+    qtbot, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, keep_originals: bool
 ) -> None:
     target, source = _pdf(tmp_path / "target.pdf"), _pdf(tmp_path / "source.pdf")
     dialog = AnnotationMergeDialog(target, source)
     qtbot.addWidget(dialog)
-    presented = []
-
-    def choose_keep(message):
-        presented.extend(button.text() for button in message.buttons())
-        return 0
-
-    monkeypatch.setattr(QMessageBox, "exec", choose_keep)
+    assert dialog.move_originals.isChecked()
+    if keep_originals:
+        dialog.move_originals.setChecked(False)
+    moved = _fake_trash(monkeypatch, tmp_path)
+    monkeypatch.setattr(QMessageBox, "information", lambda *args: None)
+    monkeypatch.setattr(
+        MergeCleanupDialog,
+        "exec",
+        lambda self: pytest.fail("Successful automatic cleanup needs no extra dialog"),
+    )
     report = dialog.save_copy(tmp_path / "merged.pdf")
     assert report is not None and report.complete
-    assert {"Keep originals", "Remove original PDFs…"} <= set(presented)
-    assert not dialog.cleanup_button.isHidden()
-    assert target.exists() and source.exists()
+    if keep_originals:
+        assert moved == []
+        assert target.exists() and source.exists()
+        assert not dialog.cleanup_button.isHidden()
+    else:
+        assert set(moved) == {target, source}
+        assert list(tmp_path.glob("*.pdf")) == [Path(report.output_path)]
+        assert dialog.result() == QDialog.Accepted
+        assert all((tmp_path / "fake-trash" / path.name).is_file() for path in moved)
+
+
+def test_partial_saved_merge_does_not_move_originals(
+    qtbot, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    report = _report(tmp_path)
+    dialog = AnnotationMergeDialog(
+        Path(report.input_files[0].path), Path(report.input_files[1].path)
+    )
+    qtbot.addWidget(dialog)
+    dialog.report = report
+    assert dialog.move_originals.isChecked()
+    moved = _fake_trash(monkeypatch, tmp_path)
     report.unresolved.append("still-open")
-    presented.clear()
     shown = []
     monkeypatch.setattr(QMessageBox, "information", lambda *args: shown.append(args[2]))
     dialog._show_saved_result()
-    assert shown and presented == []
+    assert shown and moved == []
+
+
+def test_automatic_cleanup_failure_keeps_originals_and_opens_retry(
+    qtbot, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    target, source = _pdf(tmp_path / "target.pdf"), _pdf(tmp_path / "source.pdf")
+    before = {path: path.read_bytes() for path in (target, source)}
+    dialog = AnnotationMergeDialog(target, source)
+    qtbot.addWidget(dialog)
+    assert dialog.move_originals.isChecked()
+    monkeypatch.setattr(
+        "adsfolio.gui.merge_cleanup.QFile.moveToTrash", lambda path: (False, "")
+    )
+    shown = []
+    monkeypatch.setattr(
+        MergeCleanupDialog, "exec", lambda cleanup: shown.append(cleanup.status.text())
+    )
+
+    report = dialog.save_copy(tmp_path / "merged.pdf")
+
+    assert report is not None and report.complete
+    assert shown and "Could not move" in shown[0]
+    assert all(path.read_bytes() == data for path, data in before.items())
+    assert Path(report.output_path).is_file()
 
 
 def test_cleanup_signal_closes_review_after_originals_are_removed(
@@ -264,6 +310,47 @@ def test_three_originals_and_intermediate_can_be_removed_after_sequential_merges
     assert [record["current_path"] for record in registry.iter_files()] == ["final.pdf"]
     assert registry.find_file_by_current_path(root, "target.pdf")["missing_at"]
     assert list(root.glob("*.pdf")) == [Path(final.output_path)]
+    window.close()
+
+
+def test_default_sequential_merges_leave_only_final_pdf_active(
+    qtbot, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from test_gui_main_window_watch import _window_factory
+
+    from adsfolio.gui.config import GuiConfig, RootEntry
+
+    root = tmp_path / "library"
+    root.mkdir()
+    target, source = _pdf(root / "target.pdf"), _pdf(root / "source.pdf")
+    third = _pdf(root / "third.pdf")
+    original_bytes = {path: path.read_bytes() for path in (target, source, third)}
+    window, _, _ = _window_factory(
+        monkeypatch, qtbot, GuiConfig(roots=[RootEntry(str(root))])
+    )
+    moved = _fake_trash(monkeypatch, tmp_path)
+    outputs = iter((root / "intermediate.pdf", root / "final.pdf"))
+
+    def save_with_default_option(dialog):
+        assert dialog.move_originals.isChecked()
+        assert dialog.save_copy(next(outputs)).complete
+        return dialog.result()
+
+    monkeypatch.setattr(AnnotationMergeDialog, "exec", save_with_default_option)
+    first = window._review_annotation_pair(target, source)
+    assert first is not None and first.complete
+    final = window._review_annotation_pair(Path(first.output_path), third)
+    assert final is not None and final.complete
+
+    expected = {target, source, third, root / "intermediate.pdf"}
+    assert set(moved) == expected
+    assert list(root.glob("*.pdf")) == [root / "final.pdf"]
+    registry = window.registries[str(root)]
+    assert [row["current_path"] for row in registry.iter_files()] == ["final.pdf"]
+    assert {Path(item.path) for item in final.input_files} == expected
+    for path, content in original_bytes.items():
+        assert (tmp_path / "fake-trash" / path.name).read_bytes() == content
+        assert registry.find_file_by_current_path(root, path.name)["missing_at"]
     window.close()
 
 

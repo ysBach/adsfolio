@@ -29,7 +29,7 @@ DOC = {
 }
 
 
-def candidate_window(monkeypatch, qtbot, tmp_path, *, conflict=False):
+def candidate_window(monkeypatch, qtbot, tmp_path, *, conflict=False, owned=False):
     monkeypatch.setattr(
         Config, "get_config_dir", classmethod(lambda cls: tmp_path / "config")
     )
@@ -43,6 +43,8 @@ def candidate_window(monkeypatch, qtbot, tmp_path, *, conflict=False):
     writer.add_blank_page(width=300, height=400)
     if conflict:
         writer.add_metadata({"/DOI": "10.5555/another-paper"})
+    elif owned:
+        writer.add_metadata({"/DOI": DOC["doi"][0]})
     with path.open("wb") as stream:
         writer.write(stream)
     window, controller, _ = _window_factory(
@@ -64,13 +66,82 @@ def candidate_window(monkeypatch, qtbot, tmp_path, *, conflict=False):
             candidate_bibcode=DOC["bibcode"],
             candidate_sha256=sha256_file(path),
             candidate_fingerprint=target_identity(DOC).fingerprint,
-            candidate_confirmable=True,
+            candidate_confirmable=not owned,
         )
     )
     window.show()
     window.notifications_button.click()
     assert window.notice_bar.use_id_button.isVisible()
     return window, controller, root, path, event
+
+
+@pytest.mark.parametrize(
+    "failure", [None, "conflict", "changed_pdf", "changed_candidate"]
+)
+def test_verify_this_id_checks_fresh_provider_without_manual_override(
+    monkeypatch, qtbot, tmp_path, failure
+):
+    window, _controller, root, path, event = candidate_window(
+        monkeypatch, qtbot, tmp_path, conflict=failure == "conflict", owned=True
+    )
+    original = path.read_bytes()
+    assert window.notice_bar.use_id_button.text() == "Verify This ID"
+    started = []
+
+    def start(*args, **kwargs):
+        started.append((args, kwargs))
+        window._refresh_selection_id = kwargs["selection_id"]
+        window._ads_refresh_root = root
+        window._pending_ads_refresh = (root, args, kwargs["selection_id"], "paper.pdf")
+
+    monkeypatch.setattr(window, "_start_ads_refresh", start)
+    monkeypatch.setattr(
+        QInputDialog,
+        "getText",
+        lambda *args, **kwargs: pytest.fail("The candidate ID is already known"),
+    )
+    monkeypatch.setattr(
+        QMessageBox,
+        "question",
+        lambda *args, **kwargs: pytest.fail(
+            "Provider verification does not need manual confirmation"
+        ),
+    )
+    window.notice_bar.use_id_button.click()
+    [entry] = started
+    args, kwargs = entry
+    assert "--confirm-identity" not in args
+    assert "--expected-sha256" in args and "--expected-identity" in args
+
+    def query(**kwargs):
+        document = dict(DOC)
+        if failure == "changed_candidate":
+            document["doi"] = ["10.5555/changed-record"]
+        if failure == "changed_pdf":
+            path.write_bytes(original + b"\n%changed after click\n")
+        return SimpleNamespace(docs=[document], num_found=1)
+
+    monkeypatch.setattr(
+        "adsfolio.pdf.cli._get_client",
+        lambda ctx: SimpleNamespace(search=SimpleNamespace(query=query)),
+    )
+    result = CliRunner().invoke(pdf, ["refresh-ads", str(root), *args])
+    window._pending_ads_refresh = None
+    window._job_finished(result.exit_code)
+    saved = window.registries[str(root)].find_location_by_id(kwargs["selection_id"])
+    if failure:
+        assert result.exit_code != 0
+        assert path.read_bytes() == (
+            original + b"\n%changed after click\n"
+            if failure == "changed_pdf"
+            else original
+        )
+        assert window._watch_notice_key(event) in window.notice_bar.queued_keys()
+    else:
+        assert result.exit_code == 0, result.output
+        assert saved["metadata"][IDENTITY_KEY]["status"] == "verified"
+        assert (root / saved["current_path"]).read_bytes() == original
+        assert window._watch_notice_key(event) not in window.notice_bar.queued_keys()
 
 
 @pytest.mark.parametrize(

@@ -632,6 +632,30 @@ def test_single_row_menu_keeps_single_record_labels(
     assert window.update_selected_ads_action.text() in actions
 
 
+@pytest.mark.parametrize("rows", [[0], [0, 1, 2]])
+def test_context_menu_identifies_and_renames_only_selected_rows(
+    window: MainWindow, monkeypatch, tmp_path: Path, rows
+):
+    root = _set_current_root(window, tmp_path / "library")
+    window.model._rows = _three_records(tmp_path)
+    window.show()
+    QApplication.processEvents()
+    calls = []
+    monkeypatch.setattr(
+        window, "_identify_and_rename", lambda paths: calls.append(paths), raising=False
+    )
+    actions = _menu_for_rows(window, monkeypatch, tmp_path, rows)
+    label = (
+        "Identify && Rename Selected PDF"
+        if len(rows) == 1
+        else f"Identify && Rename {len(rows)} Selected PDFs"
+    )
+
+    assert label in actions
+    actions[label].trigger()
+    assert calls == [[root / f"paper-{index}.pdf" for index in rows]]
+
+
 def test_reveal_opens_each_folder_once(window: MainWindow, monkeypatch, tmp_path: Path):
     revealed = []
     monkeypatch.setattr(

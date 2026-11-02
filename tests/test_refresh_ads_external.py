@@ -171,6 +171,114 @@ def test_ads_is_skipped_when_cleared_from_the_provider_list(
     ]
 
 
+def test_refresh_uses_explicit_global_identify_scope(library, providers, monkeypatch):
+    from adsfolio.config import Config
+
+    state = open_registry_state(library)
+    state.set_identify_settings(IdentifySettings(providers=(DoiProvider.ADS,)))
+    state.close()
+    monkeypatch.setattr(
+        Config,
+        "load_identify_settings",
+        classmethod(lambda cls: IdentifySettings(providers=(DoiProvider.CROSSREF,))),
+    )
+    monkeypatch.setattr(
+        "adsfolio.pdf.cli._get_client",
+        lambda ctx: pytest.fail("Global provider settings exclude ADS"),
+    )
+
+    result = CliRunner().invoke(
+        pdf,
+        [
+            "refresh-ads",
+            str(library),
+            "--relative-path",
+            "scan.pdf",
+            "--identifier",
+            "10.5555/not.in.ads",
+            "--confirm-identity",
+            "--identify-scope",
+            "global",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert providers == [("crossref", "10.5555/not.in.ads")]
+    assert "Refreshed ADS metadata for 0 bibcode(s)" in result.output
+    assert "Updated external metadata for 1 PDF(s)" in result.output
+
+
+def test_manual_identifier_respects_crossref_before_ads(
+    library, providers, monkeypatch
+):
+    state = open_registry_state(library)
+    state.set_identify_settings(
+        IdentifySettings(providers=(DoiProvider.CROSSREF, DoiProvider.ADS))
+    )
+    state.close()
+    search = EmptySearch()
+    monkeypatch.setattr(
+        "adsfolio.pdf.cli._get_client", lambda ctx: SimpleNamespace(search=search)
+    )
+
+    result = _run(library, "10.5555/not.in.ads")
+
+    assert result.exit_code == 0, result.output
+    assert search.queries == []
+    assert providers == [("crossref", "10.5555/not.in.ads")]
+
+
+def test_manual_identifier_can_recover_from_ads_service_failure(
+    library, providers, monkeypatch
+):
+    from adsfolio.config import ADSError
+
+    def unavailable(**kwargs):
+        raise ADSError("ADS unavailable")
+
+    monkeypatch.setattr(
+        "adsfolio.pdf.cli._get_client",
+        lambda ctx: SimpleNamespace(search=SimpleNamespace(query=unavailable)),
+    )
+
+    result = _run(library, "10.5555/not.in.ads")
+
+    assert result.exit_code == 0, result.output
+    assert _only_record(library)["metadata"]["doi"] == "10.5555/not.in.ads"
+
+
+def test_manual_doi_tries_later_provider_after_identity_rejection(
+    tmp_path, monkeypatch
+):
+    root = tmp_path / "library"
+    root.mkdir()
+    source = root / "scan.pdf"
+    write_pdf(source, doi="10.5555/not.in.ads", arxiv="2601.12345")
+    state = open_registry_state(root)
+    state.upsert_file(
+        source.name, {"sha256": sha256_file(source), "status": "unresolved"}
+    )
+    state.set_identify_settings(
+        IdentifySettings(providers=(DoiProvider.CROSSREF, DoiProvider.DATACITE))
+    )
+    state.close()
+    monkeypatch.setattr(
+        "adsfolio.pdf.identifier.fetch_crossref_doi", lambda doi: dict(CROSSREF_DOC)
+    )
+    monkeypatch.setattr(
+        "adsfolio.pdf.identifier.fetch_datacite_doi",
+        lambda doi: {**CROSSREF_DOC, "identifier": ["arXiv:2601.12345"]},
+    )
+
+    result = _run(root, "10.5555/not.in.ads")
+
+    assert result.exit_code == 0, result.output
+    assert (
+        _only_record(root)["metadata"]["_adsfolio_external_metadata"]["provider"]
+        == "datacite"
+    )
+
+
 def test_arxiv_id_outside_ads_uses_its_datacite_doi(library, providers, monkeypatch):
     search = EmptySearch()
     monkeypatch.setattr(
@@ -198,6 +306,25 @@ def test_unknown_identifier_leaves_the_file_unchanged(library, providers, monkey
     record = _only_record(library)
     assert record["current_path"] == "scan.pdf"
     assert "title" not in record["metadata"]
+
+
+def test_external_service_failure_is_not_reported_as_not_found(library, monkeypatch):
+    from adsfolio.pdf.doi_providers import ProviderNetworkError
+
+    state = open_registry_state(library)
+    state.set_identify_settings(IdentifySettings(providers=(DoiProvider.CROSSREF,)))
+    state.close()
+    before = _only_record(library)
+    monkeypatch.setattr(
+        "adsfolio.pdf.identifier.fetch_crossref_doi",
+        lambda doi: (_ for _ in ()).throw(ProviderNetworkError("Crossref unavailable")),
+    )
+
+    result = _run(library, "10.5555/not.in.ads")
+
+    assert result.exit_code == 1
+    assert "Crossref unavailable" in result.output
+    assert _only_record(library) == before
 
 
 @pytest.mark.parametrize(

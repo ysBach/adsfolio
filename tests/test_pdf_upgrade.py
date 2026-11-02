@@ -1,3 +1,4 @@
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -19,6 +20,28 @@ class _SearchStub:
     def query(self, q, fl=None, rows=10, start=0, sort=None, fq=None):
         self.calls.append(q)
         return self.mapping.get(q, SearchResult(num_found=0, start=0, docs=[]))
+
+
+def test_upgrade_backup_preserves_a_destination_created_after_check(
+    tmp_path, monkeypatch
+):
+    source = tmp_path / "source.pdf"
+    source.write_bytes(b"Original source")
+    backup_dir = tmp_path / "backups"
+    backup_dir.mkdir()
+    existing = backup_dir / source.name
+    existing.write_bytes(b"Existing backup")
+    real_exists = Path.exists
+
+    def stale_exists(path):
+        return False if path == existing else real_exists(path)
+
+    monkeypatch.setattr(Path, "exists", stale_exists)
+    backup = PdfUpgrader(SimpleNamespace())._backup_original(source, backup_dir)
+
+    assert backup != existing
+    assert backup.read_bytes() == b"Original source"
+    assert existing.read_bytes() == b"Existing backup"
 
 
 def _own_id_pdf(path, arxiv, tag):
