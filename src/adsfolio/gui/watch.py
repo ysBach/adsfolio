@@ -316,11 +316,7 @@ class _LibraryWatchWorker(QObject):
                 continue
             event = self._session.observe(snapshot, source)
             if event is not None:
-                if (
-                    self._baseline_ready
-                    and snapshot.path not in known_paths
-                    and event.identity.generation == 0
-                ):
+                if self._baseline_ready and snapshot.path not in known_paths:
                     event = replace(event, newly_added=True)
                 self.detected.emit(event)
             known_paths.add(snapshot.path)
@@ -346,11 +342,7 @@ class _LibraryWatchWorker(QObject):
             self._emit_failure(str(exc))
             return
         for event in events:
-            if (
-                self._baseline_ready
-                and event.path not in known_paths
-                and event.identity.generation == 0
-            ):
+            if self._baseline_ready and event.path not in known_paths:
                 event = replace(event, newly_added=True)
             self.detected.emit(event)
         if marked:

@@ -44,7 +44,8 @@ def test_command_job_streams_cli_output(qtbot, tmp_path) -> None:
     job = CommandJob(cli_argv("--version"), working_directory=tmp_path)
     lines: list[str] = []
     job.output.connect(lines.append)
-    with qtbot.waitSignal(job.finished, timeout=10000) as result:
+    # Allow cold interpreter startup on hosted runners without skipping the real CLI.
+    with qtbot.waitSignal(job.finished, timeout=30000) as result:
         job.start()
     assert result.args == [0]
     assert any("ADSfolio, version" in line for line in lines)

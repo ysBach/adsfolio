@@ -66,6 +66,11 @@ Homebrew installations already provide the `adsfolio` command.
 
 ## Configure ADS access
 
+ADSfolio uses the official [NASA ADS API](https://github.com/adsabs/adsabs-dev-api)
+for searches, citation exports, metrics, ADS libraries, and journal information.
+The linked ADS repository provides API documentation and examples.
+ADSfolio is an independent project, not an official ADS application.
+
 Get your token from [ADS settings](https://ui.adsabs.harvard.edu/user/settings/token).
 Use the desktop token dialog, or run interactive setup:
 

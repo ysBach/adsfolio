@@ -26,6 +26,12 @@ Client, configuration, and formatting
 ADS services and BibTeX
 -----------------------
 
+ADSfolio implements its own Python client using ``requests`` to call the
+official NASA ADS API at ``https://api.adsabs.harvard.edu/v1``.
+The ADS team's `API documentation and examples <https://github.com/adsabs/adsabs-dev-api>`_
+cover search, export, metrics, libraries, and journals.
+That repository documents the service. It is not an installed client dependency.
+
 .. autosummary::
    :toctree: generated
 

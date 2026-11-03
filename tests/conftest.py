@@ -1,5 +1,7 @@
 """Keep application tests separate from the user's configuration and cache."""
 
+import sys
+from collections.abc import Iterator
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -28,8 +30,9 @@ def isolated_session_fallback_directories():
 
 
 @pytest.fixture(autouse=True)
-def isolated_application_directories(monkeypatch, tmp_path: Path) -> None:
+def isolated_application_directories(monkeypatch, tmp_path: Path) -> Iterator[None]:
     """Give every test its own platform configuration and cache directories."""
+    _drain_qt_events()
     monkeypatch.setattr(
         platformdirs,
         "user_config_dir",
@@ -40,3 +43,16 @@ def isolated_application_directories(monkeypatch, tmp_path: Path) -> None:
         "user_cache_dir",
         lambda appname, *args, **kwargs: str(tmp_path / "cache" / appname),
     )
+    yield
+    _drain_qt_events()
+
+
+def _drain_qt_events() -> None:
+    """Complete queued Qt cleanup before a test changes configuration routing."""
+    qt = sys.modules.get("PySide6.QtCore")
+    if qt is None:
+        return
+    application = qt.QCoreApplication.instance()
+    if application is not None:
+        application.processEvents()
+        qt.QCoreApplication.sendPostedEvents(None, qt.QEvent.Type.DeferredDelete)

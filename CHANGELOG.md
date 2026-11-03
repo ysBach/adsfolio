@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Credit the official NASA ADS API in the README and documentation.
+  Link the ADS team's API documentation and distinguish it from ADSfolio's own Python client.
+
 ## 0.9.0 (2026-11-04)
 
 ### CLI, Python API, and agent installation
@@ -81,6 +84,8 @@
 
 ### Library browsing and notifications
 
+- Recognize a newly added PDF path when the filesystem reuses an earlier inode.
+  Keep replacements at existing paths quiet. Preserve PDF contents and watcher identity checks.
 - Keep ADS as the primary service. Separate **ADS linked**, **Identified without ADS**, and **Needs identification** views.
   Count verified non-ADS identities separately in the status bar. Exclude them from the Identify badge and retain normal table text.
   Changed files need review again. Unconfirmed metadata alone does not establish identity.

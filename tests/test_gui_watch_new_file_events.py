@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -72,6 +73,37 @@ def test_reconciliation_marks_unseen_file_but_not_replacement(
         "existing.pdf": False,
         "added.pdf": True,
     }
+
+
+@pytest.mark.parametrize("reconcile", [False, True])
+def test_new_path_sounds_when_its_inode_reuses_a_baseline_identity(
+    tmp_path, monkeypatch, reconcile
+):
+    baseline = FileSnapshot(tmp_path / "existing.pdf", 3, 1, 1, 10)
+    replacement = replace(baseline, inode=20, size_bytes=8, mtime_ns=2)
+    added = replace(baseline, path=tmp_path / "added.pdf", size_bytes=5, mtime_ns=3)
+    worker = _LibraryWatchWorker(tmp_path, "session")
+    worker._session = WatchSession(tmp_path, "session", [baseline])
+    worker._baseline_ready = True
+    detected = []
+    worker.detected.connect(detected.append)
+    snapshots = [replacement, added]
+    monkeypatch.setattr(worker, "_mark_missing", lambda snapshots: 0)
+    if reconcile:
+        monkeypatch.setattr(worker, "_scan_snapshots", lambda: snapshots)
+        worker._reconcile()
+    else:
+        by_path = {snapshot.path: snapshot for snapshot in snapshots}
+        monkeypatch.setattr(
+            FileSnapshot, "from_path", classmethod(lambda cls, path: by_path[path])
+        )
+        for snapshot in snapshots:
+            worker._pending[(snapshot.path, WatchSource.MODIFIED)] = None
+        worker._drain()
+    events = {event.path.name: event for event in detected}
+    assert events["added.pdf"].identity.generation == 1
+    assert events["added.pdf"].newly_added
+    assert not events["existing.pdf"].newly_added
 
 
 def test_events_from_startup_do_not_request_sound(tmp_path: Path):

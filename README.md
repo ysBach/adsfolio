@@ -4,6 +4,10 @@ A desktop app and Python toolkit that organizes your research PDFs with NASA
 ADS / SciXplorer, Crossref, and DataCite metadata. ADSfolio is an independent
 project, not an official ADS application.
 
+ADSfolio uses the official [NASA ADS API](https://github.com/adsabs/adsabs-dev-api)
+for searches, citation exports, metrics, ADS libraries, and journal information.
+We thank the ADS team for providing these services and their API documentation.
+
 ![ADSfolio library window with illustrative sample data](https://raw.githubusercontent.com/ysBach/adsfolio/main/docs/_static/app-overview.png)
 
 ## Install

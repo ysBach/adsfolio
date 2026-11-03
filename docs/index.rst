@@ -7,6 +7,11 @@ ADSfolio (package adsfolio) is a scientific literature workflow suite,
 desktop PDF library browser, and Python/CLI client for NASA ADS / SciXplorer
 and connected bibliographic discovery services.
 
+ADSfolio uses the official `NASA ADS API <https://github.com/adsabs/adsabs-dev-api>`_
+for searches, citation exports, metrics, ADS libraries, and journal information.
+We thank the ADS team for providing these services and their API documentation.
+ADSfolio is an independent project, not an official ADS application.
+
 Where to start:
 
 - **New to the desktop app:** read :doc:`getting-started`, then
