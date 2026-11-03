@@ -1,4 +1,4 @@
-"""Test root-relative filenames in the combined library."""
+"""Combined-library filenames show the library label and the path in that library."""
 
 from __future__ import annotations
 

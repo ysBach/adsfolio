@@ -74,8 +74,10 @@ from ..pdf.registry import (
     CentralPdfRegistryState,
     LibraryRefresh,
     PdfRegistry,
+    RecordFact,
 )
 from ..pdf.rename_settings import RenameSettings
+from ..pdf.search import FIELD_SEPARATOR, SEARCH_FIELDS
 from ..pdf.watch_session import FileSnapshot, WatchEvent, WatchOutcome, WatchState
 from ..pdf.watcher import WatchIdentifyPolicy
 from ..references import LocalReferences
@@ -122,6 +124,7 @@ from .library import (
     ads_url,
     arxiv_url,
     build_columns,
+    count_matching,
     verification_stale,
 )
 from .models import (
@@ -131,11 +134,13 @@ from .models import (
     LinkDelegate,
     ResolutionDelegate,
     RowHeightDelegate,
+    SearchHighlight,
 )
 from .notifications import Notice, NoticeAction, NotificationButton, NotificationPanel
 from .osint import open_path, open_url, reveal_in_file_manager
 from .references_dialog import ReferencesDialog
 from .refresh_job import LibraryRefreshJob
+from .search_completion import SearchCompleter
 from .token_dialog import TokenDialog
 from .update_dialog import UpdateButton, UpdateDialog, quiet_progress_bar
 from .updates import (
@@ -302,6 +307,12 @@ class _ConflictReviewContext:
     location_id: int
 
 
+COMBINED_VIEW_REASON = (
+    "Unavailable while Combine libraries is checked. "
+    "Clear Combine libraries in the sidebar to use it."
+)
+
+
 class MainWindow(QMainWindow):
     """Browse registered PDF roots with a paged table and metadata pane."""
 
@@ -342,6 +353,9 @@ class MainWindow(QMainWindow):
         )
         self.current_query = FileQuery(
             view=self.current_view,
+            search_exact=self.config.search_exact,
+            search_wildcards=self.config.search_wildcards,
+            search_fields=tuple(self.config.search_fields),
             order_by=sort_column,
             descending=(self.config.sort_descending if sort_column_is_valid else True),
             secondary_order_by=(
@@ -449,6 +463,8 @@ class MainWindow(QMainWindow):
         self.sidebar.addTopLevelItem(self.libraries_item)
         self.sidebar.addTopLevelItem(self.views_item)
         self.combined = CombinedViewController(self)
+        self.search_highlight = SearchHighlight()
+        self.search_highlight.enabled = self.config.search_highlight
         self.model = FileTableModel(
             None,
             self.current_query,
@@ -537,7 +553,11 @@ class MainWindow(QMainWindow):
         splitter.splitterMoved.connect(self._remember_splitter_sizes)
         self.search = QLineEdit(self)
         self.search.setClearButtonEnabled(True)
-        self.search.setPlaceholderText("Search title, author, bibcode, DOI, filename")
+        self.search.setPlaceholderText(
+            "Search, or type a field: author:bach year:2019 title:comet"
+        )
+        self._search_value_cache: tuple[tuple[Any, str], list[str]] | None = None
+        self.search_completer = SearchCompleter(self.search, self._search_field_values)
         self.search_timer = QTimer(self)
         self.search_timer.setSingleShot(True)
         self.search_timer.setInterval(150)
@@ -549,6 +569,62 @@ class MainWindow(QMainWindow):
         toolbar.setObjectName("search_toolbar")
         toolbar.addWidget(QLabel("Find: "))
         toolbar.addWidget(self.search)
+        self.search_fields_button = QToolButton(self)
+        self.search_fields_button.setText("Search Fields")
+        self.search_fields_button.setAccessibleName("Search fields")
+        self.search_fields_button.setPopupMode(QToolButton.InstantPopup)
+        self.search_fields_button.setAutoRaise(True)
+        self.search_fields_button.setIconSize(ICON_SIZE)
+        self.search_fields_button.setIcon(
+            vector_icon("search_fields", self.search_fields_button)
+        )
+        fields_menu = QMenu(self.search_fields_button)
+        self.search_all_fields_action = fields_menu.addAction("All Fields")
+        self.search_all_fields_action.setCheckable(True)
+        fields_menu.addSeparator()
+        self.search_field_actions: dict[str, QAction] = {}
+        for key, label in SEARCH_FIELDS.items():
+            action = fields_menu.addAction(f"{label}  ({key}:)")
+            action.setCheckable(True)
+            action.setData(key)
+            self.search_field_actions[key] = action
+        self.search_fields_button.setMenu(fields_menu)
+        self._set_search_fields(self.config.search_fields)
+        self.search_all_fields_action.triggered.connect(
+            lambda: self._search_fields_chosen(None)
+        )
+        for key, action in self.search_field_actions.items():
+            action.triggered.connect(
+                lambda _checked=False, field=key: self._search_fields_chosen(field)
+            )
+        toolbar.addWidget(self.search_fields_button)
+        self.search_highlight_action = QAction("Highlight Matches", self)
+        self.search_exact_action = QAction("Exact Match", self)
+        self.search_wildcards_action = QAction("Wildcards", self)
+        for action, checked, tooltip in (
+            (
+                self.search_highlight_action,
+                self.config.search_highlight,
+                "Highlight matches: mark the found text in the table",
+            ),
+            (
+                self.search_exact_action,
+                self.config.search_exact,
+                "Exact match: match accents and letter case exactly\n"
+                "When off, “bockelee” finds “Bockelée”.",
+            ),
+            (
+                self.search_wildcards_action,
+                self.config.search_wildcards,
+                "Wildcards: read % as any text and _ as any one character\n"
+                "When off, % and _ match only themselves.",
+            ),
+        ):
+            action.setCheckable(True)
+            action.setChecked(checked)
+            action.setToolTip(tooltip)
+            action.toggled.connect(self._search_options_changed)
+            toolbar.addAction(action)
         self.addToolBar(toolbar)
         self.log_dock = QDockWidget("Job log", self)
         self.log_dock.setObjectName("job_log_dock")
@@ -573,6 +649,9 @@ class MainWindow(QMainWindow):
         self._toolbar_icons.bind(self.refresh_action, "refresh")
         self._toolbar_icons.bind(self.identify_action, "identify")
         self._toolbar_icons.bind(self.rename_action, "rename")
+        self._toolbar_icons.bind(self.search_highlight_action, "highlight")
+        self._toolbar_icons.bind(self.search_exact_action, "match_case")
+        self._toolbar_icons.bind(self.search_wildcards_action, "wildcard")
         for action in (self.refresh_action, self.identify_action, self.rename_action):
             # Menus keep their text-only labels.
             action.setIconVisibleInMenu(False)
@@ -697,6 +776,8 @@ class MainWindow(QMainWindow):
         ):
             file_menu.addAction(action)
         tools = self.menuBar().addMenu("Tools")
+        # Disabled items explain their reason in a tooltip.
+        tools.setToolTipsVisible(True)
         self.token_action = QAction("NASA ADS Token…", self)
         self.token_action.triggered.connect(self._edit_token)
         tools.addAction(self.token_action)
@@ -1198,6 +1279,7 @@ class MainWindow(QMainWindow):
         try:
             for action in actions:
                 action.setEnabled(entry is not None and not self.combined.enabled)
+                action.setToolTip(COMBINED_VIEW_REASON if self.combined.enabled else "")
             self.watch_current_action.setChecked(
                 root is not None and self.watch_controller.is_watching(root)
             )
@@ -1223,6 +1305,12 @@ class MainWindow(QMainWindow):
         """Synchronize ADS library actions with current window activity."""
         if hasattr(self, "add_to_ads_library_action"):
             self.add_to_ads_library_action.setEnabled(self._can_add_to_ads_library())
+            reason = self._add_to_ads_library_block_reason()
+            self._set_action_tooltip(
+                self.add_to_ads_library_action,
+                "Add papers from one library to an ADS library",
+                reason,
+            )
         if hasattr(self, "export_ads_library_action"):
             self.export_ads_library_action.setEnabled(self._can_export_ads_library())
         self._sync_refresh_actions()
@@ -1384,6 +1472,13 @@ class MainWindow(QMainWindow):
         self.merge_annotations_action.setEnabled(
             not self.combined.enabled and self._ads_recheck_active_root is None
         )
+        self.merge_annotations_action.setToolTip(
+            COMBINED_VIEW_REASON
+            if self.combined.enabled
+            else "Wait for the identifier recheck to finish."
+            if self._ads_recheck_active_root is not None
+            else ""
+        )
         self.refresh_action.setEnabled(
             available or (self.combined.enabled and self.job is None)
         )
@@ -1445,6 +1540,12 @@ class MainWindow(QMainWindow):
         self.link_bibcodes_action.setEnabled(available)
         self.refresh_all_ads_action.setEnabled(available)
         self.refresh_all_citation_metrics_action.setEnabled(available)
+        for action in (
+            self.link_bibcodes_action,
+            self.refresh_all_ads_action,
+            self.refresh_all_citation_metrics_action,
+        ):
+            action.setToolTip(COMBINED_VIEW_REASON if self.combined.enabled else "")
         if hasattr(self, "ads_refresh_button"):
             self.ads_refresh_button.setEnabled(available or identifier_available)
             self.ads_refresh_button.setToolTip(
@@ -1458,13 +1559,32 @@ class MainWindow(QMainWindow):
 
     def _can_add_to_ads_library(self) -> bool:
         """Return whether this window can open an ADS library dialog."""
-        return (
-            self.current_root is not None
-            and not self.combined.enabled
-            and self.job is None
-            and self._ads_library_dialog is None
-            and self._ads_library_export_dialog is None
-        )
+        return not self._add_to_ads_library_block_reason()
+
+    def _add_to_ads_library_block_reason(self) -> str:
+        """Explain why the ADS library dialog cannot open, or return ``""``."""
+        if self.job is not None:
+            return "Wait for the current job to finish."
+        if (
+            self._ads_library_dialog is not None
+            or self._ads_library_export_dialog is not None
+        ):
+            return "An ADS library dialog is already open."
+        if self.combined.enabled:
+            if self._combined_selection_root() is None:
+                return "Select PDFs from one available library."
+            return ""
+        if self.current_root is None:
+            return "Open a library first."
+        return ""
+
+    def _combined_selection_root(self) -> Path | None:
+        """Return the one library that owns every selected combined-view PDF."""
+        records = self._selected_record_refs()
+        roots = {self.combined.root_for(record) for record in records}
+        if len(roots) != 1 or None in roots:
+            return None
+        return next(iter(roots))
 
     def _can_export_ads_library(self) -> bool:
         """Return whether this window can open the remote export dialog."""
@@ -1475,20 +1595,56 @@ class MainWindow(QMainWindow):
             and self._ads_library_export_dialog is None
         )
 
-    def _selected_records(self) -> tuple[dict[str, Any], ...]:
-        """Return deep-copied selected records in visual table-row order."""
-        rows = sorted(
+    def _selected_view_rows(self) -> list[QModelIndex]:
+        """Return one column-0 view index for each selected table row.
+
+        The table selects whole rows. This reads the selection ranges, so the
+        cost depends on the number of selected rows, not on rows times columns.
+        ``QItemSelectionModel.selectedRows`` checks every cell through the model.
+        """
+        selection = self.table.selectionModel()
+        model = self.table.model()
+        if selection is None or model is None:
+            return []
+        seen: set[tuple[int, int]] = set()
+        rows: list[QModelIndex] = []
+        for selected_range in selection.selection():
+            parent = selected_range.parent()
+            parent_key = id(parent.internalPointer()) if parent.isValid() else 0
+            for row in range(selected_range.top(), selected_range.bottom() + 1):
+                if (parent_key, row) in seen:
+                    continue
+                seen.add((parent_key, row))
+                index = model.index(row, 0, parent)
+                if index.isValid():
+                    rows.append(index)
+        return rows
+
+    def _selected_source_rows(self) -> list[int]:
+        """Return selected source-model rows in ascending order."""
+        return sorted(
             {
                 source.row()
-                for index in self.table.selectionModel().selectedRows()
+                for index in self._selected_view_rows()
                 if (source := self._source_table_index(index)).isValid()
             }
         )
+
+    def _selected_record_refs(self) -> tuple[dict[str, Any], ...]:
+        """Return the model's selected records without copies, in row order.
+
+        Do not change these records. Use `_selected_records` to pass records to
+        a dialog or a job.
+        """
         return tuple(
-            deepcopy(record)
-            for row in rows
+            record
+            for row in self._selected_source_rows()
             if (record := self.model.record_at(row)) is not None
         )
+
+    def _selected_records(self) -> tuple[dict[str, Any], ...]:
+        """Return deep-copied selected records in visual table-row order."""
+        return tuple(deepcopy(record) for record in self._selected_record_refs())
 
     def _ads_library_dialog_closed(self, dialog: AdsLibraryDialog) -> None:
         """Release the window's ADS library dialog after it closes."""
@@ -1509,8 +1665,13 @@ class MainWindow(QMainWindow):
         if not self._can_add_to_ads_library():
             self._sync_ads_library_action()
             return
-        assert self.current_root is not None
-        root = self.current_root.expanduser().resolve()
+        owner = (
+            self._combined_selection_root()
+            if self.combined.enabled
+            else self.current_root
+        )
+        assert owner is not None
+        root = owner.expanduser().resolve()
         registry = self.registries[str(root)]
         selected_records = self._selected_records()
         try:
@@ -2530,8 +2691,9 @@ class MainWindow(QMainWindow):
     def _populate_views(self, registry: PdfRegistry) -> None:
         """Show virtual-view counts for the selected library root."""
         self.views_item.takeChildren()
+        facts = self._safe_facts(registry)
         for view in LibraryView:
-            count = self._safe_count(registry, **FileQuery(view=view).to_filters())
+            count = count_matching(facts, view) if facts is not None else None
             item = QTreeWidgetItem(
                 [f"{view.label} ({count if count is not None else '?'})"]
             )
@@ -2540,6 +2702,16 @@ class MainWindow(QMainWindow):
             item.setToolTip(0, view.description)
             self.views_item.addChild(item)
         self.views_item.setExpanded(True)
+
+    def _safe_facts(self, registry: Any) -> tuple[RecordFact, ...] | None:
+        """Return cached count facts, reporting an active SQLite writer safely."""
+        try:
+            return registry.record_facts()
+        except sqlite3.OperationalError as exc:
+            if "locked" not in str(exc).lower() and "busy" not in str(exc).lower():
+                raise
+            self.status.showMessage("Library is busy; try again in a moment.")
+            return None
 
     def _safe_count(self, registry: PdfRegistry, **filters: Any) -> int | None:
         """Return a registry count, reporting an active SQLite writer safely."""
@@ -2582,13 +2754,8 @@ class MainWindow(QMainWindow):
             return
         self.current_root = Path(str(key))
         self.current_view = view
-        self.current_query = FileQuery(
-            view=self.current_view,
-            search=self.search.text(),
-            order_by=self.current_query.order_by,
-            descending=self.current_query.descending,
-            secondary_order_by=self.current_query.secondary_order_by,
-            tertiary_order_by=self.current_query.tertiary_order_by,
+        self.current_query = replace(
+            self.current_query, view=self.current_view, search=self.search.text()
         )
         registry = (
             self.combined.registry()
@@ -2602,21 +2769,95 @@ class MainWindow(QMainWindow):
         self._sync_watch_actions()
         self._sync_ads_library_action()
 
+    def _search_options_changed(self) -> None:
+        """Save the search options and run the search again."""
+        self.config.search_highlight = self.search_highlight_action.isChecked()
+        self.config.search_exact = self.search_exact_action.isChecked()
+        self.config.search_wildcards = self.search_wildcards_action.isChecked()
+        self._search_changed()
+
+    def _set_search_fields(self, fields: Sequence[str]) -> None:
+        """Check the menu items for the fields that plain terms search."""
+        chosen = {field for field in fields if field in self.search_field_actions}
+        self.search_all_fields_action.setChecked(not chosen)
+        for key, action in self.search_field_actions.items():
+            action.setChecked(key in chosen)
+        labels = [SEARCH_FIELDS[key] for key in SEARCH_FIELDS if key in chosen]
+        self.search_fields_button.setToolTip(
+            "Search fields: choose the fields that words without a field name "
+            "search\n"
+            f"Now: {', '.join(labels) if labels else 'all fields'}.\n"
+            "Type field:text, for example author:bach or year:2019, to search "
+            "one field."
+        )
+
+    def _search_fields_chosen(self, field: str | None) -> None:
+        """Apply a Search Fields menu choice and run the search again."""
+        if field is None:
+            chosen: list[str] = []
+        else:
+            chosen = [
+                key
+                for key, action in self.search_field_actions.items()
+                if action.isChecked()
+            ]
+        self.config.search_fields = chosen
+        self._set_search_fields(chosen)
+        self._search_changed()
+
+    def _search_source(self) -> Any:
+        """Return the registry or combined adapter that the table searches."""
+        if self.combined.enabled:
+            return self.combined.registry()
+        if self.current_root is None:
+            return None
+        return self.registries.get(str(self.current_root))
+
+    def _search_field_values(self, field: str) -> list[str]:
+        """Return sorted distinct stored values of `field` for autocomplete."""
+        source = self._search_source()
+        if source is None:
+            return []
+        try:
+            key = (source.change_token(), field)
+            cached = self._search_value_cache
+            if cached is not None and cached[0] == key:
+                return cached[1]
+            values: set[str] = set()
+            for _location, document, _folded in source.search_documents():
+                values.update(
+                    value
+                    for value in document.get(field, "").split(FIELD_SEPARATOR)
+                    if value
+                )
+        except sqlite3.OperationalError:
+            return []
+        result = sorted(values, key=str.casefold)
+        self._search_value_cache = (key, result)
+        return result
+
     def _search_changed(self) -> None:
-        self.current_query = FileQuery(
+        self.current_query = replace(
+            self.current_query,
             view=self.current_view,
             search=self.search.text(),
-            order_by=self.current_query.order_by,
-            descending=self.current_query.descending,
-            secondary_order_by=self.current_query.secondary_order_by,
-            tertiary_order_by=self.current_query.tertiary_order_by,
+            search_exact=self.search_exact_action.isChecked(),
+            search_wildcards=self.search_wildcards_action.isChecked(),
+            search_fields=tuple(self.config.search_fields),
         )
+        highlight = self.search_highlight
+        highlight.enabled = self.search_highlight_action.isChecked()
+        highlight.query = self.current_query.search
+        highlight.exact = self.current_query.search_exact
+        highlight.wildcards = self.current_query.search_wildcards
+        highlight.default_fields = self.current_query.search_fields
         self.model.set_query(self.current_query)
+        self.table.viewport().update()
         self._update_status()
 
     def _current_changed(self, current: QModelIndex, previous: QModelIndex) -> None:
         del previous
-        selected = self.table.selectionModel().selectedRows()
+        selected = self._selected_view_rows()
         source = self._source_table_index(current)
         selected_source = (
             self._source_table_index(selected[0])
@@ -2689,11 +2930,12 @@ class MainWindow(QMainWindow):
                     ):
                         raise
                     self.status.showMessage("Library is busy; try again in a moment.")
-        self.detail.set_record(
-            record,
-            root or Path(),
-            cached_document,
-        )
+        if not self.detail.shows(record, root or Path(), cached_document):
+            self.detail.set_record(
+                record,
+                root or Path(),
+                cached_document,
+            )
         self._sync_ads_library_action()
 
     def _sync_detail_and_selection_actions(self) -> None:
@@ -2703,6 +2945,10 @@ class MainWindow(QMainWindow):
 
     def _table_selection_changed(self, *_args: Any) -> None:
         """Update detail actions after a table selection changes."""
+        if self.combined.restoring_tree:
+            # The combined view restores a selection in one step and then
+            # synchronizes once.
+            return
         self.combined.selection_changed()
         self._sync_detail_and_selection_actions()
 
@@ -2728,14 +2974,17 @@ class MainWindow(QMainWindow):
     def _sync_export_action(self) -> None:
         """Enable export for the current library and its selected rows."""
         if hasattr(self, "export_selected_action"):
-            enabled = (
-                self.current_root is not None
-                and not self.combined.enabled
-                and bool(self.table.selectionModel().selectedRows())
+            has_library = self.current_root is not None or self.combined.enabled
+            self.export_selected_action.setEnabled(
+                has_library and self.table.selectionModel().hasSelection()
             )
-            self.export_selected_action.setEnabled(enabled)
-            self.export_all_action.setEnabled(
-                self.current_root is not None and not self.combined.enabled
+            self.export_all_action.setEnabled(has_library)
+            self.export_all_action.setToolTip(
+                "Choose BibTeX or a publication list for every current PDF in the "
+                "checked libraries"
+                if self.combined.enabled
+                else "Choose BibTeX or a publication list for every current PDF in "
+                "this library, including filtered and unloaded rows"
             )
 
     def _open_index(self, index: QModelIndex) -> None:
@@ -3617,23 +3866,38 @@ class MainWindow(QMainWindow):
         self.status.showMessage("Saved the citation key styles.", 5000)
 
     def _records_bibtex(self, records: Sequence[dict[str, Any]]) -> str | None:
-        """Return BibTeX for table records, asking for citation keys if needed."""
-        if self.combined.enabled:
-            return None
+        """Return BibTeX for table records, asking for citation keys if needed.
+
+        Every library uses the same central catalog, so one catalog connection
+        can export papers from several libraries of the combined view.
+        """
         ids = document_ids_of(records)
-        if not ids or self.current_root is None:
+        registry = self._export_registry(records)
+        if not ids or registry is None:
             self.status.showMessage(
                 "The selected PDFs have no paper details yet. Identify them first.",
                 8000,
             )
             return None
-        catalog = self.registries[str(self.current_root)].catalog
+        catalog = registry.catalog
         service = LocalReferences(catalog, Config.load_key_policy())
         try:
             return export_bibtex_asking_keys(self, service, ids)
         except (ValueError, sqlite3.Error) as exc:
             QMessageBox.warning(self, "BibTeX export", str(exc))
             return None
+
+    def _export_registry(self, records: Sequence[dict[str, Any]]) -> PdfRegistry | None:
+        """Return an open registry whose central catalog holds `records`."""
+        if not self.combined.enabled:
+            if self.current_root is None:
+                return None
+            return self.registries.get(str(self.current_root))
+        for record in records:
+            root = self.combined.root_for(record)
+            if root is not None:
+                return self.registries.get(str(root))
+        return None
 
     def _copy_records_bibtex(self, records: Sequence[dict[str, Any]]) -> None:
         """Copy the BibTeX of the selected papers to the clipboard."""
@@ -3682,13 +3946,22 @@ class MainWindow(QMainWindow):
         *,
         all_papers: bool = False,
     ) -> None:
-        """Choose a format for selected PDFs or all current PDFs in this library."""
-        if self.current_root is None or self.combined.enabled:
+        """Choose a format for selected PDFs or all current PDFs in this library.
+
+        In the combined view, "all" means every current PDF in the checked
+        libraries.
+        """
+        if self.current_root is None and not self.combined.enabled:
             return
         if all_papers:
             query = self.model.query
+            source = (
+                self.combined.registry()
+                if self.combined.enabled
+                else self.registries[str(self.current_root)]
+            )
             try:
-                papers = self.registries[str(self.current_root)].query_files(
+                papers = source.query_files(
                     order_by=query.order_by,
                     descending=query.descending,
                     secondary_order_by=query.secondary_order_by,
@@ -3943,7 +4216,7 @@ class MainWindow(QMainWindow):
 
     def _edit_citation_styles(self) -> None:
         """Edit global citation styles and apply accepted definitions live."""
-        selected_rows = self.table.selectionModel().selectedRows()
+        selected_rows = self._selected_view_rows()
         preview_record = (
             self._record_at_table_index(selected_rows[0])
             if len(selected_rows) == 1
@@ -4224,7 +4497,9 @@ class MainWindow(QMainWindow):
     ) -> None:
         """Recreate delegates and widths for the active runtime columns."""
         self._table_row_delegates = []
+        self.search_highlight.column_keys = tuple(column.key for column in self.columns)
         default_delegate = RowHeightDelegate(self.table)
+        default_delegate.highlight = self.search_highlight
         self.table.setItemDelegate(default_delegate)
         self._table_row_delegates.append(default_delegate)
         widths = preserved_widths or {}
@@ -4246,6 +4521,7 @@ class MainWindow(QMainWindow):
                     self.table,
                 )
             if delegate is not None:
+                delegate.highlight = self.search_highlight
                 self.table.setItemDelegateForColumn(index, delegate)
                 self._table_row_delegates.append(delegate)
 
@@ -4504,25 +4780,48 @@ class MainWindow(QMainWindow):
             if self.combined.enabled
             else self.registries[str(self.current_root)]
         )
-        filters = self.current_query.to_filters()
-        resolved_filters = {**filters, "identification": "ads_linked"}
-        external_filters = {**filters, "identification": "identified_without_ads"}
-        unresolved_filters = {**filters, "identification": "needs_identification"}
-        resolved = self._safe_count(registry, **resolved_filters)
-        external = self._safe_count(registry, **external_filters)
-        unresolved = self._safe_count(registry, **unresolved_filters)
-        # The badge counts the whole library. The status counts above share the
-        # current view and search, so reuse them only when no other filter applies.
+        facts = self._safe_facts(registry)
         library_unresolved = (
-            unresolved
-            if set(filters) <= {"identification"}
-            else self._safe_count(registry, identification="needs_identification")
+            count_matching(facts, group="needs_identification")
+            if facts is not None
+            else None
         )
         self._set_identify_badge(
             library_unresolved, unavailable=library_unresolved is None
         )
-        if resolved is None or external is None or unresolved is None:
+        if facts is None:
             return
+        query = self.current_query
+        try:
+            search_keys = (
+                registry.search_location_keys(
+                    query.search,
+                    exact=query.search_exact,
+                    wildcards=query.search_wildcards,
+                    fields=query.search_fields,
+                )
+                if query.search
+                else None
+            )
+        except sqlite3.OperationalError as exc:
+            if "locked" not in str(exc).lower() and "busy" not in str(exc).lower():
+                raise
+            self.status.showMessage("Library is busy; try again in a moment.")
+            return
+        # A group filter replaces the group of an identification view.
+        view = (
+            self.current_view
+            if self.current_view in {LibraryView.ARXIV_ONLY, LibraryView.DUPLICATES}
+            else LibraryView.ALL
+        )
+        resolved, external, unresolved = (
+            count_matching(facts, view, group=group, search_keys=search_keys)
+            for group in (
+                "ads_linked",
+                "identified_without_ads",
+                "needs_identification",
+            )
+        )
         prefix = "Combined libraries · " if self.combined.enabled else ""
         partial = (
             " · some libraries unavailable"
@@ -4754,7 +5053,7 @@ class MainWindow(QMainWindow):
 
         if (
             len(selected) != len(records)
-            or len(self.table.selectionModel().selectedRows()) != len(records)
+            or len(self._selected_view_rows()) != len(records)
             or {identity(item) for item in selected}
             != {identity(item) for item in records}
         ):
@@ -5709,7 +6008,7 @@ class MainWindow(QMainWindow):
         self,
     ) -> tuple[Path, dict[str, Any], Path] | None:
         """Return one selected PDF and its owning library, or ``None``."""
-        rows = self.table.selectionModel().selectedRows()
+        rows = self._selected_view_rows()
         index = self.table.currentIndex()
         if len(rows) != 1:
             return None

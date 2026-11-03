@@ -1,4 +1,4 @@
-"""Tests for the thread-owned GUI watch controller."""
+"""Check the GUI watch controller and its worker thread, scans, and reconciliation."""
 
 from __future__ import annotations
 

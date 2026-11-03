@@ -125,6 +125,20 @@ You can rename papers with sufficient metadata without an ADS bibcode.
 Use **File → Local References…** for manual entries or BibTeX imports.
 See [My paper is not on ADS](local-references.md).
 
+## Find a paper
+
+Type in the **Find** field above the table. Words separated by spaces must
+all match. Search ignores accents and letter case, so `bockelee` finds
+`Bockelée`. To search one field, type its name and a colon:
+
+```text
+author:"Bockelée-Morvan" year:2026 comet
+```
+
+A list suggests field names and stored values while you type. Found text is
+highlighted in the table. See [Search the table](gui.md#search-the-table)
+for all fields and options.
+
 ## Keep the library current
 
 Press **F5** after moving or deleting files outside ADSfolio.

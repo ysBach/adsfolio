@@ -29,6 +29,8 @@ from .models import FileTableModel
 
 _LOG = logging.getLogger(__name__)
 _ROOT_INDEX = QModelIndex()
+_FILE_FLAGS = Qt.ItemIsEnabled | Qt.ItemIsSelectable | Qt.ItemNeverHasChildren
+_FOLDER_FLAGS = Qt.ItemIsEnabled | Qt.ItemIsSelectable
 
 # Keys contain only immutable values. A file key needs a location identifier.
 TreeKey = tuple[Any, ...]
@@ -588,13 +590,11 @@ class CombinedTreeProxyModel(QAbstractProxyModel):
         if node is None:
             return Qt.NoItemFlags
         if node.kind == "file":
-            source = self.sourceModel()
-            return (
-                source.flags(self.mapToSource(index))
-                if source is not None
-                else Qt.NoItemFlags
-            )
-        return Qt.ItemIsEnabled | Qt.ItemIsSelectable
+            # `FileTableModel` keeps the default table flags for every cell.
+            # Qt asks for flags once per cell during selection work, so skip
+            # the round trip through the source model.
+            return _FILE_FLAGS if self.sourceModel() is not None else Qt.NoItemFlags
+        return _FOLDER_FLAGS
 
     def headerData(
         self, section: int, orientation: Qt.Orientation, role: int = Qt.DisplayRole

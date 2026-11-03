@@ -193,7 +193,7 @@ def test_identify_badge_does_not_keep_a_stale_count_when_the_count_is_unavailabl
     def locked(**filters: object) -> int:
         raise sqlite3.OperationalError("database is locked")
 
-    monkeypatch.setattr(registry, "count_files_matching", locked)
+    monkeypatch.setattr(registry, "record_facts", locked)
     window._update_status()
     assert window.identify_button.badge_text == ""
     assert "unavailable" in window.identify_action.toolTip()

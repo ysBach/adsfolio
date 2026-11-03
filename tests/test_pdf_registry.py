@@ -1,3 +1,5 @@
+"""The SQLite registry stores, refreshes, queries, and migrates PDF records."""
+
 import hashlib
 import json
 from pathlib import Path

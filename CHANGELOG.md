@@ -1,11 +1,73 @@
 # Changelog
 
-## Unreleased
-
-- Credit the official NASA ADS API in the README and documentation.
-  Link the ADS team's API documentation and distinguish it from ADSfolio's own Python client.
-
 ## 0.9.0 (2026-11-04)
+
+### Large-library speed
+
+Times below come from a copy of a 2,912-PDF catalog with empty placeholder
+files and the offscreen Qt platform. Times in the desktop app can differ.
+
+- Clearing **Combine libraries** with all PDFs selected previously froze the
+  window. It did not finish after 180 s. Now it takes about 0.1 s.
+- Opening the app previously loaded and parsed the full catalog 34 times,
+  mostly for the sidebar and status counts. Each refresh loaded it 12 times.
+  Now the app loads it 3 times at opening and 2 times for each refresh. One
+  load serves all counts until the catalog changes. **Refresh** went from
+  0.53 s to 0.15 s.
+- A search query previously loaded the full catalog 5 times, about 0.6 s for
+  each query. Now ADSfolio filters the loaded records with cached search text
+  and the same matching rules, about 0.08 s for each query. The results are
+  the same.
+- Sorting by a column previously read the catalog again, 0.40 s. Now it sorts
+  the loaded records, 0.05 s. Rows with equal values keep the same order.
+- One click on a PDF previously built the details pane twice. Now it builds
+  the pane once, and the app reuses rendered icons. A click went from 0.15 s
+  to 0.09 s.
+- Turning on **Combine libraries** went from 1.5 s to 0.25 s. **Select All**
+  in the combined view went from 0.68 s to 0.21 s.
+
+### Search
+
+- Searching `Bockelée` previously found 0 of 2,912 PDFs in a test catalog,
+  because the catalog stored `é` as the escape `\u00e9`. Now search reads the
+  decoded metadata values and finds 31 PDFs.
+- Search previously ignored letter case only for ASCII letters, so `bockelee`
+  found 2 PDFs. Now search ignores accents and letter case by default, and
+  `bockelee` finds the same 31 PDFs. Turn on **Exact Match** in the Find bar
+  to match accents and letter case exactly.
+- `%` and `_` previously acted as wildcards, so `3I_ATLAS` also matched other
+  characters in place of `_`. Now they match only themselves by default. Turn
+  on **Wildcards** in the Find bar to use them as wildcards.
+- A search previously also matched field names in the stored metadata, so
+  `title` matched 2,886 of 2,912 PDFs. Now search reads only the values.
+- `comet nucleus` previously matched only that exact text. Now spaces
+  separate terms, and a PDF must match every term, as on ADS. Use double
+  quotes for a phrase: `"comet nucleus"`.
+- Search previously had no field limits. Now `author:`, `first_author:`,
+  `title:`, `year:`, `journal:`, `abstract:`, `bibcode:`, `doi:`,
+  `identifier:`, and `filename:` limit a term to one field. Typing `f`
+  suggests `first_author:` and `filename:`. After `author:`, the list
+  suggests author names from the library.
+- The new **Search Fields** menu sets the fields for terms without a field
+  name. The default is all fields.
+- Found text was previously not marked. Now the table highlights it in the
+  columns that show the searched field. Turn off **Highlight Matches** to
+  remove the marks.
+- The Find bar options are icon buttons with tooltips, so they need little
+  horizontal space. ADSfolio saves them for the next start.
+
+### Combined view
+
+- **Tools → Add to ADS Library…** was previously unavailable while **Combine
+  libraries** was checked. Now it opens for the selected PDFs when they belong
+  to one library. For a selection from two or more libraries, the tooltip says
+  to select PDFs from one library. The combined right-click menu also has this
+  item.
+- **Export Selection As…** and **Export All As…** were previously unavailable
+  in the combined view. Now they export the selected PDFs, or all PDFs in the
+  checked libraries.
+- Disabled **Tools** items previously showed no reason. Now a tooltip explains
+  the reason. Items for one library only say to clear **Combine libraries**.
 
 ### CLI, Python API, and agent installation
 
@@ -114,6 +176,16 @@
   arrivals. **Silent** is the default. Check the audio output if playback fails.
 - Drag table headers to reorder columns. Right-click a header to set its
   alignment. Choose **Default** to restore the column's default alignment.
+
+### Documentation
+
+- Credit the official NASA ADS API in the README and documentation.
+  Link the ADS team's API documentation and distinguish it from ADSfolio's own Python client.
+- The App GUI guide has a new "Search the table" section with every search
+  field and option. "Getting started" has a short "Find a paper" step.
+- The screenshots and videos of the main window show the new Find bar. The
+  media script previously stopped before the watch-menu image because it
+  opened the menu on **Combine libraries**. Now it opens the menu on a library.
 
 ## 0.8.0 (2026-11-02)
 

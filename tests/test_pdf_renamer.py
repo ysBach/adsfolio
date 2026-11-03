@@ -1,3 +1,5 @@
+"""Render filenames from templates, and preview or apply batch renames of PDFs."""
+
 import json
 from types import SimpleNamespace
 

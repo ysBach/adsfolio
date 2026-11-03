@@ -1,3 +1,7 @@
+"""Extract, match, apply, and port portable PDF annotations through a fake PyMuPDF
+document.
+"""
+
 from types import SimpleNamespace
 
 from adsfolio.pdf.annotations import (

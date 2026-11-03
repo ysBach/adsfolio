@@ -446,7 +446,7 @@ def test_real_qt_request_keeps_event_loop_responsive_and_sends_no_token(
 
 
 @pytest.mark.parametrize("system", ["darwin", "win32", "linux"])
-def test_desktop_update_instructions_match_the_platform(
+def test_frozen_bundle_is_a_desktop_application_on_every_platform(
     qtbot, checker: UpdateChecker, monkeypatch, system: str
 ) -> None:
     import sys

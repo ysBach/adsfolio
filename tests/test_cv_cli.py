@@ -1,3 +1,5 @@
+"""The ``adsfolio cv`` commands create settings, list styles, and generate output."""
+
 from pathlib import Path
 
 from click.testing import CliRunner

@@ -934,6 +934,8 @@ class DetailPane(QWidget):
         self._link_activation = "double"
         self._record: dict[str, Any] | None = None
         self._record_metadata_snapshot: Any = None
+        self._record_snapshot: dict[str, Any] | None = None
+        self._path_existed = False
         self._cached_document: dict[str, Any] | None = None
         self._metadata: dict[str, Any] = {}
         self._active_metadata_edits: list[_MetadataEdit] = []
@@ -1329,6 +1331,29 @@ class DetailPane(QWidget):
         self._allow_manual_metadata = allow_manual_metadata
         self.set_record(self._record, self._root, self._cached_document)
 
+    def shows(
+        self,
+        record: dict[str, Any] | None,
+        root: Path,
+        cached_document: dict[str, Any] | None = None,
+    ) -> bool:
+        """Return whether the pane already renders this record state.
+
+        A `True` result means that `set_record` with the same arguments would
+        build the same rows. Callers can then skip the rebuild.
+        """
+        return (
+            record is not None
+            and self._record is not None
+            # A rebuild applies a pending field focus, so do not skip it.
+            and self._pending_field_focus is None
+            and self._root == Path(root)
+            and record == self._record_snapshot
+            and cached_document == self._cached_document
+            and self._path_existed
+            == (Path(root) / str(record.get("current_path") or "")).exists()
+        )
+
     def set_record(
         self,
         record: dict[str, Any] | None,
@@ -1355,6 +1380,7 @@ class DetailPane(QWidget):
         self._record_metadata_snapshot = (
             copy.deepcopy(record.get("metadata")) if record is not None else None
         )
+        self._record_snapshot = copy.deepcopy(record) if record is not None else None
         self._cached_document = cached_document if record is not None else None
         self._root = Path(root)
         self._path = Path()
@@ -1569,7 +1595,8 @@ class DetailPane(QWidget):
             rows.append(
                 (key, (self._label_for_key(key), value, True, key in ADS_FIELDS, None))
             )
-        if not self._path.exists():
+        self._path_existed = self._path.exists()
+        if not self._path_existed:
             rows.append(
                 (
                     "warning",

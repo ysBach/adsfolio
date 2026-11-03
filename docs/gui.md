@@ -28,6 +28,62 @@ The left pane lists library roots and filtered views. The middle pane shows a
 searchable publication table. The right pane shows editable metadata for the
 selected PDF.
 
+## Search the table
+
+Type in the **Find** field. Spaces separate the search terms. The table
+shows PDFs that match every term. Put a phrase in double quotes to keep it
+together, for example `"comet nucleus"`.
+
+### Search one field
+
+Type a field name, a colon, and the text, for example `author:bach`.
+
+| Field | Searches |
+|---|---|
+| `author:` | All authors |
+| `first_author:` | The first author |
+| `title:` | Title |
+| `year:` | Year |
+| `journal:` | Journal name and abbreviation |
+| `abstract:` | Abstract |
+| `bibcode:` | Bibcode and alternate bibcodes |
+| `doi:` | DOI |
+| `identifier:` | Other identifiers, such as arXiv IDs |
+| `filename:` | Path of the PDF in its library |
+
+Example: `author:"Bockelée-Morvan" year:2026 comet`.
+
+While you type, a list suggests field names. For example, `f` suggests
+`first_author:` and `filename:`. After `author:`, `first_author:`,
+`journal:`, or `year:`, the list suggests values from the library. Press
+**Return** or click a suggestion to insert it.
+
+### Choose the default fields
+
+A term without a field name searches all fields: the path, every metadata
+value, and the content digest. To search fewer fields:
+
+1. Click the **Search Fields** button next to the Find field.
+2. Check the fields to search.
+
+Choose **All Fields** to search everything again. Terms with a field name
+are not affected.
+
+### Search options
+
+The Find bar has three toggle buttons. Hover over a button to read its name.
+
+- **Highlight Matches** marks the found text in the table. It is on by default.
+- **Exact Match** matches accents and letter case exactly. By default, search
+  ignores both, so `bockelee` finds `Bockelée`.
+- **Wildcards** reads `%` as any text and `_` as any one character. By
+  default, `%` and `_` match only themselves, so `3I_ATLAS` finds only an
+  underscore. A wildcard does not cross from one field to another.
+
+ADSfolio saves the options and the default fields for the next start.
+Searches read only stored metadata. PDF text, such as acknowledgments, is
+not searched.
+
 ## Settings
 
 Press **⌘,** on macOS, or choose **File → Settings…**. On macOS, Settings
@@ -167,6 +223,21 @@ To run **Identify** or **Rename** for a whole library:
 
 1. Right-click the library folder in the combined table.
 2. Choose **Identify Library…** or **Rename Library…**.
+
+To add PDFs to an ADS library from the combined view:
+
+1. Select PDFs from one library.
+2. Choose **Tools → Add to ADS Library…**, or right-click the selection.
+
+If the selection contains PDFs from two or more libraries, the action is
+unavailable. Its tooltip gives the reason. **Export Selection As…** accepts
+PDFs from several libraries. **Export All As…** exports every current PDF in
+the checked libraries.
+
+Some **Tools** items apply to one library only. Examples are **Merge
+Annotations…**, the ADS refresh items for all records, and the watch settings.
+These items are unavailable while **Combine libraries** is checked. Hover over
+an item to read its reason. Clear **Combine libraries** to use them.
 
 **Show in Library** opens the owning library with the PDF selected. Clear
 **Combine libraries** to return to one library.

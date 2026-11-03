@@ -1,4 +1,6 @@
-"""Tests for catalog stale-safety and renamer non-ADS workflows."""
+"""Mark catalog metadata stale when PDF content changes, and rename non-ADS PDFs only
+with current metadata.
+"""
 
 from __future__ import annotations
 
@@ -350,6 +352,7 @@ def test_renamer_hash_guard_prevents_renaming_mutated_content(tmp_path: Path) ->
     # batch_rename skips the file with warning
     plans = renamer.batch_rename(sidecar, dry_run=True)
     assert plans == []
+    assert source.read_bytes() == b"%PDF secretly changed content"
 
     sidecar.close()
 

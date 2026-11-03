@@ -1,4 +1,4 @@
-"""Tests for ADS citation-metric cache normalization."""
+"""Normalize ADS citation metrics, parse ADS identifiers, and refresh ADS metadata."""
 
 from pathlib import Path
 from types import SimpleNamespace

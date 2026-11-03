@@ -1,4 +1,4 @@
-"""Exercise ADS-first views with isolated catalogs and unchanged PDFs."""
+"""Show the same identification group in the sidebar, table, detail pane, and counts."""
 
 from __future__ import annotations
 

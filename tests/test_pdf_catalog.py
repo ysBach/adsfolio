@@ -1,3 +1,7 @@
+"""Keep file locations, content versions, and ADS documents for many roots in one
+catalog, and import legacy per-root data without changing it.
+"""
+
 import json
 import os
 import sqlite3

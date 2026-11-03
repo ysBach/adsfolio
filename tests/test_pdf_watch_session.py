@@ -1,3 +1,5 @@
+"""A watch session tracks file arrivals, arrival generations, and state transitions."""
+
 from dataclasses import replace
 from enum import Enum
 from pathlib import Path
@@ -262,14 +264,20 @@ def test_watch_outcome_dataclass(tmp_path):
 
     outcome = WatchOutcome(
         event=event,
-        destination=tmp_path / "renamed.pdf",
+        destination=str(tmp_path / "renamed.pdf"),
+        conflict_path=str(tmp_path / "occupied.pdf"),
         bibcode="2025RNAAS...9..338Z",
         message="Success",
     )
     assert outcome.event == event
+    assert isinstance(outcome.destination, Path)
     assert outcome.destination == tmp_path / "renamed.pdf"
+    assert isinstance(outcome.conflict_path, Path)
+    assert outcome.conflict_path == tmp_path / "occupied.pdf"
     assert outcome.bibcode == "2025RNAAS...9..338Z"
     assert outcome.message == "Success"
+    assert outcome.candidate_confirmable is False
+    assert outcome.annotation_update is False
 
 
 def test_file_snapshot_from_path(tmp_path):

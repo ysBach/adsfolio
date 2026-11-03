@@ -1,3 +1,5 @@
+"""ADS library and document paging stops at the last page and rejects bad pages."""
+
 from collections.abc import Iterator
 
 import pytest

@@ -39,4 +39,6 @@ def test_write_bibtex_file_appends_utf8(tmp_path: Path):
     write_bibtex_file("@misc{a, title={é}}\n", path)
     write_bibtex_file("@misc{b, title={ü}}\n", path, append=True)
 
-    assert path.read_text(encoding="utf-8").count("@misc") == 2
+    assert path.read_text(encoding="utf-8") == (
+        "@misc{a, title={é}}\n@misc{b, title={ü}}\n"
+    )

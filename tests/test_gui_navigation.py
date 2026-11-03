@@ -1,4 +1,4 @@
-"""Check panel navigation and Find without changing the selected library."""
+"""Check panel toggles, Find, shortcuts, layout settings, and table wheel scrolling."""
 
 from pathlib import Path
 

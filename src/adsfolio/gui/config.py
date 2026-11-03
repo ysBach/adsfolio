@@ -13,6 +13,7 @@ from typing import Any
 
 from ..citations import CitationStyle, CitationStyleError, initial_citation_styles
 from ..config import Config, make_private_directory
+from ..pdf.search import SEARCH_FIELDS
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +54,10 @@ class GuiConfig:
     last_view: str = "all"
     combined_view: bool = False
     combined_roots: list[str] | None = None
+    search_exact: bool = False
+    search_wildcards: bool = False
+    search_highlight: bool = True
+    search_fields: list[str] = field(default_factory=list)
     watch_sound: str = "silent"
     window_geometry: str | None = None
     window_state: str | None = None
@@ -397,6 +402,16 @@ def _from_mapping(payload: Mapping[str, Any]) -> GuiConfig:
         last_view=_as_string(payload.get("last_view"), "all") or "all",
         combined_view=_as_bool(payload.get("combined_view"), False),
         combined_roots=combined_roots,
+        search_exact=_as_bool(payload.get("search_exact"), False),
+        search_wildcards=_as_bool(payload.get("search_wildcards"), False),
+        search_highlight=_as_bool(payload.get("search_highlight"), True),
+        search_fields=[
+            key
+            for key in payload.get("search_fields") or []
+            if isinstance(key, str) and key in SEARCH_FIELDS
+        ]
+        if isinstance(payload.get("search_fields"), list)
+        else [],
         watch_sound=_as_string(payload.get("watch_sound"), "silent") or "silent",
         window_geometry=_as_string(payload.get("window_geometry")),
         window_state=_as_string(payload.get("window_state")),

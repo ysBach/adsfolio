@@ -1,3 +1,9 @@
+"""The ``adsfolio set`` command saves the ADS token and profile.
+
+It also builds the publication cache. The module also checks ``--version``
+output and the hint for missing GUI dependencies.
+"""
+
 from pathlib import Path
 
 from click.testing import CliRunner

@@ -1,4 +1,4 @@
-"""Tests for explicit, reversible cleanup after PDF merging."""
+"""Move merge originals to the Trash only after a complete, unchanged merged PDF."""
 
 from __future__ import annotations
 

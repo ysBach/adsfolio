@@ -1,4 +1,9 @@
-"""Exercise automatic ADS rechecks without network access or user data."""
+"""Automatic identifier rechecks run offline on fictional libraries.
+
+The tests cover root order, per-library settings, missing ADS tokens, watcher
+pauses, cancellation, and settings guards. The real-backend test also checks
+that renamed PDF bytes do not change.
+"""
 
 from __future__ import annotations
 
@@ -509,7 +514,7 @@ def test_ads_disabled_runs_without_token_check(
 
 @pytest.mark.parametrize("provider", [DoiProvider.CROSSREF, DoiProvider.DATACITE])
 @pytest.mark.parametrize("token_error", [AuthenticationError, OSError])
-def test_missing_token_runs_external_providers_for_each_root(
+def test_missing_token_skips_ads_only_roots_and_runs_external_providers(
     monkeypatch, qtbot, tmp_path, backend, provider, token_error
 ):
     ads_only, mixed, external = (tmp_path / name for name in ("ads", "mixed", "ext"))

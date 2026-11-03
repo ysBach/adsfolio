@@ -20,6 +20,7 @@ from adsfolio.pdf.readiness import (
     REFERENCE_METADATA_KEY,
     metadata_ready,
 )
+from adsfolio.pdf.registry import RecordFact
 
 
 @pytest.mark.parametrize("mode", ["single", "double"])
@@ -262,14 +263,15 @@ def test_stored_match_sidebar_and_counts_explain_current_verification(
     window = MainWindow()
     qtbot.addWidget(window)
     window.current_root = tmp_path
-    filters_seen = []
 
     class StoredStatusRegistry:
         """Model an unchanged stored match whose PDF now needs reverification."""
 
-        def count_files_matching(self, **filters: object) -> int:
-            filters_seen.append(filters)
-            return 1 if filters.get("identification") in (None, "ads_linked") else 0
+        def record_facts(self) -> tuple[RecordFact, ...]:
+            return (RecordFact(str(tmp_path), 1, "ads_linked", "", "digest"),)
+
+        def search_location_keys(self, search: str) -> frozenset:
+            return frozenset()
 
         def close(self) -> None:
             pass
@@ -294,8 +296,11 @@ def test_stored_match_sidebar_and_counts_explain_current_verification(
     assert "0 identified without ADS" in window.status.currentMessage()
     assert "0 need identification" in window.status.currentMessage()
     assert "does not prove the PDF content matches" in window.status.toolTip()
-    assert {"identification": "ads_linked"} in filters_seen
-    assert {"identification": "needs_identification"} in filters_seen
+    labels = {
+        window.views_item.child(index).text(0)
+        for index in range(window.views_item.childCount())
+    }
+    assert "Needs identification (0)" in labels
 
 
 def _marker_colors(record: dict) -> set[str]:

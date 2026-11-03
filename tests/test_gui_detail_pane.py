@@ -1,4 +1,8 @@
-"""Tests for the metadata detail pane layout."""
+"""Detail pane rows and the main-window file table that feeds it.
+
+The tests cover field layout, row order and visibility, abstracts, citation and
+status rows, link and copy clicks, header menus, and SQLite busy handling.
+"""
 
 from __future__ import annotations
 
@@ -59,7 +63,7 @@ def test_detail_values_use_available_width_and_wrap_safely(
                 "doi": "10.1111/j.1365-2966.2006.10902.x",
             },
         },
-        Path("/Users/ysbach/Dropbox/Studocs/PublOCR"),
+        Path("/Users/example/Documents/PaperLibrary"),
     )
     pane.show()
     application.processEvents()
@@ -98,22 +102,25 @@ def test_detail_pane_renders_and_copies_each_doi_separately(
     pane.close()
 
 
-def test_detail_rows_default_to_modified_first_and_persist_drag_order(
+def test_detail_rows_default_to_modified_first_and_follow_configured_order(
     application: QApplication,
 ) -> None:
     """Detail rows expose a stable default order and a user-selected order."""
+    record = {
+        "current_path": "paper.pdf",
+        "size_bytes": 1,
+        "mtime_ns": 0,
+        "sha256": "a" * 64,
+        "metadata": {"title": ["Title"], "bibcode": "B1"},
+    }
+    default = DetailPane()
+    default.set_record(record, Path("/papers"))
+    assert default.row_keys()[0] == "modified"
+    default.close()
+
     pane = DetailPane()
     pane.set_row_order(["title", "modified"])
-    pane.set_record(
-        {
-            "current_path": "paper.pdf",
-            "size_bytes": 1,
-            "mtime_ns": 0,
-            "sha256": "a" * 64,
-            "metadata": {"title": ["Title"], "bibcode": "B1"},
-        },
-        Path("/papers"),
-    )
+    pane.set_record(record, Path("/papers"))
     pane.show()
     application.processEvents()
 
@@ -472,7 +479,7 @@ def test_long_abstract_expands_and_collapses_in_place(
 
 
 def test_first_author_delegate_separates_surname() -> None:
-    """Only the surname is drawn in bold for a conventional ADS author name."""
+    """The delegate splits the surname from the given names of an ADS author."""
     assert FirstAuthorDelegate.split_author("Bach, Yoonsoo P.") == (
         "Bach",
         ", Yoonsoo P.",
@@ -902,12 +909,12 @@ def test_main_window_retries_selected_ambiguous_ads_candidate(
     window.close()
 
 
-def test_main_window_reconciles_file_facts(
+def test_reconcile_file_facts_action_starts_local_file_refresh(
     application: QApplication,
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """The file-facts menu action queues the same scan as the toolbar."""
+    """The Reconcile File Facts action starts a local-file refresh."""
     monkeypatch.setattr(Config, "get_config_dir", classmethod(lambda cls: tmp_path))
     window = MainWindow()
 
@@ -1019,14 +1026,14 @@ def test_citation_rows_generated_immediately_after_bibcode_and_not_editable(
     row_a = pane._row_widgets["citation:a"]
     assert row_a.name.text() == "Short"
     assert row_a.value._copy_text == "2024TEST"
-    assert not row_a.edit_button.isVisible()
-    assert not row_a.lock_button.isVisible()
+    assert row_a.edit_button.isHidden()
+    assert row_a.lock_button.isHidden()
 
     row_b = pane._row_widgets["citation:b"]
     assert row_b.name.text() == "Readable"
     assert row_b.value._copy_text == "2024: A Test Title"
-    assert not row_b.edit_button.isVisible()
-    assert not row_b.lock_button.isVisible()
+    assert row_b.edit_button.isHidden()
+    assert row_b.lock_button.isHidden()
     pane.close()
 
 
@@ -1208,7 +1215,7 @@ def test_detail_pane_narrow_width_wraps_values_and_keeps_buttons_in_bounds(
                 "abstract": "word " * 120,
             },
         },
-        Path("/Users/ysbach/Dropbox/Studocs/PublOCR"),
+        Path("/Users/example/Documents/PaperLibrary"),
     )
     application.processEvents()
 

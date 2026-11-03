@@ -1,7 +1,5 @@
-"""Regression test: identify and rename a PDF with DocInfo title and DOI in Subject and page 1.
-
-Verifies end-to-end identification, mutation proof recording, subsequent rename,
-byte preservation, and rejection of mismatching/conflicting identities.
+"""Identify and rename PDFs whose DocInfo Subject and first page show the DOI, keep the
+PDF bytes, and reject mismatching or conflicting identities.
 """
 
 from __future__ import annotations

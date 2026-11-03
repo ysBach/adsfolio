@@ -1,3 +1,5 @@
+"""The built-in CV renderers write sections, markers, statuses, and author overrides."""
+
 from pathlib import Path
 
 from adsfolio.cv.config import CVConfig, MarkerConfig

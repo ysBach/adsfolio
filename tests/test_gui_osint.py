@@ -1,3 +1,5 @@
+"""Build reveal and open commands, and restore the environment after a launch."""
+
 import os
 import subprocess
 import sys

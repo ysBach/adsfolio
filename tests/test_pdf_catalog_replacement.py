@@ -114,10 +114,7 @@ def test_renamed_download_rejoins_deleted_attachment(setup) -> None:
     record = catalog.get_file(root, "download.pdf")
     assert record["metadata"]["notes"] == "Keep my notes"
     assert record["metadata"][LOCKED_METADATA_FIELDS_KEY] == ["title"]
-    assert (
-        record["metadata"]["title"] == ["Updated paper"]
-        or "title" in record["metadata"]
-    )
+    assert record["metadata"]["title"] == ["Updated paper"]
     assert record["metadata"][IDENTITY_KEY]["sha256"] == sha256_file(
         root / "download.pdf"
     )

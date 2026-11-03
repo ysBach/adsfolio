@@ -1,4 +1,7 @@
-"""Tests for read-only queries across PDF library roots."""
+"""Combined-library queries sort, search, and find duplicates across library roots.
+
+The queries do not change PDF files, and combined details stay read-only.
+"""
 
 from __future__ import annotations
 

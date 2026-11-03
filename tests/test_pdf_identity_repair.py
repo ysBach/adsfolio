@@ -1,3 +1,5 @@
+"""Apply and undo manifest identity repairs without loss of files, notes, or history."""
+
 import copy
 import hashlib
 import json

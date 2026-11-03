@@ -1,3 +1,9 @@
+"""The setup file saves profile, Identify, and Rename settings in separate sections.
+
+A save keeps other sections and unknown keys. Writes are atomic and private,
+and older flat keys are still read.
+"""
+
 import json
 import os
 from pathlib import Path

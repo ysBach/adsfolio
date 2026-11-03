@@ -1,4 +1,9 @@
-"""Main-window integration tests for adding local records to ADS libraries."""
+"""Main-window ADS library actions and table context-menu actions.
+
+The tests cover when the add and export actions are enabled, the dialogs they
+open, and open, copy, reveal, identify, rename, refresh, and export on selected
+rows.
+"""
 
 from __future__ import annotations
 
@@ -362,7 +367,6 @@ def test_add_to_ads_library_passes_visual_selected_and_complete_resolved_snapsho
     assert isinstance(dialog.all_records, tuple)
     assert registry.calls == [{"resolved": True}]
     assert len(dialog.all_records) == 4
-    assert all(record not in (registry,) for record in dialog.all_records)
 
     selected_source[0]["metadata"]["title"][0] = "mutated live row"
     all_source[0]["metadata"]["title"][0] = "mutated registry source"
@@ -563,6 +567,8 @@ def test_ads_library_dialog_parent_teardown_does_not_touch_deleted_action(
     _set_current_root(window, tmp_path / "library", FakeRegistry([_record(1)]))
 
     window._add_to_ads_library()
+    assert len(CapturingAdsLibraryDialog.instances) == 1
+    assert CapturingAdsLibraryDialog.instances[0].was_shown
     window.close()
     window.deleteLater()
     QApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
@@ -731,13 +737,14 @@ def test_follow_up_refreshes_run_in_the_same_job(
         ambiguous_relative_path=None,
         follow_ups=(("--bibcode", "B2"),),
     )
-    job = created[-1]
+    assert len(created) == 1
+    job = created[0]
     assert job.argv[-3:] == [str(root), "--bibcode", "B0"]
     follow_up = job.kwargs["follow_up_argv"]
     assert [command[-3:] for command in follow_up] == [[str(root), "--bibcode", "B2"]]
 
 
-def test_export_selected_papers_opens_the_list_window_with_all_rows(
+def test_export_selected_papers_opens_the_list_window_with_selected_rows(
     window: MainWindow, monkeypatch, tmp_path: Path
 ):
     _set_current_root(window, tmp_path / "library")

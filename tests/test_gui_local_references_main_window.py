@@ -1,4 +1,4 @@
-"""Verify local references are accessible without configuring PDF roots."""
+"""Open Local References without a library, and keep its fields after a refused edit."""
 
 from __future__ import annotations
 

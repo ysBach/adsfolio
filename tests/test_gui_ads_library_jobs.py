@@ -1,4 +1,7 @@
-"""Tests for thread-owned ADS library jobs."""
+"""ADS library jobs run each request in a worker thread that owns its client.
+
+The tests check request values, error kinds, client closing, and cancellation.
+"""
 
 from __future__ import annotations
 
@@ -412,6 +415,7 @@ def test_cancel_only_sets_event_and_does_not_terminate_thread(qtbot) -> None:
     finally:
         QThread.terminate = original_terminate  # type: ignore[method-assign]
 
+    assert job._cancellation.is_set()
     assert terminate_calls == []
 
 

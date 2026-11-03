@@ -1,4 +1,8 @@
-"""Test editing selected PDFs in combined libraries."""
+"""Edits, context actions, and folder actions in the combined library view.
+
+Each action must reach only the library that owns the selected PDF. The tests
+also cover recheck preemption and tree state after refresh and sort.
+"""
 
 from __future__ import annotations
 
@@ -1043,6 +1047,8 @@ def test_combined_context_menu_explains_mixed_root_identify(
         other, QItemSelectionModel.Select | QItemSelectionModel.Rows
     )
 
+    shown = []
+
     class MixedMenu(QMenu):
         def exec(self, _position):
             action = next(
@@ -1052,9 +1058,11 @@ def test_combined_context_menu_explains_mixed_root_identify(
             )
             assert not action.isEnabled()
             assert "one available library" in action.toolTip()
+            shown.append(True)
 
     monkeypatch.setattr("adsfolio.gui.combined_view.QMenu", MixedMenu)
     window.combined.table_menu(window._selected_records(), QPoint())
+    assert shown == [True]
 
 
 @pytest.mark.parametrize(

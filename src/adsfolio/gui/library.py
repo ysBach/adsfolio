@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Sequence
+from collections import Counter
+from collections.abc import Callable, Collection, Iterable, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
@@ -14,7 +15,7 @@ from ..citations import CitationFormatter, CitationStyle, citation_preference_ke
 from ..formatting import html_to_text
 from ..pdf.arxiv import arxiv_id
 from ..pdf.classification import ResolutionState, resolution_state, verification_stale
-from ..pdf.registry import stored_count
+from ..pdf.registry import RecordFact, stored_count
 
 ISO8601_TIMESTAMP_FORMAT = "iso8601"
 STALE_VERIFICATION_TOOLTIP = (
@@ -224,6 +225,12 @@ class FileQuery:
 
     view: LibraryView = LibraryView.ALL
     search: str = ""
+    # Match accents and letter case exactly. By default both are ignored.
+    search_exact: bool = False
+    # Read % and _ in `search` as wildcards. By default they are literal.
+    search_wildcards: bool = False
+    # Fields that plain search terms search. Empty means all search text.
+    search_fields: tuple[str, ...] = ()
     order_by: str = "first_seen_at"
     descending: bool = True
     secondary_order_by: str | None = None
@@ -250,7 +257,56 @@ class FileQuery:
             filters["duplicates_only"] = True
         if self.search:
             filters["search"] = self.search
+            filters["search_exact"] = self.search_exact
+            filters["search_wildcards"] = self.search_wildcards
+            filters["search_fields"] = self.search_fields
         return filters
+
+
+_VIEW_GROUPS = {
+    LibraryView.RESOLVED: "ads_linked",
+    LibraryView.IDENTIFIED_WITHOUT_ADS: "identified_without_ads",
+    LibraryView.UNRESOLVED: "needs_identification",
+}
+
+
+def count_matching(
+    facts: Iterable[RecordFact],
+    view: LibraryView = LibraryView.ALL,
+    *,
+    group: str | None = None,
+    search_keys: Collection[tuple[str, int]] | None = None,
+) -> int:
+    """Count facts with the filters that ``FileQuery(view).to_filters()`` sets.
+
+    The filters apply in the registry order: search, identification group,
+    source, and then duplicates. Duplicates are digests that occur more than
+    once among the rows that remain after the earlier filters.
+
+    Parameters
+    ----------
+    facts : Iterable[RecordFact]
+        Facts from ``record_facts()``.
+    view : LibraryView, optional
+        View whose filters apply.
+    group : str, optional
+        Identification group. It replaces the group of an identification view.
+    search_keys : Collection[tuple[str, int]], optional
+        ``(root, location_id)`` keys that match the search. `None` means no search.
+    """
+    rows: Iterable[RecordFact] = facts
+    if search_keys is not None:
+        rows = [fact for fact in rows if (fact.root, fact.location_id) in search_keys]
+    wanted_group = group if group is not None else _VIEW_GROUPS.get(view)
+    if wanted_group is not None:
+        rows = [fact for fact in rows if fact.group == wanted_group]
+    if view is LibraryView.ARXIV_ONLY:
+        rows = [fact for fact in rows if fact.source == "arxiv"]
+    if view is LibraryView.DUPLICATES:
+        rows = list(rows)
+        digests = Counter(fact.sha256 for fact in rows if fact.sha256)
+        return sum(1 for fact in rows if fact.sha256 and digests[fact.sha256] > 1)
+    return sum(1 for _fact in rows)
 
 
 BASE_COLUMNS: tuple[Column, ...] = (

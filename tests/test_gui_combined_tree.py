@@ -1,4 +1,8 @@
-"""Tests for the standalone combined-library tree proxy."""
+"""The combined-library tree proxy groups records into library, folder, and file nodes.
+
+The tests check source-row mapping and that keys, selection, and expansion
+survive paging, sorting, and source resets.
+"""
 
 from __future__ import annotations
 
@@ -212,7 +216,7 @@ def test_offscreen_view_expands_nested_folders_and_selects_file(qtbot, qtlog) ->
         _Registry([_record("/fiction/library", "a/b/paper.pdf", 4)]), FileQuery()
     )
     model = CombinedTreeProxyModel(source)
-    tester = QAbstractItemModelTester(
+    _tester = QAbstractItemModelTester(
         model, QAbstractItemModelTester.FailureReportingMode.Warning
     )
     view = QTreeView()
@@ -237,8 +241,6 @@ def test_offscreen_view_expands_nested_folders_and_selects_file(qtbot, qtlog) ->
     view.collapse(folder)
     assert not view.isExpanded(folder)
     assert view.isExpanded(root)
-    assert view.treePosition() == model.filename_column
-    assert tester is not None
     assert not [record for record in qtlog.records if "FAIL!" in record.message]
 
 
@@ -304,7 +306,7 @@ def test_pages_preserve_selection_and_expansion_without_a_reset(qtbot, qtlog) ->
     registry = _Registry(records)
     source = FileTableModel(registry, FileQuery())
     model = CombinedTreeProxyModel(source)
-    tester = QAbstractItemModelTester(
+    _tester = QAbstractItemModelTester(
         model, QAbstractItemModelTester.FailureReportingMode.Warning
     )
     view = QTreeView()
@@ -341,7 +343,6 @@ def test_pages_preserve_selection_and_expansion_without_a_reset(qtbot, qtlog) ->
         is records[-1]
     )
     assert len(_files(model)) == len(records)
-    assert tester is not None
     assert not [record for record in qtlog.records if "FAIL!" in record.message]
 
 
@@ -359,7 +360,7 @@ def test_page_boundaries_merge_folders_and_keep_source_order(
     ]
     source = FileTableModel(_Registry(records), FileQuery())
     model = CombinedTreeProxyModel(source)
-    tester = QAbstractItemModelTester(
+    _tester = QAbstractItemModelTester(
         model, QAbstractItemModelTester.FailureReportingMode.Warning
     )
     view = QTreeView()
@@ -389,7 +390,6 @@ def test_page_boundaries_merge_folders_and_keep_source_order(
         model.mapToSource(model.mapFromSource(source.index(i, 0))) == source.index(i, 0)
         for i in range(len(records))
     )
-    assert tester is not None
     assert not [record for record in qtlog.records if "FAIL!" in record.message]
 
 

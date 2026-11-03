@@ -1,3 +1,5 @@
+"""The watcher identifies, renames, moves, and records new or changed PDFs."""
+
 import re
 from pathlib import Path
 

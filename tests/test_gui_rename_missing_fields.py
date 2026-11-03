@@ -67,11 +67,13 @@ def test_template_help_explains_missing_fields(application, rename_library):
     dialog = _dialog(rename_library)
     help_text = dialog.template.toolTip()
 
-    assert "Missing metadata becomes empty" not in help_text
-    assert "missing" in help_text.lower()
-    assert "skip" in help_text.lower()
-    assert "template" in help_text.lower()
-    assert "metadata" in help_text.lower()
+    assert (
+        "ADSfolio skips files when a field in the template has no metadata."
+        in help_text
+    )
+    assert (
+        "Add the missing metadata or remove that field from the template." in help_text
+    )
     dialog.close()
 
 

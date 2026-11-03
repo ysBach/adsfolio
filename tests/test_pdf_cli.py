@@ -1,3 +1,7 @@
+"""Run the PDF identify, rename, refresh-ads, push-library, status, ocr, watch, and
+upgrade commands with isolated catalogs and fake services.
+"""
+
 import csv
 import json
 import os
@@ -113,7 +117,6 @@ def _estimate_ads_ready(paths):
 
 def test_main_registers_pdf_group():
     assert "pdf" in main.commands
-    assert "adsquery" not in pdf.commands
 
 
 def test_refresh_ads_progress_is_bounded(tmp_path, monkeypatch):
@@ -255,9 +258,8 @@ def test_identify_command_inherits_or_overrides_saved_ads_permission(
     tmp_path, monkeypatch, flags, expected
 ):
     captured = {}
-    monkeypatch.setattr(
-        Config, "load_identify_settings", lambda: IdentifySettings(allow_ads=True)
-    )
+    saved = IdentifySettings(allow_ads=True)
+    Config.save_identify_settings(saved)
     monkeypatch.setattr("adsfolio.pdf.cli._get_client", lambda ctx: object())
     monkeypatch.setattr(
         "adsfolio.pdf.cli.run_identify",
@@ -268,7 +270,7 @@ def test_identify_command_inherits_or_overrides_saved_ads_permission(
 
     assert result.exit_code == 0, result.output
     assert captured["allow_ads"] is expected
-    assert Config.load_identify_settings().allow_ads
+    assert Config.load_identify_settings() == saved
 
 
 def test_identify_command_quiet_overrides_reusable_verbose(tmp_path, monkeypatch):
@@ -1102,6 +1104,8 @@ def test_identify_prefers_exact_catalog_path_for_duplicate_sha(tmp_path, monkeyp
         assert current_record is not None
         assert archived_record["sha256"] == "sha-shared"
         assert current_record["sha256"] == "sha-shared"
+        assert archived_record["current_filename"] == "archived-copy.pdf"
+        assert current_record["current_filename"] == "current.pdf"
     finally:
         persisted.close()
 

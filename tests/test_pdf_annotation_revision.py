@@ -1,3 +1,7 @@
+"""Accept incremental PDF revisions that only add annotations, and reject revisions that
+change other document content.
+"""
+
 from __future__ import annotations
 
 import hashlib

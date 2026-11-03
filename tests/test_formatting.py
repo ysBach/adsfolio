@@ -1,3 +1,5 @@
+"""ADS HTML titles convert to LaTeX and plain text; CV author lists are formatted."""
+
 import unittest
 
 from adsfolio.formatting import html_to_latex, html_to_text

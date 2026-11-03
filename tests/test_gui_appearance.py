@@ -1,4 +1,7 @@
-"""Tests for the unified GUI appearance dialog."""
+"""The Appearance dialog edits table, detail, time-format, and application settings.
+
+Live edits apply at once; Cancel restores the earlier settings.
+"""
 
 from __future__ import annotations
 

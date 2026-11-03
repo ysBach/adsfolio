@@ -1,3 +1,5 @@
+"""Name downloaded PDFs after their bibcode without overwriting existing files."""
+
 from concurrent.futures import ThreadPoolExecutor
 from threading import Barrier
 from unittest.mock import Mock

@@ -5,6 +5,7 @@ from __future__ import annotations
 import sqlite3
 import sys
 from collections.abc import Sequence
+from dataclasses import replace
 from typing import Any
 
 from PySide6.QtCore import (
@@ -37,6 +38,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..pdf.classification import current_identity_proof
+from ..pdf.search import parse_query, search_spans
 from .library import (
     BASE_COLUMNS,
     ISO8601_TIMESTAMP_FORMAT,
@@ -202,12 +204,181 @@ class LibraryTableView(QTreeView):
         event.accept()
 
 
+# Search fields that each table column displays. A field term highlights
+# only in these columns.
+COLUMN_SEARCH_FIELDS: dict[str, frozenset[str]] = {
+    "title": frozenset({"title"}),
+    "author": frozenset({"author", "first_author"}),
+    "year": frozenset({"year"}),
+    "pub": frozenset({"journal"}),
+    "bibcode": frozenset({"bibcode"}),
+    "arxiv": frozenset({"identifier"}),
+    "filename": frozenset({"filename"}),
+}
+# Translucent marker color. The cell text stays readable below it.
+HIGHLIGHT_COLOR = QColor(255, 204, 0, 120)
+
+
+class SearchHighlight:
+    """Hold the active search for highlighting matched text in table cells.
+
+    A term with a field name highlights in the columns that display that
+    field. A plain term highlights in the columns of the default fields, or
+    in every text column when all fields are searched.
+    """
+
+    def __init__(self) -> None:
+        self.enabled = True
+        self.query = ""
+        self.exact = False
+        self.wildcards = False
+        self.default_fields: tuple[str, ...] = ()
+        self.column_keys: tuple[str, ...] = ()
+
+    def column_key(self, column: int) -> str:
+        """Return the key of a model column, or ``""`` when it is unknown."""
+        return self.column_keys[column] if 0 <= column < len(self.column_keys) else ""
+
+    def spans(self, column_key: str, text: str) -> list[tuple[int, int]]:
+        """Return sorted, merged ``(start, end)`` spans to mark in `text`."""
+        if not self.enabled or not text or not self.query.strip():
+            return []
+        shown = COLUMN_SEARCH_FIELDS.get(column_key)
+        text_column = shown is not None or column_key.startswith("citation:")
+        found: list[tuple[int, int]] = []
+        for term in parse_query(self.query):
+            if not term.text:
+                continue
+            if term.field is not None:
+                applies = shown is not None and term.field in shown
+            elif self.default_fields:
+                applies = shown is not None and bool(shown & set(self.default_fields))
+            else:
+                applies = text_column
+            if applies:
+                found.extend(
+                    search_spans(
+                        text, term.text, exact=self.exact, wildcards=self.wildcards
+                    )
+                )
+        merged: list[tuple[int, int]] = []
+        for start, end in sorted(found):
+            if merged and start <= merged[-1][1]:
+                merged[-1] = (merged[-1][0], max(end, merged[-1][1]))
+            else:
+                merged.append((start, end))
+        return merged
+
+
+def paint_highlights(
+    painter: QPainter,
+    rect: Any,
+    spans: Sequence[tuple[int, int]],
+    advance: Any,
+    visible: int,
+    height: int,
+) -> None:
+    """Draw translucent marks behind the visible part of matched text.
+
+    Parameters
+    ----------
+    painter : QPainter
+        Painter of the cell.
+    rect : QRect
+        Rectangle of the cell text. Marks are clipped to it.
+    spans : Sequence[tuple[int, int]]
+        Character spans to mark.
+    advance : Callable[[int], int]
+        Return the x offset of a character index from the text start.
+    visible : int
+        Number of characters shown before an elision mark.
+    height : int
+        Font line height.
+    """
+    if not spans:
+        return
+    painter.save()
+    painter.setClipRect(rect)
+    painter.setPen(Qt.NoPen)
+    painter.setBrush(HIGHLIGHT_COLOR)
+    top = rect.center().y() - height // 2
+    for start, end in spans:
+        end = min(end, visible)
+        if start >= end:
+            continue
+        left = advance(start)
+        painter.drawRect(left, top, max(1, advance(end) - left), height)
+    painter.restore()
+
+
 class RowHeightDelegate(QStyledItemDelegate):
-    """Apply an optional fixed height to table item geometry."""
+    """Apply an optional fixed height to table item geometry.
+
+    When `highlight` is set, the delegate also marks matched search text.
+    """
 
     def __init__(self, parent: Any = None) -> None:
         super().__init__(parent)
         self._row_height: int | None = None
+        self.highlight: SearchHighlight | None = None
+
+    def _text_spans(self, index: QModelIndex, text: str) -> list[tuple[int, int]]:
+        """Return highlight spans for the displayed text of `index`."""
+        if self.highlight is None:
+            return []
+        return self.highlight.spans(self.highlight.column_key(index.column()), text)
+
+    def paint(
+        self,
+        painter: Any,
+        option: QStyleOptionViewItem,
+        index: QModelIndex,
+    ) -> None:
+        """Paint the native item, then mark matched search text."""
+        super().paint(painter, option, index)
+        self._paint_native_highlights(painter, option, index)
+
+    def _paint_native_highlights(
+        self,
+        painter: Any,
+        option: QStyleOptionViewItem,
+        index: QModelIndex,
+        font: QFont | None = None,
+    ) -> None:
+        """Mark matches in text that the style drew in the standard way."""
+        if self.highlight is None or not self.highlight.enabled:
+            return
+        styled = QStyleOptionViewItem(option)
+        self.initStyleOption(styled, index)
+        text = styled.text
+        spans = self._text_spans(index, text)
+        if not spans:
+            return
+        widget = styled.widget
+        style = widget.style() if widget is not None else QApplication.style()
+        text_rect = style.subElementRect(QStyle.SE_ItemViewItemText, styled, widget)
+        # QCommonStyle draws item text inside this horizontal margin.
+        margin = style.pixelMetric(QStyle.PM_FocusFrameHMargin, None, widget) + 1
+        text_rect = text_rect.adjusted(margin, 0, -margin, 0)
+        metrics = QFontMetrics(font if font is not None else styled.font)
+        shown = metrics.elidedText(text, styled.textElideMode, text_rect.width())
+        visible = len(text) if shown == text else max(0, len(shown) - 1)
+        width = metrics.horizontalAdvance(shown)
+        alignment = styled.displayAlignment
+        if alignment & Qt.AlignRight:
+            origin = text_rect.right() + 1 - width
+        elif alignment & Qt.AlignHCenter:
+            origin = text_rect.left() + (text_rect.width() - width) // 2
+        else:
+            origin = text_rect.left()
+        paint_highlights(
+            painter,
+            text_rect,
+            spans,
+            lambda position: origin + metrics.horizontalAdvance(text[:position]),
+            visible,
+            metrics.height(),
+        )
 
     def set_row_height(self, height: int | None) -> None:
         """Set the fixed table-row height and refresh delegate geometry."""
@@ -286,6 +457,25 @@ class FirstAuthorDelegate(RowHeightDelegate):
             remainder,
         )
         painter.restore()
+        text = surname + remainder
+        spans = self._text_spans(index, text)
+        if spans:
+            bold_metrics = QFontMetrics(bold_font)
+            metrics = QFontMetrics(styled.font)
+            origin = text_rect.left() + shift
+
+            def advance(position: int) -> int:
+                if position <= len(surname):
+                    return origin + bold_metrics.horizontalAdvance(surname[:position])
+                return (
+                    origin
+                    + offset
+                    + metrics.horizontalAdvance(remainder[: position - len(surname)])
+                )
+
+            paint_highlights(
+                painter, text_rect, spans, advance, len(text), metrics.height()
+            )
 
 
 class LinkDelegate(RowHeightDelegate):
@@ -318,6 +508,7 @@ class LinkDelegate(RowHeightDelegate):
         if not self.requires_icon(text, styled.rect.width(), styled.font):
             styled.font.setUnderline(bool(text))
             style.drawControl(QStyle.CE_ItemViewItem, styled, painter, styled.widget)
+            self._paint_native_highlights(painter, option, index, styled.font)
             return
 
         styled.text = ""
@@ -435,8 +626,15 @@ class FileTableModel(QAbstractTableModel):
         self._query = query
         self._columns: tuple[Column, ...] = tuple(columns)
         self._snapshot: list[dict[str, Any]] = []
+        # Records before search and sort, reused while the catalog is unchanged.
+        self._natural: list[dict[str, Any]] = []
+        self._natural_key: tuple[Any, ...] | None = None
         self._rows: list[dict[str, Any]] = []
         self._total = 0
+        # Cell values by record identity, column, and role. Records do not
+        # change while the model holds them, so the values stay valid until
+        # a reload or a presentation change.
+        self._cell_cache: dict[tuple[int, int, int], Any] = {}
         self._column_fonts: dict[str, QFont] = {}
         self._column_colors: dict[str, QColor] = {}
         self._column_alignments: dict[str, str] = {}
@@ -470,6 +668,7 @@ class FileTableModel(QAbstractTableModel):
         normalized = tuple(columns)
         self.beginResetModel()
         self._columns = normalized
+        self._cell_cache.clear()
         self.endResetModel()
 
     def set_registry(
@@ -508,16 +707,19 @@ class FileTableModel(QAbstractTableModel):
         """Apply optional fixed-width fonts and text colors by column key."""
         self._column_fonts = fonts
         self._column_colors = colors or {}
+        self._cell_cache.clear()
         self.layoutChanged.emit()
 
     def set_timestamp_format(self, timestamp_format: str) -> None:
         """Apply an ISO 8601 or custom ``strftime`` timestamp format."""
         self._timestamp_format = timestamp_format
+        self._cell_cache.clear()
         self.layoutChanged.emit()
 
     def set_column_alignments(self, alignments: dict[str, str]) -> None:
         """Apply horizontal alignment overrides by column key."""
         self._column_alignments = dict(alignments)
+        self._cell_cache.clear()
         if self.columnCount():
             self.headerDataChanged.emit(Qt.Horizontal, 0, self.columnCount() - 1)
             if self.rowCount():
@@ -542,7 +744,17 @@ class FileTableModel(QAbstractTableModel):
         if not (0 <= index.column() < len(self._columns)):
             return None
         record = self._rows[index.row()]
-        column = self._columns[index.column()]
+        key = (id(record), index.column(), int(role))
+        try:
+            return self._cell_cache[key]
+        except KeyError:
+            pass
+        value = self._cell_data(record, self._columns[index.column()], role)
+        self._cell_cache[key] = value
+        return value
+
+    def _cell_data(self, record: dict[str, Any], column: Column, role: int) -> Any:
+        """Compute one cell value for `data`."""
         if role == Qt.TextAlignmentRole:
             alignment = COLUMN_ALIGNMENT_FLAGS.get(
                 self._column_alignments.get(column.key)
@@ -640,13 +852,10 @@ class FileTableModel(QAbstractTableModel):
         if not target_column.sortable:
             return
         self.set_query(
-            FileQuery(
-                view=self._query.view,
-                search=self._query.search,
+            replace(
+                self._query,
                 order_by=target_column.key,
                 descending=order == Qt.DescendingOrder,
-                secondary_order_by=self._query.secondary_order_by,
-                tertiary_order_by=self._query.tertiary_order_by,
             )
         )
 
@@ -659,6 +868,7 @@ class FileTableModel(QAbstractTableModel):
         """
         self.beginResetModel()
         try:
+            self._cell_cache.clear()
             self._snapshot = []
             self._rows = []
             self._total = 0
@@ -673,6 +883,9 @@ class FileTableModel(QAbstractTableModel):
 
     def _query_snapshot(self) -> list[dict[str, Any]] | None:
         try:
+            snapshot = self._cached_snapshot()
+            if snapshot is not None:
+                return snapshot
             return self._registry.query_files(
                 **self._query.to_filters(),
                 order_by=self._query.order_by,
@@ -683,6 +896,59 @@ class FileTableModel(QAbstractTableModel):
         except sqlite3.OperationalError as exc:
             self._report_query_error(exc)
             return None
+
+    def _cached_snapshot(self) -> list[dict[str, Any]] | None:
+        """Search and sort reused records while the catalog is unchanged.
+
+        The result equals ``query_files`` for the same query. Records keep
+        catalog order before the sort, so equal sort values keep the same
+        order as a new query. Returns `None` when the registry cannot supply
+        a change token, natural order, search keys, and sorting.
+        """
+        registry = self._registry
+        if not all(
+            callable(getattr(registry, name, None))
+            for name in (
+                "change_token",
+                "query_records",
+                "search_location_keys",
+                "sort_records",
+            )
+        ):
+            return None
+        filters = self._query.to_filters()
+        search = filters.pop("search", None)
+        exact = bool(filters.pop("search_exact", False))
+        wildcards = bool(filters.pop("search_wildcards", False))
+        fields = tuple(filters.pop("search_fields", ()))
+        if search and filters.get("duplicates_only"):
+            # Duplicates are counted among the search results, not before.
+            return None
+        token = registry.change_token()
+        key = (token, tuple(sorted(filters.items())))
+        if key != self._natural_key:
+            self._natural_key = None
+            self._natural = registry.query_records(**filters)
+            # The token from before the query makes a concurrent write miss.
+            self._natural_key = key
+        records = list(self._natural)
+        if search:
+            keys = registry.search_location_keys(
+                search, exact=exact, wildcards=wildcards, fields=fields
+            )
+            records = [
+                record
+                for record in records
+                if (str(record.get("root") or ""), record.get("location_id")) in keys
+            ]
+        registry.sort_records(
+            records,
+            order_by=self._query.order_by,
+            descending=self._query.descending,
+            secondary_order_by=self._query.secondary_order_by,
+            tertiary_order_by=self._query.tertiary_order_by,
+        )
+        return records
 
     def _report_query_error(self, exc: sqlite3.OperationalError) -> None:
         """Surface a transient registry lock without propagating through Qt."""

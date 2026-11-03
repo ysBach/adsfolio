@@ -1,3 +1,9 @@
+"""PDF downloads through ADS link gateways keep existing files and close responses.
+
+The tests also cover batch downloads, session locking, and printing HTML pages
+to PDF.
+"""
+
 import tempfile
 import threading
 import unittest
@@ -406,6 +412,23 @@ class TestDownloadPdf(unittest.TestCase):
             path = self.client.download_pdf("2020ApJ...900..100S", output_dir=tmpdir)
             self.assertIsNotNone(path)
             self.assertIn("https://example.org/download.pdf", closed)
+
+        closed.clear()
+        failures = [
+            ClosableFakeResponse(status_code=404, url=f"https://example.org/{name}")
+            for name in ("pub", "eprint", "author", "html")
+        ]
+        self.client._base._session.get = MagicMock(side_effect=failures)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = self.client.download_pdf("2020ApJ...900..100S", output_dir=tmpdir)
+            self.assertIsNone(path)
+        self.assertEqual(
+            closed,
+            [
+                f"https://example.org/{name}"
+                for name in ("pub", "eprint", "author", "html")
+            ],
+        )
 
     def test_download_pdf_serializes_concurrent_session_access(self):
         active_calls = 0

@@ -349,7 +349,7 @@ def test_recheck_keeps_excluded_unresolved_folder_unchanged(library):
     assert result.checked == 0
     assert not search.calls
     assert state.registry.catalog.get_file(root, f"unresolved/{path.name}") == before
-    assert settings.skip_unresolved_directory
+    assert hashlib.sha256(path.read_bytes()).hexdigest() == digest
 
 
 def test_recheck_uses_filename_with_saved_doi_and_allows_tracked_rename(library):

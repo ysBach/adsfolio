@@ -1,4 +1,8 @@
-"""GUI tests for the annotation merge dialog."""
+"""The annotation merge dialog moves reviewed annotations into a saved copy.
+
+The tests cover annotation review, waivers, placement suggestions, rotated
+pages, offline wording search, and save refusals that keep existing files.
+"""
 
 from __future__ import annotations
 
@@ -164,7 +168,7 @@ def test_rotated_page_view_maps_clicks_to_unrotated_coordinates(
     assert got[0][1] == pytest.approx((word[1] + word[3]) / 2, abs=1e-3)
 
 
-def test_main_window_has_merge_action_and_survives_missing_pymupdf(
+def test_main_window_has_merge_annotations_action(
     application, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(Config, "get_config_dir", classmethod(lambda cls: tmp_path))

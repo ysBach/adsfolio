@@ -1,3 +1,7 @@
+"""Apply saved global or library Rename settings in the rename and watch commands, and
+let each explicit option override only its own value.
+"""
+
 import json
 from types import SimpleNamespace
 

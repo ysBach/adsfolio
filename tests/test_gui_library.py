@@ -1,3 +1,7 @@
+"""Check library queries, column values, links, counts, and resolution states."""
+
+from datetime import datetime
+
 import pytest
 
 from adsfolio.gui.library import (
@@ -34,6 +38,17 @@ def test_file_query_maps_views_and_search():
     assert FileQuery(view=LibraryView.RESOLVED, search=" Bach ").to_filters() == {
         "identification": "ads_linked",
         "search": " Bach ",
+        "search_exact": False,
+        "search_wildcards": False,
+        "search_fields": (),
+    }
+    assert FileQuery(
+        search="x", search_exact=True, search_wildcards=True
+    ).to_filters() == {
+        "search": "x",
+        "search_exact": True,
+        "search_wildcards": True,
+        "search_fields": (),
     }
 
 
@@ -142,9 +157,12 @@ def test_resolution_column_has_a_compact_blank_header():
 
 def test_format_mtime_supports_iso8601_and_custom_patterns():
     record = {"mtime_ns": 1_700_000_000_000_000_000}
+    moment = datetime.fromtimestamp(1_700_000_000).astimezone()
 
-    assert "T" in format_mtime(record, ISO8601_TIMESTAMP_FORMAT)
-    assert format_mtime(record, "%Y-%m-%d")
+    assert format_mtime(record, ISO8601_TIMESTAMP_FORMAT) == moment.isoformat(
+        timespec="seconds"
+    )
+    assert format_mtime(record, "%Y-%m-%d") == moment.strftime("%Y-%m-%d")
 
 
 def test_base_columns_compatibility_alias():

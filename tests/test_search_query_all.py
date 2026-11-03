@@ -1,3 +1,5 @@
+"""``SearchAPI`` pages through ADS search results and sends bigquery requests."""
+
 import unittest
 
 from adsfolio.api.search import SearchAPI

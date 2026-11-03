@@ -1,9 +1,5 @@
-"""Tests for PDF document identity evidence corroboration.
-
-Covers portable synthetic regression tests covering matching titles,
-mismatching titles, first-page prefix collisions (including . and :),
-terminal punctuation preservation without heuristic trimming,
-malformed inputs, and multiple conflicting subject DOIs.
+"""Corroborate a provider DOI with the PDF title, labeled metadata DOIs, and first-page
+text, and fail closed on mismatches, conflicts, and malformed input.
 """
 
 from __future__ import annotations

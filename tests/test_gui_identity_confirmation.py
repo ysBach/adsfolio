@@ -1,4 +1,7 @@
-"""The user's identifier choice does not need a second warning."""
+"""Accept the user's identifier choice without a second warning.
+
+A chosen ADS candidate is refused when the PDF changes after the lookup.
+"""
 
 from __future__ import annotations
 

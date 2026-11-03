@@ -1,4 +1,4 @@
-"""Release metadata and Homebrew checksum validation."""
+"""Render the Homebrew cask, and preview repository setup without remote changes."""
 
 import importlib.util
 import shutil

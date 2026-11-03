@@ -158,7 +158,7 @@ def test_cache_lookup_does_not_bypass_disabled_ads(tmp_path: Path):
     assert record is None
 
 
-def test_external_rate_limit_propagates_without_negative_cache(tmp_path: Path):
+def test_external_rate_limit_error_reaches_the_caller(tmp_path: Path):
     pdf = _pdf(tmp_path / "10.1038_sample.pdf", "10.1038/sample")
 
     identifier = PdfIdentifier(client=None)
@@ -175,7 +175,7 @@ def test_external_rate_limit_propagates_without_negative_cache(tmp_path: Path):
             )
 
 
-def test_external_network_error_propagates_without_negative_cache(tmp_path: Path):
+def test_external_network_error_reaches_the_caller(tmp_path: Path):
     pdf = _pdf(tmp_path / "10.1038_sample.pdf", "10.1038/sample")
 
     identifier = PdfIdentifier(client=None)

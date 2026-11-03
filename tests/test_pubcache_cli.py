@@ -1,3 +1,5 @@
+"""The ``cache`` commands refresh, show, and clear the publication cache."""
+
 from click.testing import CliRunner
 
 from adsfolio import pubcache

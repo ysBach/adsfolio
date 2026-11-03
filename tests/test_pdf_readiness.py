@@ -1,4 +1,4 @@
-"""Tests for metadata readiness helper."""
+"""A PDF record is ready only with required fields, current content, and provenance."""
 
 from __future__ import annotations
 

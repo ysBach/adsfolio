@@ -1,3 +1,5 @@
+"""Read the identifiers a PDF states and decide if a record can bind to that PDF."""
+
 from __future__ import annotations
 
 import io

@@ -1,3 +1,5 @@
+"""Collect identified bibcodes and add them to writable ADS libraries in batches."""
+
 from collections.abc import Iterable, Iterator
 
 import pytest

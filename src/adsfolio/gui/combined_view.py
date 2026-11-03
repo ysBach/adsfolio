@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from PySide6.QtCore import (
+    QItemSelection,
     QItemSelectionModel,
     QModelIndex,
     QObject,
@@ -157,6 +158,10 @@ class CombinedViewController(QObject):
             item = window.libraries_item.child(index)
             if item.data(0, Qt.UserRole + 1) == "root":
                 self._set_root_checkbox(item, str(item.data(0, Qt.UserRole)))
+        if not self.enabled:
+            # Remove the tree first. A column reset under the tree would
+            # otherwise capture and restore its whole selection.
+            self._set_tree_enabled(False)
         self.update_columns()
         self._set_tree_enabled(self.enabled)
         if self.enabled:
@@ -208,7 +213,7 @@ class CombinedViewController(QObject):
         self._tree_resetting = True
         self._tree_pending_selection = {
             key
-            for index in self.window.table.selectionModel().selectedRows()
+            for index in self.window._selected_view_rows()
             if (key := tree.key_for_index(index)) is not None
         }
         self._tree_pending_current = tree.key_for_index(
@@ -234,6 +239,7 @@ class CombinedViewController(QObject):
             return
         self._tree_resetting = False
         self._restoring_tree = True
+        changed = False
         try:
             self.sync_tree_column()
             for row in range(tree.rowCount()):
@@ -247,20 +253,33 @@ class CombinedViewController(QObject):
                 if index.isValid():
                     self.window.table.setExpanded(index, True)
             selection = self.window.table.selectionModel()
+            restored = QItemSelection()
             for key in tuple(self._tree_pending_selection):
                 index = tree.index_for_key(key)
                 if index.isValid():
-                    selection.select(
-                        index, QItemSelectionModel.Select | QItemSelectionModel.Rows
-                    )
+                    restored.select(index, index)
                     self._tree_pending_selection.discard(key)
+            changed = not restored.isEmpty()
+            if changed:
+                # One select call emits one selectionChanged signal.
+                selection.select(
+                    restored, QItemSelectionModel.Select | QItemSelectionModel.Rows
+                )
             if self._tree_pending_current is not None:
                 index = tree.index_for_key(self._tree_pending_current)
                 if index.isValid():
                     selection.setCurrentIndex(index, QItemSelectionModel.NoUpdate)
                     self._tree_pending_current = None
+                    changed = True
         finally:
             self._restoring_tree = False
+        if changed:
+            self.window._sync_detail_and_selection_actions()
+
+    @property
+    def restoring_tree(self) -> bool:
+        """Return whether a tree selection restore is in progress."""
+        return self._restoring_tree
 
     def _queue_tree_restore(self, *_args: Any) -> None:
         """Combine row insertions into one tree-state update."""
@@ -344,7 +363,7 @@ class CombinedViewController(QObject):
         window = self.window
         selected = {
             (str(record.get("root") or ""), record.get("location_id"))
-            for record in window._selected_records()
+            for record in window._selected_record_refs()
             if record.get("location_id") is not None
         }
         registry = self.registry()
@@ -535,6 +554,18 @@ class CombinedViewController(QObject):
         identify_rename.setToolTip(
             selection_reason
             or "Identify these PDFs and apply their library's Rename settings."
+        )
+        menu.addSeparator()
+        add_to_library = menu.addAction(
+            "Add to ADS Library…", self.window._add_to_ads_library
+        )
+        add_to_library.setEnabled(self.window._can_add_to_ads_library())
+        add_to_library.setToolTip(
+            self.window._add_to_ads_library_block_reason()
+            or "Add these papers to an ADS library."
+        )
+        menu.addAction(
+            "Export Selection As…", lambda: self.window._export_papers(records)
         )
         if len(records) == 1:
             menu.addSeparator()

@@ -396,7 +396,14 @@ def test_markup_evidence_follows_annotation_quad_order(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize(
-    "original,revised", [("1.5 au", "15 au"), ("50% flux", "50 flux"), ("km/s", "km s")]
+    "original,revised",
+    [
+        ("1.5 au", "15 au"),
+        ("50% flux", "50 flux"),
+        ("km/s", "km s"),
+        ("1 MJy", "1 mJy"),
+        ("10²", "102"),
+    ],
 )
 def test_changed_numbers_and_units_have_a_review_label(
     tmp_path: Path, original: str, revised: str
@@ -425,17 +432,3 @@ def test_source_line_wrap_is_classified_as_typography(tmp_path: Path) -> None:
     evidence = source_evidence(item, TextIndex(source))
     matches = text_matches(item, target, source_words=evidence["words"])
     assert matches[0].method == "Typography differs"
-
-
-@pytest.mark.parametrize("original,revised", [("1 MJy", "1 mJy"), ("10²", "102")])
-def test_unit_case_and_exponents_have_a_review_label(
-    tmp_path: Path, original: str, revised: str
-) -> None:
-    _, item = _item(tmp_path, original, original)
-    target = _pdf(tmp_path / "target.pdf", [revised])
-    matches = text_matches(item, TextIndex(target))
-    assert matches
-    assert all(
-        match.method == "Characters differ — check numbers and symbols"
-        for match in matches
-    )

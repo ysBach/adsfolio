@@ -1,3 +1,5 @@
+"""GUI settings save and load, and invalid or old values fall back to safe defaults."""
+
 import json
 import logging
 

@@ -1,3 +1,5 @@
+"""Load the publication profile, query the user's ADS papers, and match PDFs to them."""
+
 from pathlib import Path
 from types import SimpleNamespace
 

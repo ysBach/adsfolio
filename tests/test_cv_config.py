@@ -1,3 +1,5 @@
+"""CV YAML settings load with defaults and build the ADS search query."""
+
 from pathlib import Path
 
 import pytest

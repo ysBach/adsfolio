@@ -1,4 +1,8 @@
-"""Tests for the ADS library destination and confirmation dialogs."""
+"""The Add to ADS Library dialog counts eligible records and lists writable libraries.
+
+It asks for confirmation before an add, reports each result category, and
+retries the remainder.
+"""
 
 from __future__ import annotations
 

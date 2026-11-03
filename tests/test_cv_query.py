@@ -1,3 +1,8 @@
+"""CV publication queries use the configured ADS query and author format.
+
+The module also checks the split of first-author and co-authored papers.
+"""
+
 from dataclasses import replace
 from pathlib import Path
 

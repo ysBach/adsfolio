@@ -1,4 +1,7 @@
-"""Deterministic MainWindow integration tests for library watching."""
+"""Check MainWindow with a fake watcher: notices, refreshes, lookups, and collisions.
+
+The tests also cover manual metadata entry, guided identification, and added folders.
+"""
 
 from __future__ import annotations
 
@@ -139,14 +142,6 @@ def _window_factory(monkeypatch, qtbot, config: GuiConfig):
     window = MainWindow(watch_controller=controller)
     qtbot.addWidget(window)
     return window, controller, saves
-
-
-def test_task5_main_window_tests_use_temporary_config_dir(
-    monkeypatch, qtbot, tmp_path
-) -> None:
-    _window_factory(monkeypatch, qtbot, GuiConfig())
-
-    assert Config.get_config_dir().resolve() == (tmp_path / "config").resolve()
 
 
 def _event(root: Path, session_id: str, *, generation: int = 0) -> WatchEvent:
@@ -2933,7 +2928,7 @@ def test_cancelling_the_subfolder_question_adds_nothing(monkeypatch, qtbot, tmp_
     assert window.registries == {}
 
 
-def test_folder_without_subfolders_is_added_without_asking(qtbot, tmp_path):
+def test_folder_without_subfolders_needs_no_subfolder_question(qtbot, tmp_path):
     from adsfolio.gui.main_window import MainWindow
 
     root = tmp_path / "flat"

@@ -1,3 +1,5 @@
+"""``python -m adsfolio.cli.commands`` starts the CLI without a runpy warning."""
+
 import os
 import subprocess
 import sys

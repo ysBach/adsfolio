@@ -1,3 +1,5 @@
+"""The ADS HTTP client sends its headers and timeout and reports API errors."""
+
 import json
 from unittest.mock import Mock
 

@@ -1,3 +1,5 @@
+"""Load, save, and validate identify settings for ADS use, strategies, and providers."""
+
 import pytest
 
 from adsfolio.pdf.doi_providers import DoiProvider

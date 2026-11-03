@@ -1,4 +1,8 @@
-"""Tests for table column layout and alignment preferences."""
+"""Table column order, visibility, and alignment preferences.
+
+The model and cell delegates apply the alignment, and all three settings
+persist across a restart.
+"""
 
 from __future__ import annotations
 

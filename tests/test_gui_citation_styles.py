@@ -1,4 +1,8 @@
-"""Tests for the custom citation styles editor dialog."""
+"""The citation-style editor dialog and its template help text.
+
+The tests cover adding, copying, moving, and deleting styles, previews,
+validation errors, and the save and cancel results.
+"""
 
 from __future__ import annotations
 
@@ -63,7 +67,6 @@ def test_template_help_text_completeness() -> None:
         assert f"{{{field}}}" in TEMPLATE_HELP_TEXT
 
     # Literal braces
-    assert "{" in TEMPLATE_HELP_TEXT and "}" in TEMPLATE_HELP_TEXT
     assert "{{" in TEMPLATE_HELP_TEXT and "}}" in TEMPLATE_HELP_TEXT
 
     # Missing field behavior
@@ -112,14 +115,10 @@ def test_template_help_button_and_accessible_description(
         dialog = CitationStylesDialog(list(initial_citation_styles()))
         assert not mock_critical.called
 
-    assert dialog.template_help_button is not None
     assert dialog.template_help_button.toolTip() == TEMPLATE_HELP_TEXT
     assert dialog.template_help_button.accessibleDescription() == TEMPLATE_HELP_TEXT
     assert dialog.template_edit.accessibleDescription() == TEMPLATE_HELP_TEXT
-    assert (
-        dialog.help_view.toPlainText() == TEMPLATE_HELP_TEXT
-        or TEMPLATE_HELP_TEXT in dialog.help_view.toPlainText()
-    )
+    assert dialog.help_view.toPlainText() == TEMPLATE_HELP_TEXT
 
 
 def test_initial_selection_does_not_preassign_current_style(
@@ -281,16 +280,11 @@ def test_duplicate_style_creates_copy_with_unique_name_and_fresh_id(
     assert copy1.id != "s1"
     assert len(copy1.id) > 0
 
-    # Duplicate again to ensure Copy of Copy or numbered unique copy
+    # Duplicating the selected copy copies its name again.
     dialog.duplicate_button.click()
     assert dialog.list_widget.count() == 3
     copy2 = dialog.styles[2]
-    assert copy2.name in (
-        "Copy of My Style (2)",
-        "Copy (2) of My Style",
-        "Copy of Copy of My Style",
-        "Copy 2 of My Style",
-    )
+    assert copy2.name == "Copy of Copy of My Style"
     assert copy2.id != copy1.id and copy2.id != "s1"
 
 
@@ -383,10 +377,10 @@ def test_delete_validates_current_draft_before_removing_style(
         dialog.close()
 
 
-def test_preview_does_not_mutate_styles_and_uses_custom_or_builtin_record(
+def test_preview_renders_unsaved_draft_without_mutating_styles(
     application: QApplication,
 ) -> None:
-    """Preview button validates draft and renders against preview_record or built-in record."""
+    """Preview button validates the draft and renders it against preview_record."""
     s1 = CitationStyle(
         id="s1", name="Solo", template="{first_author_initials} ({year})"
     )
@@ -413,10 +407,8 @@ def test_preview_with_built_in_example_when_preview_record_is_none(
     dialog = CitationStylesDialog([s1], preview_record=None)
 
     dialog.preview_button.click()
-    text = dialog.preview_label.text()
-    assert len(text) > 0
-    assert dialog.preview_note_label is not None
-    assert "example" in dialog.preview_note_label.text().lower()
+    assert dialog.preview_label.text() == "2024 2024A&A...123..456B"
+    assert dialog.preview_note_label.text() == "(Built-in example record)"
 
 
 def test_validation_error_on_preview_shows_message_box(

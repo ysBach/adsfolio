@@ -560,7 +560,13 @@ def _capture_workflows(
     original_menu = main_window_module.QMenu
     main_window_module.QMenu = CapturedMenu
     try:
-        item = window.sidebar.topLevelItem(0).child(0)
+        libraries = window.libraries_item
+        # The first child is the "Combine libraries" toggle, not a library.
+        item = next(
+            libraries.child(index)
+            for index in range(libraries.childCount())
+            if libraries.child(index).data(0, Qt.UserRole + 1) == "root"
+        )
         rect = window.sidebar.visualItemRect(item)
         window._sidebar_menu(rect.center())
     finally:

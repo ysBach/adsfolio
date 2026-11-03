@@ -1,3 +1,7 @@
+"""Extract PDF identifiers and resolve PDFs to ADS records with fake search results and
+no network access.
+"""
+
 import hashlib
 import logging
 from types import SimpleNamespace
@@ -357,7 +361,15 @@ def test_build_record_has_expected_fields(tmp_path):
 
     record = identifier.build_record(doc, path, manual_confirmation=True)
 
+    digest = hashlib.sha256(path.read_bytes()).hexdigest()
     assert record["bibcode"] == "BIB"
+    assert record["sha256"] == digest
+    assert record["_adsfolio_metadata_sha256"] == digest
+    assert record["current_filename"] == "paper.pdf"
+    assert record["status"] == "resolved"
+    assert (record["doi"], record["title"], record["author"]) == ("", [], [])
+    assert record["_adsfolio_identity"]["status"] == "manual_confirmed"
+    assert record["_adsfolio_identity"]["sha256"] == digest
 
 
 def test_resolve_uses_metadata_doi_before_title_fallback(tmp_path):

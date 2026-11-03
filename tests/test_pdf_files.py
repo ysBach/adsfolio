@@ -1,4 +1,6 @@
-"""Tests for shared PDF file enumeration."""
+"""Enumerate PDF files, and move PDFs without overwriting a destination or losing the
+source bytes or catalog history.
+"""
 
 from __future__ import annotations
 

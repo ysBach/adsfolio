@@ -1,4 +1,4 @@
-"""Validate DMG installation layout and packaging failure handling."""
+"""Validate DMG layout, packaging failure handling, and release checksum files."""
 
 import hashlib
 import importlib.util

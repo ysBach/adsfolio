@@ -1,3 +1,5 @@
+"""Save, load, compare, and clear the cache of the user's ADS publications."""
+
 import json
 
 from adsfolio import pubcache

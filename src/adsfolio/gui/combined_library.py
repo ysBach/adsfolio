@@ -8,7 +8,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
-from ..pdf.registry import SORTABLE_COLUMNS, PdfRegistry
+from ..pdf.registry import SORTABLE_COLUMNS, PdfRegistry, RecordFact
 from .library import Column
 
 
@@ -64,6 +64,22 @@ class CombinedLibrary:
             raise ValueError("limit must be non-negative or None")
         if offset < 0:
             raise ValueError("offset must be non-negative")
+        records = self.query_records(**filters)
+        self.sort_records(
+            records,
+            order_by=order_by,
+            descending=descending,
+            secondary_order_by=secondary_order_by,
+            tertiary_order_by=tertiary_order_by,
+        )
+        return records[offset:] if limit is None else records[offset : offset + limit]
+
+    def query_records(self, **filters: Any) -> list[dict[str, Any]]:
+        """Return filtered locations before the requested sort.
+
+        Records follow the selected-root order. Each root keeps its
+        ``relative_path`` order. Duplicates compare digests across all roots.
+        """
         duplicates_only = bool(filters.pop("duplicates_only", False))
         unavailable = set(self.unavailable_roots)
         records = [
@@ -79,6 +95,26 @@ class CombinedLibrary:
                 for record in records
                 if record.get("sha256") and counts[str(record["sha256"])] > 1
             ]
+        return records
+
+    def sort_records(
+        self,
+        records: list[dict[str, Any]],
+        *,
+        order_by: str = "relative_path",
+        descending: bool = False,
+        secondary_order_by: str | None = None,
+        tertiary_order_by: str | None = None,
+    ) -> None:
+        """Sort `records` in place with the `query_files` order rules."""
+        order_keys = [
+            key
+            for key in (order_by, secondary_order_by, tertiary_order_by)
+            if key is not None
+        ]
+        invalid = next((key for key in order_keys if key not in SORTABLE_COLUMNS), None)
+        if invalid is not None:
+            raise ValueError(f"Unsortable column: {invalid!r}")
 
         def sort_value(record: dict[str, Any], key: str) -> tuple[bool, str | int]:
             if key == "filename":
@@ -96,7 +132,62 @@ class CombinedLibrary:
             records.sort(
                 key=lambda record, sort_key=key: sort_value(record, sort_key)[0]
             )
-        return records[offset:] if limit is None else records[offset : offset + limit]
+
+    def change_token(self) -> tuple[Any, ...]:
+        """Return a value that changes with any selected catalog or label."""
+        unavailable = set(self.unavailable_roots)
+        return (
+            tuple(self.registries),
+            tuple(sorted(unavailable)),
+            tuple(sorted(self.labels.items())),
+            tuple(
+                registry.change_token()
+                for key, registry in self.registries.items()
+                if key not in unavailable
+            ),
+        )
+
+    def record_facts(self) -> tuple[RecordFact, ...]:
+        """Return cached count facts from the available selected roots."""
+        unavailable = set(self.unavailable_roots)
+        return tuple(
+            fact
+            for key, registry in self.registries.items()
+            if key not in unavailable
+            for fact in registry.record_facts()
+        )
+
+    def search_documents(
+        self,
+    ) -> tuple[tuple[int, dict[str, str], dict[str, str]], ...]:
+        """Return cached search documents from the available selected roots."""
+        unavailable = set(self.unavailable_roots)
+        return tuple(
+            entry
+            for key, registry in self.registries.items()
+            if key not in unavailable
+            for entry in registry.search_documents()
+        )
+
+    def search_location_keys(
+        self,
+        search: str,
+        *,
+        exact: bool = False,
+        wildcards: bool = False,
+        fields: Sequence[str] = (),
+    ) -> frozenset[tuple[str, int]]:
+        """Return ``(root, location_id)`` keys that match `search`."""
+        unavailable = set(self.unavailable_roots)
+        keys: set[tuple[str, int]] = set()
+        for key, registry in self.registries.items():
+            if key not in unavailable:
+                keys.update(
+                    registry.search_location_keys(
+                        search, exact=exact, wildcards=wildcards, fields=fields
+                    )
+                )
+        return frozenset(keys)
 
     def count_files_matching(self, **filters: Any) -> int:
         """Count locations across the selected roots."""

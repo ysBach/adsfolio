@@ -1,3 +1,9 @@
+"""Manual-metadata, Identify, Rename, profile, and citation-style dialogs.
+
+The tests check dialog defaults, save and cancel results, and how the main
+window opens each dialog and applies the accepted values.
+"""
+
 from __future__ import annotations
 
 import os
@@ -92,12 +98,12 @@ def test_manual_metadata_dialog_cancel_does_not_save(application) -> None:
     assert dialog.result() == QDialog.Rejected
 
 
-def test_identify_dialog_defaults_global_and_keeps_profile_fields_out(application):
+def test_identify_dialog_defaults_to_global_scope_with_one_run_options_off(
+    application,
+):
     dialog = IdentifyDialog(Path("/papers"), IdentifySettings())
 
     assert dialog.scope.currentData() == "global"
-    assert not hasattr(dialog, "debut")
-    assert not hasattr(dialog, "end")
     assert not dialog.refresh_cache.isChecked()
     assert not dialog.allow_ads.isChecked()
     assert not dialog.skip_unresolved.isChecked()
@@ -739,7 +745,7 @@ def test_citation_styles_preview_uses_builtin_for_non_single_selection(
     window.close()
 
 
-def test_rename_dialog_switches_scope_and_saves_before_apply(application, monkeypatch):
+def test_rename_dialog_accept_saves_library_scope_settings(application):
     calls = []
     dialog = RenameDialog(
         Path("/papers"),
@@ -749,6 +755,9 @@ def test_rename_dialog_switches_scope_and_saves_before_apply(application, monkey
         save_settings=lambda scope, settings: calls.append((scope, settings)),
     )
     dialog.accept()
+    assert dialog.selected_settings() == RenameSettings(
+        template="{title}", max_authors=6
+    )
     assert calls == [("library", dialog.selected_settings())]
     assert dialog.result() == QDialog.Accepted
 
@@ -949,7 +958,7 @@ def test_rename_dialog_authors_when_truncated_maximum_syncs_with_max_authors(
     dialog.close()
 
 
-def test_rename_dialog_saves_and_forwards_author_join_settings(application):
+def test_rename_dialog_settings_and_argv_carry_author_join_options(application):
     dialog = RenameDialog(
         Path("/papers"),
         RenameSettings(

@@ -78,6 +78,7 @@ PDF catalog and processing
    adsfolio.pdf.sidecar
    adsfolio.pdf.catalog
    adsfolio.pdf.registry
+   adsfolio.pdf.search
    adsfolio.pdf.cli
    adsfolio.pdf.cli_common
    adsfolio.pdf.cli_upgrade

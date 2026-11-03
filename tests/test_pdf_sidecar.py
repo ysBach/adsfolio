@@ -1,3 +1,5 @@
+"""Read, migrate, index, and save the JSON sidecar catalog of PDF records."""
+
 import json
 
 import pytest

@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 from adsfolio.config import Config
-from adsfolio.gui.library import arxiv_id as gui_arxiv_id
+from adsfolio.gui.library import BASE_COLUMNS
 from adsfolio.pdf.arxiv import arxiv_id
 from adsfolio.pdf.registry import PdfRegistry
 
@@ -43,8 +43,16 @@ def test_arxiv_id_accepts_only_arxiv_sources(record: dict, expected: str) -> Non
     assert arxiv_id(record) == expected
 
 
-def test_gui_reexports_shared_arxiv_id() -> None:
-    assert gui_arxiv_id is arxiv_id
+@pytest.mark.parametrize(
+    ("record", "expected"),
+    [
+        ({"bibcode": "2024arXiv240112345B"}, "2401.12345"),
+        ({"doi": "10.1006/icar.1998.6100"}, ""),
+    ],
+)
+def test_gui_arxiv_column_shows_shared_identifier(record: dict, expected: str) -> None:
+    column = next(column for column in BASE_COLUMNS if column.key == "arxiv")
+    assert column.getter(record) == expected
 
 
 def _add(registry: PdfRegistry, root: Path, name: str, **fields) -> None:
@@ -103,7 +111,7 @@ def test_numeric_sort_places_missing_values_last(
         {"current_path": "text.pdf", "size_bytes": ""},
         {"current_path": "big.pdf", "size_bytes": 100},
     ]
-    monkeypatch.setattr(registry, "_query_records", lambda **_: list(rows))
+    monkeypatch.setattr(registry, "query_records", lambda **_: list(rows))
 
     ordered = [
         r["current_path"]

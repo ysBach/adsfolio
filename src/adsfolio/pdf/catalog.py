@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import itertools
 import json
 import os
 import re
@@ -33,6 +34,7 @@ from .readiness import (
     PREVIOUS_RESOLUTION_KEY,
     WATCH_PENDING_KEY,
 )
+from .search import sql_search_match
 from .sidecar import SIDECAR_FILENAME, Sidecar
 
 
@@ -45,6 +47,8 @@ def _sqlite_file_identity(value: int | None) -> int | str | None:
 
 
 CATALOG_FILENAME = "pdf-library.sqlite"
+# Each open catalog gets a unique number for in-process cache keys.
+_CATALOG_SERIALS = itertools.count(1)
 CATALOG_SCHEMA_VERSION = 3
 LEGACY_REGISTRY_FILENAME = ".adsfolio-pdfs.sqlite"
 LOCKED_METADATA_FIELDS_KEY = "_adsfolio_locked_fields"
@@ -100,8 +104,12 @@ class PdfCatalog:
             else Config.get_config_dir() / CATALOG_FILENAME
         )
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._serial = next(_CATALOG_SERIALS)
         self._connection = sqlite3.connect(self.path, timeout=5.0)
         self._connection.row_factory = sqlite3.Row
+        self._connection.create_function(
+            "adsfolio_search_match", 7, sql_search_match, deterministic=True
+        )
         self._connection.execute("PRAGMA foreign_keys = ON")
         self._connection.execute("PRAGMA busy_timeout = 5000")
         try:
@@ -989,6 +997,9 @@ class PdfCatalog:
         status: str | None = None,
         resolved: bool | None = None,
         search: str | None = None,
+        search_exact: bool = False,
+        search_wildcards: bool = False,
+        search_fields: Collection[str] = (),
         include_missing: bool = False,
         document_id: int | None = None,
         attachment_id: int | None = None,
@@ -1006,6 +1017,10 @@ class PdfCatalog:
             Restrict locations to one canonical document when supplied.
         attachment_id, location_id
             Restrict results to one attachment or one location identifier.
+        search, search_exact, search_wildcards, search_fields
+            Keep locations that match the query `search`. `search_fields`
+            names the fields that plain terms search. See
+            `adsfolio.pdf.search.document_matches` for the rules.
         sha256
             One digest, or a collection of digests, of the current content.
             An empty collection matches nothing. A collection runs one indexed
@@ -1020,6 +1035,9 @@ class PdfCatalog:
                     status=status,
                     resolved=resolved,
                     search=search,
+                    search_exact=search_exact,
+                    search_wildcards=search_wildcards,
+                    search_fields=search_fields,
                     include_missing=include_missing,
                     document_id=document_id,
                     attachment_id=attachment_id,
@@ -1036,6 +1054,9 @@ class PdfCatalog:
             status=status,
             resolved=resolved,
             search=search,
+            search_exact=search_exact,
+            search_wildcards=search_wildcards,
+            search_fields=search_fields,
             include_missing=include_missing,
             document_id=document_id,
             attachment_id=attachment_id,
@@ -1068,6 +1089,9 @@ class PdfCatalog:
         status: str | None = None,
         resolved: bool | None = None,
         search: str | None = None,
+        search_exact: bool = False,
+        search_wildcards: bool = False,
+        search_fields: Collection[str] = (),
         include_missing: bool = False,
         document_id: int | None = None,
         attachment_id: int | None = None,
@@ -1076,7 +1100,7 @@ class PdfCatalog:
     ) -> int:
         """Count the locations that `query_files` returns for the same filters.
 
-        The count is done in SQL, so no metadata JSON is parsed. Digest
+        The count is done in SQL. Only a search reads metadata JSON. Digest
         collections are not accepted; call `query_files` for those.
         """
         version_join, where, params = self._file_filter_sql(
@@ -1084,6 +1108,9 @@ class PdfCatalog:
             status=status,
             resolved=resolved,
             search=search,
+            search_exact=search_exact,
+            search_wildcards=search_wildcards,
+            search_fields=search_fields,
             include_missing=include_missing,
             document_id=document_id,
             attachment_id=attachment_id,
@@ -1103,6 +1130,77 @@ class PdfCatalog:
         ).fetchone()
         return int(row[0])
 
+    def change_token(self) -> tuple[int, int, int]:
+        """Return a value that changes after any write to this catalog.
+
+        The first value identifies this open catalog in the process.
+        ``total_changes`` counts rows that this connection changed.
+        ``PRAGMA data_version`` changes after another connection commits.
+        Equal tokens therefore mean that no committed or pending write occurred
+        between the two calls.
+        """
+        row = self._connection.execute("PRAGMA data_version").fetchone()
+        return self._serial, self._connection.total_changes, int(row[0])
+
+    def query_location_ids(
+        self,
+        *,
+        root: Path | None = None,
+        search: str,
+        search_exact: bool = False,
+        search_wildcards: bool = False,
+        search_fields: Collection[str] = (),
+    ) -> set[int]:
+        """Return current location identifiers that match `search` in SQL.
+
+        It applies the same search rule as `query_files`.
+        """
+        version_join, where, params = self._file_filter_sql(
+            root=root,
+            status=None,
+            resolved=None,
+            search=search,
+            search_exact=search_exact,
+            search_wildcards=search_wildcards,
+            search_fields=search_fields,
+            include_missing=False,
+            document_id=None,
+            attachment_id=None,
+            location_id=None,
+            sha256=None,
+        )
+        rows = self._connection.execute(
+            f"""
+            SELECT l.id
+            FROM file_locations AS l
+            JOIN library_roots AS r ON r.id = l.root_id
+            JOIN attachments AS a ON a.id = l.attachment_id
+            {version_join} content_versions AS v ON v.id = l.current_version_id
+            {where}
+            """,
+            params,
+        ).fetchall()
+        return {int(row[0]) for row in rows}
+
+    def search_texts(self, root: Path) -> list[tuple[int, str, str, str | None]]:
+        """Return the raw text columns that the search filter compares.
+
+        Each row holds the location identifier, relative path, stored metadata
+        JSON, and current digest of one current location in `root`.
+        """
+        rows = self._connection.execute(
+            """
+            SELECT l.id, l.relative_path, a.metadata_json, v.sha256
+            FROM file_locations AS l
+            JOIN library_roots AS r ON r.id = l.root_id
+            JOIN attachments AS a ON a.id = l.attachment_id
+            LEFT JOIN content_versions AS v ON v.id = l.current_version_id
+            WHERE l.missing_at IS NULL AND r.canonical_path = ?
+            """,
+            (self._normalize_root(root),),
+        ).fetchall()
+        return [(int(row[0]), row[1], row[2], row[3]) for row in rows]
+
     def _file_filter_sql(
         self,
         *,
@@ -1111,6 +1209,9 @@ class PdfCatalog:
         resolved: bool | None,
         search: str | None,
         include_missing: bool,
+        search_exact: bool = False,
+        search_wildcards: bool = False,
+        search_fields: Collection[str] = (),
         document_id: int | None,
         attachment_id: int | None,
         location_id: int | None,
@@ -1147,11 +1248,18 @@ class PdfCatalog:
         elif resolved is False:
             clauses.append("(a.status != 'resolved' OR a.document_id IS NULL)")
         if (search or "").strip():
-            pattern = f"%{search.strip()}%"
             clauses.append(
-                "(l.relative_path LIKE ? OR a.metadata_json LIKE ? OR v.sha256 LIKE ?)"
+                "adsfolio_search_match("
+                "l.relative_path, a.metadata_json, v.sha256, ?, ?, ?, ?)"
             )
-            params.extend([pattern, pattern, pattern])
+            params.extend(
+                [
+                    search,
+                    int(search_exact),
+                    int(search_wildcards),
+                    ",".join(search_fields),
+                ]
+            )
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         # A digest filter rejects locations without a version, so an inner join
         # lets SQLite start from idx_version_sha256.

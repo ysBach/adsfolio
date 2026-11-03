@@ -1,4 +1,7 @@
-"""Tests for exporting complete ADS libraries from the GUI."""
+"""The ADS library export dialog saves a complete remote library to a file.
+
+Cancel, empty results, and save failures keep existing files unchanged.
+"""
 
 from __future__ import annotations
 

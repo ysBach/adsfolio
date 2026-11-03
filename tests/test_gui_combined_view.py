@@ -1,4 +1,8 @@
-"""Exercise combined-view controls and root-specific file routing."""
+"""The combined library view keeps per-library check states and routes file actions.
+
+The tests cover saved root check states, file actions sent to the owning
+library, and selection when a library fails to restore.
+"""
 
 from __future__ import annotations
 
@@ -150,7 +154,10 @@ def test_combined_open_and_details_use_each_records_own_root(
     assert not window.reconcile_file_facts_action.isEnabled()
     assert not window.remove_missing_action.isEnabled()
     assert not window.merge_annotations_action.isEnabled()
-    assert not window.export_all_action.isEnabled()
+    # Export uses the shared catalog. ADS library intake needs one owner root.
+    assert window.export_all_action.isEnabled()
+    assert window.export_selected_action.isEnabled()
+    assert window.add_to_ads_library_action.isEnabled()
     assert not window.link_bibcodes_action.isEnabled()
     assert not window.refresh_all_ads_action.isEnabled()
     assert not window.refresh_all_citation_metrics_action.isEnabled()

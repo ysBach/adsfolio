@@ -8,7 +8,7 @@ from collections import Counter
 from collections.abc import Callable, Collection, Iterator, Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, NamedTuple
 
 from .arxiv import arxiv_id
 from .catalog import (
@@ -22,11 +22,30 @@ from .classification import IDENTIFICATION_GROUPS, identification_group
 from .files import sha256_file
 from .identify_settings import IdentifySettings
 from .readiness import METADATA_STALE_KEY, stored_bibcode_matches_file
+from .search import document_matches, fold_document, record_search_document
 
 if TYPE_CHECKING:
     from .rename_settings import RenameSettings
 
 REGISTRY_FILENAME = LEGACY_REGISTRY_FILENAME
+
+
+class RecordFact(NamedTuple):
+    """Hold the record values that view and status counts need.
+
+    The fields are the canonical library root, the catalog location
+    identifier, the value of ``identification_group(record)``, the saved
+    metadata source, and the current content digest. A missing source or
+    digest is an empty string.
+    """
+
+    root: str
+    location_id: int
+    group: str
+    source: str
+    sha256: str
+
+
 SCHEMA_VERSION = CATALOG_SCHEMA_VERSION
 ADS_METADATA_FIELDS = (
     "abstract",
@@ -194,6 +213,17 @@ class CentralPdfRegistry:
         self.catalog.migrate_legacy_root(self.directory)
         self.path = self.catalog.path
         self._connection = self.catalog._connection
+        self._facts_cache: tuple[tuple[int, ...], tuple[RecordFact, ...]] | None = None
+        self._search_cache: (
+            tuple[tuple[Any, ...], frozenset[tuple[str, int]]] | None
+        ) = None
+        self._haystack_cache: (
+            tuple[
+                tuple[int, ...],
+                tuple[tuple[int, dict[str, str], dict[str, str]], ...],
+            ]
+            | None
+        ) = None
 
     @property
     def schema_version(self) -> int:
@@ -202,7 +232,100 @@ class CentralPdfRegistry:
 
     def count_files(self) -> int:
         """Return the number of current locations in this root."""
-        return len(self.catalog.query_files(root=self.directory))
+        return self.catalog.count_files(root=self.directory)
+
+    def record_facts(self) -> tuple[RecordFact, ...]:
+        """Return count facts for every current location in this root.
+
+        The result is cached until the catalog change token changes, so
+        repeated view and status counts parse the metadata JSON once.
+        """
+        token = self.catalog.change_token()
+        cached = self._facts_cache
+        if cached is not None and cached[0] == token:
+            return cached[1]
+        root = str(self.directory)
+        facts = tuple(
+            RecordFact(
+                root,
+                int(record["location_id"]),
+                identification_group(record),
+                str(record.get("source") or ""),
+                str(record.get("sha256") or ""),
+            )
+            for record in self.catalog.query_files(root=self.directory)
+        )
+        # Keep the token from before the query. A concurrent write then
+        # invalidates this entry at the next call.
+        self._facts_cache = (token, facts)
+        return facts
+
+    def search_location_keys(
+        self,
+        search: str,
+        *,
+        exact: bool = False,
+        wildcards: bool = False,
+        fields: Collection[str] = (),
+    ) -> frozenset[tuple[str, int]]:
+        """Return ``(root, location_id)`` keys that match the query `search`.
+
+        The keys equal the result of the catalog search filter with the same
+        options. `fields` names the fields that plain terms search. See
+        `adsfolio.pdf.search.document_matches` for the rules. The last result
+        is cached until the catalog change token changes.
+        """
+        token = self.catalog.change_token()
+        request = (token, search, exact, wildcards, tuple(fields))
+        cached = self._search_cache
+        if cached is not None and cached[0] == request:
+            return cached[1]
+        root = str(self.directory)
+        keys = frozenset(
+            (root, location_id)
+            for location_id, exact_document, folded_document in (
+                self._search_documents(token)
+            )
+            if document_matches(
+                exact_document if exact else folded_document,
+                search,
+                exact=exact,
+                wildcards=wildcards,
+                default_fields=fields,
+            )
+        )
+        self._search_cache = (request, keys)
+        return keys
+
+    def search_documents(
+        self,
+    ) -> tuple[tuple[int, dict[str, str], dict[str, str]], ...]:
+        """Return exact and folded search documents for current locations.
+
+        Each entry holds the location identifier and the outputs of
+        `record_search_document` and `fold_document`. Do not change them.
+        """
+        return self._search_documents(self.catalog.change_token())
+
+    def _search_documents(
+        self, token: tuple[int, ...]
+    ) -> tuple[tuple[int, dict[str, str], dict[str, str]], ...]:
+        """Return search documents, cached by change token."""
+        cached = self._haystack_cache
+        if cached is not None and cached[0] == token:
+            return cached[1]
+        documents = []
+        for (
+            location_id,
+            relative_path,
+            metadata_json,
+            sha256,
+        ) in self.catalog.search_texts(self.directory):
+            document = record_search_document(relative_path, metadata_json, sha256)
+            documents.append((location_id, document, fold_document(document)))
+        result = tuple(documents)
+        self._haystack_cache = (token, result)
+        return result
 
     def count_ads_documents(self) -> int:
         """Return the number of shared cached ADS documents."""
@@ -508,7 +631,7 @@ class CentralPdfRegistry:
             and (digest is None or isinstance(digest, str))
         ):
             return self.catalog.count_files(root=self.directory, **sql_filters)
-        return len(self._query_records(**filters))
+        return len(self.query_records(**filters))
 
     def query_files(
         self,
@@ -539,7 +662,39 @@ class CentralPdfRegistry:
         )
         if invalid is not None:
             raise ValueError(f"Unsortable column: {invalid!r}")
-        records = self._query_records(**filters)
+        records = self.query_records(**filters)
+        self.sort_records(
+            records,
+            order_by=order_by,
+            descending=descending,
+            secondary_order_by=secondary_order_by,
+            tertiary_order_by=tertiary_order_by,
+        )
+        if limit is None:
+            return records[offset:]
+        return records[offset : offset + int(limit)]
+
+    def sort_records(
+        self,
+        records: list[dict[str, Any]],
+        *,
+        order_by: str = "relative_path",
+        descending: bool = False,
+        secondary_order_by: str | None = None,
+        tertiary_order_by: str | None = None,
+    ) -> None:
+        """Sort `records` in place with the `query_files` order rules.
+
+        Empty values sort last for each key, in both directions.
+        """
+        order_keys = [
+            key
+            for key in (order_by, secondary_order_by, tertiary_order_by)
+            if key is not None
+        ]
+        invalid = next((key for key in order_keys if key not in SORTABLE_COLUMNS), None)
+        if invalid is not None:
+            raise ValueError(f"Unsortable column: {invalid!r}")
         for key in reversed(order_keys):
             records.sort(
                 key=lambda record, sort_key=key: self._sort_value(record, sort_key)[1],
@@ -548,9 +703,10 @@ class CentralPdfRegistry:
             records.sort(
                 key=lambda record, sort_key=key: self._sort_value(record, sort_key)[0]
             )
-        if limit is None:
-            return records[offset:]
-        return records[offset : offset + int(limit)]
+
+    def change_token(self) -> tuple[str, tuple[int, ...]]:
+        """Return this root and the catalog change token."""
+        return str(self.directory), self.catalog.change_token()
 
     def delete_files_by_ids(self, file_ids: list[int]) -> int:
         """Delete selected current locations and orphaned attachments."""
@@ -634,7 +790,12 @@ class CentralPdfRegistry:
         """Close the central catalog connection."""
         self.catalog.close()
 
-    def _query_records(self, **filters: Any) -> list[dict[str, Any]]:
+    def query_records(self, **filters: Any) -> list[dict[str, Any]]:
+        """Return filtered current locations in catalog order, without sorting.
+
+        Catalog order is ``relative_path`` and then location identifier.
+        `query_files` sorts this list.
+        """
         source = filters.pop("source", None)
         duplicates_only = bool(filters.pop("duplicates_only", False))
         identification = filters.pop("identification", None)

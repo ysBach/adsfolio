@@ -1,3 +1,7 @@
+"""Export PDF annotations to Obsidian notes without losing manual note text or rewriting
+unchanged notes.
+"""
+
 from pathlib import Path
 
 import pytest

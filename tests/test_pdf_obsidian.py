@@ -1,3 +1,5 @@
+"""Render Obsidian notes for resolved PDFs, fetch abstracts, and plan note writes."""
+
 from unittest.mock import Mock
 
 import pytest

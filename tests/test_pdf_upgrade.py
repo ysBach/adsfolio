@@ -1,3 +1,5 @@
+"""Find published versions of arXiv PDFs, then replace the PDFs with backups."""
+
 from pathlib import Path
 from types import SimpleNamespace
 

@@ -377,7 +377,7 @@ def test_notice_bar_does_not_offer_identify_all_for_retry_notices(qtbot):
     bar.enqueue(Notice("one", "Failed one", action_label="Retry", payload="one"))
     bar.enqueue(Notice("two", "Failed two", action_label="Retry", payload="two"))
 
-    assert not bar.action_all_button.isVisible()
+    assert bar.action_all_button.isHidden()
 
 
 def test_notice_bar_emits_bulk_payloads_and_clears_on_dismiss_all(qtbot):

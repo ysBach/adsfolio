@@ -1,3 +1,5 @@
+"""Identification checks each candidate record against the identifiers in the PDF."""
+
 from __future__ import annotations
 
 import io

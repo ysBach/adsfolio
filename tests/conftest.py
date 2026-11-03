@@ -1,6 +1,10 @@
-"""Keep application tests separate from the user's configuration and cache."""
+"""Isolate tests from user configuration, user cache, and the network.
+
+The fixtures also wait for started Qt threads before Qt deletes their owners.
+"""
 
 import sys
+import weakref
 from collections.abc import Iterator
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -47,12 +51,50 @@ def isolated_application_directories(monkeypatch, tmp_path: Path) -> Iterator[No
     _drain_qt_events()
 
 
+# Qt threads that tests started. Teardown waits for them before it deletes
+# their owners: Qt aborts the process when a running QThread is destroyed.
+_STARTED_QT_THREADS: weakref.WeakSet = weakref.WeakSet()
+# Longest wait for one thread. A cancelled worker stops at its next check.
+_QT_THREAD_WAIT_MS = 30_000
+
+
+def _track_qt_thread_starts(qt) -> None:
+    """Record every started QThread once per test session."""
+    if getattr(qt.QThread.start, "_adsfolio_tracked", False):
+        return
+    original = qt.QThread.start
+
+    def start(self, *args, **kwargs):
+        _STARTED_QT_THREADS.add(self)
+        return original(self, *args, **kwargs)
+
+    start._adsfolio_tracked = True
+    qt.QThread.start = start
+
+
+def _wait_for_qt_threads() -> None:
+    """Let started workers finish so that deferred deletes cannot abort."""
+    for thread in list(_STARTED_QT_THREADS):
+        try:
+            running = thread.isRunning()
+        except RuntimeError:
+            # Qt already deleted this thread.
+            continue
+        if running and not thread.wait(_QT_THREAD_WAIT_MS):
+            raise RuntimeError(
+                f"{type(thread).__name__} did not stop within "
+                f"{_QT_THREAD_WAIT_MS} ms after the test."
+            )
+
+
 def _drain_qt_events() -> None:
     """Complete queued Qt cleanup before a test changes configuration routing."""
     qt = sys.modules.get("PySide6.QtCore")
     if qt is None:
         return
+    _track_qt_thread_starts(qt)
     application = qt.QCoreApplication.instance()
     if application is not None:
         application.processEvents()
+        _wait_for_qt_threads()
         qt.QCoreApplication.sendPostedEvents(None, qt.QEvent.Type.DeferredDelete)

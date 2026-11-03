@@ -49,6 +49,14 @@ _PATHS = {
     "-1-3.5.28-1.15.28-2.35 0-3.5 0 0-1 0-3 1.5-2.64-.5-5.36-.5-8 0C6 2 5 2 5 2"
     "c-.3 1.15-.3 2.35 0 3.5A5.403 5.403 0 0 0 4 9c0 3.5 3 5.5 6 5.5-.39.49-.68"
     '1.05-.85 1.65-.17.6-.22 1.23-.15 1.85v4"/><path d="M9 18c-4.51 2-5-2-7-2"/>',
+    # Find bar toggles (Lucide "highlighter", "case-sensitive", "asterisk",
+    # and "list-filter", ISC license).
+    "highlight": '<path d="m9 11-6 6v3h9l3-3"/>'
+    '<path d="m22 12-4.6 4.6a2 2 0 0 1-2.8 0l-5.2-5.2a2 2 0 0 1 0-2.8L14 4"/>',
+    "match_case": '<path d="m3 15 4-8 4 8M4 13h6"/><circle cx="18" cy="12" r="3"/>'
+    '<path d="M21 9v6"/>',
+    "wildcard": '<path d="M12 6v12M17.196 9 6.804 15M6.804 9l10.392 6"/>',
+    "search_fields": '<path d="M3 6h18M7 12h10M10 18h4"/>',
     "close": '<path d="m6 6 12 12M18 6 6 18"/>',
     "close_all": '<path d="m8 8 12 12M20 8 8 20M4 16V4h12"/>',
     "pdf": '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8zM14 2v6h6M8 13h8M8 17h5"/>',
@@ -85,12 +93,34 @@ def vector_icon(
     Button icons refresh when their palette changes. No font glyphs are used.
     """
     path = _PATHS[name]
+    palette = widget.palette()
+    colors = tuple(
+        palette.color(group, role).name()
+        for group in (QPalette.Active, QPalette.Disabled)
+    )
+    cache_key = (name, colors)
+    icon = _ICON_CACHE.get(cache_key)
+    if icon is None:
+        icon = _render_vector_icon(path, colors)
+        _ICON_CACHE[cache_key] = icon
+    if hasattr(widget, "setIcon"):
+        observer = widget.findChild(_IconPaletteObserver)
+        if observer is None:
+            observer = _IconPaletteObserver(name, widget, role)
+        observer.name = name
+        observer.role = role
+    # QIcon copies share pixmap data, so a cached icon is safe to return.
+    return QIcon(icon)
+
+
+# Rendered icons by name and (active, disabled) stroke colors.
+_ICON_CACHE: dict[tuple[str, tuple[str, str]], QIcon] = {}
+
+
+def _render_vector_icon(path: str, colors: tuple[str, str]) -> QIcon:
+    """Render one SVG path at 1x, 2x, and 3x in active and disabled colors."""
     icon = QIcon()
-    for mode, group in (
-        (QIcon.Normal, QPalette.Active),
-        (QIcon.Disabled, QPalette.Disabled),
-    ):
-        color = widget.palette().color(group, role).name()
+    for mode, color in zip((QIcon.Normal, QIcon.Disabled), colors):
         svg = (
             '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" '
             f'fill="none" stroke="{color}" stroke-width="2" '
@@ -105,12 +135,6 @@ def vector_icon(
             painter.end()
             pixmap.setDevicePixelRatio(scale)
             icon.addPixmap(pixmap, mode)
-    if hasattr(widget, "setIcon"):
-        observer = widget.findChild(_IconPaletteObserver)
-        if observer is None:
-            observer = _IconPaletteObserver(name, widget, role)
-        observer.name = name
-        observer.role = role
     return icon
 
 

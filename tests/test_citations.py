@@ -1,3 +1,8 @@
+"""Citation styles render ADS metadata from templates.
+
+Invalid templates, author limits, and duplicate styles are rejected.
+"""
+
 import pytest
 
 from adsfolio.citations import (

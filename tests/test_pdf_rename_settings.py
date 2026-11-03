@@ -1,3 +1,5 @@
+"""Load, save, and validate the filename template and author settings for renames."""
+
 import logging
 
 import pytest

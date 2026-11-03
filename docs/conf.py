@@ -82,6 +82,8 @@ autodoc_type_aliases = {
     "QWidget": "PySide6.QtWidgets.QWidget",
     "QObject": "PySide6.QtCore.QObject",
     "QAction": "PySide6.QtGui.QAction",
+    "QPainter": "PySide6.QtGui.QPainter",
+    "QRect": "PySide6.QtCore.QRect",
 }
 napoleon_type_aliases = autodoc_type_aliases
 
