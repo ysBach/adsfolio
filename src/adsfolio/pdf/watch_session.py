@@ -127,6 +127,7 @@ class WatchEvent:
     identity: ArrivalIdentity
     path: Path
     state: WatchState
+    newly_added: bool = False
 
     def __post_init__(self) -> None:
         if not isinstance(self.root, Path):
@@ -140,7 +141,8 @@ class WatchOutcome:
     """Store a watch result and its optional unverified ADS candidate.
 
     `bibcode` identifies a resolved record. `candidate_bibcode` identifies a
-    proposed record that still needs review.
+    proposed record that still needs review. `annotation_update` marks a
+    proven annotation-only change to an existing record.
     """
 
     event: WatchEvent
@@ -152,6 +154,7 @@ class WatchOutcome:
     candidate_sha256: str | None = None
     candidate_fingerprint: str | None = None
     candidate_confirmable: bool = False
+    annotation_update: bool = False
 
     def __post_init__(self) -> None:
         if self.conflict_path is not None and not isinstance(self.conflict_path, Path):
@@ -269,6 +272,17 @@ class WatchSession:
             Snapshot if tracked, otherwise None.
         """
         return self._snapshots.get(identity)
+
+    def known_paths(self) -> set[Path]:
+        """Return paths of baseline files and currently active arrivals."""
+        return {
+            *(snapshot.path for snapshot in self._baseline_snapshots.values()),
+            *(
+                self._snapshots[identity].path
+                for identity in self._active_by_key.values()
+                if identity in self._snapshots
+            ),
+        }
 
     def state(self, identity: ArrivalIdentity) -> WatchState | None:
         """Return the current state for an identity.

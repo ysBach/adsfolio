@@ -1,6 +1,7 @@
 """Click command group for PDF identification and organization."""
 
 import csv
+import hashlib
 import json
 import logging
 import math
@@ -43,7 +44,9 @@ from .identify import IdentifyWorkflowHelpers, build_checked_record, run_identif
 from .identify_settings import IdentifySettings, IdentifyStrategy
 from .identity import (
     IDENTITY_KEY,
+    IdentityConflictError,
     IdentityValidationError,
+    UnverifiedIdentityError,
     extract_pdf_own_identity,
     target_identity,
 )
@@ -51,10 +54,13 @@ from .obsidian import ObsidianNoteWriter
 from .readiness import metadata_ready, stored_bibcode_matches_file
 from .reference_lookup import lookup_exact_identifier, match_reference_to_pdf
 from .registry import (
+    ADS_METADATA_FIELDS,
+    LOCKED_METADATA_FIELDS_KEY,
     PdfRegistry,
     merge_ads_metadata,
     open_registry_state,
 )
+from .rename_settings import RenameSettings
 from .renamer import DEFAULT_SCHEME, PdfRenamer, verify_record_identity
 from .sidecar import Sidecar
 from .tracked_move import resolved_file_directory
@@ -104,6 +110,41 @@ def load_library_identify_settings(directory: Path) -> IdentifySettings | None:
         return state.identify_settings
     finally:
         state.close()
+
+
+def _rename_settings_for_command(
+    ctx: click.Context, directory: Path, scope: str
+) -> RenameSettings:
+    """Combine saved Rename settings with explicitly supplied options."""
+    settings = Config.load_rename_settings()
+    if scope == "library":
+        state = open_registry_state(directory)
+        try:
+            settings = state.rename_settings or settings
+        finally:
+            state.close()
+
+    option_names = {
+        "template": "scheme",
+        "author_format": "author_format",
+        "char_policy": "char_policy",
+        "max_authors": "max_authors",
+        "authors_when_truncated": "authors_when_truncated",
+        "author_separator": "author_separator",
+        "author_truncation_suffix": "author_truncation_suffix",
+    }
+    overrides = {
+        field: ctx.params[option]
+        for field, option in option_names.items()
+        if ctx.get_parameter_source(option) != click.core.ParameterSource.DEFAULT
+    }
+    max_authors = overrides.get("max_authors", settings.max_authors)
+    authors_when_truncated = overrides.get(
+        "authors_when_truncated", settings.authors_when_truncated
+    )
+    if authors_when_truncated > max_authors:
+        raise click.UsageError("authors_when_truncated cannot exceed max_authors")
+    return replace(settings, **overrides)
 
 
 def _citation_metrics_payload(metrics: Any) -> dict[str, int | None]:
@@ -163,13 +204,165 @@ def _ads_match_candidates(
     return candidates
 
 
-def _report_ambiguous_ads_matches(documents: tuple[dict[str, Any], ...]) -> None:
-    """Print user-readable and GUI-readable candidate metadata."""
+def _report_ambiguous_ads_matches(
+    documents: tuple[dict[str, Any], ...], *, pdf_sha256: str | None = None
+) -> None:
+    """Print selectable candidates and bind review to the inspected PDF."""
     candidates = _ads_match_candidates(documents)
-    click.secho("Multiple ADS documents match this identifier:", fg="yellow")
+    if pdf_sha256 is not None:
+        candidate_index = 0
+        for document in documents:
+            if not str(document.get("bibcode") or "").strip():
+                continue
+            candidate = candidates[candidate_index]
+            candidate_index += 1
+            candidate["pdf_sha256"] = pdf_sha256
+            candidate["identity_fingerprint"] = target_identity(document).fingerprint
+            candidate["review_digest"] = _candidate_review_digest(document)
+    heading = (
+        "ADS found this candidate. Select it to update the PDF:"
+        if len(candidates) == 1
+        else "Multiple ADS documents match this identifier:"
+    )
+    click.secho(heading, fg="yellow")
     for candidate in candidates:
         click.echo("- {bibcode} | {first_author} | {title}".format(**candidate))
     click.echo(f"ADS_MATCH_CANDIDATES_JSON:{json.dumps(candidates)}")
+
+
+def _candidate_review_digest(document: dict[str, Any]) -> str:
+    """Bind a reviewed candidate to its identifiers and displayed details."""
+    reviewed = {
+        key: document.get(key) for key in ("bibcode", "doi", "title", "author", "year")
+    }
+    encoded = json.dumps(reviewed, sort_keys=True, ensure_ascii=False).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _catalog_review_snapshot(
+    registry: PdfRegistry, record: dict[str, Any]
+) -> tuple[str, dict[str, Any] | None]:
+    """Return a digest of the selected attachment and linked document."""
+    document_id = record.get("document_id")
+    document = registry.catalog.get_document(document_id) if document_id else None
+    fields = (
+        "root",
+        "relative_path",
+        "location_id",
+        "attachment_id",
+        "document_id",
+        "version_id",
+        "sha256",
+        "missing_at",
+        "status",
+        "size_bytes",
+        "mtime_ns",
+        "device",
+        "inode",
+        "first_seen_at",
+        "metadata",
+    )
+    snapshot = {key: record.get(key) for key in fields}
+    snapshot["document"] = document
+    encoded = json.dumps(snapshot, sort_keys=True, ensure_ascii=False).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest(), document
+
+
+def _report_identifier_conflict(
+    registry: PdfRegistry,
+    root: Path,
+    relative_path: str,
+    document: dict[str, Any],
+    *,
+    identifier: str,
+    identifier_option: str,
+) -> bool:
+    """Offer review only when the PDF has a conflicting identifier."""
+    record = registry.find_file_by_relative_path(root, relative_path)
+    if record is None:
+        return False
+    path = root / str(record["current_path"])
+    try:
+        evidence = extract_pdf_own_identity(path)
+        if (
+            not evidence.has_identifier
+            or evidence.blocking_errors
+            or record.get("sha256") != evidence.sha256
+        ):
+            return False
+        verify_record_identity(
+            path, document, sha256=evidence.sha256, provider_document=document
+        )
+    except (IdentityConflictError, UnverifiedIdentityError) as exc:
+        if isinstance(exc, UnverifiedIdentityError) and exc.manually_confirmable:
+            return False
+        conflict = str(exc)
+    except (IdentityValidationError, OSError):
+        return False
+    else:
+        return False
+
+    def first(field: str) -> str:
+        value = document.get(field)
+        if isinstance(value, (list, tuple)):
+            value = value[0] if value else ""
+        return str(value or "")
+
+    identity = target_identity(document)
+    identifiers = []
+    if first("bibcode"):
+        identifiers.append(f"Bibcode: {first('bibcode')}")
+    identifiers.extend(f"DOI: {value}" for value in sorted(identity.dois))
+    identifiers.extend(f"arXiv: {value}" for value in sorted(identity.arxiv_ids))
+    own_ids = ", ".join(
+        f"{'DOI' if kind == 'doi' else 'arXiv'} {value}"
+        for kind, value in sorted(evidence.identifiers)
+    )
+    payload = {
+        "identifier": identifier,
+        "identifier_option": identifier_option,
+        "title": first("title"),
+        "author": first("author"),
+        "year": first("year"),
+        "identifiers": "\n".join(identifiers),
+        "conflict": f"PDF identifiers: {own_ids}.\n{conflict}",
+        "pdf_sha256": evidence.sha256,
+        "identity_fingerprint": identity.fingerprint,
+        "review_digest": _candidate_review_digest(document),
+        "catalog_digest": _catalog_review_snapshot(registry, record)[0],
+    }
+    click.echo(f"PDF_IDENTITY_CONFLICT_JSON:{json.dumps(payload)}")
+    return True
+
+
+def _check_reviewed_document(
+    document: dict[str, Any],
+    sha256: str | None,
+    expected_sha256: str | None,
+    expected_identity: str | None,
+    expected_review_digest: str | None,
+) -> None:
+    """Reject a provider result or file record that changed after review."""
+    if expected_sha256 is not None and sha256 != expected_sha256:
+        raise IdentityValidationError(
+            "The PDF catalog record changed after review. Retry identification."
+        )
+    if (
+        expected_identity is not None
+        and target_identity(document).fingerprint != expected_identity
+    ):
+        source = "ADS" if document.get("bibcode") else "provider"
+        raise IdentityValidationError(
+            f"The {source} candidate changed after review. Retry identification."
+        )
+    if (
+        expected_review_digest is not None
+        and _candidate_review_digest(document) != expected_review_digest
+    ):
+        source = "ADS" if document.get("bibcode") else "provider"
+        raise IdentityValidationError(
+            f"The {source} candidate details changed after review. Retry identification."
+        )
 
 
 _ARXIV_INPUT = re.compile(
@@ -178,7 +371,9 @@ _ARXIV_INPUT = re.compile(
 )
 
 
-def _parse_ads_identifier(value: str) -> tuple[str, str]:
+def _parse_ads_identifier(
+    value: str, *, omit_journal_articles: bool = False
+) -> tuple[str, str]:
     """
     Classify a Bibcode, DOI, arXiv ID, or bibliographic reference.
 
@@ -211,7 +406,11 @@ def _parse_ads_identifier(value: str) -> tuple[str, str]:
     ) or _AUTHOR_YEAR_JOURNAL.fullmatch(candidate)
     if reference is not None:
         groups = reference.groupdict()
-        journal = escape_query_phrase(groups.pop("journal").strip())
+        journal = groups.pop("journal").strip()
+        if omit_journal_articles:
+            without_articles = re.sub(r"\bthe\b\s*", "", journal, flags=re.IGNORECASE)
+            journal = without_articles.strip() or journal
+        journal = escape_query_phrase(journal)
         query_parts = [f'(bibstem:"{journal}" OR pub:"{journal}")']
         query_parts.extend(
             f'{field}:"{escape_query_phrase(text.strip())}"'
@@ -247,6 +446,33 @@ def _record_bibcodes(directory: Path, *, pending_only: bool = False) -> list[str
         state.close()
 
 
+_IDENTITY_FIELDS = (
+    "bibcode",
+    "doi",
+    "identifier",
+    "alternate_bibcode",
+    "arxiv",
+    "arxiv_id",
+)
+
+
+def _merge_replacement_identity(
+    existing: dict[str, Any], document: dict[str, Any]
+) -> dict[str, Any]:
+    """Replace unlocked identity fields and retain other local metadata."""
+    merged = merge_ads_metadata(existing, document)
+    locked = {str(field) for field in existing.get(LOCKED_METADATA_FIELDS_KEY, [])}
+    for field in _IDENTITY_FIELDS:
+        if field in locked:
+            continue
+        value = document.get(field)
+        if value in (None, "", []):
+            merged.pop(field, None)
+        else:
+            merged[field] = value
+    return merged
+
+
 def _refresh_file_metadata(
     registry: PdfRegistry,
     root: Path,
@@ -255,9 +481,13 @@ def _refresh_file_metadata(
     *,
     preserve_existing: bool = False,
     manual_confirmation: bool = False,
+    manual_conflict_override: bool = False,
     refusals: dict[str, str] | None = None,
     expected_sha256: str | None = None,
     expected_identity: str | None = None,
+    expected_review_digest: str | None = None,
+    expected_catalog_digest: str | None = None,
+    replace_identity: bool = False,
 ) -> bool:
     """Apply one ADS document to an existing file, respecting locked fields.
 
@@ -265,13 +495,14 @@ def _refresh_file_metadata(
     On refusal, retain publication metadata and add the reason to `refusals`
     under `relative_path`.
 
-    `manual_confirmation` records an explicit, user-reviewed confirmation of an
-    unknown identity. It never overrides a known conflict.
+    `manual_confirmation` records a reviewed unknown identity.
+    `manual_conflict_override` records a separately reviewed conflict.
 
     `expected_sha256` and `expected_identity` bind a reviewed notice to the
     inspected PDF and proposed record. A mismatch leaves publication metadata
     unchanged. Fresh checked provider metadata clears a stale association
     through the catalog's observation path.
+    `expected_review_digest` also binds the displayed publication details.
     """
     record = registry.find_file_by_relative_path(root, relative_path)
     if record is None:
@@ -305,31 +536,42 @@ def _refresh_file_metadata(
     if metadata.get(IDENTITY_KEY):
         claimed[IDENTITY_KEY] = metadata[IDENTITY_KEY]
     try:
-        if expected_sha256 is not None and sha256 != expected_sha256:
-            raise IdentityValidationError(
-                "The PDF catalog record changed after review. Retry identification."
-            )
-        if (
-            expected_identity is not None
-            and target_identity(document).fingerprint != expected_identity
-        ):
-            raise IdentityValidationError(
-                "The ADS candidate changed after review. Retry identification."
-            )
+        linked_document = None
+        if expected_catalog_digest or manual_conflict_override:
+            catalog_digest, linked_document = _catalog_review_snapshot(registry, record)
+            if expected_catalog_digest and expected_catalog_digest != catalog_digest:
+                raise IdentityValidationError(
+                    "The catalog record changed after review. Retry identification."
+                )
+        _check_reviewed_document(
+            document, sha256, expected_sha256, expected_identity, expected_review_digest
+        )
         verify_record_identity(
             pdf_path,
             claimed,
             sha256=sha256,
             manual_confirmation=manual_confirmation,
+            manual_conflict_override=manual_conflict_override,
             provider_document=document,
         )
-        merged = merge_ads_metadata(metadata, document)
+        merged = (
+            _merge_replacement_identity(metadata, document)
+            if replace_identity
+            else merge_ads_metadata(metadata, document)
+        )
         if preserve_existing:
+            locked = {
+                str(field) for field in metadata.get(LOCKED_METADATA_FIELDS_KEY, [])
+            }
+            replaceable = set(_IDENTITY_FIELDS).union(ADS_METADATA_FIELDS)
             merged.update(
                 {
                     key: value
                     for key, value in metadata.items()
                     if value not in (None, "", [])
+                    and not (
+                        replace_identity and key in replaceable and key not in locked
+                    )
                 }
             )
         merged.pop("status", None)
@@ -338,10 +580,12 @@ def _refresh_file_metadata(
             {**merged, **({"sha256": sha256} if sha256 else {})},
             sha256=sha256,
             manual_confirmation=manual_confirmation,
+            manual_conflict_override=manual_conflict_override,
             provider_document=document,
         )
-        if metadata.get("_adsfolio_metadata_stale") or record.get(
-            "_adsfolio_metadata_stale"
+        if not manual_conflict_override and (
+            metadata.get("_adsfolio_metadata_stale")
+            or record.get("_adsfolio_metadata_stale")
         ):
             # Ordinary edits retain stale status. A provider record checked
             # against these exact bytes can establish a fresh association.
@@ -370,6 +614,23 @@ def _refresh_file_metadata(
         if refusals is not None:
             refusals[relative_path] = str(exc)
         return False
+    if manual_conflict_override:
+        merged["_adsfolio_metadata_sha256"] = merged[IDENTITY_KEY]["sha256"]
+        merged.pop("_adsfolio_metadata_stale", None)
+        merged["status"] = "resolved"
+        if not registry.replace_file_metadata_if_unchanged(
+            root,
+            relative_path,
+            merged,
+            record,
+            expected_document=linked_document,
+            changed_fields=(),
+            allow_reviewed_stale_recovery=True,
+        ):
+            if refusals is not None:
+                refusals[relative_path] = "The catalog changed. Retry identification."
+            return False
+        return True
     if not registry.replace_file_metadata(root, relative_path, merged):
         return False
     return registry.update_file_status(root, relative_path, "resolved")
@@ -408,6 +669,11 @@ def _apply_external_metadata(
     document: dict[str, Any],
     *,
     manual_confirmation: bool = False,
+    manual_conflict_override: bool = False,
+    expected_sha256: str | None = None,
+    expected_identity: str | None = None,
+    expected_review_digest: str | None = None,
+    expected_catalog_digest: str | None = None,
     refusals: dict[str, str] | None = None,
 ) -> bool:
     """Apply Crossref or DataCite metadata to one file, keeping locked fields.
@@ -424,28 +690,66 @@ def _apply_external_metadata(
     metadata = metadata if isinstance(metadata, dict) else {}
     path = root / str(record["current_path"])
     try:
+        linked_document = None
+        if expected_catalog_digest or manual_conflict_override:
+            catalog_digest, linked_document = _catalog_review_snapshot(registry, record)
+            if expected_catalog_digest and expected_catalog_digest != catalog_digest:
+                raise IdentityValidationError(
+                    "The catalog record changed after review. Retry identification."
+                )
+        sha256 = str(record.get("sha256") or "") or None
+        _check_reviewed_document(
+            document, sha256, expected_sha256, expected_identity, expected_review_digest
+        )
         built = PdfIdentifier(None).build_record(
             document,
             path,
-            sha256=str(record.get("sha256") or "") or None,
+            sha256=sha256,
             manual_confirmation=manual_confirmation,
+            manual_conflict_override=manual_conflict_override,
+        )
+        merged = _merge_replacement_identity(metadata, built)
+        locked = {str(field) for field in metadata.get(LOCKED_METADATA_FIELDS_KEY, [])}
+        if "bibcode" not in locked:
+            # An external record must detach any previous ADS association.
+            merged["bibcode"] = ""
+        for key in (
+            "_adsfolio_external_metadata",
+            "_adsfolio_metadata_sha256",
+            "identified_at",
+            IDENTITY_KEY,
+        ):
+            merged[key] = built.get(key, "")
+        merged.pop("_adsfolio_metadata_stale", None)
+        merged.pop("status", None)
+        merged[IDENTITY_KEY] = verify_record_identity(
+            path,
+            {**merged, "sha256": built["sha256"]},
+            sha256=built["sha256"],
+            manual_confirmation=manual_confirmation,
+            manual_conflict_override=manual_conflict_override,
+            provider_document=document,
         )
     except (IdentityValidationError, OSError) as exc:
         LOGGER.warning("Metadata retained; identity not verified: %s: %s", path, exc)
         if refusals is not None:
             refusals[relative_path] = str(exc)
         return False
-    merged = merge_ads_metadata(metadata, built)
-    for key in (
-        "bibcode",
-        "_adsfolio_external_metadata",
-        "_adsfolio_metadata_sha256",
-        "identified_at",
-        IDENTITY_KEY,
-    ):
-        merged[key] = built.get(key, "")
-    merged.pop("_adsfolio_metadata_stale", None)
-    merged.pop("status", None)
+    if manual_conflict_override:
+        merged["status"] = "unresolved"
+        if not registry.replace_file_metadata_if_unchanged(
+            root,
+            relative_path,
+            merged,
+            record,
+            expected_document=linked_document,
+            changed_fields=(),
+            allow_reviewed_stale_recovery=True,
+        ):
+            if refusals is not None:
+                refusals[relative_path] = "The catalog changed. Retry identification."
+            return False
+        return True
     if not registry.replace_file_metadata(root, relative_path, merged):
         return False
     return registry.update_file_status(root, relative_path, "unresolved")
@@ -538,6 +842,11 @@ def _refresh_bibcode_metadata(
 )
 @click.option("--expected-sha256", hidden=True)
 @click.option("--expected-identity", hidden=True)
+@click.option("--expected-review-digest", hidden=True)
+@click.option("--expected-catalog-digest", hidden=True)
+@click.option("--review-reference", is_flag=True, hidden=True)
+@click.option("--offer-conflict-review", is_flag=True, hidden=True)
+@click.option("--confirm-conflicting-identity", is_flag=True, hidden=True)
 @click.pass_context
 def refresh_ads_command(
     ctx: click.Context,
@@ -555,6 +864,11 @@ def refresh_ads_command(
     confirm_identity: bool,
     expected_sha256: str | None,
     expected_identity: str | None,
+    expected_review_digest: str | None,
+    expected_catalog_digest: str | None,
+    review_reference: bool,
+    offer_conflict_review: bool,
+    confirm_conflicting_identity: bool,
 ) -> None:
     """Refresh ADS metadata, rename PDFs, and return them from unresolved."""
     directory = directory.expanduser().resolve()
@@ -573,14 +887,30 @@ def refresh_ads_command(
         expected_sha256
         and expected_identity
         and relative_path is not None
-        and identifier_input is None
         and not refresh_all
-        and len(requested) == 1
+        and (identifier_input is not None or len(requested) == 1)
     ):
         raise click.UsageError(
-            "Reviewed candidates require --bibcode, --relative-path, "
+            "Reviewed candidates require an identifier, --relative-path, "
             "--expected-sha256, and --expected-identity."
         )
+    if expected_review_digest is not None and not (
+        expected_sha256 and expected_identity
+    ):
+        raise click.UsageError("Reviewed details require an expected PDF and identity.")
+    if offer_conflict_review and relative_path is None:
+        raise click.UsageError("Conflict review requires --relative-path.")
+    if offer_conflict_review and confirm_conflicting_identity:
+        raise click.UsageError("A conflict cannot be reviewed and confirmed at once.")
+    if confirm_conflicting_identity and not (
+        relative_path is not None
+        and expected_sha256
+        and expected_identity
+        and expected_review_digest
+        and expected_catalog_digest
+        and not refresh_all
+    ):
+        raise click.UsageError("Confirming a conflict requires a reviewed candidate.")
     if refresh_all:
         requested.extend(_record_bibcodes(directory, pending_only=pending_only))
     requested = list(dict.fromkeys(requested))
@@ -608,8 +938,14 @@ def refresh_ads_command(
             if identifier_input is not None
             else ("", "")
         )
+        if confirm_conflicting_identity and identifier_kind == "query":
+            raise click.UsageError("Confirm a conflict with an exact identifier.")
+        manual_confirmation = confirm_identity and not (
+            review_reference and identifier_kind == "query"
+        )
         external_lookup = identifier_kind in {"doi", "arxiv"}
         reference_path = None
+        candidate_pdf_path = None
         recover_reference = False
         reference_providers = identify_settings.providers
         if identifier_kind == "query":
@@ -619,9 +955,27 @@ def refresh_ads_command(
             if tracked is None:
                 raise click.UsageError(f"PDF is not catalogued: {relative_path}")
             reference_path = directory / str(tracked["current_path"])
+            candidate_pdf_path = reference_path
             recover_reference = extract_pdf_own_identity(reference_path).has_identifier
+            if (
+                DoiProvider.ADS not in identify_settings.providers
+                and not recover_reference
+            ):
+                raise click.UsageError(
+                    "Reference searches require NASA/ADS. Enable it in Identify settings, "
+                    "or enter the paper's DOI instead."
+                )
+        if (
+            identifier_kind == "bibcode"
+            and DoiProvider.ADS not in identify_settings.providers
+        ):
+            raise click.UsageError(
+                "Bibcode lookup requires NASA/ADS. Enable it in Identify settings, "
+                "or enter the paper's DOI instead."
+            )
         if pending_only or (
-            external_lookup and DoiProvider.ADS not in identify_settings.providers
+            identifier_kind in {"doi", "arxiv", "query"}
+            and DoiProvider.ADS not in identify_settings.providers
         ):
             client = None
         elif external_lookup or recover_reference:
@@ -641,7 +995,13 @@ def refresh_ads_command(
             def cache_documents(values: list[dict[str, Any]]) -> None:
                 state.registry.upsert_ads_documents(values, source="refresh-ads")
 
-            callback = cache_documents
+            # A manual review must not update shared paper records before the
+            # selected attachment has been checked and accepted.
+            callback = (
+                None
+                if offer_conflict_review or confirm_conflicting_identity
+                else cache_documents
+            )
             if identifier_kind in {"doi", "query", "arxiv"}:
                 if identifier_kind == "doi":
                     query = f'doi:"{escape_query_phrase(identifier_value)}"'
@@ -655,20 +1015,37 @@ def refresh_ads_command(
                     tracked = state.registry.find_file_by_relative_path(
                         directory, relative_path
                     )
+                    candidate_pdf_path = (
+                        directory / str(tracked["current_path"]) if tracked else None
+                    )
                     result = lookup_exact_identifier(
                         pdf_identifier,
                         identifier_kind,
                         identifier_value,
                         identify_settings.providers,
                         callback,
-                        path=directory / str(tracked["current_path"])
-                        if tracked
-                        else None,
+                        path=candidate_pdf_path,
                     )
                 else:
                     try:
-                        result = pdf_identifier.query_documents(query, callback)
+                        result = (
+                            pdf_identifier.query_documents(query, callback)
+                            if client is not None
+                            else AdsQueryResult(0, ())
+                        )
+                        if result.num_found == 0 and client is not None:
+                            _, alternate_query = _parse_ads_identifier(
+                                identifier_input, omit_journal_articles=True
+                            )
+                            if alternate_query != query:
+                                result = pdf_identifier.query_documents(
+                                    alternate_query, callback
+                                )
                     except ADSError as exc:
+                        if offer_conflict_review:
+                            raise click.UsageError(
+                                "ADS reference search failed. Retry or enter a DOI."
+                            ) from exc
                         reference_providers = tuple(
                             provider
                             for provider in identify_settings.providers
@@ -682,30 +1059,69 @@ def refresh_ads_command(
                         )
                         result = AdsQueryResult(0, ())
                 if identifier_kind == "query":
-                    lookup = match_reference_to_pdf(
-                        pdf_identifier,
-                        reference_path,
-                        result,
-                        reference_providers,
-                        callback,
-                    )
-                    result = lookup.matches
-                    if lookup.rejected:
-                        click.echo(
-                            f"Discarded {len(lookup.rejected)} reference candidate(s) "
-                            "that do not match this PDF."
+                    if offer_conflict_review:
+                        if result.num_found != len(result.documents):
+                            raise click.UsageError(
+                                "ADS returned incomplete reference results. "
+                                "Refine the reference or enter a DOI or Bibcode."
+                            )
+                        if not result.num_found:
+                            click.echo(
+                                (
+                                    "No ADS record matched this reference. "
+                                    if client is not None
+                                    else "ADS is unavailable for reference searches. "
+                                )
+                                + "Try the paper's DOI or Bibcode."
+                            )
+                            return
+                    else:
+                        lookup = match_reference_to_pdf(
+                            pdf_identifier,
+                            reference_path,
+                            result,
+                            reference_providers,
+                            callback,
                         )
-                    if lookup.used_own_identifiers:
-                        click.echo("Reference recovery used the PDF's own identifiers.")
-                    if result.num_found == 0:
-                        click.echo(
-                            "No reference result matches this PDF. "
-                            "No verified provider metadata was found."
-                        )
+                        result = lookup.matches
+                        if lookup.rejected:
+                            click.echo(
+                                f"Discarded {len(lookup.rejected)} reference candidate(s) "
+                                "that do not match this PDF."
+                            )
+                        if lookup.used_own_identifiers:
+                            click.echo(
+                                "Reference recovery used the PDF's own identifiers."
+                            )
+                        if result.num_found == 0:
+                            click.echo(
+                                "No reference result matches this PDF. "
+                                "No verified provider metadata was found."
+                            )
+                        elif result.num_found != len(result.documents):
+                            raise click.UsageError(
+                                "ADS returned incomplete reference results. "
+                                "Refine the reference or enter a DOI or Bibcode."
+                            )
                 if result.num_found == 1 and not result.documents[0].get("bibcode"):
                     external_document = result.documents[0]
-                if result.num_found > 1:
-                    _report_ambiguous_ads_matches(result.documents)
+                if result.num_found > 1 or (
+                    review_reference
+                    and identifier_kind == "query"
+                    and reference_path is not None
+                    and not recover_reference
+                    and result.num_found == 1
+                    and len(result.documents) == 1
+                    and result.documents[0].get("bibcode")
+                ):
+                    _report_ambiguous_ads_matches(
+                        result.documents,
+                        pdf_sha256=(
+                            extract_pdf_own_identity(candidate_pdf_path).sha256
+                            if candidate_pdf_path is not None
+                            else None
+                        ),
+                    )
                     return
                 documents = {
                     identifier_value: (
@@ -752,8 +1168,10 @@ def refresh_ads_command(
                 documents.update(
                     pdf_identifier.query_docs_for_bibcodes(
                         uncached,
-                        ads_documents_callback=lambda values: (
-                            state.registry.upsert_ads_documents(
+                        ads_documents_callback=(
+                            None
+                            if offer_conflict_review or confirm_conflicting_identity
+                            else lambda values: state.registry.upsert_ads_documents(
                                 values, source="refresh-ads"
                             )
                         ),
@@ -784,12 +1202,28 @@ def refresh_ads_command(
                 )
         for index, bibcode in enumerate(requested, start=1):
             if external_document is not None and relative_path is not None:
+                if offer_conflict_review and _report_identifier_conflict(
+                    state.registry,
+                    directory,
+                    relative_path,
+                    external_document,
+                    identifier=identifier_input or bibcode,
+                    identifier_option="--identifier"
+                    if identifier_input
+                    else "--bibcode",
+                ):
+                    return
                 if not _apply_external_metadata(
                     state.registry,
                     directory,
                     relative_path,
                     external_document,
-                    manual_confirmation=confirm_identity,
+                    manual_confirmation=manual_confirmation,
+                    manual_conflict_override=confirm_conflicting_identity,
+                    expected_sha256=expected_sha256,
+                    expected_identity=expected_identity,
+                    expected_review_digest=expected_review_digest,
+                    expected_catalog_digest=expected_catalog_digest,
                     refusals=refusals,
                 ):
                     raise click.UsageError(
@@ -800,7 +1234,7 @@ def refresh_ads_command(
                     pdf_identifier._first_scalar(external_document.get("doi"))
                     or identifier_value
                 )
-                click.echo(f"Found {external_identifier} at {provider} (not in ADS).")
+                click.echo(f"Found {external_identifier} at {provider}.")
                 external_refreshed += 1
                 rename_candidates.add(relative_path)
                 continue
@@ -813,16 +1247,47 @@ def refresh_ads_command(
             refreshed += 1
             if relative_path is not None:
                 document = documents.get(bibcode)
+                if (
+                    document is not None
+                    and offer_conflict_review
+                    and _report_identifier_conflict(
+                        state.registry,
+                        directory,
+                        relative_path,
+                        document,
+                        identifier=(
+                            str(document.get("bibcode") or "")
+                            if identifier_kind == "query"
+                            else identifier_input or bibcode
+                        ),
+                        identifier_option=(
+                            "--identifier"
+                            if identifier_input and identifier_kind != "query"
+                            else "--bibcode"
+                        ),
+                    )
+                ):
+                    return
                 if document is not None and not _refresh_file_metadata(
                     state.registry,
                     directory,
                     relative_path,
                     document,
                     preserve_existing=not rename,
-                    manual_confirmation=confirm_identity,
+                    manual_confirmation=manual_confirmation,
+                    manual_conflict_override=confirm_conflicting_identity,
                     refusals=refusals,
                     expected_sha256=expected_sha256,
                     expected_identity=expected_identity,
+                    expected_review_digest=expected_review_digest,
+                    expected_catalog_digest=expected_catalog_digest,
+                    replace_identity=(
+                        identifier_input is not None
+                        or (
+                            expected_sha256 is not None
+                            and expected_identity is not None
+                        )
+                    ),
                 ):
                     raise click.UsageError(
                         _metadata_skipped_message(relative_path, refusals)
@@ -864,6 +1329,9 @@ def refresh_ads_command(
         renamed = 0
         rename_skipped = 0
         for current_path in sorted(rename_candidates) if rename else ():
+            metadata_label = (
+                "External metadata" if external_document is not None else "ADS metadata"
+            )
             source = state.directory / current_path
             tracked = state.find_by_current_filename(current_path)
             if tracked is None or not (
@@ -873,7 +1341,7 @@ def refresh_ads_command(
             if not source.is_file():
                 rename_skipped += 1
                 click.secho(
-                    f"ADS metadata updated; PDF missing, rename skipped: {source}",
+                    f"{metadata_label} updated; PDF missing, rename skipped: {source}",
                     fg="yellow",
                 )
                 continue
@@ -892,21 +1360,21 @@ def refresh_ads_command(
             except FileExistsError as exc:
                 rename_skipped += 1
                 click.secho(
-                    f"ADS metadata updated; rename skipped because destination exists: {exc}",
+                    f"{metadata_label} updated; rename skipped because destination exists: {exc}",
                     fg="yellow",
                 )
                 continue
             except IdentityValidationError as exc:
                 rename_skipped += 1
                 click.secho(
-                    f"ADS metadata updated; rename refused, identity not verified: {exc}",
+                    f"{metadata_label} updated; rename refused, identity not verified: {exc}",
                     fg="yellow",
                 )
                 continue
             except (ADSError, OSError, ValueError, sqlite3.Error) as exc:
                 rename_skipped += 1
                 click.secho(
-                    f"ADS metadata updated; could not rename {source}: {exc}",
+                    f"{metadata_label} updated; could not rename {source}: {exc}",
                     fg="yellow",
                 )
                 continue
@@ -2020,20 +2488,30 @@ def identify_command(
     "directory", type=click.Path(exists=True, file_okay=False, path_type=Path)
 )
 @click.option(
-    "--scheme", default=DEFAULT_SCHEME, show_default=True, help="Rename template."
+    "--settings-scope",
+    type=click.Choice(["global", "library"]),
+    default="global",
+    show_default=True,
+    help="Choose saved Rename settings. Library falls back to global.",
+)
+@click.option(
+    "--scheme",
+    default=DEFAULT_SCHEME,
+    show_default="saved Rename setting",
+    help="Rename template.",
 )
 @click.option(
     "--author-format",
     default="surname_initials",
     callback=_validate_author_format,
-    show_default=True,
+    show_default="saved Rename setting",
     help="Author style: surname, surname_initials, last_comma_first, ads_custom:FMT",
 )
 @click.option(
     "--char-policy",
     default="keep",
     callback=_validate_char_policy,
-    show_default=True,
+    show_default="saved Rename setting",
     help=(
         "Filename handling for non-ASCII characters: "
         "ascii transliterates (Hanuš->Hanus), keep preserves Unicode."
@@ -2043,25 +2521,25 @@ def identify_command(
     "--max-authors",
     default=3,
     type=click.IntRange(1, 99),
-    show_default=True,
+    show_default="saved Rename setting",
 )
 @click.option(
     "--authors-when-truncated",
     default=1,
     type=click.IntRange(1, 99),
-    show_default=True,
+    show_default="saved Rename setting",
     help="Leading authors retained when --max-authors truncates the list.",
 )
 @click.option(
     "--author-separator",
     default="+",
-    show_default=True,
+    show_default="saved Rename setting",
     help="Text placed between rendered authors.",
 )
 @click.option(
     "--author-truncation-suffix",
     default="+",
-    show_default=True,
+    show_default="saved Rename setting",
     help="Text appended to {authors} only when the list is truncated.",
 )
 @click.option(
@@ -2090,6 +2568,7 @@ def identify_command(
 def rename_command(
     ctx: click.Context,
     directory: Path,
+    settings_scope: str,
     scheme: str,
     author_format: str,
     char_policy: str,
@@ -2105,12 +2584,11 @@ def rename_command(
     """Rename resolved PDFs using sidecar metadata and a naming scheme."""
     sidecar = None
     try:
-        if authors_when_truncated > max_authors:
-            raise click.UsageError("authors_when_truncated cannot exceed max_authors")
+        rename_settings = _rename_settings_for_command(ctx, directory, settings_scope)
         selected_paths = _files_inside(directory, file_paths) if file_paths else None
         client = (
             _get_client(ctx)
-            if allow_ads or author_format.startswith("ads_custom:")
+            if allow_ads or rename_settings.author_format.startswith("ads_custom:")
             else None
         )
         identify_settings = (
@@ -2157,14 +2635,8 @@ def rename_command(
         ).resolve()
         rename_options: dict[str, Any] = {
             "sidecar": sidecar,
-            "template": scheme,
             "dry_run": not apply,
-            "author_format": author_format,
-            "char_policy": char_policy,
-            "max_authors": max_authors,
-            "authors_when_truncated": authors_when_truncated,
-            "author_separator": author_separator,
-            "author_truncation_suffix": author_truncation_suffix,
+            **rename_settings.to_mapping(),
         }
         if selected_paths is not None:
             rename_options["current_filenames"] = [
@@ -2188,7 +2660,7 @@ def rename_command(
             click.secho(f"Not renamed: {current_name}: {reason}", fg="yellow")
         for refused_name, reason in sorted(renamer.identity_refused.items()):
             click.secho(
-                f"Not renamed; identity not verified: {refused_name}: {reason}",
+                f"Not renamed: {refused_name}: Identity not verified. {reason}",
                 fg="yellow",
             )
         if not plans:
@@ -2294,7 +2766,17 @@ def export_command(directory: Path, output: Path) -> None:
     "directory", type=click.Path(exists=True, file_okay=False, path_type=Path)
 )
 @click.option(
-    "--scheme", default=DEFAULT_SCHEME, show_default=True, help="Rename template."
+    "--settings-scope",
+    type=click.Choice(["global", "library"]),
+    default="global",
+    show_default=True,
+    help="Choose saved Rename settings. Library falls back to global.",
+)
+@click.option(
+    "--scheme",
+    default=DEFAULT_SCHEME,
+    show_default="saved Rename setting",
+    help="Rename template.",
 )
 @click.option(
     "--use-watchdog", is_flag=True, help="Use watchdog backend instead of polling."
@@ -2310,14 +2792,14 @@ def export_command(directory: Path, output: Path) -> None:
     "--author-format",
     default="surname_initials",
     callback=_validate_author_format,
-    show_default=True,
+    show_default="saved Rename setting",
     help="Author style: surname, surname_initials, last_comma_first, ads_custom:FMT",
 )
 @click.option(
     "--char-policy",
     default="keep",
     callback=_validate_char_policy,
-    show_default=True,
+    show_default="saved Rename setting",
     help=(
         "Filename handling for non-ASCII characters: "
         "ascii transliterates (Hanuš->Hanus), keep preserves Unicode."
@@ -2327,25 +2809,25 @@ def export_command(directory: Path, output: Path) -> None:
     "--max-authors",
     default=3,
     type=click.IntRange(1, 99),
-    show_default=True,
+    show_default="saved Rename setting",
 )
 @click.option(
     "--authors-when-truncated",
     default=1,
     type=click.IntRange(1, 99),
-    show_default=True,
+    show_default="saved Rename setting",
     help="Leading authors retained when --max-authors truncates the list.",
 )
 @click.option(
     "--author-separator",
     default="+",
-    show_default=True,
+    show_default="saved Rename setting",
     help="Text placed between rendered authors.",
 )
 @click.option(
     "--author-truncation-suffix",
     default="+",
-    show_default=True,
+    show_default="saved Rename setting",
     help="Text appended to {authors} only when the list is truncated.",
 )
 @click.option("--apply", is_flag=True, help="Apply renames/moves. Default is dry-run.")
@@ -2359,7 +2841,7 @@ def export_command(directory: Path, output: Path) -> None:
     default=24.0,
     type=float,
     show_default=True,
-    help="Hours between auto-upgrade checks.",
+    help="Hours between ADS rechecks and auto-upgrade checks.",
 )
 @click.option(
     "--overwrite-arxiv-with-official",
@@ -2385,6 +2867,7 @@ def export_command(directory: Path, output: Path) -> None:
 def watch_command(
     ctx: click.Context,
     directory: Path,
+    settings_scope: str,
     scheme: str,
     use_watchdog: bool,
     recursive: bool,
@@ -2415,8 +2898,7 @@ def watch_command(
 
     signal.signal(signal.SIGTERM, request_stop)
     try:
-        if authors_when_truncated > max_authors:
-            raise click.UsageError("authors_when_truncated cannot exceed max_authors")
+        rename_settings = _rename_settings_for_command(ctx, directory, settings_scope)
         directory = directory.resolve()
         if output_unresolved is not None:
             output_unresolved = (
@@ -2433,12 +2915,24 @@ def watch_command(
         settings = (
             load_library_identify_settings(directory) or Config.load_identify_settings()
         )
+        recheck_settings = (
+            replace(settings, output_unresolved=str(output_unresolved))
+            if output_unresolved is not None
+            else settings
+        )
         client = None
-        if DoiProvider.ADS in settings.providers or auto_upgrade:
+        needs_custom_author_client = rename_settings.author_format.startswith(
+            "ads_custom:"
+        )
+        if (
+            DoiProvider.ADS in settings.providers
+            or auto_upgrade
+            or needs_custom_author_client
+        ):
             try:
                 client = _get_client(ctx)
             except AuthenticationError:
-                if auto_upgrade or settings.providers == (DoiProvider.ADS,):
+                if auto_upgrade or needs_custom_author_client:
                     raise
         sidecar = open_registry_state(directory)
         identifier = PdfIdentifier(client)
@@ -2450,13 +2944,13 @@ def watch_command(
             record = watcher.process_new_pdf(
                 pdf_path=pdf_path,
                 sidecar=sidecar,
-                scheme=scheme,
-                author_format=author_format,
-                char_policy=char_policy,
-                max_authors=max_authors,
-                authors_when_truncated=authors_when_truncated,
-                author_separator=author_separator,
-                author_truncation_suffix=author_truncation_suffix,
+                scheme=rename_settings.template,
+                author_format=rename_settings.author_format,
+                char_policy=rename_settings.char_policy,
+                max_authors=rename_settings.max_authors,
+                authors_when_truncated=rename_settings.authors_when_truncated,
+                author_separator=rename_settings.author_separator,
+                author_truncation_suffix=rename_settings.author_truncation_suffix,
                 output_unresolved=output_unresolved,
                 apply=apply,
                 strategies=settings.strategies,
@@ -2479,6 +2973,52 @@ def watch_command(
                     )
             else:
                 click.secho(f"Unresolved {pdf_path.name}", fg="yellow")
+
+        def _recheck() -> bool:
+            nonlocal client
+            token = (ctx.obj or {}).get("token")
+            if not token or not str(token).strip():
+                try:
+                    Config.get_token(prompt=False)
+                except AuthenticationError:
+                    click.secho(
+                        "ADS recheck skipped: no token. Configure an ADS token.",
+                        fg="yellow",
+                        err=True,
+                    )
+                    return False
+            if client is None:
+                client = _get_client(ctx)
+            from .ads_recheck import recheck_existing
+
+            result = recheck_existing(
+                sidecar,
+                client,
+                rename_settings,
+                ads_enabled=True,
+                apply=apply,
+                cancelled=stop_event.is_set,
+                identify_settings=recheck_settings,
+                recursive=recursive,
+            )
+            failure_count = len(result.failures)
+            if apply:
+                message = (
+                    f"ADS recheck: checked {result.checked}, updated {result.updated}, "
+                    f"renamed {result.renamed}, failures {failure_count}."
+                )
+            else:
+                message = (
+                    f"[DRY-RUN] ADS recheck: checked {result.checked}, "
+                    f"planned updates {result.planned_updates}, "
+                    f"planned renames {result.planned_renames}, failures {failure_count}."
+                )
+            click.secho(
+                message, fg="yellow" if failure_count else None, err=bool(failure_count)
+            )
+            for failure in result.failures:
+                click.secho(f"ADS recheck: {failure}", fg="yellow", err=True)
+            return bool(result.cancelled)
 
         click.echo(f"Watching directory: {directory}")
         if not apply:
@@ -2505,6 +3045,10 @@ def watch_command(
                 auto_upgrade=auto_upgrade,
                 upgrade_interval_hours=upgrade_interval,
                 upgrade_kwargs=upgrade_kwargs,
+                recheck_callback=_recheck
+                if DoiProvider.ADS in settings.providers
+                else None,
+                update_locations=apply,
             )
         else:
             watcher.poll_loop(
@@ -2517,6 +3061,10 @@ def watch_command(
                 auto_upgrade=auto_upgrade,
                 upgrade_interval_hours=upgrade_interval,
                 upgrade_kwargs=upgrade_kwargs,
+                recheck_callback=_recheck
+                if DoiProvider.ADS in settings.providers
+                else None,
+                update_locations=apply,
             )
     except KeyboardInterrupt:
         click.echo("Stopped.")

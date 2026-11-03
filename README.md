@@ -11,8 +11,21 @@ project, not an official ADS application.
 - **Desktop app:** download the file for your system from the
   [latest release](https://github.com/ysBach/adsfolio/releases/latest).
 - **Homebrew on macOS:** `brew install --cask ysBach/adsfolio/adsfolio`
-- **CLI and Python:** `pip install adsfolio`, or
-  `pip install "adsfolio[full,gui]"` for the desktop app too.
+- **CLI and Python API:** `pip install adsfolio`. This installation omits Qt
+  and the desktop bundle. Use `uv tool install adsfolio` for an isolated CLI.
+- **Python with desktop features:** `pip install "adsfolio[full,gui]"`.
+
+For AI agents, download the brief
+[CLI/API skill](https://github.com/ysBach/adsfolio/releases/latest/download/adsfolio-cli-api-SKILL.md).
+Save it as `adsfolio-cli-api/SKILL.md` in your agent's skills directory.
+The [source skill](skills/adsfolio-cli-api/SKILL.md) is also available in this repository.
+Search supports structured output:
+
+```sh
+adsfolio search 'author:Einstein' --fields bibcode,title,year --rows 5 --json
+```
+
+ADS searches require an ADS token. See [CLI and Python](https://ysbach.github.io/adsfolio/docs/command-line-and-python.html) for setup and API examples.
 
 The app is not signed. Your system can ask you to approve it the first time.
 See [Getting started](https://ysbach.github.io/adsfolio/docs/getting-started.html#install)

@@ -112,10 +112,10 @@ def test_view_guidance_and_actions_remain_accessible_in_the_panel(
     )
     window._select_view(LibraryView.UNRESOLVED)
     assert not window.notification_panel.isVisible()
-    assert "no saved ADS link" in window.notifications_button.toolTip()
+    assert "need identification or review" in window.notifications_button.toolTip()
     window.notifications_button.click()
     assert window.view_explanation.isVisible()
-    assert "no saved ADS link" in window.view_explanation.text()
+    assert "need identification or review" in window.view_explanation.text()
     assert window.check_papers_button.isVisible()
     window.check_papers_button.click()
     assert calls == [window.current_root]

@@ -12,6 +12,8 @@ import re
 import unicodedata
 from collections.abc import Mapping
 from dataclasses import dataclass
+from html import unescape
+from html.entities import html5
 from typing import Any
 
 from pypdf import PdfReader
@@ -35,6 +37,14 @@ _SUBJECT_EXPLICIT_DOI_RE = re.compile(
 _DOI_PREFIX_RE = re.compile(r"^10\.\d{4,9}[/:]")
 _TITLE_QUOTES = str.maketrans({"‘": "'", "’": "'", "“": '"', "”": '"'})
 _TITLE_SEPARATOR_RE = re.compile(r"(?:\s+[-–—]\s+|:\s+)")
+_TITLE_DISPLAY_TAGS = frozenset(
+    {"astrobj", "b", "em", "i", "span", "strong", "sub", "sup"}
+)
+_TITLE_DISPLAY_TAG_RE = re.compile(r"<(/?)([A-Za-z]+)\s*>")
+_TITLE_ENTITY_RE = re.compile(
+    r"&(?:[A-Za-z][A-Za-z0-9]*|#(?:[0-9]+|[xX][0-9A-Fa-f]+));"
+)
+_TITLE_DASHES = str.maketrans({character: "-" for character in "‐‑‒–—−"})
 
 
 @dataclass(frozen=True)
@@ -62,6 +72,67 @@ def _normalize_title_text(title: str) -> str:
     text = unicodedata.normalize("NFC", str(title or "")).translate(_TITLE_QUOTES)
     text = " ".join(text.strip().split()).casefold()
     return " : ".join(part.strip() for part in _TITLE_SEPARATOR_RE.split(text))
+
+
+def _normalize_page_title(title: str) -> str:
+    """Normalize line breaks and typographic dashes for a page-title match."""
+    text = unicodedata.normalize("NFKC", title).translate(_TITLE_DASHES)
+    return " ".join(text.translate(_TITLE_QUOTES).casefold().split())
+
+
+def _normalize_missing_title_dashes(title: str) -> str:
+    """Allow a DocInfo title to omit dashes when the page title matches."""
+    return " ".join(_normalize_page_title(title).replace("-", "").split())
+
+
+def _decode_title_entity(match: re.Match[str]) -> str:
+    """Decode a complete, valid HTML entity without dropping its contents."""
+    entity = match.group()
+    if not entity.startswith("&#") and entity[1:] not in html5:
+        return entity
+    try:
+        decoded = unescape(entity)
+    except ValueError:
+        return entity
+    return decoded if decoded and "\ufffd" not in decoded else entity
+
+
+def _provider_title_text(title: str) -> str:
+    """Remove balanced display tags and decode valid HTML entities.
+
+    Unknown tags remain literal. Keep the original title when recognized tags
+    do not balance or angle brackets are ambiguous. Decode entities after tag
+    handling so escaped angle brackets remain title text.
+    """
+    parts: list[str] = []
+    open_tags: list[str] = []
+    position = 0
+    while True:
+        start = title.find("<", position)
+        if start < 0:
+            parts.append(title[position:])
+            break
+        parts.append(title[position:start])
+        end = title.find(">", start + 1)
+        if end < 0:
+            parts.append(title[start:])
+            break
+        candidate = title[start : end + 1]
+        if "<" in candidate[1:]:
+            return title
+        tag = _TITLE_DISPLAY_TAG_RE.fullmatch(candidate)
+        if tag is None or tag.group(2).casefold() not in _TITLE_DISPLAY_TAGS:
+            parts.append(candidate)
+        elif tag.group(1):
+            if not open_tags or open_tags.pop() != tag.group(2).casefold():
+                return title
+        else:
+            open_tags.append(tag.group(2).casefold())
+        position = end + 1
+
+    if open_tags:
+        return title
+    return _TITLE_ENTITY_RE.sub(_decode_title_entity, "".join(parts))
 
 
 def _extract_subject_labeled_dois(subject: str) -> list[str]:
@@ -105,7 +176,8 @@ def check_document_doi_evidence(
 
     All of these conditions must hold:
 
-    1. DocInfo ``/Subject`` contains exactly one explicitly labeled DOI.
+    1. DocInfo ``/Subject`` contains exactly one explicitly labeled DOI, or
+       ``/WPS-ARTICLEDOI`` contains one article DOI.
     2. The first page repeats that DOI with exact token boundaries.
     3. The metadata and provider titles match after documented formatting normalization.
     4. The provider record explicitly lists the same DOI.
@@ -113,7 +185,7 @@ def check_document_doi_evidence(
     Parameters
     ----------
     pdf_bytes : bytes
-        Immutable bytes of the PDF to verify.
+        Immutable bytes of the PDF to check.
     provider_document : Mapping[str, Any]
         Authoritative provider record containing the title and DOI.
 
@@ -126,8 +198,12 @@ def check_document_doi_evidence(
     -----
     Title comparison folds case and collapses whitespace. It normalizes
     canonical Unicode, curly quotation marks, and spaced subtitle separators.
-    Each resulting title part must match exactly. DOI tokens retain their
-    punctuation and use exact token boundaries.
+    It also accepts balanced provider display tags and valid HTML entities.
+    Title content and unknown tags remain significant. Each resulting title
+    part must match exactly. DOI tokens retain their punctuation and use exact
+    token boundaries. When only the publisher article DOI is present, page 1
+    must also contain the full provider title. In that case the DocInfo title
+    may omit dashes, but its remaining characters must match.
     """
     if not isinstance(pdf_bytes, (bytes, bytearray, memoryview)) or not pdf_bytes:
         return DocumentDoiEvidence(None, "The PDF data cannot be read.")
@@ -146,6 +222,7 @@ def check_document_doi_evidence(
         metadata = reader.metadata or {}
         subject = str(metadata.get("/Subject") or "").strip()
         title = str(metadata.get("/Title") or "").strip()
+        article_value = metadata.get("/WPS-ARTICLEDOI")
     except Exception as exc:  # noqa: BLE001 - parsers raise many types
         _LOGGER.debug("Failed to read PDF metadata: %s", exc)
         return DocumentDoiEvidence(None, "ADSfolio cannot read the PDF metadata.")
@@ -155,18 +232,28 @@ def check_document_doi_evidence(
             None, "The PDF metadata has no title for the DOI cross-check."
         )
 
-    # Condition 1: PDF DocInfo /Subject has explicitly labeled DOI(s).
+    # Keep every DOI-bearing DocInfo field consistent with the candidate.
     subject_dois = _extract_subject_labeled_dois(subject)
-    # Must have exactly one explicitly labeled DOI (reject multiple or conflicting).
-    if not subject_dois:
+    article_doi = ""
+    if article_value is not None:
+        if not isinstance(article_value, str):
+            return DocumentDoiEvidence(None, "The PDF article DOI is invalid.")
+        article_doi = _normalize_doi(article_value)
+        if not re.fullmatch(r"10\.\d{4,9}/\S+", article_doi):
+            return DocumentDoiEvidence(None, "The PDF article DOI is invalid.")
+    candidates = set(subject_dois)
+    if article_doi:
+        candidates.add(article_doi)
+    if not candidates:
         return DocumentDoiEvidence(
             None, "The PDF Subject metadata has no explicitly labelled DOI."
         )
-    if len(set(subject_dois)) != 1:
+    if len(candidates) != 1:
         return DocumentDoiEvidence(
-            None, "The PDF Subject metadata lists several different DOIs."
+            None, "The PDF metadata lists several different DOIs."
         )
-    subject_doi = subject_dois[0]
+    subject_doi = candidates.pop()
+    article_only = not subject_dois
 
     # Provider DOIs
     provider_doi_raw = provider_document.get("doi")
@@ -220,7 +307,28 @@ def check_document_doi_evidence(
             f"PDF metadata states DOI {subject_doi}, but page 1 does not repeat that exact DOI.",
         )
 
-    if _normalize_title_text(title) != _normalize_title_text(provider_title):
+    provider_titles = (provider_title, _provider_title_text(provider_title))
+    normalized_title = _normalize_title_text(title)
+    title_matches = any(
+        normalized_title == _normalize_title_text(candidate)
+        for candidate in provider_titles
+    )
+    if article_only:
+        page_title = _normalize_page_title(first_page_text)
+        title_matches = any(
+            bool(_normalize_page_title(candidate))
+            and bool(_normalize_missing_title_dashes(title))
+            and _normalize_missing_title_dashes(title)
+            == _normalize_missing_title_dashes(candidate)
+            and bool(
+                re.search(
+                    rf"(?<!\w){re.escape(_normalize_page_title(candidate))}(?!\w)",
+                    page_title,
+                )
+            )
+            for candidate in provider_titles
+        )
+    if not title_matches:
         return DocumentDoiEvidence(
             None,
             f"DOI {subject_doi} matches the PDF metadata, page 1, and provider, but the document titles differ.",

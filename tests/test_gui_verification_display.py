@@ -164,7 +164,7 @@ def test_fresh_manual_metadata_is_marked_as_local_not_ads(qtbot) -> None:
     index = model.index(0, column)
     assert (
         index.data(Qt.ToolTipRole)
-        == "Local metadata ready for renaming. No ADS record linked."
+        == "Metadata available. Confirm the PDF identity. No ADS record linked."
     )
     assert index.data(Qt.AccessibleTextRole) == index.data(Qt.ToolTipRole)
     image = QImage(24, 24, QImage.Format_ARGB32)
@@ -186,6 +186,71 @@ def test_fresh_manual_metadata_is_marked_as_local_not_ads(qtbot) -> None:
     )
 
 
+@pytest.mark.parametrize("status", ["resolved", "unresolved"])
+def test_reviewed_identifier_conflict_is_labeled_as_manual(qtbot, tmp_path, status):
+    from adsfolio.pdf.identity import IDENTITY_KEY, target_identity
+
+    metadata = {"doi": "10.5555/correct", "title": ["Paper"]}
+    if status == "resolved":
+        metadata["bibcode"] = "2021JEx.....3....7R"
+    metadata[IDENTITY_KEY] = {
+        "status": "manual_confirmed",
+        "authority": "manual_conflict_override",
+        "sha256": "current",
+        "identity": target_identity(metadata).fingerprint,
+    }
+    record = {"status": status, "sha256": "current", "metadata": metadata}
+    pane = DetailPane()
+    qtbot.addWidget(pane)
+    pane.set_record(record, tmp_path)
+    row = pane._row_widgets["status"]
+    assert row.value.text() == (
+        "Manually identified (ADS linked)"
+        if status == "resolved"
+        else "Manually identified (no ADS link)"
+    )
+    assert "conflicting PDF identifiers" in row.value.toolTip()
+
+
+@pytest.mark.parametrize(
+    ("proof_status", "authority", "status", "expected"),
+    [
+        (
+            "filename_associated",
+            "ads_filename_bibcode",
+            "resolved",
+            "Identified from filename (ADS linked)",
+        ),
+        (
+            "manual_confirmed",
+            "manual",
+            "unresolved",
+            "Manually identified (no ADS link)",
+        ),
+    ],
+)
+def test_detail_status_names_the_identity_source(
+    qtbot, tmp_path, proof_status, authority, status, expected
+):
+    from adsfolio.pdf.identity import IDENTITY_KEY, target_identity
+
+    metadata = {"title": ["Paper"], "author": ["Author"], "year": "2024"}
+    if status == "resolved":
+        metadata["bibcode"] = "2024Test...1A"
+    metadata[IDENTITY_KEY] = {
+        "status": proof_status,
+        "authority": authority,
+        "sha256": "current",
+        "identity": target_identity(metadata).fingerprint,
+    }
+    pane = DetailPane()
+    qtbot.addWidget(pane)
+    pane.set_record(
+        {"status": status, "sha256": "current", "metadata": metadata}, tmp_path
+    )
+    assert pane._row_widgets["status"].value.text() == expected
+
+
 def test_stored_match_sidebar_and_counts_explain_current_verification(
     qtbot, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -204,7 +269,7 @@ def test_stored_match_sidebar_and_counts_explain_current_verification(
 
         def count_files_matching(self, **filters: object) -> int:
             filters_seen.append(filters)
-            return 0 if filters.get("resolved") is False else 1
+            return 1 if filters.get("identification") in (None, "ads_linked") else 0
 
         def close(self) -> None:
             pass
@@ -219,15 +284,18 @@ def test_stored_match_sidebar_and_counts_explain_current_verification(
     )
     assert matched.text(0) == "ADS linked (1)"
     assert "does not prove the PDF content matches" in matched.toolTip(0)
-    assert "Changed PDFs need identification again" in matched.toolTip(0)
-    assert LibraryView.UNRESOLVED.label == "Needs ADS lookup"
-    assert FileQuery(view=LibraryView.RESOLVED).to_filters() == {"resolved": True}
+    assert "Changed PDFs appear under Needs identification" in matched.toolTip(0)
+    assert LibraryView.UNRESOLVED.label == "Needs identification"
+    assert FileQuery(view=LibraryView.RESOLVED).to_filters() == {
+        "identification": "ads_linked"
+    }
     window._update_status()
     assert "1 ADS linked" in window.status.currentMessage()
-    assert "0 need ADS lookup" in window.status.currentMessage()
+    assert "0 identified without ADS" in window.status.currentMessage()
+    assert "0 need identification" in window.status.currentMessage()
     assert "does not prove the PDF content matches" in window.status.toolTip()
-    assert {"resolved": True} in filters_seen
-    assert {"resolved": False} in filters_seen
+    assert {"identification": "ads_linked"} in filters_seen
+    assert {"identification": "needs_identification"} in filters_seen
 
 
 def _marker_colors(record: dict) -> set[str]:

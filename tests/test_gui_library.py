@@ -18,14 +18,21 @@ from adsfolio.gui.library import (
 
 def test_file_query_maps_views_and_search():
     assert FileQuery().to_filters() == {}
-    assert FileQuery(view=LibraryView.RESOLVED).to_filters() == {"resolved": True}
-    assert FileQuery(view=LibraryView.UNRESOLVED).to_filters() == {"resolved": False}
+    assert FileQuery(view=LibraryView.RESOLVED).to_filters() == {
+        "identification": "ads_linked"
+    }
+    assert FileQuery(view=LibraryView.UNRESOLVED).to_filters() == {
+        "identification": "needs_identification"
+    }
+    assert FileQuery(view=LibraryView.IDENTIFIED_WITHOUT_ADS).to_filters() == {
+        "identification": "identified_without_ads"
+    }
     assert FileQuery(view=LibraryView.ARXIV_ONLY).to_filters() == {"source": "arxiv"}
     assert FileQuery(view=LibraryView.DUPLICATES).to_filters() == {
         "duplicates_only": True
     }
     assert FileQuery(view=LibraryView.RESOLVED, search=" Bach ").to_filters() == {
-        "resolved": True,
+        "identification": "ads_linked",
         "search": " Bach ",
     }
 

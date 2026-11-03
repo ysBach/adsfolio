@@ -828,17 +828,27 @@ class RenameDialog(QDialog):
         self.table = QTableWidget(0, 2, self)
         self.table.setHorizontalHeaderLabels(["Current location", "Target location"])
         self.summary = QLabel("No preview generated", self)
+        self.skipped_label = QLabel("Skipped files and reasons", self)
+        self.skipped_details = QPlainTextEdit(self)
+        self.skipped_details.setAccessibleName("Skipped files and reasons")
+        self.skipped_details.setReadOnly(True)
+        self.skipped_label.hide()
+        self.skipped_details.hide()
         form = QFormLayout()
         scope_help = "Choose whether reusable Rename behavior applies globally or only to this library."
         template_help = (
-            "Builds each filename with Python-style fields: {bibcode}, {year}, "
+            "Build each filename with Python-style fields: {bibcode}, {year}, "
             "{title}, {first_author}, {first_author_full}, {authors}, {authors_N}, "
-            "{journal}, {volume}, and {page}. {authors} adds the configured suffix "
-            "when total authors exceed Max authors; {authors_N} omits that "
-            "suffix. Missing metadata becomes empty, unknown fields stop the rename, "
-            "unsafe characters are sanitized, .pdf is appended automatically, and "
-            "results are limited to 240 UTF-8 bytes. A rename is skipped if its "
-            "target filename already exists. Use {{ and }} for literal braces."
+            "{journal}, {volume}, and {page}. "
+            "{authors} adds the configured suffix when the author count exceeds Max authors. "
+            "{authors_N} omits the suffix. "
+            "ADSfolio skips files when a field in the template has no metadata. "
+            "Add the missing metadata or remove that field from the template. "
+            "Unknown fields stop the rename. ADSfolio replaces unsafe characters. "
+            "The filename extension .pdf is appended automatically. "
+            "ADSfolio limits filenames to 240 UTF-8 bytes. "
+            "ADSfolio skips files if the target filename already exists. "
+            "Use {{ and }} for literal braces."
         )
         author_help = (
             "Controls author placeholders: surname; surname_initials; "
@@ -917,6 +927,8 @@ class RenameDialog(QDialog):
         layout.addLayout(form)
         layout.addWidget(self.summary)
         layout.addWidget(self.table)
+        layout.addWidget(self.skipped_label)
+        layout.addWidget(self.skipped_details)
         from PySide6.QtWidgets import QDialogButtonBox
 
         buttons = QDialogButtonBox(QDialogButtonBox.Cancel, self)
@@ -1045,7 +1057,8 @@ class RenameDialog(QDialog):
         unresolved_directory = self._unresolved_directory()
         QApplication.setOverrideCursor(Qt.WaitCursor)
         try:
-            plans = PdfRenamer().batch_rename(
+            renamer = PdfRenamer()
+            plans = renamer.batch_rename(
                 state,
                 template=self.template.text(),
                 dry_run=True,
@@ -1065,6 +1078,9 @@ class RenameDialog(QDialog):
         except ValueError as exc:
             self.summary.setText(str(exc))
             self.table.setRowCount(0)
+            self.skipped_details.clear()
+            self.skipped_label.hide()
+            self.skipped_details.hide()
             return
         finally:
             state.close()
@@ -1084,7 +1100,24 @@ class RenameDialog(QDialog):
                     )
                 ),
             )
-        self.summary.setText(f"{len(plans)} change(s)" if plans else "No changes")
+        skipped = list(renamer.skipped.items())
+        skipped.extend(
+            (
+                name,
+                f"Identity not verified: {reason}\nReview the PDF identity before renaming.",
+            )
+            for name, reason in renamer.identity_refused.items()
+        )
+        skipped.sort(key=lambda item: item[0])
+        self.skipped_details.setPlainText(
+            "\n\n".join(f"{name}\n{reason}" for name, reason in skipped)
+        )
+        self.skipped_label.setVisible(bool(skipped))
+        self.skipped_details.setVisible(bool(skipped))
+        summary = f"{len(plans)} change(s)" if plans else "No changes"
+        if skipped:
+            summary += f", {len(skipped)} skipped"
+        self.summary.setText(summary)
 
     def build_argv(self) -> list[str]:
         """Return the CLI argv represented by the dialog."""

@@ -23,6 +23,15 @@ def _disable_external_network_in_identifier_tests(monkeypatch):
 OWN_DOI = "10.5555/own.paper"
 
 
+def _bibcode_query(*bibcodes):
+    """Build the ADS query expected for current and former bibcodes."""
+    return " OR ".join(
+        f'{field}:"{bibcode}"'
+        for bibcode in bibcodes
+        for field in ("bibcode", "alternate_bibcode", "identifier")
+    )
+
+
 def _pdf(path, doi=OWN_DOI, body="paper"):
     """Write a one-page PDF whose DocInfo names \'doi\' as its own DOI."""
     writer = PdfWriter()
@@ -82,7 +91,7 @@ def test_compute_sha256(tmp_path):
 def test_bibcode_resolution_is_not_constrained_by_publication_prefetch_window():
     """Direct ADS resolution is independent of the publication-prefetch window."""
     bibcode = "1965Natur.207.1381B"
-    query = f'bibcode:"{bibcode}"'
+    query = _bibcode_query(bibcode)
     identifier, search = _build_identifier(
         {query: SearchResult(num_found=1, start=0, docs=[{"bibcode": bibcode}])}
     )
@@ -386,7 +395,7 @@ def test_resolve_validates_filename_bibcode_before_doi_and_title(tmp_path):
     bibcode = "2025RNAAS...9..338Z"
     path = tmp_path / f"{bibcode}.pdf"
     _pdf(path)
-    query = f'bibcode:"{bibcode}"'
+    query = _bibcode_query(bibcode)
     document = {
         "bibcode": bibcode,
         "title": ["Aperture-averaged Polarimetry"],
@@ -437,7 +446,7 @@ def test_resolve_falls_through_when_filename_bibcode_is_not_validated(tmp_path):
     assert record is not None
     assert record["bibcode"] == document["bibcode"]
     assert [call["q"] for call in search.calls] == [
-        f'bibcode:"{false_candidate}"',
+        _bibcode_query(false_candidate),
         title_query,
     ]
 
@@ -477,7 +486,7 @@ def test_resolve_zhelto_style_pdf_via_first_page_title(tmp_path, monkeypatch):
         lambda _: _FakeReader(metadata={}, text=page_text),
     )
 
-    search.results['bibcode:"2025RNAAS...9..338Z"'] = SearchResult(
+    search.results[_bibcode_query("2025RNAAS...9..338Z")] = SearchResult(
         num_found=1, start=0, docs=[document]
     )
     record = identifier.resolve(path)
@@ -487,7 +496,7 @@ def test_resolve_zhelto_style_pdf_via_first_page_title(tmp_path, monkeypatch):
     assert [call["q"] for call in search.calls] == [
         f'title:"{title}"',
         f'title:"{title}"',
-        'bibcode:"2025RNAAS...9..338Z"',
+        _bibcode_query("2025RNAAS...9..338Z"),
     ]
 
 
@@ -500,7 +509,7 @@ def test_resolve_many_extracts_and_validates_filename_bibcodes_by_default(
     document = {"bibcode": bibcode, "title": ["Paper Title"], "doi": [OWN_DOI]}
     identifier, search = _build_identifier(
         {
-            f'bibcode:"{bibcode}"': SearchResult(
+            _bibcode_query(bibcode): SearchResult(
                 num_found=1,
                 start=0,
                 docs=[document],
@@ -516,7 +525,7 @@ def test_resolve_many_extracts_and_validates_filename_bibcodes_by_default(
 
     assert records[path] is not None
     assert records[path]["bibcode"] == bibcode
-    assert [call["q"] for call in search.calls] == [f'bibcode:"{bibcode}"']
+    assert [call["q"] for call in search.calls] == [_bibcode_query(bibcode)]
 
 
 def test_resolve_handles_metadata_doi_direct_ads_lookup(tmp_path):
@@ -788,7 +797,7 @@ def test_equal_candidate_is_queried_once_across_strategies(tmp_path, monkeypatch
 def test_cached_lookup_answers_candidates_without_overriding_priority(
     tmp_path, monkeypatch
 ):
-    path = tmp_path / "paper.pdf"
+    path = tmp_path / "2024ApJ...900..100A.pdf"
     _pdf(path)
     identifier, search = _build_identifier({})
     monkeypatch.setattr(
@@ -1333,11 +1342,11 @@ def test_typography_candidates_require_one_exact_ads_identity(
         {query: SearchResult(num_found=len(documents), start=0, docs=documents)}
     )
     for document in documents:
-        search.results[f'bibcode:"{document["bibcode"]}"'] = SearchResult(
+        search.results[_bibcode_query(document["bibcode"])] = SearchResult(
             num_found=1, start=0, docs=[document]
         )
     if len(documents) == 2:
-        search.results['bibcode:"BIB1" OR bibcode:"BIB2"'] = SearchResult(
+        search.results[_bibcode_query("BIB1", "BIB2")] = SearchResult(
             num_found=2, start=0, docs=documents
         )
     path = tmp_path / "paper.pdf"
@@ -1431,7 +1440,7 @@ def test_title_probe_caches_only_verified_full_record(tmp_path):
                     {"bibcode": "OTHER", "title": ["An unrelated journal paper"]},
                 ],
             ),
-            'bibcode:"BIB1"': SearchResult(num_found=1, start=0, docs=[doc]),
+            _bibcode_query("BIB1"): SearchResult(num_found=1, start=0, docs=[doc]),
         }
     )
     path = tmp_path / "paper.pdf"

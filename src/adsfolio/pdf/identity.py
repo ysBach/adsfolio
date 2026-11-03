@@ -1,9 +1,8 @@
 """Verify that a PDF is the paper that metadata claims it is.
 
-Automatic identification may write metadata for a PDF only after the PDF's
-own identifiers (arXiv stamp, DOI in document metadata) agree with the
-identifiers of the target record. File names, content hashes, search-result
-order, and title or author similarity never establish identity.
+Independent verification requires the PDF's own identifiers to agree with
+the provider record. A unique ADS bibcode in a filename can also associate a
+PDF with a record. That association is not independent verification.
 """
 
 from __future__ import annotations
@@ -23,6 +22,7 @@ from typing import Any
 from xml.parsers import expat
 
 from .arxiv import normalize_arxiv_id
+from .upgrade_utils import _normalize_doi
 
 __all__ = [
     "IDENTITY_KEY",
@@ -54,6 +54,19 @@ _DOI_PREFIX_RE = re.compile(
     r"^(?:doi\s*:\s*|https?://(?:dx\.)?doi\.org/)", re.IGNORECASE
 )
 _BIBCODE_RE = re.compile(r"^\d{4}\S{14}[A-Za-z.]$")
+_FILENAME_BIBCODE_RE = re.compile(
+    r"(?<![A-Za-z0-9])(\d{4}[A-Za-z&.]{5}[A-Za-z0-9.]{4}"
+    r"[A-Za-z0-9.][A-Za-z0-9.\-]{4}[A-Za-z])(?![A-Za-z0-9])"
+)
+_PAGE_DOI_RE = re.compile(r"\b10\.\d{4,9}/[-._;()/:A-Z0-9]+", re.IGNORECASE)
+_PROVIDER_ID_FIELDS = (
+    "bibcode",
+    "alternate_bibcode",
+    "identifier",
+    "doi",
+    "arxiv",
+    "arxiv_id",
+)
 _PRISM_NS = (
     "http://prismstandard.org/namespaces/basic/2.0/",
     "http://prismstandard.org/namespaces/basic/2.1/",
@@ -67,6 +80,14 @@ _XMP_IDENTIFIER_TAG = f"{{{_DC_NS}}}identifier"
 # of reference DOIs, are not the PDF naming itself).
 _DOCINFO_SINGLE_KEYS = frozenset({"doi", "prism:doi", "arxiv", "arxiv_id"})
 _DOCINFO_MULTI_KEYS = frozenset({"dc:identifier"})
+_MANUAL_BLOCKING_CLAIM_ERRORS = frozenset(
+    {
+        "unparseable article DOI in DocInfo",
+        "unparseable arXiv DOI in DocInfo Subject",
+        "unparseable identifier in DocInfo",
+        "unparseable identifier in XMP",
+    }
+)
 
 # MuPDF is not safe to call from several threads at once.
 _FITZ_LOCK = threading.Lock()
@@ -132,6 +153,9 @@ class PdfOwnIdentity:
     between the two raises instead of returning). 'arxiv_ids' holds
     version-free, lower-case arXiv identifiers, including arXiv DOIs. 'dois'
     holds lower-case DOIs from document metadata, never from body text.
+    `article_dois` and `subject_dois` hold unverified metadata claims. They can
+    reject a conflict. Page and provider evidence must corroborate them before
+    they establish identity.
     'errors' lists all parser failures. 'warnings' identifies unreadable
     optional metadata sources. These do not invalidate readable identifiers
     from other sources. 'blocking_errors' excludes those warnings.
@@ -144,6 +168,8 @@ class PdfOwnIdentity:
     dois: frozenset[str]
     errors: tuple[str, ...] = ()
     warnings: tuple[str, ...] = ()
+    article_dois: frozenset[str] = frozenset()
+    subject_dois: frozenset[str] = frozenset()
 
     @property
     def blocking_errors(self) -> tuple[str, ...]:
@@ -153,15 +179,34 @@ class PdfOwnIdentity:
     @property
     def identifiers(self) -> frozenset[tuple[str, str]]:
         """Own identifiers as ('arxiv' | 'doi', value) pairs."""
-        return frozenset(
-            [("arxiv", value) for value in self.arxiv_ids]
-            + [("doi", value) for value in self.dois]
-        )
+        pairs = {("arxiv", value) for value in self.arxiv_ids}
+        pairs.update(("doi", value) for value in self.dois)
+        for doi in self.article_dois:
+            classified = _classify(doi)
+            if classified is not None and classified[0] in {"arxiv", "doi"}:
+                pairs.add(classified)
+        return frozenset(pairs)
 
     @property
     def has_identifier(self) -> bool:
         """Whether the PDF states at least one identifier."""
-        return bool(self.arxiv_ids or self.dois)
+        return bool(self.arxiv_ids or self.dois or self.article_dois)
+
+
+def select_first_page_doi(text: str, evidence: PdfOwnIdentity | None) -> str | None:
+    """Select a single page DOI, or use metadata to disambiguate several."""
+    candidates: dict[str, str] = {}
+    for match in _PAGE_DOI_RE.finditer(text):
+        value = match.group().rstrip(").,;")
+        candidates.setdefault(_normalize_doi(value), value)
+    if len(candidates) == 1:
+        return next(iter(candidates.values()))
+    if not candidates or evidence is None or evidence.blocking_errors:
+        return None
+    metadata_dois = set(evidence.dois | evidence.article_dois | evidence.subject_dois)
+    metadata_dois.update(f"10.48550/arxiv.{value}" for value in evidence.arxiv_ids)
+    matching = set(candidates) & metadata_dois
+    return candidates[next(iter(matching))] if len(matching) == 1 else None
 
 
 @dataclass(frozen=True)
@@ -221,7 +266,10 @@ def _classify(token: Any) -> tuple[str, str] | None:
     if _DOI_RE.fullmatch(bare):
         match = _ARXIV_DOI_RE.fullmatch(bare)
         if match:
-            arxiv = normalize_arxiv_id(match.group(1))
+            value = match.group(1)
+            if not re.fullmatch(_ARXIV_ID, value, re.IGNORECASE):
+                return None
+            arxiv = normalize_arxiv_id(value)
             return ("arxiv", arxiv) if arxiv else None
         return "doi", bare.lower()
     match = _BARE_ARXIV_RE.fullmatch(text)
@@ -236,6 +284,15 @@ def _classify(token: Any) -> tuple[str, str] | None:
     if _BIBCODE_RE.fullmatch(text):
         return "bibcode", text.lower()
     return None
+
+
+def _valid_article_doi(doi: str) -> bool:
+    if not _DOI_RE.fullmatch(doi):
+        return False
+    prefix = "10.48550/arxiv."
+    if doi.casefold().startswith(prefix):
+        return bool(re.fullmatch(_ARXIV_ID, doi[len(prefix) :], re.IGNORECASE))
+    return True
 
 
 def _values(value: Any) -> Iterable[Any]:
@@ -388,15 +445,28 @@ def _add_metadata_token(
 
 
 def _add_known_tokens(
-    tokens: Iterable[str], arxiv_ids: set[str], dois: set[str]
+    tokens: Iterable[str],
+    arxiv_ids: set[str],
+    dois: set[str],
+    *,
+    errors: list[str] | None = None,
+    where: str = "DocInfo",
 ) -> None:
     """Keep tokens that are DOIs or arXiv ids; other identifiers are ignored."""
-    for token in tokens:
+    iterator = iter(tokens)
+    for token in iterator:
+        if re.fullmatch(r"(?:doi|arxiv):", token, re.IGNORECASE):
+            token += next(iterator, "")
         classified = _classify(token)
         if classified is not None and classified[0] == "arxiv":
             arxiv_ids.add(classified[1])
         elif classified is not None and classified[0] == "doi":
             dois.add(classified[1])
+        elif errors is not None and (
+            _DOI_PREFIX_RE.match(token)
+            or re.match(r"(?:10\.\d{4,9}/|arxiv:)", token, re.IGNORECASE)
+        ):
+            errors.append(f"unparseable identifier in {where}")
 
 
 def _xmp_tree_with_unbound_prefixes(packet: bytes) -> ET.Element | None:
@@ -474,10 +544,20 @@ def _read_xmp(
             if text:
                 _add_metadata_token(text, arxiv_ids, dois, errors, "XMP")
         elif element.tag == _XMP_IDENTIFIER_TAG:
-            _add_known_tokens("".join(element.itertext()).split(), arxiv_ids, dois)
+            _add_known_tokens(
+                " ".join(element.itertext()).split(),
+                arxiv_ids,
+                dois,
+                errors=errors,
+                where="XMP",
+            )
         if _XMP_IDENTIFIER_TAG in element.attrib:
             _add_known_tokens(
-                element.attrib[_XMP_IDENTIFIER_TAG].split(), arxiv_ids, dois
+                element.attrib[_XMP_IDENTIFIER_TAG].split(),
+                arxiv_ids,
+                dois,
+                errors=errors,
+                where="XMP",
             )
 
 
@@ -487,6 +567,8 @@ def _read_pdf_identifiers(
     dois: set[str],
     errors: list[str],
     warnings: list[str],
+    article_dois: set[str],
+    subject_dois: set[str],
 ) -> None:
     """Collect own identifiers from DocInfo, XMP and the first-page margin stamp."""
     from pypdf import PdfReader
@@ -511,8 +593,26 @@ def _read_pdf_identifiers(
                 continue
             if name in _DOCINFO_SINGLE_KEYS:
                 _add_metadata_token(str(value), arxiv_ids, dois, errors, "DocInfo")
+            elif name == "wps-articledoi":
+                article_doi = _normalize_doi(str(value))
+                if not _valid_article_doi(article_doi):
+                    errors.append("unparseable article DOI in DocInfo")
+                else:
+                    article_dois.add(article_doi)
+            elif name == "subject":
+                from .document_identity_evidence import _extract_subject_labeled_dois
+
+                for doi in _extract_subject_labeled_dois(str(value)):
+                    if doi.casefold().startswith(
+                        "10.48550/arxiv."
+                    ) and not _valid_article_doi(doi):
+                        errors.append("unparseable arXiv DOI in DocInfo Subject")
+                    else:
+                        subject_dois.add(doi)
             elif name in _DOCINFO_MULTI_KEYS:
-                _add_known_tokens(str(value).split(), arxiv_ids, dois)
+                _add_known_tokens(
+                    str(value).split(), arxiv_ids, dois, errors=errors, where="DocInfo"
+                )
             elif name == "title" and _DOI_PREFIX_RE.match(str(value).strip()):
                 # Some publisher PDFs put a DOI label in the entire title field.
                 # Keep the whole value so prose and reference lists do not match.
@@ -541,8 +641,9 @@ def extract_pdf_own_identity(path: Path) -> PdfOwnIdentity:
     The file is read once; the hash and every parsed identifier come from the
     same bytes. Sources are the arXiv margin stamp on page 1, DocInfo DOI keys,
     a complete labeled DOI in DocInfo Title, and XMP
-    ``prism:doi`` / ``dc:identifier``. DOIs printed in the body (often
-    references) are never used. Parser failures remain in ``errors``.
+    ``prism:doi`` / ``dc:identifier``. Publisher article DOI claims are kept
+    separately until corroborated. DOIs printed in the body (often references)
+    are never used alone. Parser failures remain in ``errors``.
     Unreadable optional XMP is also listed in ``warnings``. It does not
     invalidate readable identifiers or corroborated document DOI evidence.
 
@@ -566,10 +667,14 @@ def extract_pdf_own_identity(path: Path) -> PdfOwnIdentity:
 
     arxiv_ids: set[str] = set()
     dois: set[str] = set()
+    article_dois: set[str] = set()
+    subject_dois: set[str] = set()
     errors: list[str] = []
     warnings: list[str] = []
     try:
-        _read_pdf_identifiers(data, arxiv_ids, dois, errors, warnings)
+        _read_pdf_identifiers(
+            data, arxiv_ids, dois, errors, warnings, article_dois, subject_dois
+        )
     except ImportError:
         errors.append("pypdf is not installed")
     except Exception as exc:  # noqa: BLE001 - parsers raise many types
@@ -585,6 +690,8 @@ def extract_pdf_own_identity(path: Path) -> PdfOwnIdentity:
         mtime_ns=after.st_mtime_ns,
         arxiv_ids=frozenset(arxiv_ids),
         dois=frozenset(dois),
+        article_dois=frozenset(article_dois),
+        subject_dois=frozenset(subject_dois),
         errors=tuple(errors),
         warnings=tuple(warnings),
     )
@@ -606,6 +713,73 @@ def _stamp(
     return None
 
 
+def extract_exact_filename_bibcode(filename: str) -> str | None:
+    """Return the sole exact bibcode in a filename, or `None`."""
+    matches = set(_FILENAME_BIBCODE_RE.findall(Path(filename).stem))
+    return next(iter(matches)) if len(matches) == 1 else None
+
+
+def _filename_provider_identity(
+    document: Mapping[str, Any], source_bibcode: str
+) -> tuple[dict[str, Any], TargetIdentity]:
+    """Check that an ADS record explicitly lists the complete source bibcode."""
+    primary = document.get("bibcode")
+    if not isinstance(primary, str) or not _FILENAME_BIBCODE_RE.fullmatch(primary):
+        raise IdentityValidationError("The ADS record has no valid primary bibcode.")
+    listed = {
+        item
+        for field in ("bibcode", "alternate_bibcode", "identifier")
+        for item in _values(document.get(field))
+        if isinstance(item, str)
+    }
+    if source_bibcode not in listed:
+        raise IdentityValidationError(
+            "The ADS record does not list the filename bibcode."
+        )
+    identifiers = {
+        field: document[field]
+        for field in _PROVIDER_ID_FIELDS
+        if document.get(field) not in (None, "", [])
+    }
+    return identifiers, target_identity(identifiers)
+
+
+def _check_filename_claims(
+    path: Path, evidence: PdfOwnIdentity, authority: TargetIdentity
+) -> None:
+    """Reject DOI claims in PDF Subject metadata that disagree with ADS."""
+    for claim in sorted(evidence.subject_dois):
+        classified = _classify(claim)
+        if classified is None:
+            raise IdentityValidationError("A PDF identifier cannot be parsed.")
+        kind, value = classified
+        allowed = {
+            "doi": authority.dois,
+            "arxiv": authority.arxiv_ids,
+            "bibcode": authority.bibcodes,
+        }[kind]
+        if value not in allowed:
+            raise IdentityConflictError(
+                f"{path.name} has a PDF identifier that the ADS record does not list: {claim}"
+            )
+
+
+def _filename_proof(
+    evidence: PdfOwnIdentity,
+    target: TargetIdentity,
+    source: str,
+    identifiers: dict[str, Any],
+    authority: TargetIdentity,
+) -> dict[str, Any]:
+    proof = _provenance("filename_associated", "ads_filename_bibcode", evidence, target)
+    proof.update(
+        source_bibcode=source,
+        provider_identity=authority.fingerprint,
+        provider_identifiers=identifiers,
+    )
+    return proof
+
+
 def _primary_arxiv_ids(target: TargetIdentity) -> frozenset[str]:
     """Return the eprint ids of the primary when the primary is an arXiv object.
 
@@ -624,6 +798,20 @@ def _primary_arxiv_ids(target: TargetIdentity) -> frozenset[str]:
     return frozenset()
 
 
+def _subject_conflict_claims(own: PdfOwnIdentity) -> frozenset[str]:
+    if own.arxiv_ids or own.dois or own.article_dois:
+        return own.subject_dois
+    return frozenset()
+
+
+def _claimed_arxiv_ids(own: PdfOwnIdentity) -> set[str]:
+    return {
+        classified[1]
+        for doi in own.article_dois | _subject_conflict_claims(own)
+        if (classified := _classify(doi)) is not None and classified[0] == "arxiv"
+    }
+
+
 def _compare(
     own: PdfOwnIdentity, authority: TargetIdentity
 ) -> tuple[list[str], list[str]]:
@@ -635,9 +823,15 @@ def _compare(
     """
     contradicted: list[str] = []
     uncorroborated: list[str] = []
+    article_arxiv = _claimed_arxiv_ids(own)
+    article_dois = {
+        doi
+        for doi in own.article_dois | _subject_conflict_claims(own)
+        if not _ARXIV_DOI_RE.fullmatch(doi)
+    }
     for label, mine, theirs in (
-        ("arXiv", own.arxiv_ids, authority.arxiv_ids),
-        ("DOI", own.dois, authority.dois),
+        ("arXiv", own.arxiv_ids | article_arxiv, authority.arxiv_ids),
+        ("DOI", own.dois | article_dois, authority.dois),
     ):
         for value in sorted(mine - theirs):
             (contradicted if theirs else uncorroborated).append(f"{label} {value}")
@@ -645,7 +839,12 @@ def _compare(
 
 
 def _provenance(
-    status: str, authority: str, evidence: PdfOwnIdentity, target: TargetIdentity
+    status: str,
+    authority: str,
+    evidence: PdfOwnIdentity,
+    target: TargetIdentity,
+    *,
+    previous_proof: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     proof = {
         "version": _PROVENANCE_VERSION,
@@ -660,6 +859,10 @@ def _provenance(
     }
     if evidence.warnings:
         proof["parser_warnings"] = list(evidence.warnings)
+    if previous_proof is not None:
+        lineage = previous_proof.get("annotation_revision")
+        if isinstance(lineage, Mapping):
+            proof["annotation_revision"] = dict(lineage)
     return proof
 
 
@@ -669,7 +872,10 @@ def assert_mutation_allowed(
     *,
     expected_sha256: str | None = None,
     manual_confirmation: bool = False,
+    manual_conflict_override: bool = False,
     provider_document: Mapping[str, Any] | None = None,
+    filename_bibcode: str | None = None,
+    allow_filename_association: bool = False,
 ) -> dict[str, Any]:
     """Allow associating a PDF with 'metadata' only if the PDF vouches for it.
 
@@ -688,11 +894,9 @@ def assert_mutation_allowed(
     record. Every readable own identifier must agree, including identifiers
     recovered from XMP.
 
-    Manual confirmation (the argument, or a stored 'manual_confirmed' proof
-    bound to this file hash and record) admits only two cases: the PDF states
-    no identifier of its own, or the metadata claims no stable identifier
-    (hand-entered title, authors, year). It never overrides a PDF identifier
-    that the provider contradicts or fails to corroborate.
+    Ordinary manual confirmation admits an otherwise unverified identity.
+    A separate conflict override records explicit review of a provider result
+    against the PDF. Its proof applies only to the same PDF and identifiers.
 
     Parameters
     ----------
@@ -704,15 +908,22 @@ def assert_mutation_allowed(
         Hash the caller believes the file has; a different current hash raises.
     manual_confirmation
         The user explicitly confirmed an otherwise unverified association.
+    manual_conflict_override
+        The user reviewed a conflict with the provider record. Requires the
+        expected PDF hash and a provider document for the chosen record.
     provider_document
         Fresh record from the authoritative provider for 'metadata'.
+    filename_bibcode
+        Exact bibcode to check against the filename and provider record.
+    allow_filename_association
+        Permit a filename association after a complete, unique ADS lookup.
 
     Returns
     -------
     dict
-        Provenance for 'IDENTITY_KEY': status ('verified' or
-        'manual_confirmed'), authority, file hash, record fingerprint, and the
-        PDF's own identifiers. Manual provenance never means "ADS resolved".
+        Provenance for 'IDENTITY_KEY', including its status, file hash, record
+        fingerprint, and PDF identifiers. A filename association is not an
+        independently verified identity.
 
     Raises
     ------
@@ -749,6 +960,94 @@ def assert_mutation_allowed(
                 f"the proposed record ({target_label or 'no identifier'})"
             )
 
+    saved_filename = _stamp(metadata, "filename_associated", evidence.sha256, target)
+    filename_details = None
+    if saved_filename is not None:
+        source = saved_filename.get("source_bibcode")
+        identifiers = saved_filename.get("provider_identifiers")
+        if (
+            saved_filename.get("authority") != "ads_filename_bibcode"
+            or not isinstance(source, str)
+            or not isinstance(identifiers, Mapping)
+        ):
+            raise IdentityValidationError("The filename association proof is invalid.")
+        identifiers, saved_authority = _filename_provider_identity(identifiers, source)
+        if (
+            saved_filename.get("provider_identity") != saved_authority.fingerprint
+            or target.claims_outside(saved_authority)
+            or (
+                authority is not None
+                and authority.fingerprint != saved_authority.fingerprint
+            )
+        ):
+            raise IdentityValidationError(
+                "The filename association provider identity changed."
+            )
+        authority = saved_authority
+        filename_details = (source, identifiers, saved_authority)
+    elif filename_bibcode is not None:
+        if (
+            provider_document is None
+            or extract_exact_filename_bibcode(name) != filename_bibcode
+        ):
+            raise IdentityValidationError(
+                "The filename bibcode is missing or ambiguous."
+            )
+        identifiers, filename_authority = _filename_provider_identity(
+            provider_document, filename_bibcode
+        )
+        filename_details = (filename_bibcode, identifiers, filename_authority)
+
+    if manual_conflict_override and (
+        provider_document is None or expected_sha256 is None or not stable
+    ):
+        raise IdentityValidationError(
+            "A conflict override requires a reviewed provider record and PDF hash."
+        )
+    previous_override = _stamp(metadata, "manual_confirmed", evidence.sha256, target)
+    if previous_override is not None and (
+        previous_override.get("authority") != "manual_conflict_override"
+        or list(previous_override.get("own_arxiv", ())) != sorted(evidence.arxiv_ids)
+        or list(previous_override.get("own_doi", ())) != sorted(evidence.dois)
+    ):
+        previous_override = None
+
+    def reviewed_conflict() -> dict[str, Any] | None:
+        if (
+            (manual_conflict_override or previous_override is not None)
+            and evidence.has_identifier
+            and not evidence.blocking_errors
+        ):
+            return _provenance(
+                "manual_confirmed",
+                "manual_conflict_override",
+                evidence,
+                target,
+                previous_proof=previous_override,
+            )
+        return None
+
+    if (
+        evidence.article_dois
+        and evidence.subject_dois
+        and evidence.article_dois != evidence.subject_dois
+    ):
+        if proof := reviewed_conflict():
+            return proof
+        raise IdentityConflictError(
+            f"{name} contains conflicting article and Subject DOI metadata."
+        )
+    if (
+        evidence.dois
+        and evidence.subject_dois
+        and not evidence.subject_dois.issubset(evidence.dois)
+    ):
+        if proof := reviewed_conflict():
+            return proof
+        raise IdentityConflictError(
+            f"{name} contains conflicting DOI and Subject metadata."
+        )
+
     contradicted, uncorroborated = _compare(evidence, authority or target)
     # An arXiv primary is one specific eprint: an alias cannot turn eprint B
     # into eprint A.
@@ -756,18 +1055,45 @@ def assert_mutation_allowed(
     if primary_arxiv:
         contradicted += [
             f"arXiv {value}"
-            for value in sorted(evidence.arxiv_ids - primary_arxiv)
+            for value in sorted(
+                (evidence.arxiv_ids | _claimed_arxiv_ids(evidence)) - primary_arxiv
+            )
             if f"arXiv {value}" not in contradicted
         ]
     if contradicted:
+        if proof := reviewed_conflict():
+            return proof
         raise IdentityConflictError(
             f"{name} identifies itself as {', '.join(contradicted)}, which "
             f"contradicts the proposed record ({target_label or 'no identifier'})"
         )
 
-    if evidence.has_identifier and not evidence.blocking_errors:
+    if filename_details is not None:
+        source, identifiers, filename_authority = filename_details
+        if uncorroborated:
+            raise UnverifiedIdentityError(
+                f"The ADS record does not corroborate {', '.join(uncorroborated)}."
+            )
+        if not evidence.blocking_errors and (
+            allow_filename_association
+            or saved_filename is not None
+            or evidence.has_identifier
+            or evidence.subject_dois
+        ):
+            _check_filename_claims(Path(pdf_path), evidence, filename_authority)
+
+    if (evidence.arxiv_ids or evidence.dois) and not evidence.blocking_errors:
         if authority is not None and not uncorroborated:
-            return _provenance("verified", "provider_document", evidence, target)
+            previous = _stamp(metadata, "verified", evidence.sha256, target) or _stamp(
+                metadata, "manual_confirmed", evidence.sha256, target
+            )
+            return _provenance(
+                "verified",
+                "provider_document",
+                evidence,
+                target,
+                previous_proof=previous,
+            )
         proof = _stamp(metadata, "verified", evidence.sha256, target)
         if (
             authority is None
@@ -776,7 +1102,9 @@ def assert_mutation_allowed(
             and list(proof.get("own_arxiv", ())) == sorted(evidence.arxiv_ids)
             and list(proof.get("own_doi", ())) == sorted(evidence.dois)
         ):
-            return _provenance("verified", "stored_proof", evidence, target)
+            return _provenance(
+                "verified", "stored_proof", evidence, target, previous_proof=proof
+            )
 
     if (
         authority is None
@@ -804,7 +1132,11 @@ def assert_mutation_allowed(
                     warnings=evidence.warnings,
                 )
                 return _provenance(
-                    "verified", "stored_proof", corroborated_evidence, target
+                    "verified",
+                    "stored_proof",
+                    corroborated_evidence,
+                    target,
+                    previous_proof=proof,
                 )
 
     document_evidence_reason = ""
@@ -845,20 +1177,47 @@ def assert_mutation_allowed(
                 "corroborated_document_doi",
                 corroborated_evidence,
                 target,
+                previous_proof=(
+                    _stamp(metadata, "verified", evidence.sha256, target)
+                    or _stamp(metadata, "manual_confirmed", evidence.sha256, target)
+                ),
             )
 
-    confirmable = not evidence.has_identifier or not stable
-    wanted = manual_confirmation or (
+    if (
         not evidence.blocking_errors
-        and _stamp(metadata, "manual_confirmed", evidence.sha256, target) is not None
+        and filename_details is not None
+        and (saved_filename is not None or allow_filename_association)
+    ):
+        source, identifiers, filename_authority = filename_details
+        return _filename_proof(
+            evidence, target, source, identifiers, filename_authority
+        )
+
+    invalid_claim = any(
+        error in _MANUAL_BLOCKING_CLAIM_ERRORS for error in evidence.blocking_errors
     )
+    if uncorroborated and (proof := reviewed_conflict()):
+        return proof
+    confirmable = (not evidence.has_identifier or not stable) and not invalid_claim
+    previous_manual = (
+        _stamp(metadata, "manual_confirmed", evidence.sha256, target)
+        if not evidence.blocking_errors
+        else None
+    )
+    wanted = manual_confirmation or previous_manual is not None
     if wanted and confirmable:
-        return _provenance("manual_confirmed", "manual", evidence, target)
+        return _provenance(
+            "manual_confirmed",
+            "manual",
+            evidence,
+            target,
+            previous_proof=previous_manual,
+        )
     if evidence.blocking_errors:
         reason = "; ".join(evidence.blocking_errors)
     elif uncorroborated:
         reason = f"the provider record does not corroborate {', '.join(uncorroborated)}"
-    elif not evidence.has_identifier:
+    elif not (evidence.arxiv_ids or evidence.dois):
         reason = (
             document_evidence_reason
             or "No document identifier could be verified from the PDF."
@@ -876,7 +1235,7 @@ def assert_mutation_allowed(
         message += "."
     if (
         evidence.warnings
-        and not evidence.has_identifier
+        and not (evidence.arxiv_ids or evidence.dois)
         and not evidence.blocking_errors
     ):
         message += " Some embedded metadata could not be read."

@@ -27,7 +27,8 @@ When code changes, update docs in the same commit.
 
 `pdf.reference_lookup` owns reference recovery and manual provider ordering.
 The identity module retains the shared mutation checks. Neither a cached document
-nor a filename supplies proof of PDF identity.
+nor a filename supplies proof of PDF identity. An exact unique ADS filename
+match has separate filename-association provenance. Reject conflicting PDF IDs.
 
 Private settings saves use independent temporary files. Final replacements run
 in sequence within one process to avoid concurrent Windows move failures.
@@ -180,6 +181,10 @@ discovery.
 
 **GUI file table**
 
+- `pdf.classification` derives current identification groups without changing the stored ADS lookup status or rename permissions.
+  Non-ADS identification requires accepted proof bound to the current content hash and identifier fingerprint.
+  Registry queries apply the `identification` filter before sorting and pagination. Counts use the same classifier, including in combined libraries.
+  Changed records need review. Usable metadata alone does not establish identity.
 - `FileTableModel` runs the registry query once per reset (`set_query`,
   `set_registry`, reload) and keeps the full sorted result in memory. It shows
   `PAGE_SIZE` (500) rows at a time. `fetchMore` slices that snapshot without

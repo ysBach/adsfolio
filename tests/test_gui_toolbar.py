@@ -126,7 +126,7 @@ def test_identify_badge_counts_whole_library_ignoring_view_search_and_paging(
     assert window.model.rowCount() < window.model.total
     assert window.identify_button.badge_text == "4"
     tooltip = window.identify_action.toolTip()
-    assert "4 catalogued PDFs need ADS lookup" in tooltip
+    assert "4 catalogued PDFs need identification" in tooltip
     assert "skip PDFs that already have usable metadata" in tooltip
     assert window.identify_button.accessibleDescription() == tooltip
 
@@ -162,12 +162,12 @@ def test_identify_badge_is_exact_for_large_counts_and_hidden_for_zero(
 def test_identify_badge_follows_new_records(window: MainWindow, tmp_path: Path) -> None:
     root = _open_library(window, tmp_path, ["resolved"])
     assert window.identify_button.badge_text == ""
-    assert "0 catalogued PDFs need ADS lookup" in window.identify_action.toolTip()
+    assert "0 catalogued PDFs need identification" in window.identify_action.toolTip()
     registry = window.registries[str(root)]
     _add_file(registry, root, "new.pdf", "unresolved")
     window.refresh(root)
     assert window.identify_button.badge_text == "1"
-    assert "1 catalogued PDF needs ADS lookup" in window.identify_action.toolTip()
+    assert "1 catalogued PDF needs identification" in window.identify_action.toolTip()
 
 
 def test_identify_badge_clears_without_a_library(
@@ -179,7 +179,7 @@ def test_identify_badge_clears_without_a_library(
     window._remove_root()
     assert window.current_root is None
     assert window.identify_button.badge_text == ""
-    assert "need ADS lookup" not in window.identify_action.toolTip()
+    assert "catalogued PDFs need identification" not in window.identify_action.toolTip()
     assert window.status.currentMessage() == "No library selected"
 
 

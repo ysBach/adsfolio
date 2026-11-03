@@ -53,7 +53,7 @@ def lookup_exact_identifier(
     AdsQueryResult
         Candidates from the first suitable provider. Multiple verified
         candidates retain their ambiguity. If all candidates fail the PDF
-        check, return one for the caller's explicit identity refusal.
+        check, return the first provider's candidates for review or refusal.
 
     Raises
     ------
@@ -65,7 +65,7 @@ def lookup_exact_identifier(
     if kind not in {"doi", "arxiv"}:
         raise ValueError(f"Unsupported identifier type: {kind}")
     evidence = extract_pdf_own_identity(path) if path is not None else None
-    first_rejected = None
+    first_rejected: tuple[dict[str, Any], ...] = ()
     errors = []
     for provider in providers:
         try:
@@ -102,20 +102,22 @@ def lookup_exact_identifier(
             if documents:
                 if evidence is not None and evidence.has_identifier:
                     verified = []
+                    rejected = []
                     for document in documents:
                         try:
                             identifier.build_record(
                                 document, path, sha256=evidence.sha256
                             )
                         except IdentityValidationError as exc:
-                            if first_rejected is None:
-                                first_rejected = document
+                            rejected.append(document)
                             identifier.logger.warning(
                                 "Rejected %s candidate: %s", provider.value, exc
                             )
                         else:
                             verified.append(document)
                     if not verified:
+                        if not first_rejected:
+                            first_rejected = tuple(rejected)
                         continue
                     documents = tuple(verified)
                 return AdsQueryResult(len(documents), documents)
@@ -124,8 +126,8 @@ def lookup_exact_identifier(
             identifier.logger.warning(
                 "%s lookup failed; trying the next provider: %s", provider.value, exc
             )
-    if first_rejected is not None:
-        return AdsQueryResult(1, (first_rejected,))
+    if first_rejected:
+        return AdsQueryResult(len(first_rejected), first_rejected)
     if errors:
         raise errors[-1]
     return AdsQueryResult(0, ())

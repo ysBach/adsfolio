@@ -16,20 +16,25 @@ pytest.importorskip("pytestqt")
 from PySide6.QtWidgets import QApplication
 
 from adsfolio.config import Config
+from adsfolio.gui.library import LibraryView
 from adsfolio.gui.main_window import MainWindow
+from adsfolio.pdf.classification import identification_group
 from adsfolio.pdf.cli import pdf
 from adsfolio.pdf.files import sha256_file
 from adsfolio.pdf.registry import open_registry_state
+from adsfolio.pdf.rename_settings import RenameSettings
 
 
 def test_typed_doi_renames_the_pdf_and_exports_bibtex(qtbot, monkeypatch, tmp_path):
     monkeypatch.setattr(
         Config, "get_config_dir", classmethod(lambda cls: tmp_path / "config")
     )
+    Config.save_rename_settings(RenameSettings(template="{authors}_{year}-{title}"))
     root = tmp_path / "library"
     root.mkdir()
     scan = root / "scan_0042.pdf"
     write_pdf(scan)
+    original_hash = sha256_file(scan)
     state = open_registry_state(root)
     try:
         state.upsert_file(
@@ -83,7 +88,7 @@ def test_typed_doi_renames_the_pdf_and_exports_bibtex(qtbot, monkeypatch, tmp_pa
     # 2. The file is renamed from the Crossref metadata.
     assert not scan.exists()
     [renamed] = list(root.glob("*.pdf"))
-    assert renamed.name == "RoeA+KimS_-Grain_Growth_in_Cold_Clouds.pdf"
+    assert renamed.name == "RoeA+KimS_2019-Grain_Growth_in_Cold_Clouds.pdf"
 
     # 3. Copy its BibTeX from the main table, with the DOI as the key.
     window = MainWindow()
@@ -92,6 +97,13 @@ def test_typed_doi_renames_the_pdf_and_exports_bibtex(qtbot, monkeypatch, tmp_pa
     window._select_root(root)
     catalog = window.registries[str(root)].catalog
     record = catalog.get_file(root, renamed.name)
+    assert sha256_file(renamed) == original_hash
+    assert identification_group(record) == "identified_without_ads"
+    window._select_view(LibraryView.IDENTIFIED_WITHOUT_ADS)
+    assert window.model.total == 1
+    assert window.identify_button.badge_text == ""
+    window._select_view(LibraryView.UNRESOLVED)
+    assert window.model.total == 0
     window._copy_records_bibtex([record])
     text = QApplication.clipboard().text()
     assert "@article{10.5555/jex.2019.12.34," in text

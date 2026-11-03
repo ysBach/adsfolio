@@ -97,6 +97,7 @@ class _LibraryWatchWorker(QObject):
         self._observer: Any = None
         self._timer: QTimer | None = None
         self._stopping = False
+        self._baseline_ready = False
         self._paused = False
         self._pending: dict[tuple[Path, WatchSource], None] = {}
         self._pending_lock = threading.Lock()
@@ -138,6 +139,7 @@ class _LibraryWatchWorker(QObject):
             self._drain()
             baseline, changed = self._split_startup_snapshots(baseline)
             self._session.finish_baseline(baseline)
+            self._baseline_ready = True
             for snapshot in changed:
                 event = self._session.observe(snapshot, WatchSource.CREATED)
                 if event is not None:
@@ -298,6 +300,7 @@ class _LibraryWatchWorker(QObject):
     def _drain(self) -> None:
         if self._session is None:
             return
+        known_paths = self._session.known_paths() if self._baseline_ready else set()
         with self._pending_lock:
             pending = list(self._pending)
             self._pending.clear()
@@ -313,7 +316,14 @@ class _LibraryWatchWorker(QObject):
                 continue
             event = self._session.observe(snapshot, source)
             if event is not None:
+                if (
+                    self._baseline_ready
+                    and snapshot.path not in known_paths
+                    and event.identity.generation == 0
+                ):
+                    event = replace(event, newly_added=True)
                 self.detected.emit(event)
+            known_paths.add(snapshot.path)
         if reconcile_wanted:
             self._reconcile()
 
@@ -327,6 +337,7 @@ class _LibraryWatchWorker(QObject):
         if self._session is None:
             return
         try:
+            known_paths = self._session.known_paths()
             self._session.start_scan()
             snapshots = self._scan_snapshots()
             events = self._session.reconcile(snapshots)
@@ -335,6 +346,12 @@ class _LibraryWatchWorker(QObject):
             self._emit_failure(str(exc))
             return
         for event in events:
+            if (
+                self._baseline_ready
+                and event.path not in known_paths
+                and event.identity.generation == 0
+            ):
+                event = replace(event, newly_added=True)
             self.detected.emit(event)
         if marked:
             self.reconciled.emit(self.root)
@@ -503,6 +520,10 @@ class _LibraryWatchWorker(QObject):
     @Slot()
     def pause_writes(self) -> None:
         if self._paused:
+            # A prior resume can fail after the catalog was released. Each
+            # foreground request still needs its own pause acknowledgment.
+            if self._registry is None:
+                self.paused.emit(self.session_id)
             return
         self._paused = True
         if self._registry is not None:

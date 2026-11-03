@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import html
 from collections.abc import Sequence
+from dataclasses import dataclass
 from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any
@@ -30,6 +31,7 @@ from PySide6.QtWidgets import (
     QInputDialog,
     QLabel,
     QMenu,
+    QMessageBox,
     QPushButton,
     QScrollArea,
     QSizePolicy,
@@ -45,6 +47,11 @@ from PySide6.QtWidgets import (
 from ..citations import CitationFormatter, CitationStyle, citation_preference_key
 from ..formatting import html_to_text
 from ..pdf.catalog import REFERENCE_FIELD_MAP, REFERENCE_METADATA_KEY
+from ..pdf.classification import (
+    ResolutionState,
+    current_identity_proof,
+    resolution_state,
+)
 from ..pdf.registry import LOCKED_METADATA_FIELDS_KEY
 from .icons import ICON_SIZE, vector_icon
 from .library import (
@@ -899,6 +906,19 @@ class MetadataRow(QWidget):
         self.name.setFont(font)
 
 
+@dataclass(eq=False)
+class _MetadataEdit:
+    root: Path
+    location_id: Any
+    attachment_id: Any
+    current_path: Any
+    key: str
+    field_present: bool
+    field_value: Any
+    record_field: Any
+    invalidated: bool = False
+
+
 class DetailPane(QWidget):
     """Display editable metadata and file actions for one selected record."""
 
@@ -913,8 +933,10 @@ class DetailPane(QWidget):
         super().__init__(parent)
         self._link_activation = "double"
         self._record: dict[str, Any] | None = None
+        self._record_metadata_snapshot: Any = None
         self._cached_document: dict[str, Any] | None = None
         self._metadata: dict[str, Any] = {}
+        self._active_metadata_edits: list[_MetadataEdit] = []
         self._root = Path()
         self._path = Path()
         self._timestamp_format = ISO8601_TIMESTAMP_FORMAT
@@ -928,8 +950,13 @@ class DetailPane(QWidget):
         self._compact_rows = False
         self._label_width: int | None = None
         self._pending_field_focus: tuple[Path, str, str] | None = None
+        self._pending_metadata_changed_fields: set[str] | None = None
         self._show_edit_buttons = True
         self._show_lock_buttons = True
+        self._read_only = False
+        self._read_only_reason = ""
+        self._allow_identifier_update = False
+        self._allow_manual_metadata = False
         self._pdf_viewer_command: str | None = None
         self._web_browser_command: str | None = None
         self._row_order: list[str] = []
@@ -971,18 +998,23 @@ class DetailPane(QWidget):
         buttons.setContentsMargins(4, 4, 4, 4)
         buttons.setSpacing(4)
         update_button = QPushButton("Update by ID…", self._actions)
+        self.update_button = update_button
         self.manual_metadata_button = QPushButton("Enter Details…", self._actions)
         open_button = QPushButton("Open", self._actions)
         reveal_button = QPushButton("Reveal", self._actions)
+        self._file_action_buttons = (open_button, reveal_button)
+        self._action_descriptions: dict[QPushButton, str] = {}
         for button, icon_name, description in (
             (
                 update_button,
                 "refresh",
-                "Look up a Bibcode, DOI, arXiv ID, or reference.\n"
-                "Reference formats: {authorLastName}-{year}-{bibstem} or {bibstem}-{volume}-{page}.\n"
-                "{bibstem} means the ADS journal abbreviation. You can use the full journal name instead.\n"
-                "These reference formats query ADS only; other sites are not searched.\n"
-                "Click for field definitions and examples.",
+                (
+                    "Look up a Bibcode, DOI, arXiv ID, or reference.\n"
+                    "Reference formats: {authorLastName}-{year}-{bibstem} or {bibstem}-{volume}-{page}.\n"
+                    "{bibstem} means the ADS journal abbreviation. You can use the full journal name instead.\n"
+                    "These reference formats query ADS only; other sites are not searched.\n"
+                    "Click for field definitions and examples."
+                ),
             ),
             (
                 self.manual_metadata_button,
@@ -996,6 +1028,7 @@ class DetailPane(QWidget):
             button.setIconSize(ICON_SIZE)
             button.setToolTip(description)
             button.setAccessibleName(description)
+            self._action_descriptions[button] = description
         buttons.addWidget(update_button, 0, 0)
         buttons.addWidget(open_button, 0, 1)
         buttons.addWidget(self.manual_metadata_button, 1, 0)
@@ -1006,6 +1039,7 @@ class DetailPane(QWidget):
         open_button.clicked.connect(self._open)
         reveal_button.clicked.connect(self._reveal)
         self._actions.setEnabled(False)
+        self._update_action_tooltips()
 
     def set_compact_rows(self, enabled: bool) -> None:
         """Use context menus while retaining the saved inline-button choices."""
@@ -1225,6 +1259,76 @@ class DetailPane(QWidget):
                     return style.name
         return FIELD_LABELS.get(key, key)
 
+    def _update_action_tooltips(self) -> None:
+        identifier_update_only = self._read_only and self._allow_identifier_update
+        manual_metadata_allowed = self._read_only and self._allow_manual_metadata
+        for button, description in self._action_descriptions.items():
+            parts = []
+            if self._record is None:
+                parts.append("Select a PDF to use this action.")
+            if identifier_update_only and button is self.update_button:
+                parts.append("The automatic ADS recheck will stop before this update.")
+            elif manual_metadata_allowed and button is self.manual_metadata_button:
+                parts.append(
+                    "The automatic ADS recheck will stop before you enter details."
+                )
+            elif self._read_only and button in (
+                self.update_button,
+                self.manual_metadata_button,
+            ):
+                parts.append("Editing is unavailable right now.")
+                if self._read_only_reason:
+                    parts.append(self._read_only_reason)
+            parts.append(description)
+            if self._record is not None:
+                parts.append(f"Library: {self._root}")
+            tooltip = "\n".join(parts)
+            button.setToolTip(tooltip)
+            button.setAccessibleDescription(tooltip)
+
+    def set_read_only(
+        self,
+        read_only: bool,
+        reason: str | None = None,
+        *,
+        allow_identifier_update: bool = False,
+        allow_manual_metadata: bool = False,
+    ) -> None:
+        """Set whether metadata editing is unavailable.
+
+        Parameters
+        ----------
+        read_only : bool
+            Disable metadata editing when true.
+        reason : str or None, optional
+            Explain why editing is unavailable. Use a generic message if omitted.
+        allow_identifier_update : bool, optional
+            Allow Update by ID in read-only mode when the user selects a record.
+            The caller must stop the automatic ADS recheck before the update.
+        allow_manual_metadata : bool, optional
+            Allow Enter Details in read-only mode. The caller must stop the
+            recheck before it opens the details dialog.
+        """
+        read_only = bool(read_only)
+        allow_identifier_update = bool(allow_identifier_update) if read_only else False
+        allow_manual_metadata = bool(allow_manual_metadata) if read_only else False
+        self._read_only_reason = (reason or "").strip() if read_only else ""
+        if (
+            self._read_only,
+            self._allow_identifier_update,
+            self._allow_manual_metadata,
+        ) == (
+            read_only,
+            allow_identifier_update,
+            allow_manual_metadata,
+        ):
+            self._update_action_tooltips()
+            return
+        self._read_only = read_only
+        self._allow_identifier_update = allow_identifier_update
+        self._allow_manual_metadata = allow_manual_metadata
+        self.set_record(self._record, self._root, self._cached_document)
+
     def set_record(
         self,
         record: dict[str, Any] | None,
@@ -1245,8 +1349,12 @@ class DetailPane(QWidget):
             self._record is not None
             and record is not None
             and self._record.get("current_path") == record.get("current_path")
+            and self._root == Path(root)
         )
         self._record = record
+        self._record_metadata_snapshot = (
+            copy.deepcopy(record.get("metadata")) if record is not None else None
+        )
         self._cached_document = cached_document if record is not None else None
         self._root = Path(root)
         self._path = Path()
@@ -1261,7 +1369,18 @@ class DetailPane(QWidget):
         self._row_widgets = {}
         self._row_labels = {}
         self._actions.setEnabled(record is not None)
+        identifier_update_only = self._read_only and self._allow_identifier_update
+        self.update_button.setEnabled(
+            record is not None and (not self._read_only or identifier_update_only)
+        )
+        self.manual_metadata_button.setEnabled(
+            record is not None and (not self._read_only or self._allow_manual_metadata)
+        )
+        for button in self._file_action_buttons:
+            button.setEnabled(record is not None)
+        self._update_action_tooltips()
         if record is None:
+            self._invalidate_stale_metadata_edits()
             self._refresh_rows_geometry()
             return
         raw_metadata = record.get("metadata")
@@ -1290,6 +1409,8 @@ class DetailPane(QWidget):
                 *REFERENCE_FIELD_MAP.values(),
             }:
                 editable, lockable = False, False
+            if self._read_only:
+                editable, lockable = False, False
             self._add_row(
                 key,
                 label,
@@ -1300,6 +1421,7 @@ class DetailPane(QWidget):
                 display_text=display_text,
             )
         self._apply_label_width()
+        self._invalidate_stale_metadata_edits()
         pending = self._pending_field_focus
         if pending is not None and pending[:2] == (
             self._root,
@@ -1480,6 +1602,9 @@ class DetailPane(QWidget):
             link_html=display_text,
             parent=self._rows,
         )
+        if self._read_only and self._allow_identifier_update:
+            row.edit_button.setEnabled(False)
+            row.lock_button.setEnabled(False)
         if REFERENCE_METADATA_KEY in self._metadata and key in {
             "bibcode",
             *REFERENCE_FIELD_MAP.values(),
@@ -1504,14 +1629,76 @@ class DetailPane(QWidget):
             )
             row.value.setAccessibleDescription(STALE_VERIFICATION_TOOLTIP)
         elif key == "status" and value in ("resolved", "unresolved"):
+            proof = current_identity_proof(self._record or {}) or {}
+            current_proof = bool(proof)
+            verified_external = (
+                value == "unresolved"
+                and current_proof
+                and proof.get("status") == "verified"
+            )
+            reviewed_conflict = (
+                current_proof
+                and proof.get("status") == "manual_confirmed"
+                and proof.get("authority") == "manual_conflict_override"
+            )
+            filename_associated = (
+                current_proof
+                and proof.get("status") == "filename_associated"
+                and proof.get("authority") == "ads_filename_bibcode"
+            )
+            manual_associated = (
+                current_proof
+                and proof.get("status") == "manual_confirmed"
+                and proof.get("authority") == "manual"
+            )
+            if verified_external:
+                row.value.setText("Identified (no ADS link)")
+            elif reviewed_conflict or manual_associated:
+                row.value.setText(
+                    "Manually identified (ADS linked)"
+                    if value == "resolved"
+                    else "Manually identified (no ADS link)"
+                )
+            elif filename_associated:
+                row.value.setText(
+                    "Identified from filename (ADS linked)"
+                    if value == "resolved"
+                    else "Identified from filename (no ADS link)"
+                )
+            elif value == "unresolved":
+                row.value.setText(
+                    "Metadata available (identity unconfirmed)"
+                    if resolution_state(self._record or {})
+                    is ResolutionState.LOCAL_METADATA
+                    else "Needs identification"
+                )
             explanation = (
-                "ADS record linked. This does not verify the PDF contents."
+                "You confirmed this match despite conflicting PDF identifiers. "
+                + (
+                    "An ADS record is linked."
+                    if value == "resolved"
+                    else "No ADS record is linked."
+                )
+                if reviewed_conflict
+                else "The match uses the PDF's filename bibcode. The PDF contents were not independently verified."
+                if filename_associated
+                else "The match was entered manually. "
+                + (
+                    "An ADS record is linked."
+                    if value == "resolved"
+                    else "No ADS record is linked."
+                )
+                if manual_associated
+                else "ADS record linked. This does not verify the PDF contents."
                 if value == "resolved"
+                else "The PDF identifier matched a provider record. No ADS record is linked."
+                if verified_external
                 else (
-                    "Metadata is available. ADS lookup is pending. "
-                    "Existing metadata is retained."
-                    if self._metadata
-                    else "ADS lookup is pending. Run Identify to check known identifiers in batches."
+                    "Metadata is available, but the PDF identity needs confirmation. "
+                    "Use Update by ID to identify this PDF. Existing metadata is retained."
+                    if resolution_state(self._record or {})
+                    is ResolutionState.LOCAL_METADATA
+                    else "Identification is incomplete. Run Identify or use Update by ID. Existing metadata is retained."
                 )
             )
             row.value.setToolTip(f"{explanation} Click to copy the stored status.")
@@ -1548,19 +1735,72 @@ class DetailPane(QWidget):
         if row is not None:
             row.setFocus(Qt.PopupFocusReason)
 
+    def _metadata_edit_matches(self, edit: _MetadataEdit) -> bool:
+        record = self._record
+        row = self._row_widgets.get(edit.key)
+        return (
+            record is not None
+            and not self._read_only
+            and self._root == edit.root
+            and record.get("location_id") == edit.location_id
+            and record.get("attachment_id") == edit.attachment_id
+            and record.get("current_path") == edit.current_path
+            and record.get("metadata") == self._record_metadata_snapshot
+            and (edit.key in self._metadata) == edit.field_present
+            and self._metadata.get(edit.key) == edit.field_value
+            and record.get(edit.key) == edit.record_field
+            and row is not None
+            and row._editable
+        )
+
+    def _invalidate_stale_metadata_edits(self) -> None:
+        for edit in self._active_metadata_edits:
+            if not self._metadata_edit_matches(edit):
+                edit.invalidated = True
+
     def _edit_metadata(self, key: str) -> None:
+        if self._record is None or self._read_only:
+            return
+        row = self._row_widgets.get(key)
+        if row is None or not row._editable:
+            return
+        edit = _MetadataEdit(
+            root=self._root,
+            location_id=copy.deepcopy(self._record.get("location_id")),
+            attachment_id=copy.deepcopy(self._record.get("attachment_id")),
+            current_path=copy.deepcopy(self._record.get("current_path")),
+            key=key,
+            field_present=key in self._metadata,
+            field_value=copy.deepcopy(self._metadata.get(key)),
+            record_field=copy.deepcopy(self._record.get(key)),
+        )
         original = self._metadata.get(key, "")
         initial = (
             "\n".join(self._as_list(original)) if key in LIST_FIELDS else str(original)
         )
         prompt = "One value per line" if key in LIST_FIELDS else "Value"
-        value, accepted = QInputDialog.getMultiLineText(
-            self,
-            f"Edit {self.row_label(key)}",
-            prompt,
-            initial,
-        )
+        self._active_metadata_edits.append(edit)
+        try:
+            value, accepted = QInputDialog.getMultiLineText(
+                self,
+                f"Edit {self.row_label(key)}",
+                prompt,
+                initial,
+            )
+        finally:
+            self._active_metadata_edits.remove(edit)
         if not accepted:
+            return
+        if edit.invalidated or not self._metadata_edit_matches(edit):
+            QMessageBox.warning(
+                self,
+                "Edit not saved",
+                "The selected PDF, its metadata, or editing access changed. "
+                "Your edit was not saved. Check the selected PDF and field. "
+                "Try again when editing is available.",
+            )
+            return
+        if value == initial:
             return
         self._metadata[key] = (
             [line for line in value.splitlines() if line.strip()]
@@ -1572,8 +1812,12 @@ class DetailPane(QWidget):
             str((self._record or {}).get("current_path") or ""),
             key,
         )
-        self.metadata_changed.emit(copy.deepcopy(self._metadata))
-        self._pending_field_focus = None
+        self._pending_metadata_changed_fields = {key}
+        try:
+            self.metadata_changed.emit(copy.deepcopy(self._metadata))
+        finally:
+            self._pending_field_focus = None
+            self._pending_metadata_changed_fields = None
 
     def _set_lock(self, key: str, locked: bool) -> None:
         current = {
@@ -1581,6 +1825,8 @@ class DetailPane(QWidget):
             for value in self._metadata.get(LOCKED_METADATA_FIELDS_KEY, [])
             if str(value).strip()
         }
+        if (key in current) == locked:
+            return
         if locked:
             current.add(key)
         else:
@@ -1591,8 +1837,12 @@ class DetailPane(QWidget):
             str((self._record or {}).get("current_path") or ""),
             key,
         )
-        self.metadata_changed.emit(copy.deepcopy(self._metadata))
-        self._pending_field_focus = None
+        self._pending_metadata_changed_fields = {LOCKED_METADATA_FIELDS_KEY}
+        try:
+            self.metadata_changed.emit(copy.deepcopy(self._metadata))
+        finally:
+            self._pending_field_focus = None
+            self._pending_metadata_changed_fields = None
 
     def _request_ads_update(self) -> None:
         self.ads_update_requested.emit(str(self._metadata.get("bibcode") or ""))

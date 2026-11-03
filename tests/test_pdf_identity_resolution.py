@@ -135,7 +135,11 @@ def test_own_arxiv_stamp_resolves_the_correct_record_after_filename_conflict(tmp
     assert pdf not in engine.identity_failures
 
 
-def test_recommended_strategies_start_with_own_content_and_cannot_be_bypassed(tmp_path):
+def test_recommended_strategies_start_with_own_content_and_cannot_be_bypassed(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr("adsfolio.pdf.identifier.fetch_crossref_doi", lambda doi: None)
+    monkeypatch.setattr("adsfolio.pdf.identifier.fetch_datacite_doi", lambda doi: None)
     assert RECOMMENDED_IDENTIFY_STRATEGIES[0] is IdentifyStrategy.FIRST_PAGE_ARXIV
     pdf = kohn_named_pdf(tmp_path, stamp=STAMP)
     engine = PdfIdentifier(client=FakeClient([KOHN]))

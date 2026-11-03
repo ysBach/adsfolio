@@ -1,13 +1,17 @@
 """Template-based PDF renaming engine."""
 
+import copy
 import logging
 import re
+import sqlite3
 import unicodedata
 from collections.abc import Mapping, Sequence
 from pathlib import Path
+from string import Formatter
 from typing import TYPE_CHECKING, Any
 
 from ..formatting import html_to_text
+from .catalog import PdfCatalog, _sqlite_file_identity
 from .cli_common import is_resolved_record
 from .doi_providers import DEFAULT_DOI_PROVIDERS, DoiProvider
 from .files import sha256_file
@@ -16,8 +20,17 @@ from .identity import (
     IdentityValidationError,
     UnverifiedIdentityError,
     assert_mutation_allowed,
+    target_identity,
 )
-from .readiness import METADATA_SHA256_KEY, metadata_ready
+from .readiness import (
+    METADATA_SHA256_KEY,
+    METADATA_STALE_KEY,
+    PREVIOUS_RESOLUTION_KEY,
+    REFERENCE_METADATA_KEY,
+    WATCH_PENDING_KEY,
+    metadata_ready,
+)
+from .registry import CentralPdfRegistryState
 from .sidecar import Sidecar
 from .tracked_move import is_same_file_alias, move_tracked_file
 
@@ -63,10 +76,30 @@ _NONDECOMPOSABLE_LATIN_ASCII = str.maketrans(
 __all__ = [
     "DEFAULT_NONBIBCODE_SCHEME",
     "DEFAULT_SCHEME",
+    "MissingTemplateFieldsError",
     "PdfRenamer",
     "identity_view",
+    "recover_stale_record",
     "verify_record_identity",
 ]
+
+
+class MissingTemplateFieldsError(ValueError):
+    """Report missing metadata required by a filename template.
+
+    Attributes
+    ----------
+    missing_fields : tuple of str
+        Template field names that have no metadata value.
+    """
+
+    def __init__(self, missing_fields: Sequence[str]) -> None:
+        self.missing_fields = tuple(sorted(set(missing_fields)))
+        names = ", ".join(self.missing_fields)
+        super().__init__(
+            f"Missing metadata for template fields: {names}. "
+            "Add metadata or choose a template without these fields."
+        )
 
 
 def identity_view(record: Mapping[str, Any]) -> dict[str, Any]:
@@ -107,6 +140,7 @@ def verify_record_identity(
     *,
     sha256: str | None = None,
     manual_confirmation: bool = False,
+    manual_conflict_override: bool = False,
     provider_document: Mapping[str, Any] | None = None,
     state: Any = None,
     client: "ADSClient | None" = None,
@@ -125,6 +159,8 @@ def verify_record_identity(
     manual_confirmation : bool, optional
         Set only for an explicit, user-reviewed confirmation of an unknown
         identity. A known conflict is never overridden.
+    manual_conflict_override : bool, optional
+        Allow a specifically reviewed conflict with a fresh provider record.
     provider_document : Mapping[str, Any], optional
         Authoritative raw ADS or provider document for the record. When
         omitted, a valid stored proof is checked first. Otherwise, the cached
@@ -163,6 +199,7 @@ def verify_record_identity(
                 view,
                 expected_sha256=expected,
                 manual_confirmation=manual_confirmation,
+                manual_conflict_override=manual_conflict_override,
             )
         except IdentityValidationError:
             # An invalid stored proof grants nothing; use ordinary validation.
@@ -175,6 +212,7 @@ def verify_record_identity(
             view,
             expected_sha256=expected,
             manual_confirmation=manual_confirmation,
+            manual_conflict_override=manual_conflict_override,
             provider_document=provider_document,
         )
     except UnverifiedIdentityError:
@@ -206,8 +244,296 @@ def verify_record_identity(
             view,
             expected_sha256=expected,
             manual_confirmation=manual_confirmation,
+            manual_conflict_override=manual_conflict_override,
             provider_document=document,
         )
+
+
+_STALE_RECOVERY_HISTORY = "_adsfolio_stale_recovery_history"
+
+
+def _recovery_file_facts(path: Path) -> tuple[int, int, int, int, int]:
+    stat = path.stat()
+    return stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns
+
+
+def _check_recovery_locations(
+    locations: list[dict[str, Any]], location_id: int
+) -> None:
+    """Refuse recovery if another location is live or its state is unknown."""
+    active = next(
+        (item for item in locations if item["location_id"] == location_id), None
+    )
+    if active is None:
+        raise IdentityValidationError("The PDF location is no longer tracked.")
+    for item in locations:
+        if item["location_id"] == location_id:
+            continue
+        if item["missing_at"] is None:
+            raise IdentityValidationError("The attachment has another active location.")
+        root = Path(item["root"])
+        if root == Path(active["root"]) and PdfCatalog._normalize_relative_path(
+            str(item["current_path"])
+        ) == PdfCatalog._normalize_relative_path(str(active["current_path"])):
+            continue
+        if not root.is_dir():
+            raise IdentityValidationError(
+                f"A previously tracked library is unavailable: {root}."
+            )
+        relative = PdfCatalog._normalize_relative_path(str(item["current_path"]))
+        try:
+            (root / relative).lstat()
+        except FileNotFoundError:
+            continue
+        raise IdentityValidationError(
+            f"A previously tracked PDF location exists: {root / relative}."
+        )
+
+
+def recover_stale_record(
+    state: Sidecar | CentralPdfRegistryState,
+    relative_path: str,
+    *,
+    apply: bool,
+) -> dict[str, Any] | None:
+    """Reverify a changed PDF against its cached ADS record.
+
+    Parameters
+    ----------
+    state
+        Library state containing the tracked PDF and cached ADS record.
+    relative_path
+        Current PDF path relative to the library root.
+    apply
+        Persist a verified recovery when True. False only checks and plans.
+
+    Returns
+    -------
+    dict or None
+        Flat, rename-ready metadata, or None if recovery does not apply.
+
+    Raises
+    ------
+    IdentityValidationError
+        The cached record, PDF, catalog, or shared locations cannot be verified.
+
+    Notes
+    -----
+    Recovery also handles a changed file before the catalog scans it. It never
+    fetches a provider record or changes the shared document metadata. Recovery
+    retains prior identity proof and content versions as history.
+    """
+    return _recover_stale_record(state, relative_path, apply=apply)
+
+
+def _recover_stale_record(
+    state: Sidecar | CentralPdfRegistryState,
+    relative_path: str,
+    *,
+    apply: bool,
+    expected_record: Mapping[str, Any] | None = None,
+    expected_sha256: str | None = None,
+) -> dict[str, Any] | None:
+    """Bind an optional Rename preview to the same record and PDF bytes."""
+    registry = getattr(state, "registry", None)
+    catalog = getattr(registry, "catalog", None)
+    if catalog is None:
+        return None
+    root = Path(state.directory).expanduser().resolve()
+    record = catalog.get_file(root, relative_path)
+    if expected_record is not None and record != expected_record:
+        raise IdentityValidationError(
+            "The catalog changed before Rename. Retry Rename."
+        )
+    if record is None:
+        return None
+    metadata = copy.deepcopy(record["metadata"])
+    stale = bool(record.get(METADATA_STALE_KEY) or metadata.get(METADATA_STALE_KEY))
+    if record["missing_at"] is not None:
+        if stale:
+            raise IdentityValidationError("The tracked PDF location is missing.")
+        return None
+    relative = PdfCatalog._normalize_relative_path(str(record["current_path"]))
+    path = root / relative
+    if path.is_symlink() or path.resolve() != path:
+        raise IdentityValidationError("The PDF path contains a symbolic link.")
+    facts = _recovery_file_facts(path)
+    digest = sha256_file(path)
+    if expected_sha256 is not None and digest != expected_sha256:
+        raise IdentityValidationError("The PDF changed before Rename. Retry Rename.")
+    if _recovery_file_facts(path) != facts:
+        raise IdentityValidationError("The PDF changed during identity verification.")
+    if not stale and digest == record["sha256"]:
+        return None
+    if not record["sha256"] or record["version_id"] is None:
+        raise IdentityValidationError("The catalog has no current PDF digest.")
+    if REFERENCE_METADATA_KEY in metadata:
+        raise IdentityValidationError(
+            "Edit this managed reference in Local References."
+        )
+
+    bibcode = metadata.get("bibcode")
+    if isinstance(bibcode, (list, tuple)):
+        bibcode = bibcode[0] if bibcode else ""
+    bibcode = str(bibcode or "").strip()
+    if not bibcode:
+        raise IdentityValidationError("The saved metadata has no ADS bibcode.")
+    document = cached_provider_document(state, metadata)
+    if not isinstance(document, Mapping):
+        raise IdentityValidationError("The saved ADS record is not cached.")
+    if str(document.get("bibcode") or "").strip().casefold() != bibcode.casefold():
+        raise IdentityValidationError("The cached ADS record has a different bibcode.")
+    authority = target_identity(document)
+    rows = catalog._connection.execute(
+        "SELECT id FROM documents WHERE lower(bibcode) = lower(?) ORDER BY id",
+        (bibcode,),
+    ).fetchall()
+    if len(rows) != 1:
+        raise IdentityValidationError("The saved ADS document is missing or ambiguous.")
+    document_id = int(rows[0]["id"])
+    shared_document = catalog.get_document(document_id)
+    if shared_document is None or not isinstance(shared_document["metadata"], dict):
+        raise IdentityValidationError("The saved ADS document is invalid.")
+    if REFERENCE_METADATA_KEY in shared_document["metadata"]:
+        raise IdentityValidationError("The saved ADS document is a managed reference.")
+    if target_identity(shared_document["metadata"]).claims_outside(authority):
+        raise IdentityValidationError(
+            "The saved ADS document has conflicting identifiers."
+        )
+    if record["document_id"] not in (None, document_id):
+        raise IdentityValidationError("The PDF is linked to a different document.")
+    previous = metadata.get(PREVIOUS_RESOLUTION_KEY)
+    if previous is not None and (
+        not isinstance(previous, Mapping)
+        or previous.get("document_id") != document_id
+        or previous.get("sha256")
+        != (metadata.get(METADATA_SHA256_KEY) or metadata.get("sha256"))
+        or previous.get("identity") != target_identity(metadata).fingerprint
+    ):
+        raise IdentityValidationError("The previous PDF resolution is inconsistent.")
+
+    locations = catalog.query_files(
+        attachment_id=record["attachment_id"], include_missing=True
+    )
+    _check_recovery_locations(locations, record["location_id"])
+    proof = assert_mutation_allowed(
+        path, metadata, expected_sha256=digest, provider_document=document
+    )
+    if proof.get("status") != "verified":
+        raise IdentityValidationError("The PDF identity is not verified.")
+    history = metadata.get(_STALE_RECOVERY_HISTORY, [])
+    if not isinstance(history, list):
+        raise IdentityValidationError("The saved recovery history is invalid.")
+    old_proof = metadata.get(IDENTITY_KEY)
+    old_sha = metadata.get(METADATA_SHA256_KEY) or metadata.get("sha256")
+    if old_proof is not None or previous is not None or old_sha:
+        metadata[_STALE_RECOVERY_HISTORY] = [
+            *history,
+            {
+                "sha256": old_sha,
+                "identity_proof": copy.deepcopy(old_proof),
+                "previous_resolution": copy.deepcopy(previous),
+            },
+        ]
+    metadata.pop(METADATA_STALE_KEY, None)
+    metadata.pop(PREVIOUS_RESOLUTION_KEY, None)
+    metadata[WATCH_PENDING_KEY] = False
+    metadata["sha256"] = digest
+    metadata[METADATA_SHA256_KEY] = digest
+    metadata[IDENTITY_KEY] = proof
+
+    def check_snapshot() -> None:
+        if (
+            catalog.get_file(root, relative) != record
+            or catalog.query_files(
+                attachment_id=record["attachment_id"], include_missing=True
+            )
+            != locations
+            or cached_provider_document(state, metadata) != document
+            or catalog.get_document(document_id) != shared_document
+            or catalog._connection.execute(
+                "SELECT id FROM documents WHERE lower(bibcode) = lower(?) ORDER BY id",
+                (bibcode,),
+            ).fetchall()
+            != rows
+        ):
+            raise IdentityValidationError("The catalog changed during verification.")
+        _check_recovery_locations(locations, record["location_id"])
+        if path.is_symlink() or path.resolve() != path:
+            raise IdentityValidationError("The PDF path changed during verification.")
+        if (
+            _recovery_file_facts(path) != facts
+            or sha256_file(path) != digest
+            or _recovery_file_facts(path) != facts
+        ):
+            raise IdentityValidationError(
+                "The PDF changed during identity verification."
+            )
+
+    if not apply:
+        check_snapshot()
+        return CentralPdfRegistryState._record_view(
+            {
+                **record,
+                "sha256": digest,
+                "status": "resolved",
+                "document_id": document_id,
+                "metadata": metadata,
+            }
+        )
+    connection = catalog._connection
+    if connection.in_transaction:
+        raise IdentityValidationError("The catalog already has an active transaction.")
+    connection.execute("BEGIN IMMEDIATE")
+    try:
+        check_snapshot()
+        location = connection.execute(
+            "SELECT * FROM file_locations WHERE id = ? AND missing_at IS NULL",
+            (record["location_id"],),
+        ).fetchone()
+        if location is None:
+            raise IdentityValidationError("The PDF location is no longer tracked.")
+        version_id = catalog._select_or_create_version(
+            record["attachment_id"], location, digest, facts[2]
+        )
+        catalog._update_attachment(
+            record["attachment_id"],
+            document_id=document_id,
+            status="resolved",
+            metadata=metadata,
+        )
+        connection.execute(
+            "UPDATE file_locations SET current_version_id = ?, size_bytes = ?, "
+            "mtime_ns = ?, device = ?, inode = ?, last_seen_at = ? WHERE id = ?",
+            (
+                version_id,
+                facts[2],
+                facts[3],
+                _sqlite_file_identity(facts[0]),
+                _sqlite_file_identity(facts[1]),
+                catalog._utc_timestamp(),
+                record["location_id"],
+            ),
+        )
+        _check_recovery_locations(locations, record["location_id"])
+        if (
+            path.is_symlink()
+            or path.resolve() != path
+            or _recovery_file_facts(path) != facts
+            or sha256_file(path) != digest
+            or _recovery_file_facts(path) != facts
+        ):
+            raise IdentityValidationError(
+                "The PDF changed during identity verification."
+            )
+        connection.commit()
+    except BaseException:
+        connection.rollback()
+        raise
+    saved = catalog.get_file(root, relative)
+    if saved is None:
+        raise IdentityValidationError("The PDF location is no longer tracked.")
+    return CentralPdfRegistryState._record_view(saved)
 
 
 class PdfRenamer:
@@ -417,6 +743,55 @@ class PdfRenamer:
             "page": self._normalize_component(page, char_policy),
         }
 
+    def _validate_template_fields(
+        self, template: str, metadata: Mapping[str, Any]
+    ) -> None:
+        """Reject referenced fields that have no corresponding metadata."""
+
+        def has_first_value(value: Any) -> bool:
+            if isinstance(value, list):
+                value = value[0] if value else None
+            return value is not None and bool(str(value).strip())
+
+        authors = metadata.get("author")
+        if isinstance(authors, (list, tuple)):
+            first_author = authors[0] if authors else None
+            has_authors = any(has_first_value(author) for author in authors)
+        else:
+            first_author = authors[0] if isinstance(authors, str) and authors else None
+            has_authors = has_first_value(authors)
+
+        # Match the first-value and journal fallback rules used by render.
+        bibstem = metadata.get("bibstem")
+        journal = bibstem if self._first_list_value(bibstem) else metadata.get("pub")
+        available = {
+            "bibcode": has_first_value(metadata.get("bibcode")),
+            "year": has_first_value(metadata.get("year")),
+            "title": has_first_value(metadata.get("title")),
+            "first_author": has_first_value(first_author),
+            "first_author_full": has_first_value(first_author),
+            "authors": has_authors,
+            "authors_N": has_authors,
+            "journal": has_first_value(journal),
+            "volume": has_first_value(metadata.get("volume")),
+            "page": has_first_value(metadata.get("page")),
+        }
+        missing: set[str] = set()
+        pending = [template]
+        formatter = Formatter()
+        # Format specifications can contain additional replacement fields.
+        while pending:
+            for _, field, format_spec, _ in formatter.parse(pending.pop()):
+                if field is None:
+                    continue
+                name = field.split(".", 1)[0].split("[", 1)[0]
+                if name in available and not available[name]:
+                    missing.add(name)
+                if format_spec:
+                    pending.append(format_spec)
+        if missing:
+            raise MissingTemplateFieldsError(sorted(missing))
+
     def render(
         self,
         template: str,
@@ -475,22 +850,54 @@ class PdfRenamer:
 
         `current_filenames`, when supplied, limits processing to these current
         paths relative to the catalog root. An empty sequence selects no files.
+        A Unicode alias selects a current path only when its directory entry
+        proves the match.
 
-        Use the selected template without substitution. Missing fields render
-        as empty components. Record unchanged targets in ``unchanged`` and
-        other skipped reasons in ``skipped``. Clear these mappings for each call.
+        Use the selected template without substitution. Skip records when a
+        referenced field has no value. Record unchanged targets in `unchanged`
+        and other skipped reasons in `skipped`. Clear these mappings for each call.
         """
         self._validate_author_limits(max_authors, authors_when_truncated)
         self.identity_refused = {}
         self.unchanged = {}
         self.skipped = {}
         plans: list[tuple[str, str]] = []
+        files = sidecar.files
+        registry = getattr(sidecar, "registry", None)
+        catalog = getattr(registry, "catalog", None)
         selected = set(current_filenames) if current_filenames is not None else None
-        for original_name, metadata in sidecar.files.items():
+        if selected:
+            current_names = [
+                metadata.get("current_filename", name)
+                for name, metadata in files.items()
+            ]
+            for name in selected.difference(current_names):
+                try:
+                    PdfCatalog._normalize_relative_path(name)
+                except ValueError:
+                    continue
+                if catalog is not None:
+                    record = catalog.get_file(sidecar.directory, name)
+                    if record is not None and record["missing_at"] is None:
+                        selected.add(record["current_path"])
+                else:
+                    aliases = [
+                        current
+                        for current in current_names
+                        if PdfCatalog._same_unicode_entry(
+                            sidecar.directory, current, name
+                        )
+                    ]
+                    if len(aliases) == 1:
+                        selected.add(aliases[0])
+        for original_name, metadata in files.items():
             current_name = metadata.get("current_filename", original_name)
             if selected is not None and current_name not in selected:
                 continue
-            if not (is_resolved_record(dict(metadata)) or metadata_ready(metadata)):
+            stale = bool(metadata.get(METADATA_STALE_KEY))
+            if not stale and not (
+                is_resolved_record(dict(metadata)) or metadata_ready(metadata)
+            ):
                 self.skipped[str(current_name)] = (
                     "Metadata is not ready for renaming. Run Identify or Update by ID."
                 )
@@ -504,20 +911,59 @@ class PdfRenamer:
             stored_sha = str(
                 metadata.get("sha256") or metadata.get(METADATA_SHA256_KEY) or ""
             ).strip()
+            actual_sha = None
             if stored_sha:
                 try:
                     actual_sha = sha256_file(source_path)
                 except OSError as exc:
                     self.skipped[str(current_name)] = f"Cannot read PDF: {exc}"
                     continue
-                if actual_sha != stored_sha:
-                    self.logger.warning(
-                        "Skipping rename due to hash mismatch: %s", source_path
+            changed = bool(stored_sha and actual_sha != stored_sha)
+            needs_recovery = stale or bool(
+                changed and catalog is not None and metadata.get("bibcode")
+            )
+            recovery_snapshot = None
+            if needs_recovery:
+                try:
+                    if catalog is not None:
+                        recovery_snapshot = catalog.get_file(
+                            sidecar.directory, str(current_name)
+                        )
+                    if recovery_snapshot is None:
+                        raise IdentityValidationError(
+                            "This record cannot be recovered in this library."
+                        )
+                    recovered = _recover_stale_record(
+                        sidecar,
+                        str(current_name),
+                        apply=False,
+                        expected_record=recovery_snapshot,
+                        expected_sha256=actual_sha,
                     )
-                    self.skipped[str(current_name)] = (
-                        "PDF content changed. Run Identify to check the current file."
+                    if recovered is None:
+                        raise IdentityValidationError(
+                            "This record no longer needs recovery. Retry Rename."
+                        )
+                    metadata = recovered
+                    stored_sha = str(metadata.get("sha256") or "").strip()
+                except (OSError, ValueError, sqlite3.Error) as exc:
+                    reason = (
+                        "Metadata is not ready for renaming."
+                        if stale
+                        else "PDF content changed."
+                    )
+                    self.identity_refused[str(current_name)] = (
+                        f"{reason} {exc} Review the PDF, then use Update by ID."
                     )
                     continue
+            elif changed:
+                self.logger.warning(
+                    "Skipping rename due to hash mismatch: %s", source_path
+                )
+                self.skipped[str(current_name)] = (
+                    "PDF content changed. Run Identify to check the current file."
+                )
+                continue
 
             try:
                 verify_record_identity(
@@ -530,16 +976,21 @@ class PdfRenamer:
                 self.identity_refused[str(current_name)] = str(exc)
                 continue
 
-            new_name = self.render(
-                template,
-                metadata,
-                author_format,
-                max_authors,
-                authors_when_truncated,
-                char_policy,
-                author_separator,
-                author_truncation_suffix,
-            )
+            try:
+                self._validate_template_fields(template, metadata)
+                new_name = self.render(
+                    template,
+                    metadata,
+                    author_format,
+                    max_authors,
+                    authors_when_truncated,
+                    char_policy,
+                    author_separator,
+                    author_truncation_suffix,
+                )
+            except MissingTemplateFieldsError as exc:
+                self.skipped[str(current_name)] = str(exc)
+                continue
             target_directory = source_path.parent
             if (
                 is_resolved_record(dict(metadata))
@@ -554,19 +1005,64 @@ class PdfRenamer:
                     target_directory = move_resolved_to
 
             target_path = target_directory / new_name
-            if target_path == source_path:
-                self.unchanged[str(current_name)] = new_name
-                continue
-            if is_same_file_alias(source_path, target_path):
-                self.unchanged[str(current_name)] = new_name
-                continue
-            if target_path.exists() and target_path != source_path:
+            unchanged = target_path == source_path or is_same_file_alias(
+                source_path, target_path
+            )
+            if not unchanged and target_path.exists():
                 self.logger.warning("Skipping existing target: %s", target_path)
                 self.skipped[str(current_name)] = (
                     f"Destination exists: {target_path}. Review both PDFs before choosing a filename."
                 )
                 continue
 
+            if needs_recovery and not dry_run:
+                try:
+                    committed = _recover_stale_record(
+                        sidecar,
+                        str(current_name),
+                        apply=True,
+                        expected_record=recovery_snapshot,
+                        expected_sha256=str(metadata["sha256"]),
+                    )
+                    if committed is None or {
+                        key: value
+                        for key, value in committed.items()
+                        if key != IDENTITY_KEY
+                    } != {
+                        key: value
+                        for key, value in metadata.items()
+                        if key != IDENTITY_KEY
+                    }:
+                        raise IdentityValidationError(
+                            "The PDF or catalog changed before Rename. Retry Rename."
+                        )
+                    metadata = committed
+                except (OSError, ValueError, sqlite3.Error) as exc:
+                    self.identity_refused[str(current_name)] = (
+                        f"{exc} Review the PDF, then use Update by ID."
+                    )
+                    continue
+
+            if unchanged:
+                self.unchanged[str(current_name)] = new_name
+                continue
+            if needs_recovery and not dry_run:
+                try:
+                    current = catalog.get_file(sidecar.directory, str(current_name))
+                    if (
+                        current is None
+                        or CentralPdfRegistryState._record_view(current) != metadata
+                    ):
+                        raise IdentityValidationError(
+                            "The catalog changed before Rename. Retry Rename."
+                        )
+                    if sha256_file(source_path) != metadata["sha256"]:
+                        raise IdentityValidationError(
+                            "The PDF changed before Rename. Retry Rename."
+                        )
+                except (OSError, ValueError, sqlite3.Error) as exc:
+                    self.identity_refused[str(current_name)] = str(exc)
+                    continue
             plans.append((current_name, new_name))
             if dry_run:
                 continue
@@ -588,7 +1084,13 @@ class PdfRenamer:
         author_truncation_suffix: str = "+",
         target_directory: Path | None = None,
     ) -> Path:
-        """Plan or apply a rename for one tracked resolved PDF."""
+        """Plan or apply a rename for one tracked resolved PDF.
+
+        Raises
+        ------
+        MissingTemplateFieldsError
+            The template references fields without metadata. No move occurs.
+        """
         source = Path(source_path).expanduser().resolve()
         if not (is_resolved_record(dict(metadata)) or metadata_ready(metadata)):
             raise ValueError(
@@ -606,6 +1108,7 @@ class PdfRenamer:
                 )
 
         verify_record_identity(source, metadata, sha256=stored_sha or None, state=state)
+        self._validate_template_fields(template, metadata)
 
         destination_directory = (
             source.parent

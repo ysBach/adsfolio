@@ -95,7 +95,7 @@ def test_status_click_reveals_selected_pdf_recovery_controls(
     ]
     assert window.detail._record["current_path"] == "warning.pdf"
     assert window.detail._row_widgets["status"].value.text() == (
-        "PDF changed" if state == "changed" else "No ADS link"
+        "PDF changed" if state == "changed" else "Needs identification"
     )
     update_button = next(
         button

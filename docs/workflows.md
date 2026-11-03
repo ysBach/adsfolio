@@ -66,13 +66,25 @@ the folder where your browser saves papers.
 ![Library menu with the three watch choices](_static/tutorial/watch-menu.png)
 
 Renames use the saved settings from the **Rename** window. Set the filename
-template there first, and check it with **Preview**. The watcher processes
-only PDFs that arrive after watching starts. Existing PDFs stay unchanged.
-Automatic renaming requires a verified
+template there first. Check it with **Preview**. The watcher also checks
+changes to cataloged PDFs. A proven incremental annotation save keeps the
+existing identification without a rename. Automatic renaming requires a verified
 [PDF identity check](gui.md#pdf-identity-checks). A new PDF that states no
 arXiv ID or DOI, or one that contradicts the found record, keeps its name and
-shows a warning. A ``●``
-beside the library name shows an active watcher. See
+shows a warning. If the template requires missing metadata, the watcher keeps
+the filename. Check **Notifications** for the missing fields. Add the metadata
+or choose a template without those fields. Then retry the rename.
+If the template requires a bibcode, the watcher can retry enabled ADS after an
+external lookup. ADSfolio must verify any ADS match against the PDF.
+
+ADSfolio also rechecks existing records at startup and every 24 hours while it
+is open. It checks registered libraries even when their watchers are off.
+When ADS provides a verified match or new bibcode, ADSfolio updates the record
+and applies the saved Rename settings. A failed identity check or filename
+collision keeps the affected files in place. Review the reported issue and
+retry. See [Watching library roots](gui.md#watching-library-roots).
+
+A ``●`` beside the library name shows an active watcher. See
 [Watching library roots](gui.md#watching-library-roots) for details. For the
 command line, see [Tutorial 4, step 4](cli-tutorials/04-pdf-workflows.md#4-watch-a-folder-for-new-pdfs).
 

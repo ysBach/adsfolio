@@ -29,6 +29,44 @@ def isolated_catalog(monkeypatch, tmp_path):
     monkeypatch.setattr(Config, "get_config_dir", classmethod(lambda cls: tmp_path))
 
 
+@pytest.mark.parametrize("has_metadata", [False, True])
+def test_first_hash_retains_stale_safety_for_existing_metadata(
+    tmp_path: Path, has_metadata: bool
+) -> None:
+    catalog = PdfCatalog(tmp_path / "catalog.sqlite")
+    root = tmp_path / "lib"
+    root.mkdir()
+    path = root / "paper.pdf"
+    write_pdf(path)
+    stat = path.stat()
+    metadata = {"title": ["Existing title"]} if has_metadata else {}
+    try:
+        catalog.observe_file(
+            root,
+            path.name,
+            sha256=None,
+            size_bytes=stat.st_size,
+            mtime_ns=stat.st_mtime_ns,
+            status="unresolved",
+            metadata=metadata,
+        )
+        catalog.observe_file(
+            root,
+            path.name,
+            sha256=sha256_file(path),
+            size_bytes=stat.st_size,
+            mtime_ns=stat.st_mtime_ns,
+            status="unresolved",
+        )
+        record = catalog.get_file(root, path.name)
+        assert record["sha256"] == sha256_file(path)
+        assert bool(record.get(METADATA_STALE_KEY)) is has_metadata
+        if has_metadata:
+            assert record["metadata"]["title"] == metadata["title"]
+    finally:
+        catalog.close()
+
+
 def test_stale_replacement_unlinks_document_and_blocks_resolved_queries(
     tmp_path: Path,
 ) -> None:
@@ -265,12 +303,10 @@ def test_renamer_non_ads_metadata_ready_default_and_custom_scheme(
 
     renamer = PdfRenamer()
 
-    # The selected bibcode field stays empty when no bibcode exists.
+    # A required bibcode cannot be silently omitted.
     plans = renamer.batch_rename(sidecar, template=DEFAULT_SCHEME, dry_run=True)
-    assert len(plans) == 1
-    old_name, new_name = plans[0]
-    assert old_name == "paper.pdf"
-    assert new_name == "CurieM_-Non-ADS_Title.pdf"
+    assert plans == []
+    assert "bibcode" in renamer.skipped["paper.pdf"]
 
     # Custom scheme is respected
     custom_plans = renamer.batch_rename(

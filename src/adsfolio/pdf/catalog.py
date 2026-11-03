@@ -21,13 +21,16 @@ from .files import sha256_file
 from .identity import (
     IDENTITY_KEY,
     IdentityValidationError,
+    UnverifiedIdentityError,
     assert_mutation_allowed,
+    extract_pdf_own_identity,
     target_identity,
 )
 from .readiness import (
     EXTERNAL_METADATA_KEY,
     METADATA_SHA256_KEY,
     METADATA_STALE_KEY,
+    PREVIOUS_RESOLUTION_KEY,
     WATCH_PENDING_KEY,
 )
 from .sidecar import SIDECAR_FILENAME, Sidecar
@@ -46,6 +49,7 @@ CATALOG_SCHEMA_VERSION = 3
 LEGACY_REGISTRY_FILENAME = ".adsfolio-pdfs.sqlite"
 LOCKED_METADATA_FIELDS_KEY = "_adsfolio_locked_fields"
 REFERENCE_METADATA_KEY = "_adsfolio_reference"
+_DOCUMENT_SNAPSHOT_UNSET: Any = object()
 # A citation key that the user typed for a paper that is not a local reference.
 CITE_KEY_METADATA_KEY = "_adsfolio_cite_key"
 REFERENCE_FIELD_MAP = {
@@ -153,6 +157,7 @@ class PdfCatalog:
         inode: int | None = None,
         metadata: Mapping[str, Any] | None = None,
         status: str | None = None,
+        active_spellings: set[str] | None = None,
     ) -> CatalogObservation:
         """Register one observation without opening a transaction.
 
@@ -179,7 +184,13 @@ class PdfCatalog:
 
         root_id = self._ensure_root(normalized_root)
         location = self._active_location(root_id, normalized_path)
+        if location is None and (
+            active_spellings is None
+            or unicodedata.normalize("NFC", normalized_path) in active_spellings
+        ):
+            location = self._active_unicode_alias(root_id, normalized_path)
         matched_by = "path"
+        created_attachment = False
         if location is not None:
             attachment_id = int(location["attachment_id"])
         else:
@@ -193,13 +204,16 @@ class PdfCatalog:
                     metadata=metadata,
                     status=status,
                 )
+                created_attachment = True
 
-        location = self._location_for_attachment_path(
-            root_id,
-            normalized_path,
-            attachment_id,
-        )
+        if location is None:
+            location = self._location_for_attachment_path(
+                root_id,
+                normalized_path,
+                attachment_id,
+            )
         content_changed = False
+        previous_content_sha = None
         if location is not None and location["current_version_id"] is not None:
             version = self._connection.execute(
                 "SELECT sha256 FROM content_versions WHERE id = ?",
@@ -208,6 +222,7 @@ class PdfCatalog:
             content_changed = normalized_sha is not None and (
                 version is None or version["sha256"] != normalized_sha
             )
+            previous_content_sha = version["sha256"] if version is not None else None
 
         attachment = self._attachment(attachment_id)
         if attachment is None:
@@ -216,6 +231,15 @@ class PdfCatalog:
         if not isinstance(existing_metadata, dict):
             existing_metadata = {}
         existing_status = str(attachment["status"] or "unresolved")
+        if (
+            content_changed
+            and previous_content_sha is None
+            and not existing_metadata
+            and attachment["document_id"] is None
+            and existing_status in {"new", "unresolved"}
+        ):
+            # A first hash does not invalidate metadata that does not exist.
+            content_changed = False
         incoming_metadata = dict(metadata or {})
         if existing_status == "resolved" and status != "resolved":
             incoming_metadata = {
@@ -236,11 +260,6 @@ class PdfCatalog:
             existing_metadata,
             incoming_metadata,
         )
-        document_id = self._ensure_document(
-            merged_metadata, existing_id=attachment["document_id"]
-        )
-        if document_id is None:
-            document_id = attachment["document_id"]
         if (
             status in (None, "")
             or (status == "new" and not content_changed)
@@ -253,11 +272,6 @@ class PdfCatalog:
             next_status = existing_status
         else:
             next_status = str(status or existing_status)
-        if next_status == "resolved" and (
-            document_id is None or not merged_metadata.get("bibcode")
-        ):
-            # "resolved" means an ADS link; other documents stay unresolved.
-            next_status = "unresolved"
         stale = content_changed or bool(existing_metadata.get(METADATA_STALE_KEY))
         fresh_ads = (
             status == "resolved"
@@ -283,11 +297,49 @@ class PdfCatalog:
             else:
                 fresh_external = proof["status"] == "verified"
         if stale and not (fresh_ads or fresh_external):
+            previous_metadata_sha = existing_metadata.get(
+                METADATA_SHA256_KEY
+            ) or existing_metadata.get("sha256")
+            previous_identity = target_identity(existing_metadata).fingerprint
+            if (
+                content_changed
+                and existing_status == "resolved"
+                and attachment["document_id"] is not None
+                and previous_content_sha
+                and previous_metadata_sha == previous_content_sha
+                and previous_identity
+            ):
+                merged_metadata[PREVIOUS_RESOLUTION_KEY] = {
+                    "sha256": previous_content_sha,
+                    "identity": previous_identity,
+                    "document_id": int(attachment["document_id"]),
+                }
             merged_metadata[METADATA_STALE_KEY] = True
             document_id = None
             next_status = "unresolved"
-        elif fresh_ads or fresh_external:
-            merged_metadata.pop(METADATA_STALE_KEY, None)
+        else:
+            filesystem_only = (
+                status in (None, "", "new")
+                and not (set(incoming_metadata) - {WATCH_PENDING_KEY})
+                and not (created_attachment and metadata)
+            )
+            document_id = (
+                attachment["document_id"]
+                if filesystem_only
+                else self._ensure_document(
+                    merged_metadata, existing_id=attachment["document_id"]
+                )
+            )
+            if document_id is None:
+                document_id = attachment["document_id"]
+            if next_status == "resolved" and (
+                document_id is None or not merged_metadata.get("bibcode")
+            ):
+                # "resolved" means an ADS link; other documents stay unresolved.
+                next_status = "unresolved"
+            if fresh_ads or fresh_external:
+                merged_metadata.pop(METADATA_STALE_KEY, None)
+                merged_metadata.pop(PREVIOUS_RESOLUTION_KEY, None)
         self._update_attachment(
             attachment_id,
             document_id=document_id,
@@ -471,6 +523,7 @@ class PdfCatalog:
                 IDENTITY_KEY,
                 METADATA_SHA256_KEY,
                 METADATA_STALE_KEY,
+                PREVIOUS_RESOLUTION_KEY,
                 EXTERNAL_METADATA_KEY,
                 WATCH_PENDING_KEY,
             }
@@ -567,6 +620,7 @@ class PdfCatalog:
                 IDENTITY_KEY,
                 METADATA_SHA256_KEY,
                 METADATA_STALE_KEY,
+                PREVIOUS_RESOLUTION_KEY,
                 "sha256",
                 "identified_at",
                 "resolution_strategy",
@@ -661,7 +715,11 @@ class PdfCatalog:
             raise
 
     def get_file(self, root: Path, relative_path: str) -> dict[str, Any] | None:
-        """Return one location record and its attachment metadata."""
+        """Return one location record and its attachment metadata.
+
+        Prefer an exact path match, including a missing location. Otherwise,
+        return a unique active Unicode alias proven by its directory entry.
+        """
         normalized_root = self._normalize_root(root)
         normalized_path = self._normalize_relative_path(relative_path)
         row = self._connection.execute(
@@ -682,7 +740,20 @@ class PdfCatalog:
             """,
             (normalized_root, normalized_path),
         ).fetchone()
-        return self._record_from_row(row) if row is not None else None
+        if row is not None:
+            return self._record_from_row(row)
+        root_row = self._connection.execute(
+            "SELECT id FROM library_roots WHERE canonical_path = ?", (normalized_root,)
+        ).fetchone()
+        if root_row is None:
+            return None
+        alias = self._active_unicode_alias(int(root_row["id"]), normalized_path)
+        if alias is None:
+            return None
+        records = self.query_files(
+            root=Path(normalized_root), location_id=int(alias["id"])
+        )
+        return records[0] if records else None
 
     def document_for_attachment(self, attachment_id: int) -> dict[str, Any] | None:
         """Return the canonical document linked to an attachment."""
@@ -1100,6 +1171,246 @@ class PdfCatalog:
         ).fetchall()
         return [dict(row) for row in rows]
 
+    def preserve_annotation_revision(
+        self,
+        root: Path,
+        relative_path: str,
+        expected_sha256: str,
+        *,
+        apply: bool = True,
+    ) -> dict[str, Any] | None:
+        """Preserve an identified record when only PDF annotations changed.
+
+        The previous identified bytes must occur as an exact, cataloged prefix.
+        Both revisions must have the same non-annotation PDF structure. An
+        existing identity proof keeps its verification level. A legacy record
+        without proof does not gain one.
+
+        Parameters
+        ----------
+        root : Path
+            Library root containing the PDF.
+        relative_path : str
+            PDF path relative to the root.
+        expected_sha256 : str
+            Digest of the current PDF contents.
+        apply : bool, optional
+            Update the catalog when True. Otherwise, only check continuity.
+
+        Returns
+        -------
+        dict or None
+            The preserved record, or None when continuity cannot be proven.
+        """
+        from .annotation_revision import annotation_only_revision
+
+        record = self.get_file(root, relative_path)
+        if record is None or not record.get("bibcode"):
+            return None
+        metadata = copy.deepcopy(record["metadata"])
+        previous_sha = str(
+            metadata.get(METADATA_SHA256_KEY) or metadata.get("sha256") or ""
+        )
+        if not previous_sha or previous_sha == expected_sha256:
+            return None
+        previous_identity = target_identity(metadata).fingerprint
+        previous_resolution = metadata.get(PREVIOUS_RESOLUTION_KEY)
+        if record["status"] == "resolved":
+            document_id = record["document_id"]
+        elif (
+            metadata.get(METADATA_STALE_KEY)
+            and isinstance(previous_resolution, Mapping)
+            and previous_resolution.get("sha256") == previous_sha
+            and previous_resolution.get("identity") == previous_identity
+        ):
+            document_id = previous_resolution.get("document_id")
+        else:
+            return None
+        if not isinstance(document_id, int) or isinstance(document_id, bool):
+            return None
+
+        def document_matches(
+            own_dois: frozenset[str] = frozenset(),
+            own_arxiv: frozenset[str] = frozenset(),
+        ) -> bool:
+            document = self._connection.execute(
+                "SELECT bibcode, metadata_json FROM documents WHERE id = ?",
+                (document_id,),
+            ).fetchone()
+            if (
+                document is None
+                or document["bibcode"] != self.document_identity(metadata)[0]
+            ):
+                return False
+            try:
+                shared = json.loads(document["metadata_json"] or "{}")
+            except (TypeError, ValueError):
+                return False
+            if not isinstance(shared, dict):
+                return False
+            saved_identity = target_identity(metadata)
+            shared_identity = target_identity(shared)
+            return all(
+                not saved or not known or saved.issubset(known)
+                for saved, known in (
+                    (saved_identity.dois, shared_identity.dois),
+                    (saved_identity.arxiv_ids, shared_identity.arxiv_ids),
+                    (own_dois, shared_identity.dois),
+                    (own_arxiv, shared_identity.arxiv_ids),
+                )
+            )
+
+        if not document_matches():
+            return None
+        proof = metadata.get(IDENTITY_KEY)
+        if proof is not None and (
+            not isinstance(proof, Mapping)
+            or proof.get("status") not in {"verified", "manual_confirmed"}
+            or proof.get("sha256") != previous_sha
+            or proof.get("identity") != previous_identity
+        ):
+            return None
+        if len(self.query_files(attachment_id=record["attachment_id"])) != 1:
+            return None
+        versions = [
+            version
+            for version in self.content_versions(record["attachment_id"])
+            if version["sha256"] == previous_sha
+        ]
+        if not versions:
+            return None
+        path = Path(root) / relative_path
+
+        def file_facts() -> tuple[int, int, int, int, int]:
+            stat = path.stat()
+            return (
+                stat.st_dev,
+                stat.st_ino,
+                stat.st_size,
+                stat.st_mtime_ns,
+                stat.st_ctime_ns,
+            )
+
+        try:
+            facts = file_facts()
+            data = path.read_bytes()
+            if (
+                facts != file_facts()
+                or len(data) != facts[2]
+                or hashlib.sha256(data).hexdigest() != expected_sha256
+                or not annotation_only_revision(
+                    data, int(versions[-1]["size_bytes"]), previous_sha
+                )
+            ):
+                return None
+        except OSError:
+            return None
+
+        updated = copy.deepcopy(metadata)
+        updated["sha256"] = expected_sha256
+        updated[METADATA_SHA256_KEY] = expected_sha256
+        updated[WATCH_PENDING_KEY] = False
+        updated.pop(METADATA_STALE_KEY, None)
+        updated.pop(PREVIOUS_RESOLUTION_KEY, None)
+        if proof is not None:
+            updated[IDENTITY_KEY] = {**proof, "sha256": expected_sha256}
+        try:
+            checked = assert_mutation_allowed(
+                path, updated, expected_sha256=expected_sha256
+            )
+        except UnverifiedIdentityError as exc:
+            if proof is not None or not exc.manually_confirmable:
+                return None
+            evidence = extract_pdf_own_identity(path)
+            if evidence.sha256 != expected_sha256 or evidence.blocking_errors:
+                return None
+            own_dois = evidence.dois
+            own_arxiv = evidence.arxiv_ids
+        except IdentityValidationError:
+            return None
+        else:
+            if proof is None or checked["status"] != proof["status"]:
+                return None
+            own_dois = frozenset(checked.get("own_doi", ()))
+            own_arxiv = frozenset(checked.get("own_arxiv", ()))
+            lineage = proof.get("annotation_revision")
+            if not isinstance(lineage, Mapping):
+                lineage = {}
+            checked["annotation_revision"] = {
+                "previous_sha256": previous_sha,
+                "original_sha256": lineage.get("original_sha256") or previous_sha,
+                "original_authority": lineage.get("original_authority")
+                or proof.get("authority"),
+                "original_checked_at": lineage.get("original_checked_at")
+                or proof.get("checked_at"),
+            }
+            updated[IDENTITY_KEY] = checked
+        if not document_matches(own_dois, own_arxiv):
+            return None
+
+        if not apply:
+            return {
+                **record,
+                "sha256": expected_sha256,
+                "document_id": document_id,
+                "status": "resolved",
+                "metadata": updated,
+            }
+        if self._connection.in_transaction:
+            return None
+        with self._connection:
+            self._connection.execute("BEGIN IMMEDIATE")
+            current = self.get_file(root, relative_path)
+            if (
+                current is None
+                or current["location_id"] != record["location_id"]
+                or current["sha256"] != record["sha256"]
+                or current["status"] != record["status"]
+                or current["metadata"] != record["metadata"]
+                or len(self.query_files(attachment_id=record["attachment_id"])) != 1
+                or file_facts() != facts
+            ):
+                return None
+            if not document_matches(own_dois, own_arxiv):
+                return None
+            location = self._connection.execute(
+                "SELECT * FROM file_locations WHERE id = ? AND missing_at IS NULL",
+                (record["location_id"],),
+            ).fetchone()
+            if location is None:
+                return None
+            version_id = self._select_or_create_version(
+                record["attachment_id"], location, expected_sha256, facts[2]
+            )
+            self._update_attachment(
+                record["attachment_id"],
+                document_id=document_id,
+                status="resolved",
+                metadata=updated,
+            )
+            self._connection.execute(
+                "UPDATE file_locations SET size_bytes = ?, mtime_ns = ?, device = ?, "
+                "inode = ?, current_version_id = ?, last_seen_at = ? WHERE id = ?",
+                (
+                    facts[2],
+                    facts[3],
+                    _sqlite_file_identity(facts[0]),
+                    _sqlite_file_identity(facts[1]),
+                    version_id,
+                    self._utc_timestamp(),
+                    record["location_id"],
+                ),
+            )
+            if (
+                file_facts() != facts
+                or sha256_file(path) != expected_sha256
+                or file_facts() != facts
+            ):
+                raise IdentityValidationError(
+                    f"{path.name} changed while checking its annotations"
+                )
+        return self.get_file(root, relative_path)
+
     def ensure_root(self, root: Path) -> int:
         """Register a library root and return its catalog identifier."""
         with self._connection:
@@ -1147,11 +1458,21 @@ class PdfCatalog:
                                 observations.append((Path(entry.path), stat))
                         except FileNotFoundError:
                             continue
-        known_rows = {
-            record["current_path"]: record
-            for record in self.query_files(root=normalized_root, include_missing=True)
+        known_records = self.query_files(root=normalized_root, include_missing=True)
+        known_rows = {record["current_path"]: record for record in known_records}
+        known_locations = {record["location_id"]: record for record in known_records}
+        known_spellings = {
+            unicodedata.normalize("NFC", record["current_path"])
+            for record in known_records
+            if record["missing_at"] is None
         }
-        prepared: list[tuple[str, os.stat_result, str | None]] = []
+        root_row = self._connection.execute(
+            "SELECT id FROM library_roots WHERE canonical_path = ?",
+            (str(normalized_root),),
+        ).fetchone()
+        prepared: list[
+            tuple[str, os.stat_result, str | None, dict[str, Any] | None]
+        ] = []
         for path, stat in observations:
             if cancelled is not None and cancelled():
                 raise InterruptedError("Local refresh cancelled")
@@ -1177,6 +1498,16 @@ class PdfCatalog:
                 ),
             ).fetchone()[0]
             previous = known_rows.get(relative_path)
+            if (
+                root_row is not None
+                and (previous is None or previous["missing_at"] is not None)
+                and unicodedata.normalize("NFC", relative_path) in known_spellings
+            ):
+                active = self._active_location(root_row["id"], relative_path)
+                if active is None:
+                    active = self._active_unicode_alias(root_row["id"], relative_path)
+                if active is not None:
+                    previous = known_locations.get(int(active["id"]))
             if previous is not None and previous["sha256"]:
                 needs_digest = needs_digest or any(
                     previous[key] is not None and previous[key] != value
@@ -1193,12 +1524,20 @@ class PdfCatalog:
                     digest = sha256_file(path)
                 except FileNotFoundError:
                     continue
-            prepared.append((relative_path, stat, digest))
+            prepared.append((relative_path, stat, digest, previous))
         seen_paths: set[str] = set()
         discovered = 0
         with self._connection:
-            self._ensure_root(str(normalized_root))
-            for relative_path, stat, digest in prepared:
+            root_id = self._ensure_root(str(normalized_root))
+            active_spellings = {
+                unicodedata.normalize("NFC", row["relative_path"])
+                for row in self._connection.execute(
+                    "SELECT relative_path FROM file_locations "
+                    "WHERE root_id = ? AND missing_at IS NULL",
+                    (root_id,),
+                )
+            }
+            for relative_path, stat, digest, previous in prepared:
                 if cancelled is not None and cancelled():
                     raise InterruptedError("Local refresh cancelled")
                 seen_paths.add(relative_path)
@@ -1214,11 +1553,10 @@ class PdfCatalog:
                         {WATCH_PENDING_KEY: True}
                         if known_rows
                         and (
-                            relative_path not in known_rows
-                            or known_rows[relative_path]["missing_at"] is not None
+                            previous is None
+                            or previous["missing_at"] is not None
                             or any(
-                                known_rows[relative_path][key] is not None
-                                and known_rows[relative_path][key] != value
+                                previous[key] is not None and previous[key] != value
                                 for key, value in (
                                     ("size_bytes", stat.st_size),
                                     ("mtime_ns", stat.st_mtime_ns),
@@ -1230,7 +1568,9 @@ class PdfCatalog:
                         else None
                     ),
                     status=None,
+                    active_spellings=active_spellings,
                 )
+                active_spellings.add(unicodedata.normalize("NFC", relative_path))
                 discovered += 1
         self.mark_missing_locations(normalized_root, seen_paths, recursive=recursive)
         return discovered
@@ -1269,6 +1609,229 @@ class PdfCatalog:
         record = self.get_file(root, relative_path)
         if record is None:
             return False
+        clean_metadata, managed = self._prepare_metadata_replacement(record, metadata)
+        with self._connection:
+            self._apply_metadata_replacement(record, metadata, clean_metadata, managed)
+        return True
+
+    def replace_file_metadata_if_unchanged(
+        self,
+        root: Path,
+        relative_path: str,
+        metadata: Mapping[str, Any],
+        expected_record: Mapping[str, Any],
+        *,
+        expected_document: Mapping[str, Any] | None = _DOCUMENT_SNAPSHOT_UNSET,
+        changed_fields: Collection[str] | None = None,
+        allow_reviewed_stale_recovery: bool = False,
+    ) -> bool:
+        """Replace metadata only when the catalog record matches a snapshot.
+
+        Parameters
+        ----------
+        root
+            Library root that contains the location.
+        relative_path
+            Path of the location within the root.
+        metadata
+            Replacement metadata, with the same semantics as
+            ``replace_file_metadata``.
+        expected_record
+            Unmodified record returned by ``get_file`` or ``query_files``.
+            Keep its nested metadata separate from the replacement metadata.
+        expected_document
+            Unmodified snapshot returned by ``get_document``. Pass `None` when
+            the record has no linked document. Omit this argument to skip the
+            document check.
+        changed_fields
+            Fields to merge into an existing document. Omit this argument to
+            infer changes from `expected_record` and `metadata`. An empty
+            collection leaves existing document metadata unchanged. The full
+            replacement still updates the attachment and identifies the target
+            document. A new document receives the full replacement metadata.
+        allow_reviewed_stale_recovery
+            Allow a manually reviewed conflict to replace stale metadata.
+            The proof must match the current PDF hash and identifiers.
+
+        Returns
+        -------
+        bool
+            `True` if the replacement succeeds. `False` if the location is
+            missing or a supplied snapshot is incomplete or no longer matches.
+            Get fresh snapshots before retrying after `False`.
+
+        Raises
+        ------
+        RuntimeError
+            If this connection already has an open transaction.
+        TypeError
+            If `changed_fields` is a string or contains a non-string value.
+        sqlite3.OperationalError
+            If SQLite cannot acquire the write lock before its timeout.
+
+        Notes
+        -----
+        The comparison and replacement share one SQLite write transaction.
+        The digest and file facts come from the catalog, not the PDF on disk.
+        The record snapshot does not include linked document metadata.
+        The optional document check covers only the currently linked document.
+        It does not guard a different document selected by replacement metadata.
+        The replacement updates the attachment and may update its document.
+        Other locations can share the attachment or document.
+        Document fields use the existing merge rules for locks and empty values.
+        For non-stale records, the catalog retains the current status when
+        `metadata` omits status and leaves identifiers and identity proof unchanged.
+        Explicit status and identity changes use the existing replacement rules.
+        The comparison cannot detect changes that restore the snapshot values.
+        Other connections can write again after this call commits.
+        """
+        if isinstance(changed_fields, (str, bytes)):
+            raise TypeError("changed_fields must be a collection of field names")
+        if changed_fields is not None:
+            changed_fields = frozenset(changed_fields)
+            if any(not isinstance(key, str) for key in changed_fields):
+                raise TypeError("changed_fields must contain only strings")
+        conn = self._connection
+        if conn.in_transaction:
+            raise RuntimeError("Metadata replacement needs its own transaction")
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            current = self.get_file(root, relative_path)
+            fields = (
+                "root",
+                "relative_path",
+                "location_id",
+                "attachment_id",
+                "document_id",
+                "version_id",
+                "sha256",
+                "missing_at",
+                "status",
+                "size_bytes",
+                "mtime_ns",
+                "device",
+                "inode",
+                "first_seen_at",
+            )
+            matches = (
+                current is not None
+                and current["missing_at"] is None
+                and all(
+                    key in expected_record and current[key] == expected_record[key]
+                    for key in fields
+                )
+                and isinstance(expected_record.get("metadata"), dict)
+            )
+            if matches:
+                try:
+                    matches = self._encode_json(
+                        current["metadata"]
+                    ) == self._encode_json(expected_record["metadata"])
+                except (TypeError, ValueError):
+                    matches = False
+            if matches and expected_document is not _DOCUMENT_SNAPSHOT_UNSET:
+                document_id = current["document_id"]
+                if document_id is None:
+                    matches = expected_document is None
+                elif not isinstance(expected_document, Mapping):
+                    matches = False
+                else:
+                    document = self.get_document(document_id)
+                    try:
+                        matches = document is not None and self._encode_json(
+                            document
+                        ) == self._encode_json(dict(expected_document))
+                    except (TypeError, ValueError):
+                        matches = False
+            if not matches:
+                conn.rollback()
+                return False
+            stale = bool(
+                current["metadata"].get(METADATA_STALE_KEY)
+                or current.get(METADATA_STALE_KEY)
+            )
+            recover_stale = False
+            if stale and allow_reviewed_stale_recovery:
+                proof = metadata.get(IDENTITY_KEY)
+                digest = current.get("sha256")
+                if not (
+                    isinstance(proof, Mapping)
+                    and proof.get("status") == "manual_confirmed"
+                    and proof.get("authority") == "manual_conflict_override"
+                    and digest
+                    and proof.get("sha256") == digest
+                ):
+                    conn.rollback()
+                    return False
+                try:
+                    checked = assert_mutation_allowed(
+                        Path(root) / str(current["current_path"]),
+                        metadata,
+                        expected_sha256=str(digest),
+                    )
+                except (IdentityValidationError, OSError):
+                    conn.rollback()
+                    return False
+                if checked.get("authority") != "manual_conflict_override":
+                    conn.rollback()
+                    return False
+                recover_stale = True
+            clean_metadata, managed = self._prepare_metadata_replacement(
+                current, metadata
+            )
+            if recover_stale:
+                clean_metadata.pop(METADATA_STALE_KEY, None)
+                clean_metadata.pop(PREVIOUS_RESOLUTION_KEY, None)
+            previous = expected_record["metadata"]
+            if changed_fields is None:
+                changed_fields = {
+                    key
+                    for key in clean_metadata.keys() | previous.keys()
+                    if key not in clean_metadata
+                    or key not in previous
+                    or self._encode_json(clean_metadata[key])
+                    != self._encode_json(previous[key])
+                }
+            identity_fields = (
+                "bibcode",
+                "doi",
+                "arxiv",
+                "arxiv_id",
+                "identifier",
+                "alternate_bibcode",
+                IDENTITY_KEY,
+            )
+            previous_identity = {
+                key: previous[key] for key in identity_fields if key in previous
+            }
+            replacement_identity = {
+                key: clean_metadata[key]
+                for key in identity_fields
+                if key in clean_metadata
+            }
+            if "status" not in metadata and self._encode_json(
+                previous_identity
+            ) == self._encode_json(replacement_identity):
+                metadata = {**metadata, "status": current["status"]}
+            self._apply_metadata_replacement(
+                current,
+                metadata,
+                clean_metadata,
+                managed,
+                document_changed_fields=changed_fields,
+                reviewed_stale_recovery=recover_stale,
+            )
+            conn.commit()
+            return True
+        except BaseException:
+            conn.rollback()
+            raise
+
+    @staticmethod
+    def _prepare_metadata_replacement(
+        record: Mapping[str, Any], metadata: Mapping[str, Any]
+    ) -> tuple[dict[str, Any], bool]:
+        """Copy replacement metadata and validate managed reference fields."""
         clean_metadata = {
             str(key): copy.deepcopy(value)
             for key, value in metadata.items()
@@ -1288,51 +1851,63 @@ class PdfCatalog:
                 raise ValueError(
                     "Reference fields stay protected; edit them in File → Local References…"
                 )
-        with self._connection:
-            existing_stale = bool(
-                record["metadata"].get(METADATA_STALE_KEY)
-                or record.get(METADATA_STALE_KEY)
-            )
-            if existing_stale:
-                clean_metadata[METADATA_STALE_KEY] = True
+        return clean_metadata, managed
 
-            if existing_stale:
-                document_id = None
-                status = "unresolved"
+    def _apply_metadata_replacement(
+        self,
+        record: Mapping[str, Any],
+        metadata: Mapping[str, Any],
+        clean_metadata: dict[str, Any],
+        managed: bool,
+        *,
+        document_changed_fields: Collection[str] | None = None,
+        reviewed_stale_recovery: bool = False,
+    ) -> None:
+        """Apply prepared metadata within the caller's transaction."""
+        existing_stale = bool(
+            record["metadata"].get(METADATA_STALE_KEY) or record.get(METADATA_STALE_KEY)
+        )
+        if existing_stale and not reviewed_stale_recovery:
+            clean_metadata[METADATA_STALE_KEY] = True
+
+        if existing_stale and not reviewed_stale_recovery:
+            document_id = None
+            status = "unresolved"
+        else:
+            if managed:
+                document_id = record["document_id"]
+            elif "bibcode" in clean_metadata or not record.get("bibcode"):
+                # A paper without an ADS link becomes a document once its
+                # metadata is complete enough; see _ensure_document.
+                document_id = self._ensure_document(
+                    clean_metadata,
+                    existing_id=record["document_id"],
+                    changed_fields=document_changed_fields,
+                )
+                if document_id is None and "bibcode" not in clean_metadata:
+                    document_id = record["document_id"]
             else:
-                if managed:
-                    document_id = record["document_id"]
-                elif "bibcode" in clean_metadata or not record.get("bibcode"):
-                    # A paper without an ADS link becomes a document once its
-                    # metadata is complete enough; see _ensure_document.
-                    document_id = self._ensure_document(
-                        clean_metadata, existing_id=record["document_id"]
-                    )
-                    if document_id is None and "bibcode" not in clean_metadata:
-                        document_id = record["document_id"]
-                else:
-                    document_id = record["document_id"]
-                if managed and not clean_metadata.get("bibcode"):
-                    status = "unresolved"
-                elif "status" in metadata and metadata["status"] not in (None, ""):
-                    status = str(metadata["status"])
-                elif "bibcode" in clean_metadata:
-                    status = (
-                        "resolved"
-                        if document_id is not None and clean_metadata.get("bibcode")
-                        else "unresolved"
-                    )
-                else:
-                    status = str(record["status"])
-                if status == "resolved" and document_id is None:
-                    status = "unresolved"
-            self._update_attachment(
-                int(record["attachment_id"]),
-                document_id=document_id,
-                status=status,
-                metadata=clean_metadata,
-            )
-        return True
+                document_id = record["document_id"]
+            if managed and not clean_metadata.get("bibcode"):
+                status = "unresolved"
+            elif "status" in metadata and metadata["status"] not in (None, ""):
+                status = str(metadata["status"])
+            elif "bibcode" in clean_metadata:
+                status = (
+                    "resolved"
+                    if document_id is not None and clean_metadata.get("bibcode")
+                    else "unresolved"
+                )
+            else:
+                status = str(record["status"])
+            if status == "resolved" and document_id is None:
+                status = "unresolved"
+        self._update_attachment(
+            int(record["attachment_id"]),
+            document_id=document_id,
+            status=status,
+            metadata=clean_metadata,
+        )
 
     def move_file(
         self,
@@ -2119,6 +2694,82 @@ class PdfCatalog:
             (root_id, relative_path),
         ).fetchone()
 
+    @staticmethod
+    def _same_unicode_entry(base: Path, first: str, second: str) -> bool:
+        """Check whether equivalent spellings name the same directory entry."""
+        if first == second or unicodedata.normalize("NFC", first) != (
+            unicodedata.normalize("NFC", second)
+        ):
+            return False
+        first_parts = PurePosixPath(first).parts
+        second_parts = PurePosixPath(second).parts
+        if len(first_parts) != len(second_parts):
+            return False
+        parent = base
+        try:
+            for first_part, second_part in zip(first_parts, second_parts):
+                if first_part == second_part:
+                    parent = parent / first_part
+                    parent.lstat()
+                    continue
+                names = [
+                    name
+                    for name in os.listdir(parent)
+                    if unicodedata.normalize("NFC", name)
+                    == unicodedata.normalize("NFC", first_part)
+                ]
+                if len(names) != 1:
+                    return False
+                # Compare entries without following symlinks.
+                entries = [
+                    (parent / name).lstat()
+                    for name in (first_part, second_part, names[0])
+                ]
+                identities = {(entry.st_dev, entry.st_ino) for entry in entries}
+                if any(entry.st_ino == 0 for entry in entries) or len(identities) != 1:
+                    return False
+                parent = parent / names[0]
+        except OSError:
+            return False
+        return True
+
+    def _active_unicode_alias(
+        self,
+        root_id: int,
+        relative_path: str,
+        attachment_id: int | None = None,
+    ) -> sqlite3.Row | None:
+        """Return a unique active location proven to use the same entry."""
+        query = "SELECT * FROM file_locations WHERE root_id = ? AND missing_at IS NULL"
+        params: list[Any] = [root_id]
+        if attachment_id is not None:
+            query += " AND attachment_id = ?"
+            params.append(attachment_id)
+        if relative_path.isascii():
+            # An ASCII spelling can have a non-ASCII canonical equivalent.
+            query += " AND relative_path GLOB '*[^ -~]*'"
+        spelling = unicodedata.normalize("NFC", relative_path)
+        candidates = [
+            row
+            for row in self._connection.execute(query, params)
+            if row["relative_path"] != relative_path
+            and unicodedata.normalize("NFC", row["relative_path"]) == spelling
+        ]
+        if not candidates:
+            return None
+        root = self._connection.execute(
+            "SELECT canonical_path FROM library_roots WHERE id = ?", (root_id,)
+        ).fetchone()
+        if root is None:
+            return None
+        base = Path(root["canonical_path"])
+        matches = [
+            row
+            for row in candidates
+            if self._same_unicode_entry(base, row["relative_path"], relative_path)
+        ]
+        return matches[0] if len(matches) == 1 else None
+
     def _location_for_attachment_path(
         self,
         root_id: int,
@@ -2137,44 +2788,8 @@ class PdfCatalog:
 
         if exact is not None and exact["missing_at"] is None:
             return exact
-        spelling = unicodedata.normalize("NFC", relative_path)
-        if spelling.isascii():
-            return exact
-        root = self._connection.execute(
-            "SELECT canonical_path FROM library_roots WHERE id = ?", (root_id,)
-        ).fetchone()
-        if root is None:
-            return None
-        # Unicode spellings can name one file on macOS and distinct files on Linux.
-        base = Path(root[0])
-        path = base / relative_path
-        directory_names: dict[Path, set[str]] = {}
-
-        def has_exact_spelling(relative: str) -> bool:
-            parent = base
-            for part in PurePosixPath(relative).parts:
-                if parent not in directory_names:
-                    directory_names[parent] = set(os.listdir(parent))
-                if part not in directory_names[parent]:
-                    return False
-                parent = parent / part
-            return True
-
-        for row in self._connection.execute(
-            "SELECT * FROM file_locations WHERE root_id = ? AND attachment_id = ? AND missing_at IS NULL",
-            (root_id, attachment_id),
-        ):
-            if unicodedata.normalize("NFC", row["relative_path"]) != spelling:
-                continue
-            try:
-                if not (
-                    has_exact_spelling(row["relative_path"])
-                    and has_exact_spelling(relative_path)
-                ) and path.samefile(base / row["relative_path"]):
-                    return row
-            except OSError:
-                continue
-        return exact
+        alias = self._active_unicode_alias(root_id, relative_path, attachment_id)
+        return alias if alias is not None else exact
 
     def _match_attachment(
         self,
@@ -2323,14 +2938,22 @@ class PdfCatalog:
         return None
 
     def _ensure_document(
-        self, metadata: Mapping[str, Any], *, existing_id: int | None = None
+        self,
+        metadata: Mapping[str, Any],
+        *,
+        existing_id: int | None = None,
+        changed_fields: Collection[str] | None = None,
     ) -> int | None:
         """Return the document for `metadata`, creating or updating it.
 
-        Documents are found by bibcode, then DOI, then arXiv ID. Without any
-        identifier, `existing_id` is updated when given. Metadata without a
-        bibcode creates a document only when ``_describes_paper`` accepts it.
+        The catalog finds documents by bibcode, then DOI, then arXiv ID. If no
+        match exists and metadata has no DOI or arXiv ID, it may reuse
+        `existing_id`. It reuses the document only if its bibcode is absent or
+        matches. Metadata without a bibcode creates a document only when
+        ``_describes_paper`` accepts it.
         A DOI-only document that later gains a bibcode keeps its row.
+        For an existing document, `changed_fields` limits the fields merged.
+        Document lookup and new document creation use all of `metadata`.
 
         Returns
         -------
@@ -2366,20 +2989,37 @@ class PdfCatalog:
             self._set_document_identity(document_id, metadata)
             return document_id
 
+        if changed_fields is not None and not changed_fields:
+            return int(row["id"])
+
         existing = json.loads(row["metadata_json"] or "{}")
         if not isinstance(existing, dict):
             existing = {}
-        merged = self._merge_metadata(existing, metadata)
+        updates = (
+            metadata
+            if changed_fields is None
+            else {
+                key: value for key, value in metadata.items() if key in changed_fields
+            }
+        )
+        merged = self._merge_metadata(existing, updates)
         document_id = int(row["id"])
+        bibcode_update = (
+            bibcode if changed_fields is None or "bibcode" in changed_fields else None
+        )
         self._connection.execute(
             """
             UPDATE documents
             SET bibcode = COALESCE(bibcode, ?), metadata_json = ?, updated_at = ?
             WHERE id = ?
             """,
-            (bibcode or None, self._encode_json(merged), now, document_id),
+            (bibcode_update or None, self._encode_json(merged), now, document_id),
         )
-        self._set_document_identity(document_id, merged)
+        if changed_fields is None or any(
+            key in changed_fields
+            for key in ("bibcode", "doi", "arxiv", "arxiv_id", "identifier")
+        ):
+            self._set_document_identity(document_id, merged)
         return document_id
 
     def _select_or_create_version(

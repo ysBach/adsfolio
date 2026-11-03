@@ -35,7 +35,12 @@ from .identity import (
     extract_pdf_own_identity,
     target_identity,
 )
-from .readiness import EXTERNAL_METADATA_KEY, METADATA_SHA256_KEY, METADATA_STALE_KEY
+from .readiness import (
+    EXTERNAL_METADATA_KEY,
+    METADATA_SHA256_KEY,
+    METADATA_STALE_KEY,
+    PREVIOUS_RESOLUTION_KEY,
+)
 from .rename_settings import RenameSettings
 from .renamer import PdfRenamer
 
@@ -92,6 +97,7 @@ AUTOMATIC_FIELDS = frozenset(
         IDENTITY_KEY,
         METADATA_SHA256_KEY,
         METADATA_STALE_KEY,
+        PREVIOUS_RESOLUTION_KEY,
     }
 )
 _ADS_EXTRA_FIELDS = ("abstract", "author_count", "citation_count")

@@ -2,6 +2,114 @@
 
 ## Unreleased
 
+## 0.9.0 (2026-11-04)
+
+### CLI, Python API, and agent installation
+
+- Document the base CLI and Python installation without Qt or the native desktop bundle.
+  Use `pip install adsfolio` for Python or `uv tool install adsfolio` for an isolated CLI.
+- Publish a brief CLI/API agent skill as a checksummed release download and include it in the source archive.
+  Save the file as `adsfolio-cli-api/SKILL.md` in your agent's skills directory.
+  Use JSON searches for structured results. ADS queries still require a token.
+
+### PDF identification and filenames
+
+- Read an unambiguous DOI from XMP metadata during automatic identification.
+  Continue to reject conflicting identifiers and preserve PDF contents.
+- Let enabled DOI providers run when the user declines ADS requests. Honor a
+  disabled ADS setting for reference hints. Enable ADS or enter a DOI to search.
+- Retry a journal-name reference without the word `the` when the first search
+  finds no record. For an unverified PDF, select the returned paper to apply it.
+- Remove the identity confirmation before **Update by ID…**. A direct ID starts
+  the lookup. If a PDF identifier conflicts, review the actual result and confirm
+  the correction. Automatic identification still refuses conflicts. If the PDF,
+  catalog record, or candidate changes during review, retry the lookup.
+- Show reference-search candidates even when the PDF has a different identifier.
+  If no candidate matches, enter a DOI or Bibcode. The app keeps the current metadata.
+- Replace stale unlocked identifiers during an identifier update. Keep notes
+  and locked fields. If a locked identifier conflicts, unlock or correct it and
+  retry. The existing record and PDF stay unchanged until you resolve the conflict.
+- Show **Identified (no ADS link)** for a verified external record. The status
+  marker no longer promises that every Rename template has the required fields.
+- Reverify saved PDFs against their cached or current ADS record. Preserve
+  existing metadata and history when the PDF proves the identity. Report the
+  reason when verification fails.
+- Check enabled filename bibcodes during automatic ADS rechecks. A unique exact
+  match can associate a PDF without readable identifiers. Mark the filename
+  source and reject conflicting PDF identifiers. Keep its filename.
+- Recheck saved external records and indexed PDF DOI metadata at GUI startup.
+  Crossref and DataCite can verify a DOI without an ADS token. Failed lookups
+  leave existing metadata unchanged. Respect the saved Identify scope.
+- Prefer a unique first-page DOI that also appears in PDF metadata. This avoids
+  selecting an unrelated citation DOI when the page contains several DOIs.
+- Corroborate publisher article DOI fields with the first page and provider.
+  Report identity updates and filename outcomes in the job log.
+- Stop trailing bytes in compressed PDF streams from stalling annotation checks.
+- Recheck existing catalog records with ADS at startup and every 24 hours.
+  When ADS provides a verified new match or bibcode, update the metadata and
+  apply the saved Rename settings. If verification or a rename fails, retain
+  the existing files and review the reported issue before retrying.
+- Recognize supported display markup in provider titles during PDF identity
+  checks. The remaining identity checks still apply.
+- Enable ADS and allow ADS requests to retry verified external records without
+  an ADS bibcode. ADSfolio may also use a cached ADS record without network
+  permission. A verified match can add a bibcode. If no match passes the
+  identity check, keep the existing metadata. Review the log before retrying.
+- Skip renames when a template field lacks metadata. Report the missing fields.
+  Add the metadata or choose a template without those fields.
+- Retry enabled ADS after an external Watch result when the template needs a
+  bibcode. Keep the existing record if ADS cannot verify a match.
+- Load saved global Rename settings for `pdf rename` and `pdf watch` by default.
+  Use `--settings-scope library` for library settings with global fallback.
+  Explicit Rename flags override the selected settings for that run.
+- Recognize equivalent Unicode path spellings when they name one directory entry.
+  Keep existing attachment history and avoid merging separate entries.
+
+### Saved PDF annotations
+
+- Keep an existing identification when an incremental save changes only
+  annotations. Preserve the previous verification level and the PDF contents.
+  If the check cannot prove continuity, review the identity notice.
+
+### Settings and sorting
+
+- Open **Settings** with **⌘,** on macOS. Edit desktop, library, citation,
+  account, Identify, Rename, and CV settings from one window. Save each section
+  separately. Library watching controls apply immediately.
+- Keep the selected sort column and direction across searches, library changes,
+  refreshes, and restarts. Report a save failure in Notifications.
+
+### Library browsing and notifications
+
+- Keep ADS as the primary service. Separate **ADS linked**, **Identified without ADS**, and **Needs identification** views.
+  Count verified non-ADS identities separately in the status bar. Exclude them from the Identify badge and retain normal table text.
+  Changed files need review again. Unconfirmed metadata alone does not establish identity.
+  Use **Update by ID…** for a selected PDF that needs confirmation. Preserve PDF contents, provider order, and rename safeguards.
+- Check **Combine libraries** to browse selected libraries together. Expand
+  library groups and nested folder groups to find PDFs. The combined view does
+  not move PDFs. Existing watchers continue to run.
+- Select one PDF in the combined view to edit fields or locks, enter details,
+  or update by ID. Each action uses the owning library and keeps the combined
+  view open. An ID update may rename the PDF with that library's settings. It
+  may also move a resolved PDF from the unresolved folder to the library root.
+  An edit may change metadata shared with other attachments.
+- Identify selected PDFs from one library without leaving the combined view.
+  You can also apply that library's Rename settings to verified matches.
+- Preserve shared fields and concurrent edits when saving PDF details. Reopen
+  manual entry if another process changed a field you edited.
+- During an automatic ADS recheck, choose **Update by ID…** or **Enter Details…**
+  for one PDF. The app stops the recheck before starting the edit. If the PDF or
+  its catalog entry changes during the wait, refresh the library and retry.
+  A watcher that failed to resume no longer blocks a later recheck indefinitely.
+- For whole-library Identify or Rename, right-click its folder. If an editing
+  control is unavailable, read its tooltip. Select one PDF or wait for the active
+  job or ADS recheck to finish. Notifications names unavailable folders.
+  Reconnect the folder. Choose **Refresh**.
+- Choose **Tools → New PDF Sound…** to preview and save a sound for watched
+  arrivals. **Silent** is the default. Check the audio output if playback fails.
+- Drag table headers to reorder columns. Right-click a header to set its
+  alignment. Choose **Default** to restore the column's default alignment.
+
 ## 0.8.0 (2026-11-02)
 
 ### Automatic candidate verification

@@ -36,6 +36,7 @@ from PySide6.QtWidgets import (
     QTreeView,
 )
 
+from ..pdf.classification import current_identity_proof
 from .library import (
     BASE_COLUMNS,
     ISO8601_TIMESTAMP_FORMAT,
@@ -51,17 +52,23 @@ from .library import (
 )
 
 PAGE_SIZE = 500
-# Status-marker colors: green is an ADS link, purple is usable local metadata
-# without one, and amber means the record still needs an ADS lookup.
+# Green marks ADS links. Purple marks external identity or usable local metadata.
+# Amber marks records that need identification or review.
 RESOLUTION_COLORS = {
     ResolutionState.CHANGED: "#d97706",
     ResolutionState.ADS_LINKED: "#2e7d32",
+    ResolutionState.IDENTIFIED_EXTERNAL: "#7b1fa2",
     ResolutionState.LOCAL_METADATA: "#7b1fa2",
     ResolutionState.UNRESOLVED: "#d97706",
 }
 COUNT_COLUMN_TOOLTIPS = {
     "author_count": SAVED_AUTHOR_COUNT_TOOLTIP,
     "citation_count": SAVED_CITATION_COUNT_TOOLTIP,
+}
+COLUMN_ALIGNMENT_FLAGS = {
+    "left": Qt.AlignLeft,
+    "center": Qt.AlignHCenter,
+    "right": Qt.AlignRight,
 }
 
 
@@ -72,14 +79,19 @@ def resolution_tooltip(record: dict[str, Any]) -> str:
         return STALE_VERIFICATION_TOOLTIP
     if state is ResolutionState.ADS_LINKED:
         return "ADS record linked"
+    if state is ResolutionState.IDENTIFIED_EXTERNAL:
+        proof = current_identity_proof(record)
+        if proof is not None and proof.get("status") == "manual_confirmed":
+            return "Manually identified. No ADS record linked."
+        return "Identified by a verified PDF identifier. No ADS record linked."
     if state is ResolutionState.LOCAL_METADATA:
-        return "Local metadata ready for renaming. No ADS record linked."
+        return "Metadata available. Confirm the PDF identity. No ADS record linked."
     if record.get("bibcode"):
         return (
             "Bibcode present. ADS lookup is pending. "
             "Run Identify to check it in a batch. Existing metadata is retained."
         )
-    return "No completed ADS lookup. Run Identify or enter metadata."
+    return "Needs identification. Run Identify or use Update by ID."
 
 
 class LibraryTableView(QTreeView):
@@ -252,11 +264,24 @@ class FirstAuthorDelegate(RowHeightDelegate):
         bold_font = QFont(styled.font)
         bold_font.setBold(True)
         painter.setFont(bold_font)
-        painter.drawText(text_rect, Qt.AlignLeft | Qt.AlignVCenter, surname)
         offset = painter.fontMetrics().horizontalAdvance(surname)
+        shift = 0
+        alignment = index.data(Qt.TextAlignmentRole)
+        if alignment is not None:
+            flags = Qt.AlignmentFlag(alignment)
+            text_width = offset + QFontMetrics(styled.font).horizontalAdvance(remainder)
+            if flags & Qt.AlignRight:
+                shift = text_rect.width() - text_width
+            elif flags & Qt.AlignHCenter:
+                shift = (text_rect.width() - text_width) // 2
+        painter.drawText(
+            text_rect.adjusted(shift, 0, 0, 0),
+            Qt.AlignLeft | Qt.AlignVCenter,
+            surname,
+        )
         painter.setFont(styled.font)
         painter.drawText(
-            text_rect.adjusted(offset, 0, 0, 0),
+            text_rect.adjusted(shift + offset, 0, 0, 0),
             Qt.AlignLeft | Qt.AlignVCenter,
             remainder,
         )
@@ -313,7 +338,9 @@ class LinkDelegate(RowHeightDelegate):
         badge_font = QFont(styled.font)
         badge_font.setBold(True)
         painter.setFont(badge_font)
-        painter.drawText(badge, Qt.AlignCenter, self.brand)
+        alignment = index.data(Qt.TextAlignmentRole)
+        flags = Qt.AlignmentFlag(alignment) if alignment is not None else Qt.AlignCenter
+        painter.drawText(badge, flags, self.brand)
         painter.restore()
 
 
@@ -334,13 +361,26 @@ class ResolutionDelegate(RowHeightDelegate):
         )
         style.drawControl(QStyle.CE_ItemViewItem, styled, painter, styled.widget)
         model = index.model()
-        record = model.record_at(index.row()) if hasattr(model, "record_at") else None
+        if hasattr(model, "record_for_index"):
+            record = model.record_for_index(index)
+        else:
+            record = (
+                model.record_at(index.row()) if hasattr(model, "record_at") else None
+            )
         if not isinstance(record, dict):
             return
         marker_size = min(10, styled.rect.width() - 4, styled.rect.height() - 4)
         if marker_size <= 0:
             return
         marker = styled.rect.center()
+        alignment = index.data(Qt.TextAlignmentRole)
+        if alignment is not None:
+            flags = Qt.AlignmentFlag(alignment)
+            inner = styled.rect.adjusted(2, 2, -2, -2)
+            if flags & Qt.AlignLeft:
+                marker.setX(inner.left() + marker_size // 2)
+            elif flags & Qt.AlignRight:
+                marker.setX(inner.right() - (marker_size - 1 - marker_size // 2))
         state = resolution_state(record)
         if state is ResolutionState.CHANGED:
             half = marker_size / 2.0
@@ -399,6 +439,7 @@ class FileTableModel(QAbstractTableModel):
         self._total = 0
         self._column_fonts: dict[str, QFont] = {}
         self._column_colors: dict[str, QColor] = {}
+        self._column_alignments: dict[str, str] = {}
         self._timestamp_format = ISO8601_TIMESTAMP_FORMAT
         if registry is not None:
             self._reload()
@@ -474,6 +515,18 @@ class FileTableModel(QAbstractTableModel):
         self._timestamp_format = timestamp_format
         self.layoutChanged.emit()
 
+    def set_column_alignments(self, alignments: dict[str, str]) -> None:
+        """Apply horizontal alignment overrides by column key."""
+        self._column_alignments = dict(alignments)
+        if self.columnCount():
+            self.headerDataChanged.emit(Qt.Horizontal, 0, self.columnCount() - 1)
+            if self.rowCount():
+                self.dataChanged.emit(
+                    self.index(0, 0),
+                    self.index(self.rowCount() - 1, self.columnCount() - 1),
+                    [Qt.TextAlignmentRole],
+                )
+
     def rowCount(self, parent: QModelIndex = QModelIndex()) -> int:
         """Return the number of rows currently loaded into the model."""
         return 0 if parent.isValid() else len(self._rows)
@@ -490,6 +543,12 @@ class FileTableModel(QAbstractTableModel):
             return None
         record = self._rows[index.row()]
         column = self._columns[index.column()]
+        if role == Qt.TextAlignmentRole:
+            alignment = COLUMN_ALIGNMENT_FLAGS.get(
+                self._column_alignments.get(column.key)
+            )
+            if alignment is not None:
+                return int(alignment | Qt.AlignVCenter)
         if column.key.startswith("citation:"):
             if role in (Qt.DisplayRole, Qt.ToolTipRole, Qt.AccessibleTextRole):
                 return column.getter(record)
@@ -531,7 +590,9 @@ class FileTableModel(QAbstractTableModel):
         if role == Qt.ForegroundRole:
             return self._column_colors.get(
                 column.key,
-                Qt.gray if record.get("status") == "unresolved" else None,
+                Qt.gray
+                if resolution_state(record) is ResolutionState.UNRESOLVED
+                else None,
             )
         if role == Qt.FontRole:
             return self._column_fonts.get(column.key)
@@ -546,6 +607,11 @@ class FileTableModel(QAbstractTableModel):
         """Return column headers."""
         if orientation != Qt.Horizontal or not 0 <= section < len(self._columns):
             return None
+        if role == Qt.TextAlignmentRole:
+            alignment = COLUMN_ALIGNMENT_FLAGS.get(
+                self._column_alignments.get(self._columns[section].key)
+            )
+            return int(alignment | Qt.AlignVCenter) if alignment is not None else None
         if role == Qt.ToolTipRole:
             return COUNT_COLUMN_TOOLTIPS.get(self._columns[section].key)
         if role != Qt.DisplayRole:

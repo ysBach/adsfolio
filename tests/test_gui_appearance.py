@@ -55,7 +55,7 @@ def test_appearance_dialog_reorders_and_hides_detail_rows(
     assert dialog.hidden_table_columns == ["filename"]
     assert dialog.detail_row_order == ["abstract", "title", "doi"]
     assert dialog.detail_hidden_rows == ["abstract"]
-    assert dialog.font_table.columnCount() == 5
+    assert dialog.font_table.columnCount() == 6
     assert dialog.font_table.rowCount() == len(COLUMNS)
     assert dialog.detail_table.columnCount() == 5
     status_row = dialog.table_column_order.index("status")

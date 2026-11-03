@@ -482,11 +482,8 @@ def test_rename_uses_exact_selected_template_without_substituting_year(tmp_path)
     )
 
     assert result.exit_code == 0, result.output
-    target = tmp_path / "SmithJ_-Paper_Title.pdf"
-    assert f"{source.name} -> {target.name}" in result.output
-    assert "non-ADS rename rule" not in result.output
-    assert sha256_file(target) == digest
-    assert not source.exists()
+    assert "bibcode" in result.output
+    assert sha256_file(source) == digest
 
     changed = CliRunner().invoke(
         pdf,
@@ -494,7 +491,7 @@ def test_rename_uses_exact_selected_template_without_substituting_year(tmp_path)
             "rename",
             str(tmp_path),
             "--file",
-            str(target),
+            str(source),
             "--scheme",
             "{year}_{authors}-{title}",
             "--apply",
@@ -503,9 +500,9 @@ def test_rename_uses_exact_selected_template_without_substituting_year(tmp_path)
 
     explicit_year_target = tmp_path / "2024_SmithJ-Paper_Title.pdf"
     assert changed.exit_code == 0, changed.output
-    assert f"{target.name} -> {explicit_year_target.name}" in changed.output
+    assert f"{source.name} -> {explicit_year_target.name}" in changed.output
     assert sha256_file(explicit_year_target) == digest
-    assert not target.exists()
+    assert not source.exists()
 
 
 @pytest.mark.parametrize("blocked", ["hash", "missing", "metadata", "destination"])
@@ -715,6 +712,55 @@ def test_identify_passes_cached_lookup_to_ordered_resolver(tmp_path, monkeypatch
     assert callable(observed["cached_candidate_lookup"])
     assert observed["allow_network_lookup"] is False
     assert "Resolved PDFs: 1" in result.output
+
+
+def test_identify_uses_crossref_when_ads_requests_are_not_allowed(
+    tmp_path, monkeypatch
+):
+    path = tmp_path / "paper.pdf"
+    _write_pdf(path, doi="10.5555/example")
+    calls = []
+
+    class NoAdsSearch:
+        def query(self, **kwargs):
+            pytest.fail("ADS network requests are disabled")
+
+    monkeypatch.setattr(
+        "adsfolio.pdf.cli._get_client",
+        lambda ctx: SimpleNamespace(search=NoAdsSearch()),
+    )
+    monkeypatch.setattr(
+        "adsfolio.pdf.identifier.fetch_crossref_doi",
+        lambda doi: (
+            calls.append(doi)
+            or {"doi": [doi], "title": ["Example paper"], "year": "2024"}
+        ),
+    )
+
+    result = CliRunner().invoke(
+        pdf,
+        [
+            "identify",
+            str(tmp_path),
+            "--strategy",
+            "pdf_metadata_doi",
+            "--provider",
+            "ads",
+            "--provider",
+            "crossref",
+            "--no-allow-ads",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert calls == ["10.5555/example"]
+    state = open_registry_state(tmp_path)
+    try:
+        record = state.registry.find_file_by_current_path(tmp_path, path.name)
+        assert record["metadata"]["doi"] == "10.5555/example"
+        assert record["metadata"]["title"] == ["Example paper"]
+    finally:
+        state.close()
 
 
 def test_identify_prompts_before_ads_queries(tmp_path, monkeypatch):
@@ -2843,11 +2889,13 @@ def test_external_identify_then_rename_without_ads_token(tmp_path, monkeypatch):
     assert before["metadata"]["_adsfolio_external_metadata"]["provider"] == "crossref"
     identity = before["id"]
     state.close()
-    result = CliRunner().invoke(pdf, ["rename", str(root), "--apply"])
+    result = CliRunner().invoke(
+        pdf, ["rename", str(root), "--scheme", "{authors}_{year}-{title}", "--apply"]
+    )
     assert result.exit_code == 0, result.output
     renamed = list(root.glob("*.pdf"))
     assert len(renamed) == 1
-    assert renamed[0].name == "CurieM_-External_Paper.pdf"
+    assert renamed[0].name == "CurieM_2024-External_Paper.pdf"
     state = open_registry_state(root)
     after = state.registry.find_file_by_current_path(root, renamed[0].name)
     assert after["id"] == identity

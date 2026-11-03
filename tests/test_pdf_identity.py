@@ -79,6 +79,72 @@ def test_horizontal_arxiv_citation_and_body_doi_are_not_identity(tmp_path):
     assert not extract_pdf_own_identity(pdf).has_identifier
 
 
+def test_xmp_identifier_list_keeps_separate_conflicting_values(tmp_path):
+    packet = (
+        "<x:xmpmeta xmlns:x='adobe:ns:meta/'><rdf:RDF "
+        "xmlns:rdf='http://www.w3.org/1999/02/22-rdf-syntax-ns#'>"
+        "<rdf:Description xmlns:dc='http://purl.org/dc/elements/1.1/'>"
+        "<dc:identifier><rdf:Bag><rdf:li>arXiv:1208.4606</rdf:li>"
+        "<rdf:li>arXiv:1301.00001</rdf:li></rdf:Bag></dc:identifier>"
+        "</rdf:Description></rdf:RDF></x:xmpmeta>"
+    )
+    pdf = make_pdf(
+        tmp_path / "paper.pdf", docinfo={"/DOI": "10.1234/example"}, xmp=packet
+    )
+    provider = {
+        "bibcode": "2012A&A...545A..88R",
+        "doi": ["10.1234/example"],
+        "identifier": ["arXiv:1208.4606"],
+    }
+    own = extract_pdf_own_identity(pdf)
+    assert own.arxiv_ids == frozenset({"1208.4606", "1301.00001"})
+    with pytest.raises(IdentityConflictError):
+        verify(pdf, provider)
+
+
+@pytest.mark.parametrize("location", ["docinfo", "xmp_element", "xmp_attribute"])
+def test_malformed_dc_identifier_blocks_verification_and_manual_review(
+    tmp_path, location
+):
+    invalid = "10.48550/arxiv.1208.4606-extra"
+    namespace = "http://purl.org/dc/elements/1.1/"
+    packet = None
+    metadata = {"/DOI": "10.1234/example"}
+    if location == "docinfo":
+        metadata["/dc:identifier"] = invalid
+    else:
+        item = (
+            f"<dc:identifier>{invalid}</dc:identifier>"
+            if location == "xmp_element"
+            else ""
+        )
+        attribute = f" dc:identifier='{invalid}'" if location == "xmp_attribute" else ""
+        packet = (
+            "<x:xmpmeta xmlns:x='adobe:ns:meta/'><rdf:RDF "
+            "xmlns:rdf='http://www.w3.org/1999/02/22-rdf-syntax-ns#'>"
+            f"<rdf:Description xmlns:dc='{namespace}'{attribute}>"
+            f"{item}</rdf:Description></rdf:RDF></x:xmpmeta>"
+        )
+    pdf = make_pdf(tmp_path / "paper.pdf", docinfo=metadata, xmp=packet)
+    provider = {"doi": ["10.1234/example"], "bibcode": "2026Test"}
+    with pytest.raises(IdentityValidationError):
+        assert_mutation_allowed(pdf, provider, provider_document=provider)
+    with pytest.raises(UnverifiedIdentityError) as error:
+        assert_mutation_allowed(
+            pdf, {"title": "Manual entry"}, manual_confirmation=True
+        )
+    assert not error.value.manually_confirmable
+
+
+def test_unrelated_dc_identifier_remains_compatible_with_valid_doi(tmp_path):
+    pdf = make_pdf(
+        tmp_path / "paper.pdf",
+        docinfo={"/DOI": "10.1234/example", "/dc:identifier": "ISBN:123456789"},
+    )
+    provider = {"doi": ["10.1234/example"], "bibcode": "2026Test"}
+    assert verify(pdf, provider)["status"] == "verified"
+
+
 def test_provider_aliases_verify_across_versions_and_bibcode_forms(tmp_path):
     pdf = make_pdf(tmp_path / "paper.pdf", stamp=STAMP)
     for record in (

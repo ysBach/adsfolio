@@ -117,9 +117,10 @@ a year, and external or manual provenance. The default filename omits the
 bibcode when none exists. A custom template still uses the fields that you
 specify.
 
-The paper stays in **Needs ADS lookup**. That view uses the saved ADS lookup
-status, so it includes papers with complete non-ADS metadata. The status
-tooltip shows whether the metadata is ready for renaming.
+Current verified or user-confirmed PDF identities appear in **Identified without ADS**.
+Complete metadata alone does not establish identity. Unconfirmed metadata remains under **Needs identification**.
+Use **Update by ID…** to confirm the selected PDF. ADS rechecks can add a bibcode later.
+These views do not change rename requirements or move files.
 
 ### When the PDF file changes
 

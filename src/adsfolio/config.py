@@ -16,6 +16,7 @@ import os
 import sys
 import tempfile
 import threading
+import time
 from collections.abc import Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar
@@ -498,11 +499,20 @@ class Config:
 
     @classmethod
     def check_rate_limit(cls) -> bool:
-        """Check if we're close to rate limit. Returns True if OK to proceed."""
+        """Return whether a request can proceed without using the quota reserve.
+
+        Once the ADS reset time has passed, allow a request to refresh the
+        previously reported quota. ADS reports the reset as a Unix timestamp.
+        """
         if cls._rate_remaining is None:
             return True
         try:
             remaining = int(cls._rate_remaining)
-            return remaining > 10  # Leave buffer
         except (ValueError, TypeError):
             return True
+        if remaining > 10:
+            return True
+        try:
+            return time.time() >= int(cls._rate_reset)
+        except (ValueError, TypeError):
+            return False

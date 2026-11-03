@@ -13,8 +13,7 @@ from urllib.parse import quote
 from ..citations import CitationFormatter, CitationStyle, citation_preference_key
 from ..formatting import html_to_text
 from ..pdf.arxiv import arxiv_id
-from ..pdf.cli_common import is_resolved_record
-from ..pdf.readiness import METADATA_SHA256_KEY, METADATA_STALE_KEY, metadata_ready
+from ..pdf.classification import ResolutionState, resolution_state, verification_stale
 from ..pdf.registry import stored_count
 
 ISO8601_TIMESTAMP_FORMAT = "iso8601"
@@ -29,53 +28,6 @@ SAVED_CITATION_COUNT_TOOLTIP = (
     "Saved citation count from metadata or a manual edit. "
     "It is a snapshot, not a live ADS value."
 )
-
-
-def verification_stale(record: dict[str, Any]) -> bool:
-    """Return whether stale metadata or a changed PDF invalidates verification display.
-
-    This controls presentation only; stored status and rename readiness are
-    unchanged. Metadata provenance can be top-level or nested in `metadata`.
-    """
-    raw_metadata = record.get("metadata")
-    metadata = raw_metadata if isinstance(raw_metadata, dict) else {}
-    expected_sha = (
-        record.get(METADATA_SHA256_KEY)
-        or metadata.get(METADATA_SHA256_KEY)
-        or metadata.get("sha256")
-    )
-    return bool(
-        record.get(METADATA_STALE_KEY)
-        or metadata.get(METADATA_STALE_KEY)
-        or (expected_sha and expected_sha != record.get("sha256"))
-    )
-
-
-class ResolutionState(str, Enum):
-    """How far a library record has been identified, for the status marker."""
-
-    CHANGED = "changed"
-    ADS_LINKED = "ads_linked"
-    LOCAL_METADATA = "local_metadata"
-    UNRESOLVED = "unresolved"
-
-
-def resolution_state(record: dict[str, Any]) -> ResolutionState:
-    """Classify a record for the status marker and its tooltip.
-
-    A changed PDF wins over every other state. Otherwise a record with a saved
-    ADS link is `ADS_LINKED`. A record without one but with current,
-    rename-ready manual or external metadata is `LOCAL_METADATA`. Everything
-    else, including partly entered manual metadata, is `UNRESOLVED`. This only
-    changes presentation; stored status and rename readiness are unchanged.
-    """
-    if verification_stale(record):
-        return ResolutionState.CHANGED
-    if is_resolved_record(record):
-        return ResolutionState.ADS_LINKED
-    if metadata_ready(record):
-        return ResolutionState.LOCAL_METADATA
-    return ResolutionState.UNRESOLVED
 
 
 def format_count(record: dict[str, Any], key: str) -> str:
@@ -93,6 +45,7 @@ class LibraryView(str, Enum):
 
     ALL = "all"
     RESOLVED = "resolved"
+    IDENTIFIED_WITHOUT_ADS = "identified_without_ads"
     UNRESOLVED = "unresolved"
     ARXIV_ONLY = "arxiv_only"
     DUPLICATES = "duplicates"
@@ -103,20 +56,36 @@ class LibraryView(str, Enum):
         return {
             self.ALL: "All PDFs",
             self.RESOLVED: "ADS linked",
-            self.UNRESOLVED: "Needs ADS lookup",
+            self.IDENTIFIED_WITHOUT_ADS: "Identified without ADS",
+            self.UNRESOLVED: "Needs identification",
             self.ARXIV_ONLY: "arXiv",
             self.DUPLICATES: "Duplicates",
         }[self]
 
     @property
     def description(self) -> str:
-        """Explain the stored-status filter separately from current indicators."""
-        if self in {self.RESOLVED, self.UNRESOLVED}:
+        """Explain identification evidence and the action for each view."""
+        if self is self.ALL:
             return (
-                "Groups use the saved ADS lookup status. Needs ADS lookup can include "
-                "bibcodes awaiting lookup and complete non-ADS metadata. "
+                "All current PDFs. ADS remains the primary identification service. "
+                "An ADS link alone does not prove the PDF content matches."
+            )
+        if self is self.RESOLVED:
+            return (
+                "These PDFs have current saved ADS links. "
                 "A linked ADS record does not prove the PDF content matches. "
-                "Changed PDFs need identification again."
+                "Changed PDFs appear under Needs identification."
+            )
+        if self is self.IDENTIFIED_WITHOUT_ADS:
+            return (
+                "These PDFs have current verified or user-confirmed identities without ADS links. "
+                "They do not need identification again. ADS rechecks can add links later."
+            )
+        if self is self.UNRESOLVED:
+            return (
+                "These PDFs need identification or review of changed files. "
+                "Usable metadata alone does not confirm a match. "
+                "Run Identify or use Update by ID for the selected PDF."
             )
         return self.label
 
@@ -270,9 +239,11 @@ class FileQuery:
         """
         filters: dict[str, Any] = {}
         if self.view is LibraryView.RESOLVED:
-            filters["resolved"] = True
+            filters["identification"] = "ads_linked"
+        elif self.view is LibraryView.IDENTIFIED_WITHOUT_ADS:
+            filters["identification"] = "identified_without_ads"
         elif self.view is LibraryView.UNRESOLVED:
-            filters["resolved"] = False
+            filters["identification"] = "needs_identification"
         elif self.view is LibraryView.ARXIV_ONLY:
             filters["source"] = "arxiv"
         elif self.view is LibraryView.DUPLICATES:
@@ -380,4 +351,5 @@ __all__ = [
     "format_first_seen",
     "format_mtime",
     "resolution_state",
+    "verification_stale",
 ]

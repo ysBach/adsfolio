@@ -5,18 +5,20 @@ from __future__ import annotations
 import copy
 import json
 from collections import Counter
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Callable, Collection, Iterator, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from .arxiv import arxiv_id
 from .catalog import (
+    _DOCUMENT_SNAPSHOT_UNSET,
     CATALOG_SCHEMA_VERSION,
     LEGACY_REGISTRY_FILENAME,
     LOCKED_METADATA_FIELDS_KEY,
     PdfCatalog,
 )
+from .classification import IDENTIFICATION_GROUPS, identification_group
 from .files import sha256_file
 from .identify_settings import IdentifySettings
 from .readiness import METADATA_STALE_KEY, stored_bibcode_matches_file
@@ -251,8 +253,8 @@ class CentralPdfRegistry:
                 mtime_ns=stat.st_mtime_ns,
                 device=stat.st_dev,
                 inode=stat.st_ino,
-                metadata=record["metadata"],
-                status=record["status"],
+                metadata=None,
+                status=None,
             )
             updated += 1
         return FileReconciliation(
@@ -433,6 +435,32 @@ class CentralPdfRegistry:
         """Replace one attachment's local metadata."""
         return self.catalog.replace_file_metadata(root, relative_path, metadata)
 
+    def replace_file_metadata_if_unchanged(
+        self,
+        root: Path,
+        relative_path: str,
+        metadata: Mapping[str, Any],
+        expected_record: Mapping[str, Any],
+        *,
+        expected_document: Mapping[str, Any] | None = _DOCUMENT_SNAPSHOT_UNSET,
+        changed_fields: Collection[str] | None = None,
+        allow_reviewed_stale_recovery: bool = False,
+    ) -> bool:
+        """Replace metadata if the catalog still matches the original record.
+
+        See ``PdfCatalog.replace_file_metadata_if_unchanged`` for the snapshot
+        requirements and transaction behavior.
+        """
+        return self.catalog.replace_file_metadata_if_unchanged(
+            root,
+            relative_path,
+            metadata,
+            expected_record,
+            expected_document=expected_document,
+            changed_fields=changed_fields,
+            allow_reviewed_stale_recovery=allow_reviewed_stale_recovery,
+        )
+
     def record_rename(
         self,
         root: Path,
@@ -464,15 +492,18 @@ class CentralPdfRegistry:
         """Count current locations matching supported catalog filters.
 
         Counts in SQL when the filters allow it. The `source` filter reads
-        metadata JSON and `duplicates_only` compares digests across the
+        metadata JSON. Identification groups also read current identity evidence.
+        `duplicates_only` compares digests across the
         filtered rows, so those still load the records.
         """
         sql_filters = dict(filters)
         source = sql_filters.pop("source", None)
         duplicates_only = sql_filters.pop("duplicates_only", False)
+        identification = sql_filters.pop("identification", None)
         digest = sql_filters.get("sha256")
         if (
             source is None
+            and identification is None
             and not duplicates_only
             and (digest is None or isinstance(digest, str))
         ):
@@ -606,7 +637,16 @@ class CentralPdfRegistry:
     def _query_records(self, **filters: Any) -> list[dict[str, Any]]:
         source = filters.pop("source", None)
         duplicates_only = bool(filters.pop("duplicates_only", False))
+        identification = filters.pop("identification", None)
+        if identification is not None and identification not in IDENTIFICATION_GROUPS:
+            raise ValueError(f"Unknown identification group: {identification!r}")
         records = self.catalog.query_files(root=self.directory, **filters)
+        if identification is not None:
+            records = [
+                record
+                for record in records
+                if identification_group(record) == identification
+            ]
         if source is not None:
             records = [
                 record

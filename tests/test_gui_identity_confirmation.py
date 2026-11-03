@@ -1,4 +1,4 @@
-"""Explicit review is required before assigning an unreadable PDF identity."""
+"""The user's identifier choice does not need a second warning."""
 
 from __future__ import annotations
 
@@ -11,18 +11,18 @@ from pytestqt.qtbot import QtBot
 from test_gui_main_window_watch import _window_factory
 
 from adsfolio.gui.config import GuiConfig, RootEntry
+from adsfolio.pdf.files import sha256_file
+from adsfolio.pdf.identity import target_identity
 
 
 @pytest.mark.parametrize("owned", [False, True])
-@pytest.mark.parametrize("confirm", [False, True])
-def test_update_by_id_requires_confirmation_only_without_owned_identifier(
+def test_update_by_id_accepts_the_users_identifier_without_an_extra_warning(
     monkeypatch: pytest.MonkeyPatch,
     qtbot: QtBot,
     tmp_path: Path,
     owned: bool,
-    confirm: bool,
 ) -> None:
-    """Only explicit consent adds the single-file manual-confirmation flag."""
+    """Keep validation enabled when the PDF has identifiers of its own."""
     root = tmp_path / "library"
     root.mkdir()
     path = root / "paper.pdf"
@@ -42,41 +42,69 @@ def test_update_by_id_requires_confirmation_only_without_owned_identifier(
     monkeypatch.setattr(
         QInputDialog, "getText", lambda *args, **kwargs: ("arXiv:2401.00001", True)
     )
-    questions: list[str] = []
     started: list[tuple[str, ...]] = []
-
-    def answer(_parent, _title, text, *_args):
-        questions.append(text)
-        return QMessageBox.Yes if confirm else QMessageBox.No
-
-    monkeypatch.setattr(QMessageBox, "question", answer)
+    monkeypatch.setattr(
+        QMessageBox, "question", lambda *args: pytest.fail("Unnecessary warning")
+    )
     monkeypatch.setattr(
         window, "_start_ads_refresh", lambda *args, **kwargs: started.append(args)
     )
 
     window._update_from_identifier("")
 
-    assert bool(questions) is not owned
-    if owned or confirm:
-        assert len(started) == 1
-        assert started[0][:2] == ("--identifier", "arXiv:2401.00001")
-        assert ("--confirm-identity" in started[0]) is not owned
-    else:
-        assert started == []
-    if questions:
-        assert "paper.pdf" in questions[0]
-        assert "arXiv:2401.00001" in questions[0]
+    assert len(started) == 1
+    assert started[0][:2] == ("--identifier", "arXiv:2401.00001")
+    assert ("--confirm-identity" in started[0]) is not owned
     assert path.read_bytes() == before
 
 
+@pytest.mark.parametrize("change", ["changed", "missing"])
+def test_reference_candidate_is_bound_to_the_reviewed_pdf(
+    monkeypatch: pytest.MonkeyPatch, qtbot: QtBot, tmp_path: Path, change: str
+) -> None:
+    root = tmp_path / "library"
+    root.mkdir()
+    path = root / "paper.pdf"
+    writer = PdfWriter()
+    writer.add_blank_page(width=300, height=400)
+    writer.write(path)
+    window, _controller, _saves = _window_factory(
+        monkeypatch, qtbot, GuiConfig(roots=[RootEntry(str(root))])
+    )
+    document = {"bibcode": "2024Test...1A", "title": ["Candidate"]}
+    candidate = {
+        "bibcode": document["bibcode"],
+        "first_author": "Author",
+        "title": "Candidate",
+        "pdf_sha256": sha256_file(path),
+        "identity_fingerprint": target_identity(document).fingerprint,
+    }
+    warnings = []
+    started = []
+
+    def choose(*args, **kwargs):
+        if change == "changed":
+            path.write_bytes(b"changed after the lookup")
+        else:
+            path.unlink()
+        return args[3][0], True
+
+    monkeypatch.setattr(QInputDialog, "getItem", choose)
+    monkeypatch.setattr(QMessageBox, "warning", lambda *args: warnings.append(args))
+    monkeypatch.setattr(window, "_start_ads_refresh", lambda *a, **k: started.append(a))
+
+    window._choose_ambiguous_ads_match([candidate], path.name, 1, root=root)
+
+    assert not started
+    assert warnings and ("changed" in warnings[0][2] or "no longer" in warnings[0][2])
+
+
 @pytest.mark.parametrize("owned", [False, True])
-@pytest.mark.parametrize("confirm", [False, True])
-def test_choose_ambiguous_ads_candidate_prompts_and_binds_confirmation(
+def test_choosing_an_ads_candidate_needs_no_second_confirmation(
     monkeypatch: pytest.MonkeyPatch,
     qtbot: QtBot,
     tmp_path: Path,
     owned: bool,
-    confirm: bool,
 ) -> None:
     root = tmp_path / "library"
     root.mkdir()
@@ -104,33 +132,21 @@ def test_choose_ambiguous_ads_candidate_prompts_and_binds_confirmation(
         "getItem",
         lambda *args, **kwargs: (args[3][0], True),
     )
-    questions: list[str] = []
     started: list[tuple[str, ...]] = []
-
-    def answer(_parent, _title, text, *_args):
-        questions.append(text)
-        return QMessageBox.Yes if confirm else QMessageBox.No
-
-    monkeypatch.setattr(QMessageBox, "question", answer)
+    monkeypatch.setattr(
+        QMessageBox, "question", lambda *args: pytest.fail("Unnecessary warning")
+    )
     monkeypatch.setattr(
         window, "_start_ads_refresh", lambda *args, **kwargs: started.append(args)
     )
 
     window._choose_ambiguous_ads_match(candidates, "ambig.pdf", 1, root=root)
 
-    assert bool(questions) is not owned
-    if owned or confirm:
-        assert len(started) == 1
-        assert started[0][:4] == (
-            "--bibcode",
-            "2024Test...1A",
-            "--relative-path",
-            "ambig.pdf",
-        )
-        assert ("--confirm-identity" in started[0]) is not owned
-    else:
-        assert started == []
-    if questions:
-        assert "ambig.pdf" in questions[0]
-        assert "2024Test...1A" in questions[0]
-        assert "trusted metadata fields" in questions[0]
+    assert len(started) == 1
+    assert started[0][:4] == (
+        "--bibcode",
+        "2024Test...1A",
+        "--relative-path",
+        "ambig.pdf",
+    )
+    assert ("--confirm-identity" in started[0]) is not owned

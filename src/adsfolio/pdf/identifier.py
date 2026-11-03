@@ -5,7 +5,7 @@ import logging
 import os
 import re
 import unicodedata
-from collections import Counter
+from collections import Counter, deque
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import contextmanager
@@ -20,7 +20,6 @@ if TYPE_CHECKING:
 
 from ..api.search import escape_query_phrase
 from ..config import ADSError, RequestTooLongError
-from .arxiv import normalize_arxiv_id
 from .doi_providers import (
     DEFAULT_DOI_PROVIDERS,
     DoiProvider,
@@ -36,15 +35,18 @@ from .identity import (
     IDENTITY_KEY,
     IdentityConflictError,
     IdentityValidationError,
+    UnverifiedIdentityError,
     assert_mutation_allowed,
+    extract_exact_filename_bibcode,
     extract_pdf_own_identity,
+    select_first_page_doi,
     target_identity,
 )
 from .upgrade_utils import _extract_doi_resolver_path, _normalize_doi
 
 DOI_PATTERN = re.compile(r"\b10\.\d{4,9}/[-._;()/:A-Z0-9]+", re.IGNORECASE)
 BIBCODE_PATTERN = re.compile(
-    r"\b(\d{4}[A-Za-z&.]{5}[A-Za-z0-9.]{4}[A-Za-z0-9.][A-Za-z0-9.]{4}[A-Za-z])\b"
+    r"\b(\d{4}[A-Za-z&.]{5}[A-Za-z0-9.]{4}[A-Za-z0-9.][A-Za-z0-9.\-]{4}[A-Za-z])\b"
 )
 _ExtractedValue = TypeVar("_ExtractedValue")
 AdsDocumentsCallback = Callable[[list[dict[str, Any]]], None]
@@ -143,6 +145,18 @@ def _extract_doi_text(text: str) -> str | None:
     return match.group(0).rstrip(").,;")
 
 
+def _select_first_page_doi(text: str, pdf_path: Path) -> str | None:
+    """Select one page DOI, using PDF metadata to resolve multiple candidates."""
+    selected = select_first_page_doi(text, None)
+    if selected is not None or not DOI_PATTERN.search(text):
+        return selected
+    try:
+        evidence = extract_pdf_own_identity(pdf_path)
+    except IdentityValidationError:
+        return None
+    return select_first_page_doi(text, evidence)
+
+
 def _extract_doi_from_metadata_map(metadata: Any) -> str | None:
     metadata_text = []
     for key, value in dict(metadata).items():
@@ -162,6 +176,20 @@ def _extract_doi_from_metadata_map(metadata: Any) -> str | None:
                 return doi
         metadata_text.append(value_text)
     return _extract_doi_text(" ".join(metadata_text))
+
+
+def _extract_xmp_doi_candidate(pdf_path: Path, reader: Any) -> str | None:
+    """Return an unambiguous DOI stated in the PDF's XMP metadata."""
+    try:
+        trailer = getattr(reader, "trailer", None)
+        if trailer is None or not trailer["/Root"].get("/Metadata"):
+            return None
+        identity = extract_pdf_own_identity(pdf_path)
+    except (AttributeError, KeyError, TypeError, IdentityValidationError, OSError):
+        return None
+    if identity.blocking_errors or len(identity.dois) != 1:
+        return None
+    return next(iter(identity.dois))
 
 
 def _extract_bibcode_from_metadata_map(metadata: Any) -> str | None:
@@ -218,13 +246,15 @@ def extract_doi_candidates_pdf(
 
         reader = PdfReader(str(pdf_path))
         metadata = getattr(reader, "metadata", None) or {}
-        metadata_doi = _extract_doi_from_metadata_map(metadata)
+        metadata_doi = _extract_doi_from_metadata_map(
+            metadata
+        ) or _extract_xmp_doi_candidate(pdf_path, reader)
         if metadata_doi:
             return metadata_doi, None
         if not getattr(reader, "pages", None):
             return None, None
         page_text = reader.pages[0].extract_text() or ""
-        return None, _extract_doi_text(page_text)
+        return None, _select_first_page_doi(page_text, pdf_path)
     except Exception:
         return None, None
     finally:
@@ -407,18 +437,8 @@ class PdfIdentifier:
         return None
 
     def extract_bibcode_from_filename(self, filename: str) -> str | None:
-        """Extract bibcode-like token from filename variants."""
-        stem = Path(filename).stem
-        variants = [
-            stem,
-            stem.replace("_", "."),
-            stem.replace("-", "."),
-        ]
-        for candidate in variants:
-            bibcode = self.extract_bibcode_from_text(candidate)
-            if bibcode:
-                return bibcode
-        return None
+        """Return the sole exact bibcode in the filename."""
+        return extract_exact_filename_bibcode(filename)
 
     def _first_page_text(self, pdf_path: Path) -> str:
         with self._quiet_pypdf_logs():
@@ -438,7 +458,9 @@ class PdfIdentifier:
             self.logger.debug("Failed reading metadata from %s: %s", pdf_path, exc)
             return None
 
-        return self._extract_doi_from_metadata_obj(metadata)
+        return self._extract_doi_from_metadata_obj(
+            metadata
+        ) or _extract_xmp_doi_candidate(pdf_path, reader)
 
     def _extract_doi_from_metadata_obj(self, metadata: Any) -> str | None:
         return _extract_doi_from_metadata_map(metadata)
@@ -496,7 +518,9 @@ class PdfIdentifier:
             with self._quiet_pypdf_logs():
                 reader = self._load_reader(pdf_path)
                 metadata = getattr(reader, "metadata", None) or {}
-                metadata_doi = self._extract_doi_from_metadata_obj(metadata)
+                metadata_doi = self._extract_doi_from_metadata_obj(
+                    metadata
+                ) or _extract_xmp_doi_candidate(pdf_path, reader)
                 if metadata_doi:
                     return metadata_doi, None
                 if not getattr(reader, "pages", None):
@@ -510,12 +534,12 @@ class PdfIdentifier:
             )
             return None, None
 
-        return None, self._extract_doi(page_text)
+        return None, _select_first_page_doi(page_text, pdf_path)
 
     def extract_doi_from_text(self, pdf_path: Path) -> str | None:
         """Extract DOI from first-page text."""
         try:
-            return self._extract_doi(self._first_page_text(pdf_path))
+            return _select_first_page_doi(self._first_page_text(pdf_path), pdf_path)
         except Exception as exc:
             self.logger.debug("Failed extracting DOI text from %s: %s", pdf_path, exc)
             return None
@@ -740,11 +764,46 @@ class PdfIdentifier:
     def _chunked(self, items: list[str], chunk_size: int) -> list[list[str]]:
         return [items[i : i + chunk_size] for i in range(0, len(items), chunk_size)]
 
+    def _query_identifier_batches(
+        self,
+        items: list[str],
+        make_query: Callable[[list[str]], str],
+        rows_per_item: int,
+        progress_callback: Callable[[int, int], None] | None = None,
+    ) -> Iterable[tuple[list[str], list[dict[str, Any]]]]:
+        """Split identifier batches when ADS rejects a request as too long."""
+        pending = deque(self._chunked(items, self.MAX_BATCH_TERMS))
+        total = len(pending)
+        completed = 0
+        if progress_callback is not None and total:
+            progress_callback(completed, total)
+        while pending:
+            chunk = pending.popleft()
+            rows = min(max(len(chunk) * rows_per_item, 10), 2000)
+            try:
+                documents = self._query_exact_documents(make_query(chunk), rows)
+            except RequestTooLongError:
+                if len(chunk) == 1:
+                    raise
+                middle = len(chunk) // 2
+                pending.appendleft(chunk[middle:])
+                pending.appendleft(chunk[:middle])
+                total += 1
+                continue
+            yield chunk, documents
+            completed += 1
+            if progress_callback is not None:
+                progress_callback(completed, total)
+
     def _query_exact_documents(self, query: str, rows: int) -> list[dict[str, Any]]:
         """Read complete, stable ADS results before deciding identifier uniqueness."""
         result = self.client.search.query(q=query, fl=self.SEARCH_FIELDS, rows=rows)
         documents = list(result.docs)
         total = int(result.num_found)
+        if getattr(result, "start", 0) != 0:
+            raise ADSError(
+                "ADS returned an incomplete first identifier page. Retry the lookup."
+            )
         while len(documents) < total:
             start = len(documents)
             page = self.client.search.query(
@@ -845,15 +904,15 @@ class PdfIdentifier:
             normalized.append(doi)
 
         resolved: dict[str, dict[str, Any] | None] = {doi: None for doi in normalized}
-        chunks = self._chunked(normalized, self.MAX_BATCH_TERMS)
-        total_chunks = len(chunks)
-        if progress_callback is not None and total_chunks > 0:
-            progress_callback(0, total_chunks)
-        for index, chunk in enumerate(chunks, start=1):
-            terms = [f'doi:"{escape_query_phrase(doi)}"' for doi in chunk]
-            query = " OR ".join(terms)
-            rows = min(max(len(chunk) * 5, 10), 2000)
-            documents = self._query_exact_documents(query, rows)
+        batches = self._query_identifier_batches(
+            normalized,
+            lambda chunk: " OR ".join(
+                f'doi:"{escape_query_phrase(doi)}"' for doi in chunk
+            ),
+            5,
+            progress_callback,
+        )
+        for chunk, documents in batches:
             if ads_documents_callback is not None:
                 ads_documents_callback(documents)
 
@@ -873,8 +932,6 @@ class PdfIdentifier:
                     resolved[doi] = docs[0]
                 elif len(docs) > 1:
                     self.logger.info("Ambiguous DOI match for doi=%s", doi)
-            if progress_callback is not None:
-                progress_callback(index, total_chunks)
         return resolved
 
     def query_docs_for_bibcodes(
@@ -883,10 +940,27 @@ class PdfIdentifier:
         progress_callback: Callable[[int, int], None] | None = None,
         ads_documents_callback: AdsDocumentsCallback | None = None,
     ) -> dict[str, dict[str, Any] | None]:
-        """
-        Resolve bibcode candidates using batched ADS queries.
+        """Resolve current and former bibcodes using batched ADS queries.
 
-        Returns bibcode -> unique matching ADS document, or None when missing.
+        Parameters
+        ----------
+        bibcodes
+            Bibcodes to look up. The lookup ignores case when it removes duplicates.
+        progress_callback
+            Optional callback for the number of completed query batches.
+        ads_documents_callback
+            Optional callback for each complete batch of ADS documents.
+
+        Returns
+        -------
+        dict[str, dict[str, Any] | None]
+            Each requested bibcode maps to its unique ADS document, or `None`
+            when no document or more than one document claims it.
+
+        Notes
+        -----
+        ADS must list a bibcode as a primary or alternate identifier. An arXiv
+        bibcode can also match a complete arXiv identifier for the same eprint.
         """
         if self.client is None:
             self.logger.debug("No ADS client configured; skipping ADS bibcode query.")
@@ -897,54 +971,83 @@ class PdfIdentifier:
             bibcode = str(raw).strip()
             if not bibcode:
                 continue
-            key = bibcode.lower()
+            key = bibcode.casefold()
             if key in seen:
                 continue
             seen.add(key)
             normalized.append(bibcode)
 
         resolved: dict[str, dict[str, Any] | None] = {code: None for code in normalized}
-        chunks = self._chunked(normalized, self.MAX_BATCH_TERMS)
-        total_chunks = len(chunks)
-        if progress_callback is not None and total_chunks > 0:
-            progress_callback(0, total_chunks)
+        batches = self._query_identifier_batches(
+            normalized,
+            lambda chunk: " OR ".join(
+                f'{field}:"{escape_query_phrase(code)}"'
+                for code in chunk
+                for field in ("bibcode", "alternate_bibcode", "identifier")
+            ),
+            2,
+            progress_callback,
+        )
+        for chunk, documents in batches:
+            owners: dict[str, dict[str, dict[str, Any]]] = {code: {} for code in chunk}
+            incomplete_owners: set[str] = set()
+            arxiv_ids = {
+                code: target_identity({"bibcode": code}).arxiv_ids for code in chunk
+            }
+            seen_bibcodes: set[str] = set()
+            for document in documents:
+                primary = document.get("bibcode")
+                if isinstance(primary, (list, tuple)):
+                    primary = primary[0] if primary else None
+                if not isinstance(primary, str) or not primary.strip():
+                    aliases = [
+                        value
+                        for field in ("alternate_bibcode", "identifier")
+                        for value in self._as_list(document.get(field))
+                        if isinstance(value, str)
+                    ]
+                    claimed = {value.strip().casefold() for value in aliases}
+                    claimed_arxiv = target_identity({"identifier": aliases}).arxiv_ids
+                    incomplete_owners.update(
+                        code
+                        for code in chunk
+                        if code.casefold() in claimed or arxiv_ids[code] & claimed_arxiv
+                    )
+                    continue
+                primary = primary.strip()
+                primary_key = primary.casefold()
+                if primary_key in seen_bibcodes:
+                    raise ADSError(
+                        "ADS returned duplicate bibcodes in identifier results. "
+                        "Retry the lookup."
+                    )
+                seen_bibcodes.add(primary_key)
+                aliases = [
+                    value
+                    for field in ("alternate_bibcode", "identifier")
+                    for value in self._as_list(document.get(field))
+                ]
+                claimed_bibcodes = {primary_key} | {
+                    value.strip().casefold()
+                    for value in aliases
+                    if isinstance(value, str) and value.strip()
+                }
+                claimed_arxiv = target_identity({"identifier": aliases}).arxiv_ids
+                for code in chunk:
+                    if code.casefold() in claimed_bibcodes or (
+                        arxiv_ids[code] & claimed_arxiv
+                    ):
+                        owners[code][primary_key] = document
 
-        for index, chunk in enumerate(chunks, start=1):
-            terms = [f'bibcode:"{code.replace(chr(34), " ")}"' for code in chunk]
-            query = " OR ".join(terms)
-            rows = min(max(len(chunk) * 2, 10), 2000)
-            documents = self._query_exact_documents(query, rows)
             if ads_documents_callback is not None:
                 ads_documents_callback(documents)
 
-            docs_by_bibcode: dict[str, dict[str, Any]] = {}
-            for doc in documents:
-                bibcode = self._first_scalar(doc.get("bibcode"))
-                if not bibcode:
-                    continue
-                docs_by_bibcode[bibcode.lower()] = doc
-
             for code in chunk:
-                doc = docs_by_bibcode.get(code.lower())
-                if doc is None:
-                    arxiv = normalize_arxiv_id(code)
-                    aliases = {
-                        self._first_scalar(candidate.get("bibcode")): candidate
-                        for candidate in documents
-                        if any(
-                            str(value).casefold() == code.casefold()
-                            or (arxiv and normalize_arxiv_id(value) == arxiv)
-                            for field in ("alternate_bibcode", "identifier")
-                            for value in self._as_list(candidate.get(field))
-                        )
-                    }
-                    if len(aliases) == 1:
-                        doc = next(iter(aliases.values()))
-                if doc is not None:
-                    resolved[code] = doc
+                if len(owners[code]) == 1 and code not in incomplete_owners:
+                    resolved[code] = next(iter(owners[code].values()))
+                elif owners[code]:
+                    self.logger.info("Ambiguous ADS bibcode match for %s", code)
 
-            if progress_callback is not None:
-                progress_callback(index, total_chunks)
         return resolved
 
     def _resolve_doc_for_doi(
@@ -1215,6 +1318,9 @@ class PdfIdentifier:
         sha256: str | None = None,
         *,
         manual_confirmation: bool = False,
+        manual_conflict_override: bool = False,
+        filename_bibcode: str | None = None,
+        allow_filename_association: bool = False,
     ) -> dict[str, Any]:
         """Build a library record, after checking the PDF is the paper in `doc`.
 
@@ -1271,7 +1377,10 @@ class PdfIdentifier:
             record,
             expected_sha256=sha256 or None,
             manual_confirmation=manual_confirmation,
+            manual_conflict_override=manual_conflict_override,
             provider_document=doc,
+            filename_bibcode=filename_bibcode,
+            allow_filename_association=allow_filename_association,
         )
         record["sha256"] = provenance["sha256"]
         record["_adsfolio_metadata_sha256"] = provenance["sha256"]
@@ -1301,13 +1410,14 @@ class PdfIdentifier:
         resolved: dict[str, dict[str, Any] | None] = {i: None for i in arxiv_ids}
         if self.client is None:
             return resolved
-        for chunk in self._chunked(sorted(resolved), self.MAX_BATCH_TERMS):
-            query = " OR ".join(
+        batches = self._query_identifier_batches(
+            sorted(resolved),
+            lambda chunk: " OR ".join(
                 f'identifier:"arXiv:{escape_query_phrase(i)}"' for i in chunk
-            )
-            documents = self._query_exact_documents(
-                query, min(max(len(chunk) * 5, 10), 2000)
-            )
+            ),
+            5,
+        )
+        for chunk, documents in batches:
             if ads_documents_callback is not None:
                 ads_documents_callback(documents)
             for arxiv_id in chunk:
@@ -1374,6 +1484,7 @@ class PdfIdentifier:
         ads_documents_callback: AdsDocumentsCallback | None,
         cached_candidate_lookup: CachedCandidateLookup | None,
         allow_network_lookup: bool,
+        complete_candidates: set[str],
     ) -> None:
         pending: dict[str, str] = {}
         for candidate in candidates.values():
@@ -1406,6 +1517,8 @@ class PdfIdentifier:
         )
         for key, value in pending.items():
             candidate_cache[("bibcode", key)] = docs.get(value)
+            if docs.get(value) is not None:
+                complete_candidates.add(key)
 
     def _query_doi_candidates(
         self,
@@ -1416,6 +1529,7 @@ class PdfIdentifier:
         cached_candidate_lookup: CachedCandidateLookup | None,
         allow_network_lookup: bool,
         providers: Sequence[DoiProvider] = DEFAULT_DOI_PROVIDERS,
+        allow_external_network_lookup: bool | None = None,
     ) -> None:
         pending: set[str] = set()
         for candidate in candidates.values():
@@ -1427,25 +1541,13 @@ class PdfIdentifier:
                 continue
             pending.add(normalized)
 
-        # Allow cached ADS DOI hits even when allow_network_lookup is False,
-        # but only if ADS is active in providers.
-        if (
-            not allow_network_lookup
-            and DoiProvider.ADS in providers
-            and cached_candidate_lookup is not None
-        ):
-            for normalized in list(pending):
-                cache_hit, doc = cached_candidate_lookup("doi", normalized)
-                if cache_hit and doc is not None:
-                    candidate_cache[("doi", normalized)] = doc
-                    pending.remove(normalized)
-
-        if not pending or not allow_network_lookup:
-            if not allow_network_lookup:
-                for normalized in pending:
-                    candidate_cache[("doi", normalized)] = None
+        if not pending:
             return
-
+        allow_external = (
+            allow_network_lookup
+            if allow_external_network_lookup is None
+            else allow_external_network_lookup
+        )
         remaining = set(pending)
         provider_errors = {}
         for provider in providers:
@@ -1460,7 +1562,7 @@ class PdfIdentifier:
                             candidate_cache[("doi", normalized)] = doc
                             remaining.remove(normalized)
 
-                if not remaining or self.client is None:
+                if not remaining or self.client is None or not allow_network_lookup:
                     continue
 
                 try:
@@ -1494,6 +1596,8 @@ class PdfIdentifier:
                         remaining.remove(normalized)
 
             elif provider in {DoiProvider.CROSSREF, DoiProvider.DATACITE}:
+                if not allow_external:
+                    continue
                 for normalized in list(remaining):
                     try:
                         doc = _fetch_external_doi(provider, normalized)
@@ -1727,6 +1831,7 @@ class PdfIdentifier:
         ads_documents_callback: AdsDocumentsCallback | None,
         cached_candidate_lookup: CachedCandidateLookup | None,
         allow_network_lookup: bool,
+        allow_external_network_lookup: bool | None,
     ) -> dict[str, Any] | None:
         """Try later DOI providers after one candidate fails the PDF identity check."""
         source = (
@@ -1753,6 +1858,7 @@ class PdfIdentifier:
                         cached_candidate_lookup,
                         allow_network_lookup,
                         providers=(provider,),
+                        allow_external_network_lookup=allow_external_network_lookup,
                     )
                 except (ADSError, ProviderError) as exc:
                     self.logger.warning(
@@ -1782,8 +1888,22 @@ class PdfIdentifier:
         ads_documents_callback: AdsDocumentsCallback | None,
         cached_candidate_lookup: CachedCandidateLookup | None,
         allow_network_lookup: bool,
+        ads_errors: dict[Path, dict[tuple[str, Any], ADSError]],
+        complete_bibcodes: set[str],
         providers: Sequence[DoiProvider] = DEFAULT_DOI_PROVIDERS,
+        allow_external_network_lookup: bool | None = None,
     ) -> tuple[dict[Path, dict[str, Any]], list[Path]]:
+        def defer_ads_error(exc: ADSError) -> None:
+            self.logger.warning(
+                "ADS lookup failed for %s; trying later strategies: %s",
+                strategy.value,
+                exc,
+            )
+            for path, candidate in candidates.items():
+                key = self._candidate_cache_key(strategy, candidate)
+                if key is not None and key not in candidate_cache:
+                    ads_errors.setdefault(path, {})[key] = exc
+
         ads_enabled = DoiProvider.ADS in providers
         if strategy is IdentifyStrategy.FIRST_PAGE_ARXIV:
             pending = sorted(
@@ -1793,11 +1913,15 @@ class PdfIdentifier:
                     if ("arxiv", str(value)) not in candidate_cache
                 }
             )
-            docs = (
-                self.query_docs_for_arxiv_ids(pending, ads_documents_callback)
-                if pending and ads_enabled and allow_network_lookup
-                else dict.fromkeys(pending)
-            )
+            try:
+                docs = (
+                    self.query_docs_for_arxiv_ids(pending, ads_documents_callback)
+                    if pending and ads_enabled and allow_network_lookup
+                    else dict.fromkeys(pending)
+                )
+            except ADSError as exc:
+                defer_ads_error(exc)
+                docs = {}
             for key, doc in docs.items():
                 candidate_cache[("arxiv", key)] = doc
         elif strategy in {
@@ -1806,28 +1930,36 @@ class PdfIdentifier:
             IdentifyStrategy.FIRST_PAGE_BIBCODE,
         }:
             if ads_enabled:
-                self._query_bibcode_candidates(
+                try:
+                    self._query_bibcode_candidates(
+                        candidates,
+                        candidate_cache,
+                        progress_callback,
+                        ads_documents_callback,
+                        cached_candidate_lookup,
+                        allow_network_lookup,
+                        complete_bibcodes,
+                    )
+                except ADSError as exc:
+                    defer_ads_error(exc)
+        elif strategy in {
+            IdentifyStrategy.FILENAME_DOI,
+            IdentifyStrategy.PDF_METADATA_DOI,
+            IdentifyStrategy.FIRST_PAGE_DOI,
+        }:
+            try:
+                self._query_doi_candidates(
                     candidates,
                     candidate_cache,
                     progress_callback,
                     ads_documents_callback,
                     cached_candidate_lookup,
                     allow_network_lookup,
+                    providers=providers,
+                    allow_external_network_lookup=allow_external_network_lookup,
                 )
-        elif strategy in {
-            IdentifyStrategy.FILENAME_DOI,
-            IdentifyStrategy.PDF_METADATA_DOI,
-            IdentifyStrategy.FIRST_PAGE_DOI,
-        }:
-            self._query_doi_candidates(
-                candidates,
-                candidate_cache,
-                progress_callback,
-                ads_documents_callback,
-                cached_candidate_lookup,
-                allow_network_lookup,
-                providers=providers,
-            )
+            except ADSError as exc:
+                defer_ads_error(exc)
         elif strategy is IdentifyStrategy.STRUCTURED_FILENAME:
             if ads_enabled:
                 self._query_structured_candidates(
@@ -1846,6 +1978,23 @@ class PdfIdentifier:
                     cached_candidate_lookup,
                     allow_network_lookup,
                 )
+        if strategy in {
+            IdentifyStrategy.FIRST_PAGE_ARXIV,
+            IdentifyStrategy.FILENAME_BIBCODE,
+            IdentifyStrategy.PDF_METADATA_BIBCODE,
+            IdentifyStrategy.FIRST_PAGE_BIBCODE,
+            IdentifyStrategy.FILENAME_DOI,
+            IdentifyStrategy.PDF_METADATA_DOI,
+            IdentifyStrategy.FIRST_PAGE_DOI,
+        }:
+            for path, candidate in candidates.items():
+                key = self._candidate_cache_key(strategy, candidate)
+                if key is None or key not in candidate_cache:
+                    continue
+                doc = candidate_cache[key]
+                # An external DOI result does not establish that ADS recovered.
+                if key[0] != "doi" or doc is None or doc.get("bibcode"):
+                    ads_errors.get(path, {}).pop(key, None)
         resolved: dict[Path, dict[str, Any]] = {}
         unresolved: list[Path] = []
         for path in paths:
@@ -1867,11 +2016,23 @@ class PdfIdentifier:
             if doc is None:
                 unresolved.append(path)
                 continue
+            filename_code = (
+                candidate
+                if strategy is IdentifyStrategy.FILENAME_BIBCODE
+                and isinstance(candidate, str)
+                and extract_exact_filename_bibcode(path.name) == candidate
+                else None
+            )
             try:
                 record = self.build_record(
                     doc,
                     path,
                     sha256=sha256_by_path.get(path) if sha256_by_path else None,
+                    filename_bibcode=filename_code,
+                    allow_filename_association=(
+                        filename_code is not None
+                        and filename_code.casefold() in complete_bibcodes
+                    ),
                 )
             except IdentityValidationError as exc:
                 self.logger.warning("Rejected identification of %s: %s", path.name, exc)
@@ -1880,6 +2041,42 @@ class PdfIdentifier:
                 ):
                     self.identity_failures[path] = exc
                 record = None
+                if filename_code is not None and isinstance(
+                    exc, UnverifiedIdentityError
+                ):
+                    code = filename_code
+                    if (
+                        code.casefold() not in complete_bibcodes
+                        and allow_network_lookup
+                        and ads_enabled
+                        and self.client is not None
+                    ):
+                        try:
+                            fresh = self.query_docs_for_bibcodes(
+                                [code], ads_documents_callback=ads_documents_callback
+                            ).get(code)
+                        except ADSError as lookup_error:
+                            ads_errors.setdefault(path, {})[
+                                ("bibcode", code.casefold())
+                            ] = lookup_error
+                            fresh = None
+                        if fresh is not None:
+                            doc = fresh
+                            candidate_cache[("bibcode", code.casefold())] = fresh
+                            complete_bibcodes.add(code.casefold())
+                    if code.casefold() in complete_bibcodes:
+                        try:
+                            record = self.build_record(
+                                doc,
+                                path,
+                                sha256=sha256_by_path.get(path)
+                                if sha256_by_path
+                                else None,
+                                filename_bibcode=code,
+                                allow_filename_association=True,
+                            )
+                        except IdentityValidationError as filename_error:
+                            self.identity_failures[path] = filename_error
                 if strategy in {
                     IdentifyStrategy.FILENAME_DOI,
                     IdentifyStrategy.PDF_METADATA_DOI,
@@ -1895,6 +2092,7 @@ class PdfIdentifier:
                         ads_documents_callback,
                         cached_candidate_lookup,
                         allow_network_lookup,
+                        allow_external_network_lookup,
                     )
                 if record is None:
                     unresolved.append(path)
@@ -1914,8 +2112,13 @@ class PdfIdentifier:
         *,
         strategies: tuple[IdentifyStrategy, ...] = RECOMMENDED_IDENTIFY_STRATEGIES,
         providers: tuple[DoiProvider, ...] = DEFAULT_DOI_PROVIDERS,
+        allow_external_network_lookup: bool | None = None,
     ) -> dict[str, Any] | None:
-        """Resolve one PDF with the canonical ordered strategy engine."""
+        """Resolve one PDF with the canonical ordered strategy engine.
+
+        By default, `allow_network_lookup` also controls DOI provider requests.
+        Set `allow_external_network_lookup` to control those requests separately.
+        """
         path = Path(pdf_path)
         return self.resolve_many(
             [path],
@@ -1925,6 +2128,7 @@ class PdfIdentifier:
             ads_documents_callback=ads_documents_callback,
             cached_candidate_lookup=cached_candidate_lookup,
             allow_network_lookup=allow_network_lookup,
+            allow_external_network_lookup=allow_external_network_lookup,
         )[path]
 
     def resolve_many(
@@ -1939,8 +2143,13 @@ class PdfIdentifier:
         *,
         strategies: tuple[IdentifyStrategy, ...] = RECOMMENDED_IDENTIFY_STRATEGIES,
         providers: tuple[DoiProvider, ...] = DEFAULT_DOI_PROVIDERS,
+        allow_external_network_lookup: bool | None = None,
     ) -> dict[Path, dict[str, Any] | None]:
-        """Resolve PDFs in configured stage order while batching equal lookups."""
+        """Resolve PDFs in configured stage order while batching equal lookups.
+
+        By default, `allow_network_lookup` also controls DOI provider requests.
+        Set `allow_external_network_lookup` to control those requests separately.
+        """
         ordered_paths = [Path(path) for path in pdf_paths]
         results: dict[Path, dict[str, Any] | None] = {
             path: None for path in ordered_paths
@@ -1951,6 +2160,8 @@ class PdfIdentifier:
         self.identity_failures.clear()
         pending = list(ordered_paths)
         candidate_cache: dict[tuple[str, Any], dict[str, Any] | None] = {}
+        ads_errors: dict[Path, dict[tuple[str, Any], ADSError]] = {}
+        complete_bibcodes: set[str] = set()
         for strategy in strategies:
             if not pending:
                 break
@@ -1970,7 +2181,10 @@ class PdfIdentifier:
                 ads_documents_callback,
                 cached_candidate_lookup,
                 allow_network_lookup,
+                ads_errors,
+                complete_bibcodes,
                 providers=providers,
+                allow_external_network_lookup=allow_external_network_lookup,
             )
             results.update(resolved)
             self.logger.info(
@@ -1983,4 +2197,6 @@ class PdfIdentifier:
 
         for path in pending:
             self.logger.warning("Unable to resolve PDF: %s", path.name)
+            if ads_errors.get(path):
+                raise next(iter(ads_errors[path].values()))
         return results

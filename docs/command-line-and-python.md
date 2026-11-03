@@ -24,6 +24,32 @@ pip install "adsfolio[full,gui]"  # adds the desktop application
 `uv tool install adsfolio` or `pipx install adsfolio` installs the CLI in its own
 environment.
 
+### CLI and API without the desktop app
+
+The base package includes the CLI and Python API. It does not install Qt,
+PyMuPDF, Watchdog, or the native desktop bundle. It still includes basic PDF
+and citation dependencies. Python remains necessary for this installation.
+
+For an AI agent or script, use JSON output:
+
+```sh
+adsfolio search 'author:Einstein' --fields bibcode,title,year --rows 5 --json
+```
+
+Without a persistent CLI installation, use:
+
+```sh
+uvx --from adsfolio adsfolio search 'author:Einstein' --rows 5 --json
+```
+
+ADS queries require an ADS token. Provide `ADS_API_TOKEN` through your environment
+or secret manager. Do not place tokens in agent instructions or command arguments.
+For repeatable environments, pin the package to your chosen release.
+
+Download the [CLI/API agent skill](https://github.com/ysBach/adsfolio/releases/latest/download/adsfolio-cli-api-SKILL.md).
+Save it as `adsfolio-cli-api/SKILL.md` in your agent's skills directory.
+The skill covers queries, JSON output, Python access, and mutation boundaries.
+
 ### From source
 
 ```sh
@@ -54,7 +80,7 @@ Local references and DOI lookups do not require an ADS token.
 ## Search and export
 
 ```sh
-adsfolio search "author:Einstein" --fl bibcode,title --rows 5
+adsfolio search "author:Einstein" --fields bibcode,title --rows 5
 adsfolio export 2020ApJ...900..100S -f bibtex
 adsfolio library list
 adsfolio library get LIBRARY_ID --bibtex
@@ -79,6 +105,29 @@ Identify records publication matches. Rename previews changes unless you supply
 Both commands check each match against the arXiv stamp and DOIs that the PDF
 states about itself. They skip PDFs whose identifiers contradict the record or
 cannot confirm it. See [PDF identity checks](gui.md#pdf-identity-checks).
+ADSfolio recognizes supported display markup in provider titles during the
+title comparison. The record must still pass the other identity checks.
+
+To retry verified external metadata without an ADS bibcode, enable ADS and
+allow ADS requests. This command selects ADS for one run:
+
+```sh
+adsfolio pdf identify ~/Papers --provider ads --allow-ads
+```
+
+A verified ADS match can add its bibcode. ADSfolio may also use a cached ADS
+record without network permission. If no ADS match passes the identity check,
+it keeps the existing metadata. Check the output before retrying.
+
+`pdf rename` and `pdf watch` load saved global Rename settings by default. Add
+`--settings-scope library` to use the library's saved Rename settings. If the
+library has no saved settings, ADSfolio uses the global settings. Explicit
+Rename flags, such as `--scheme`, override the named settings for that run.
+
+If a template field lacks metadata, Rename skips the file and names the missing
+fields in its output. Add the metadata or choose a different `--scheme`.
+Then retry the rename.
+
 See [PDF workflows](cli-tutorials/04-pdf-workflows.md) for provider order,
 filename templates, OCR preparation, watching, and annotation transfer.
 
@@ -96,8 +145,19 @@ adsfolio pdf status ~/Papers --recursive
 ```
 
 Watch with `--apply` can identify and rename arriving PDFs that pass the
-identity check as verified. Review its saved
-policies before starting it on an existing collection.
+identity check. A unique exact ADS bibcode in a filename can associate a PDF
+without independently verifying its contents. Review saved policies before
+starting Watch on an existing collection.
+For a proven incremental annotation save, Watch keeps the saved identification.
+Other changes still need an identity check.
+Watch also rechecks existing records with enabled ADS at startup and every 24
+hours. Set `--upgrade-interval` to change the interval. A verified new match
+or bibcode updates metadata and uses the saved Rename settings with `--apply`.
+Without `--apply`, it previews those changes. A failed identity check or
+filename collision keeps the files in place. Resolve the reported issue and
+retry.
+If the template requires missing metadata, Watch keeps the filename and reports
+the missing fields. Add the metadata or choose another template before retrying.
 Upgrade and Obsidian commands preview their work by default.
 Read their `--help` output before applying changes.
 

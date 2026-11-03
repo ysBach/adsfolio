@@ -9,12 +9,13 @@ import pytest
 from click.testing import CliRunner
 from pdf_identity_fixtures import write_pdf
 
-from adsfolio.config import AuthenticationError
+from adsfolio.config import AuthenticationError, Config
 from adsfolio.pdf.cli import _parse_ads_identifier, pdf
 from adsfolio.pdf.doi_providers import DoiProvider
 from adsfolio.pdf.files import sha256_file
 from adsfolio.pdf.identify_settings import IdentifySettings
 from adsfolio.pdf.registry import open_registry_state
+from adsfolio.pdf.rename_settings import RenameSettings
 
 CROSSREF_DOC = {
     "doi": ["10.5555/not.in.ads"],
@@ -39,6 +40,7 @@ class EmptySearch:
 
 @pytest.fixture
 def library(tmp_path: Path) -> Path:
+    Config.save_rename_settings(RenameSettings(template="{authors}_{year}-{title}"))
     root = tmp_path / "library"
     root.mkdir()
     pdf_path = root / "scan.pdf"
@@ -125,7 +127,7 @@ def test_doi_outside_ads_updates_and_renames_the_file(library, providers, monkey
     assert result.exit_code == 0, result.output
     assert search.queries == ['doi:"10.5555/not.in.ads"']
     assert providers == [("crossref", "10.5555/not.in.ads")]
-    assert "not in ADS" in result.output
+    assert "Found 10.5555/not.in.ads at crossref." in result.output
     record = _only_record(library)
     assert record["status"] == "unresolved"
     assert not record["bibcode"]
@@ -135,6 +137,141 @@ def test_doi_outside_ads_updates_and_renames_the_file(library, providers, monkey
     assert (library / record["current_path"]).is_file()
     assert record["_document"] is not None and record["_document"]["bibcode"] is None
     assert record["_document"]["doi"] == "10.5555/not.in.ads"
+
+
+@pytest.mark.parametrize("locked", [False, True])
+@pytest.mark.parametrize("provider", ["crossref", "ads"])
+@pytest.mark.parametrize("rename", [False, True])
+@pytest.mark.parametrize("was_linked", [False, True])
+def test_explicit_doi_handles_stale_catalog_identifiers_without_losing_notes(
+    library, providers, monkeypatch, locked, provider, rename, was_linked
+):
+    source = library / "scan.pdf"
+    original = source.read_bytes()
+    state = open_registry_state(library)
+    try:
+        record = state.registry.find_file_by_current_path(library, source.name)
+        metadata = dict(record["metadata"])
+        metadata.update(
+            {
+                "title": ["Old title"],
+                "doi": "10.5555/old",
+                "identifier": ["10.5555/old"],
+                "notes": "Keep these notes",
+            }
+        )
+        if locked:
+            metadata["_adsfolio_locked_fields"] = ["doi"]
+        if was_linked:
+            metadata["bibcode"] = "2010ApJ...700...12X"
+        assert state.registry.replace_file_metadata(library, source.name, metadata)
+    finally:
+        state.close()
+    before = _only_record(library)
+    if provider == "ads":
+        document = {**CROSSREF_DOC, "bibcode": "2021JEx.....3....7R"}
+        search = SimpleNamespace(
+            query=lambda **kwargs: SimpleNamespace(num_found=1, docs=[document])
+        )
+        requested = document["bibcode"]
+    else:
+        search = EmptySearch()
+        requested = "10.5555/not.in.ads"
+    monkeypatch.setattr(
+        "adsfolio.pdf.cli._get_client", lambda _ctx: SimpleNamespace(search=search)
+    )
+
+    result = CliRunner().invoke(
+        pdf,
+        [
+            "refresh-ads",
+            str(library),
+            "--identifier",
+            requested,
+            "--confirm-identity",
+            "--relative-path",
+            "scan.pdf",
+            *([] if rename else ["--no-rename"]),
+        ],
+    )
+    after = _only_record(library)
+
+    if locked:
+        assert result.exit_code == 2
+        assert after["metadata"] == before["metadata"]
+        assert source.read_bytes() == original
+    else:
+        assert result.exit_code == 0, result.output
+        stored_doi = after["metadata"]["doi"]
+        assert "10.5555/not.in.ads" in (
+            stored_doi if isinstance(stored_doi, list) else [stored_doi]
+        )
+        assert "10.5555/old" not in after["metadata"].get("identifier", [])
+        assert after["metadata"]["title"] == CROSSREF_DOC["title"]
+        assert after["metadata"]["notes"] == "Keep these notes"
+        assert after["bibcode"] == (requested if provider == "ads" else "")
+        assert (library / after["current_path"]).read_bytes() == original
+
+
+def test_correcting_one_pdf_keeps_other_attachment_on_the_old_paper(
+    library, providers, monkeypatch
+):
+    first = library / "scan.pdf"
+    second = library / "other.pdf"
+    write_pdf(second)
+    second.write_bytes(second.read_bytes() + b"\n% another attachment")
+    first_hash = sha256_file(first)
+    second_hash = sha256_file(second)
+    old_bibcode = "2010ApJ...700...12X"
+    state = open_registry_state(library)
+    try:
+        for path, digest in ((first, first_hash), (second, second_hash)):
+            state.upsert_file(
+                path.name,
+                {
+                    "current_filename": path.name,
+                    "sha256": digest,
+                    "bibcode": old_bibcode,
+                    "doi": "10.5555/old",
+                    "title": ["Old paper"],
+                    "status": "resolved",
+                },
+            )
+    finally:
+        state.close()
+    monkeypatch.setattr(
+        "adsfolio.pdf.cli._get_client",
+        lambda _ctx: SimpleNamespace(search=EmptySearch()),
+    )
+
+    result = CliRunner().invoke(
+        pdf,
+        [
+            "refresh-ads",
+            str(library),
+            "--identifier",
+            "10.5555/not.in.ads",
+            "--relative-path",
+            first.name,
+            "--confirm-identity",
+            "--no-rename",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    state = open_registry_state(library)
+    try:
+        updated = state.registry.find_file_by_current_path(library, first.name)
+        untouched = state.registry.find_file_by_current_path(library, second.name)
+        assert not updated["bibcode"]
+        assert updated["metadata"]["doi"] == "10.5555/not.in.ads"
+        assert untouched["bibcode"] == old_bibcode
+        assert untouched["metadata"]["doi"] == "10.5555/old"
+        assert updated["document_id"] != untouched["document_id"]
+    finally:
+        state.close()
+    assert sha256_file(first) == first_hash
+    assert sha256_file(second) == second_hash
 
 
 def test_doi_lookup_works_without_an_ads_token(library, providers, monkeypatch):

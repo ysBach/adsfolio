@@ -889,7 +889,13 @@ def test_main_window_retries_selected_ambiguous_ads_candidate(
 
     assert captured == [
         (
-            ("--bibcode", "1965Natur.207.1381B", "--relative-path", "paper.pdf"),
+            (
+                "--bibcode",
+                "1965Natur.207.1381B",
+                "--relative-path",
+                "paper.pdf",
+                "--offer-conflict-review",
+            ),
             17,
         )
     ]
@@ -1295,7 +1301,7 @@ def test_toolbar_exposes_identify_and_rename_actions(
 
 @pytest.mark.parametrize(
     "raw_status,display_status",
-    [("resolved", "ADS record linked"), ("unresolved", "No ADS link")],
+    [("resolved", "ADS record linked"), ("unresolved", "Needs identification")],
 )
 def test_detail_status_display_preserves_metadata_and_edit_semantics(
     application: QApplication,
@@ -1320,7 +1326,7 @@ def test_detail_status_display_preserves_metadata_and_edit_semantics(
     assert row.lock_button.isHidden()
     assert row.value.accessibleDescription()
     if raw_status == "unresolved":
-        assert "Metadata is available" in row.value.toolTip()
+        assert "Identification is incomplete" in row.value.toolTip()
         assert "Existing metadata is retained" in row.value.toolTip()
     monkeypatch.setattr(
         QInputDialog, "getMultiLineText", lambda *args: ("Edited title", True)
@@ -1330,6 +1336,40 @@ def test_detail_status_display_preserves_metadata_and_edit_semantics(
     assert changes[-1]["status"] == raw_status
     assert record["status"] == raw_status
     assert record["metadata"]["status"] == raw_status
+    pane.close()
+
+
+def test_verified_external_record_distinguishes_identification_from_ads_link(
+    application: QApplication,
+) -> None:
+    from adsfolio.pdf.identity import IDENTITY_KEY, target_identity
+
+    pane = DetailPane()
+    metadata = {
+        "title": ["Fictional paper"],
+        "doi": "10.5555/example",
+    }
+    metadata[IDENTITY_KEY] = {
+        "status": "verified",
+        "sha256": "file-digest",
+        "identity": target_identity(metadata).fingerprint,
+    }
+    record = {
+        "current_path": "paper.pdf",
+        "status": "unresolved",
+        "sha256": "file-digest",
+        "metadata": metadata,
+    }
+
+    pane.set_record(record, Path("/papers"))
+    row = pane._row_widgets["status"]
+    assert row.value.text() == "Identified (no ADS link)"
+    assert "matched a provider record" in row.value.toolTip()
+    assert row.value._copy_text == "unresolved"
+
+    metadata["doi"] = "10.5555/changed"
+    pane.set_record(record, Path("/papers"))
+    assert pane._row_widgets["status"].value.text() == "Needs identification"
     pane.close()
 
 

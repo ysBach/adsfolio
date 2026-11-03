@@ -274,6 +274,10 @@ def test_preview_renders_html_and_markdown_and_keeps_source(qtbot, tmp_path):
 
 def test_selected_papers_export_offline_in_their_order(qtbot, tmp_path, monkeypatch):
     monkeypatch.setattr("adsfolio.gui.cv_dialog.CommandJob", FakeJob)
+    monkeypatch.setattr(
+        "adsfolio.journal_utils._get_journal_map",
+        lambda: {"ApJ": {"full": "The Astrophysical Journal", "iso4": "ApJ"}},
+    )
     (tmp_path / "cv.yaml").write_text(
         yaml.safe_dump(
             {

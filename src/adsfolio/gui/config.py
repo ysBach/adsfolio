@@ -51,10 +51,14 @@ class GuiConfig:
     roots: list[RootEntry] = field(default_factory=list)
     last_root: str | None = None
     last_view: str = "all"
+    combined_view: bool = False
+    combined_roots: list[str] | None = None
+    watch_sound: str = "silent"
     window_geometry: str | None = None
     window_state: str | None = None
     column_widths: dict[str, int] = field(default_factory=dict)
     column_fonts: dict[str, dict[str, Any]] = field(default_factory=dict)
+    column_alignments: dict[str, str] = field(default_factory=dict)
     table_column_order: list[str] = field(default_factory=list)
     hidden_table_columns: list[str] = field(default_factory=list)
     detail_fonts: dict[str, dict[str, Any]] = field(default_factory=dict)
@@ -255,6 +259,19 @@ def _from_mapping(payload: Mapping[str, Any]) -> GuiConfig:
                     normalized_font["color"] = color
                 column_fonts[key] = normalized_font
 
+    raw_alignments = payload.get("column_alignments", {})
+    column_alignments: dict[str, str] = {}
+    if isinstance(raw_alignments, Mapping):
+        for key, value in raw_alignments.items():
+            if (
+                isinstance(key, str)
+                and key
+                and key not in _OBSOLETE_GUI_PREFERENCE_KEYS
+                and isinstance(value, str)
+                and value in {"left", "center", "right"}
+            ):
+                column_alignments[key] = value
+
     table_column_order: list[str] = []
     raw_table_column_order = payload.get("table_column_order", [])
     if isinstance(raw_table_column_order, list):
@@ -362,15 +379,30 @@ def _from_mapping(payload: Mapping[str, Any]) -> GuiConfig:
             if isinstance(path, str) and scope in {"global", "library"}:
                 rename_scopes[str(Path(path).expanduser().resolve())] = str(scope)
 
+    raw_combined_roots = payload.get("combined_roots")
+    combined_roots = (
+        [
+            path
+            for path in raw_combined_roots
+            if isinstance(path, str) and path and "\0" not in path
+        ]
+        if isinstance(raw_combined_roots, list)
+        else None
+    )
+
     return GuiConfig(
         version=GUI_CONFIG_VERSION,
         roots=roots,
         last_root=_as_string(payload.get("last_root")),
         last_view=_as_string(payload.get("last_view"), "all") or "all",
+        combined_view=_as_bool(payload.get("combined_view"), False),
+        combined_roots=combined_roots,
+        watch_sound=_as_string(payload.get("watch_sound"), "silent") or "silent",
         window_geometry=_as_string(payload.get("window_geometry")),
         window_state=_as_string(payload.get("window_state")),
         column_widths=column_widths,
         column_fonts=column_fonts,
+        column_alignments=column_alignments,
         table_column_order=table_column_order,
         hidden_table_columns=hidden_table_columns,
         detail_fonts=detail_fonts,

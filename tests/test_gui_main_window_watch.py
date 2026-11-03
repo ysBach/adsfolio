@@ -221,6 +221,7 @@ def test_f5_reconciles_files_preserving_selection_and_history(
 def test_local_refresh_waits_for_watcher_and_keeps_origin_root(
     monkeypatch, qtbot, tmp_path
 ) -> None:
+    monkeypatch.setattr(MainWindow, "_queue_startup_ads_rechecks", lambda self: None)
     first, second = tmp_path / "first", tmp_path / "second"
     first.mkdir()
     second.mkdir()
@@ -256,6 +257,7 @@ def test_local_refresh_waits_for_watcher_and_keeps_origin_root(
 def test_failed_local_refresh_keeps_history_and_restores_controls(
     monkeypatch, qtbot, tmp_path
 ) -> None:
+    monkeypatch.setattr(MainWindow, "_queue_startup_ads_rechecks", lambda self: None)
     root = tmp_path / "library"
     root.mkdir()
     writer = PdfWriter()
@@ -352,7 +354,9 @@ def test_ads_toolbar_reuses_selected_and_identifier_refresh(
 
     root = tmp_path / "library"
     root.mkdir()
-    (root / "paper.pdf").write_bytes(b"paper")
+    writer = PdfWriter()
+    writer.add_blank_page(width=100, height=100)
+    writer.write(root / "paper.pdf")
     window, _controller, _saves = _window_factory(
         monkeypatch, qtbot, GuiConfig(roots=[RootEntry(str(root))])
     )
@@ -372,7 +376,9 @@ def test_ads_toolbar_reuses_selected_and_identifier_refresh(
     monkeypatch.setattr(
         QInputDialog, "getText", lambda *args, **kwargs: (identifier, True)
     )
-    monkeypatch.setattr(QMessageBox, "question", lambda *args: QMessageBox.Yes)
+    monkeypatch.setattr(
+        QMessageBox, "warning", lambda *args: pytest.fail("Unexpected warning")
+    )
     window.update_selected_ads_action.trigger()
 
     assert "--confirm-identity" in calls[1][0]
@@ -1482,18 +1488,28 @@ def test_untracked_notice_does_not_register_a_cancelled_or_changed_pdf(
     event = replace(_event(root, controller.session_id(root)), state=WatchState.FAILED)
     controller.outcome.emit(WatchOutcome(event, message="No readable identifier"))
     monkeypatch.setattr(
-        QInputDialog, "getText", lambda *args, **kwargs: ("10.1000/manual", True)
+        QInputDialog,
+        "getText",
+        lambda *args, **kwargs: ("10.1000/manual", review != "declined"),
     )
     warnings = []
     monkeypatch.setattr(QMessageBox, "warning", lambda *args: warnings.append(args[2]))
 
-    def answer(*args):
-        if review == "file_changed":
-            pdf.write_bytes(pdf.read_bytes() + b"\n% External update")
-            return QMessageBox.Yes
-        return QMessageBox.No
+    if review == "file_changed":
+        from adsfolio.gui.main_window import extract_pdf_own_identity
 
-    monkeypatch.setattr(QMessageBox, "question", answer)
+        def changed_after_extraction(path):
+            identity = extract_pdf_own_identity(path)
+            pdf.write_bytes(pdf.read_bytes() + b"\n% External update")
+            return identity
+
+        monkeypatch.setattr(
+            "adsfolio.gui.main_window.extract_pdf_own_identity",
+            changed_after_extraction,
+        )
+    monkeypatch.setattr(
+        QMessageBox, "question", lambda *args: pytest.fail("Unnecessary warning")
+    )
 
     window.notice_bar.update_by_id_button.click()
 

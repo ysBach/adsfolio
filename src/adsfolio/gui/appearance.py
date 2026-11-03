@@ -69,6 +69,7 @@ class AppearanceDialog(QDialog):
         self._table_row_keys: list[str] = []
         self._detail_row_keys: list[str] = []
         self._table_columns = tuple(table_columns)
+        self._alignment_controls: dict[str, QComboBox] = {}
         layout = QVBoxLayout(self)
         self.tabs = QTabWidget(self)
         self.tabs.addTab(self._build_fonts_tab(config), "Table")
@@ -105,6 +106,15 @@ class AppearanceDialog(QDialog):
     def hidden_table_columns(self) -> list[str]:
         """Return table-column keys configured as hidden."""
         return self._unchecked_keys(self.font_table, self._table_row_keys)
+
+    @property
+    def column_alignments(self) -> dict[str, str]:
+        """Return the selected non-default alignment for each column."""
+        return {
+            key: str(combo.currentData())
+            for key, combo in self._alignment_controls.items()
+            if combo.currentData() != "default"
+        }
 
     @property
     def timestamp_format_value(self) -> str:
@@ -188,9 +198,9 @@ class AppearanceDialog(QDialog):
         ]
         rows = list(self._ordered_rows(labels, config.table_column_order))
         self._table_row_keys = [key for key, _label in rows]
-        self.font_table = QTableWidget(len(rows), 5, tab)
+        self.font_table = QTableWidget(len(rows), 6, tab)
         self.font_table.setHorizontalHeaderLabels(
-            ["Column", "Custom style", "Font", "Size", "Color"]
+            ["Column", "Custom style", "Font", "Size", "Color", "Alignment"]
         )
         hidden = set(config.hidden_table_columns)
         for row, (key, name) in enumerate(rows):
@@ -200,6 +210,20 @@ class AppearanceDialog(QDialog):
             self._add_font_controls(
                 self.font_table, row, key, self._font_settings.get(key)
             )
+            alignment = QComboBox(self.font_table)
+            alignment.setAccessibleName(f"Alignment for {name}")
+            for label, value in (
+                ("Default", "default"),
+                ("Left", "left"),
+                ("Center", "center"),
+                ("Right", "right"),
+            ):
+                alignment.addItem(label, value)
+            index = alignment.findData(config.column_alignments.get(key, "default"))
+            alignment.setCurrentIndex(max(0, index))
+            alignment.currentIndexChanged.connect(self._emit_settings_changed)
+            self._alignment_controls[key] = alignment
+            self.font_table.setCellWidget(row, 5, alignment)
         self._enable_row_reordering(self.font_table)
         self.font_table.itemChanged.connect(self._emit_settings_changed)
         self.font_table.verticalHeader().sectionMoved.connect(

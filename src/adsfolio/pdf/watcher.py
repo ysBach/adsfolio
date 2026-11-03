@@ -24,10 +24,22 @@ from .identify_settings import (
     IdentifyStrategy,
 )
 from .identity import IDENTITY_KEY, IdentityValidationError, UnverifiedIdentityError
-from .readiness import WATCH_PENDING_KEY, metadata_ready
+from .readiness import (
+    EXTERNAL_METADATA_KEY,
+    METADATA_STALE_KEY,
+    WATCH_PENDING_KEY,
+    metadata_ready,
+)
 from .registry import CentralPdfRegistryState
 from .rename_settings import RenameSettings
-from .renamer import DEFAULT_SCHEME, PdfRenamer, verify_record_identity
+from .renamer import (
+    DEFAULT_SCHEME,
+    MissingTemplateFieldsError,
+    PdfRenamer,
+    cached_provider_document,
+    recover_stale_record,
+    verify_record_identity,
+)
 from .sidecar import Sidecar
 from .tracked_move import (
     TrackedMoveConflictError,
@@ -42,6 +54,26 @@ __all__ = ["PdfNotReadyError", "PdfWatcher", "WatchIdentifyPolicy"]
 
 class PdfNotReadyError(RuntimeError):
     """Indicate that a PDF should be retried after its filesystem state changes."""
+
+
+@dataclass
+class _WatchSchedule:
+    interval_hours: float
+    last_check: float | None = None
+
+    def due(self) -> bool:
+        return self.last_check is None or (
+            time.monotonic() - self.last_check >= max(1.0, self.interval_hours * 3600)
+        )
+
+    def complete(self) -> None:
+        self.last_check = time.monotonic()
+
+    def remaining(self) -> float:
+        if self.last_check is None:
+            return 0.0
+        interval = max(1.0, self.interval_hours * 3600)
+        return max(0.0, self.last_check + interval - time.monotonic())
 
 
 @dataclass(frozen=True)
@@ -196,6 +228,25 @@ class PdfWatcher:
             raise PdfNotReadyError(f"PDF changed while it was being inspected: {path}")
         return sha256
 
+    def _preserve_annotation_revision(
+        self,
+        path: Path,
+        state: Sidecar | CentralPdfRegistryState,
+        *,
+        apply: bool,
+        sha256: str | None = None,
+    ) -> dict[str, Any] | None:
+        """Keep a cataloged identification after a proven annotation change."""
+        if not isinstance(state, CentralPdfRegistryState):
+            return None
+        relative = self._relative_path(Path(state.directory), path)
+        if state.find_by_current_filename(relative) is None:
+            return None
+        digest = sha256 or self._ready_sha256(path)
+        return state.registry.catalog.preserve_annotation_revision(
+            Path(state.directory), relative, digest, apply=apply
+        )
+
     def process_new_pdf(
         self,
         pdf_path: Path,
@@ -212,6 +263,7 @@ class PdfWatcher:
         providers: tuple[DoiProvider, ...] = DEFAULT_DOI_PROVIDERS,
         author_separator: str = "+",
         author_truncation_suffix: str = "+",
+        _check_annotation_revision: bool = True,
     ) -> dict | None:
         """Identify and rename a single PDF, returning resolved metadata.
 
@@ -231,6 +283,12 @@ class PdfWatcher:
         relative_path = self._relative_path(root, path)
 
         sha256 = self._ready_sha256(path)
+        if _check_annotation_revision:
+            preserved = self._preserve_annotation_revision(
+                path, sidecar, apply=apply, sha256=sha256
+            )
+            if preserved is not None:
+                return CentralPdfRegistryState._record_view(preserved)
         target_directory = resolved_file_directory(root, path, output_unresolved)
         rename_options = {
             "template": scheme,
@@ -244,6 +302,31 @@ class PdfWatcher:
             "target_directory": target_directory,
         }
         existing = sidecar.find_by_current_filename(relative_path)
+        existing_at_path = existing
+        recovered_existing = False
+        if (
+            existing is not None
+            and isinstance(sidecar, CentralPdfRegistryState)
+            and existing[1].get("bibcode")
+            and (
+                existing[1].get(METADATA_STALE_KEY)
+                or (
+                    str(existing[1].get("sha256") or "") != sha256
+                    and cached_provider_document(sidecar, existing[1]) is not None
+                )
+            )
+        ):
+            try:
+                recovered = recover_stale_record(sidecar, relative_path, apply=apply)
+            except UnverifiedIdentityError:
+                raise
+            except IdentityValidationError as exc:
+                raise IdentityValidationError(
+                    f"{exc} Review the PDF, then use Update by ID."
+                ) from exc
+            if recovered is not None:
+                existing = (existing[0], recovered)
+                recovered_existing = True
         if existing is not None:
             _current_path, record = existing
             if str(record.get("sha256") or "") == sha256:
@@ -260,7 +343,11 @@ class PdfWatcher:
                         client=getattr(self.identifier, "client", None),
                         providers=providers,
                     )
-                    if apply and isinstance(sidecar, CentralPdfRegistryState):
+                    if (
+                        apply
+                        and isinstance(sidecar, CentralPdfRegistryState)
+                        and not recovered_existing
+                    ):
                         refreshed = sidecar.upsert_file(_current_path, refreshed)
                     target = self.renamer.rename_tracked_file(
                         state=sidecar,
@@ -272,7 +359,7 @@ class PdfWatcher:
                         refreshed["current_filename"] = self._relative_path(
                             root, target
                         )
-                        if target == path:
+                        if target == path and not recovered_existing:
                             sidecar.upsert_file(_current_path, refreshed)
                             sidecar.save()
                     elif target != path:
@@ -334,6 +421,59 @@ class PdfWatcher:
         stored_record[IDENTITY_KEY] = verify_record_identity(
             path, stored_record, sha256=sha256, state=sidecar
         )
+        if (
+            DoiProvider.ADS in providers
+            and stored_record.get(EXTERNAL_METADATA_KEY)
+            and stored_record[IDENTITY_KEY].get("status") == "verified"
+        ):
+            try:
+                PdfRenamer()._validate_template_fields(scheme, stored_record)
+            except MissingTemplateFieldsError as missing:
+                if "bibcode" in missing.missing_fields:
+                    candidate = None
+                    try:
+                        candidate = self.identifier.resolve_many(
+                            [path],
+                            journal_map=journal_map,
+                            strategies=strategies,
+                            providers=(DoiProvider.ADS,),
+                            sha256_by_path={path: sha256},
+                            cached_candidate_lookup=(
+                                build_cached_candidate_lookup(
+                                    self.identifier, sidecar.registry, []
+                                )
+                                if isinstance(sidecar, CentralPdfRegistryState)
+                                else None
+                            ),
+                        ).get(path)
+                        if candidate is not None and is_resolved_record(candidate):
+                            candidate = dict(candidate)
+                            candidate["current_filename"] = relative_path
+                            candidate["sha256"] = sha256
+                            candidate[WATCH_PENDING_KEY] = False
+                            candidate[IDENTITY_KEY] = verify_record_identity(
+                                path, candidate, sha256=sha256, state=sidecar
+                            )
+                            if candidate[IDENTITY_KEY].get("status") == "verified":
+                                stored_record = candidate
+                            else:
+                                candidate = None
+                        else:
+                            candidate = None
+                    except (ADSError, ProviderError, IdentityValidationError) as exc:
+                        self.logger.warning(
+                            "ADS bibcode retry failed for %s: %s", path, exc
+                        )
+                        candidate = None
+                    if candidate is None:
+                        if existing_at_path is not None:
+                            raise
+                        verify_record_identity(
+                            path, stored_record, sha256=sha256, state=sidecar
+                        )
+            except ValueError:
+                # Leave malformed templates to the normal rename validation.
+                pass
         if existing is not None:
             self.logger.info("Registering another location for tracked PDF: %s", path)
         if apply:
@@ -393,6 +533,14 @@ class PdfWatcher:
                     destination=source,
                     message="Ignored PDF in the unresolved directory",
                 )
+            preserved = self._preserve_annotation_revision(source, state, apply=True)
+            if preserved is not None:
+                return WatchOutcome(
+                    event=replace(event, state=WatchState.RESOLVED),
+                    destination=source,
+                    bibcode=str(preserved["bibcode"]),
+                    annotation_update=True,
+                )
             unresolved_destination: Path | None = None
             if identify_settings.output_unresolved:
                 unresolved_destination = self._unique_destination(
@@ -416,6 +564,7 @@ class PdfWatcher:
                 apply=True,
                 strategies=identify_settings.strategies,
                 providers=identify_settings.providers,
+                _check_annotation_revision=False,
             )
         except IdentityValidationError as exc:
             return WatchOutcome(
@@ -608,16 +757,25 @@ class PdfWatcher:
         auto_upgrade: bool = False,
         upgrade_interval_hours: float = 24.0,
         upgrade_kwargs: dict[str, Any] | None = None,
+        recheck_callback: Callable[[], bool] | None = None,
+        update_locations: bool = True,
     ) -> None:
         """Poll filesystem for new PDFs and process them."""
         directory = Path(directory)
         handler = callback or (
             lambda path: self.process_new_pdf(pdf_path=path, sidecar=sidecar)
         )
-        last_upgrade_check = 0.0
+        upgrade_schedule = _WatchSchedule(upgrade_interval_hours)
+        recheck_schedule = _WatchSchedule(upgrade_interval_hours)
         last_facts: dict[str, tuple[int, int, int, int]] = {}
 
         while True:
+            if (
+                recheck_callback is not None
+                and stop_event is not None
+                and stop_event.is_set()
+            ):
+                return
             scan = self._scan_or_none(directory, sidecar, recursive, last_facts)
             if scan is not None:
                 changed_paths, seen_paths = scan
@@ -627,20 +785,40 @@ class PdfWatcher:
                     )
 
                 registry = getattr(sidecar, "registry", None)
-                if registry is not None:
+                if update_locations and registry is not None:
                     registry.catalog.mark_missing_locations(
                         directory, seen_paths, recursive=recursive
                     )
 
-            if auto_upgrade:
-                elapsed = time.time() - last_upgrade_check
-                if elapsed >= max(1.0, upgrade_interval_hours * 3600):
-                    self._run_auto_upgrade(sidecar, upgrade_kwargs or {})
-                    last_upgrade_check = time.time()
+            if (
+                recheck_callback is not None
+                and stop_event is not None
+                and stop_event.is_set()
+            ):
+                return
+
+            if auto_upgrade and upgrade_schedule.due():
+                self._run_auto_upgrade(sidecar, upgrade_kwargs or {})
+                upgrade_schedule.complete()
+
+            if recheck_callback is not None:
+                if stop_event is not None and stop_event.is_set():
+                    return
+                if self._run_auto_recheck(recheck_callback, recheck_schedule):
+                    return
 
             if stop_event is not None and stop_event.is_set():
                 return
-            time.sleep(interval)
+            sleep_interval = interval
+            if recheck_callback is not None:
+                sleep_interval = min(sleep_interval, recheck_schedule.remaining())
+            if auto_upgrade:
+                sleep_interval = min(sleep_interval, upgrade_schedule.remaining())
+            if stop_event is not None and hasattr(stop_event, "wait"):
+                if stop_event.wait(sleep_interval):
+                    return
+            else:
+                time.sleep(sleep_interval)
 
     def watchdog_loop(
         self,
@@ -653,6 +831,8 @@ class PdfWatcher:
         auto_upgrade: bool = False,
         upgrade_interval_hours: float = 24.0,
         upgrade_kwargs: dict[str, Any] | None = None,
+        recheck_callback: Callable[[], bool] | None = None,
+        update_locations: bool = True,
     ) -> None:
         """Use watchdog Observer backend to react to filesystem events."""
         try:
@@ -703,10 +883,17 @@ class PdfWatcher:
         observer = Observer()
         observer.schedule(PdfEventHandler(), str(directory), recursive=recursive)
         observer.start()
-        last_upgrade_check = 0.0
+        upgrade_schedule = _WatchSchedule(upgrade_interval_hours)
+        recheck_schedule = _WatchSchedule(upgrade_interval_hours)
         last_reconciliation = 0.0
         try:
             while True:
+                if (
+                    recheck_callback is not None
+                    and stop_event is not None
+                    and stop_event.is_set()
+                ):
+                    return
                 now = time.monotonic()
                 if now - last_reconciliation >= reconciliation_interval:
                     scan = self._scan_or_none(directory, sidecar, recursive, last_facts)
@@ -715,7 +902,7 @@ class PdfWatcher:
                         for pdf_path in changed_paths:
                             enqueue(pdf_path)
                         registry = getattr(sidecar, "registry", None)
-                        if registry is not None:
+                        if update_locations and registry is not None:
                             registry.catalog.mark_missing_locations(
                                 directory, seen_paths, recursive=recursive
                             )
@@ -732,16 +919,38 @@ class PdfWatcher:
                     finally:
                         with queue_lock:
                             queued_paths.discard(path)
-                if auto_upgrade:
-                    elapsed = time.time() - last_upgrade_check
-                    if elapsed >= max(1.0, upgrade_interval_hours * 3600):
-                        self._run_auto_upgrade(sidecar, upgrade_kwargs or {})
-                        last_upgrade_check = time.time()
+                if (
+                    recheck_callback is not None
+                    and stop_event is not None
+                    and stop_event.is_set()
+                ):
+                    return
+                if auto_upgrade and upgrade_schedule.due():
+                    self._run_auto_upgrade(sidecar, upgrade_kwargs or {})
+                    upgrade_schedule.complete()
+                if recheck_callback is not None:
+                    if stop_event is not None and stop_event.is_set():
+                        return
+                    if self._run_auto_recheck(recheck_callback, recheck_schedule):
+                        return
                 if stop_event is not None and stop_event.is_set():
                     return
         finally:
             observer.stop()
             observer.join()
+
+    def _run_auto_recheck(
+        self, callback: Callable[[], bool], schedule: _WatchSchedule
+    ) -> bool:
+        if not schedule.due():
+            return False
+        try:
+            return bool(callback())
+        except Exception as exc:  # noqa: BLE001 - Keep the watcher running.
+            self.logger.warning("ADS recheck failed: %s", exc)
+            return False
+        finally:
+            schedule.complete()
 
     def _run_auto_upgrade(
         self, sidecar: Sidecar, upgrade_kwargs: dict[str, Any]

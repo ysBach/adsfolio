@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import logging
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
@@ -18,16 +19,17 @@ from ..config import ADSError, Config
 from .cli_common import is_resolved_record
 from .cli_common import iter_pdf_paths as _iter_pdf_paths
 from .cli_common import unique_destination
-from .doi_providers import DEFAULT_DOI_PROVIDERS, DoiProvider
+from .doi_providers import DEFAULT_DOI_PROVIDERS, DoiProvider, ProviderError
 from .identifier import (
     CachedCandidateLookup,
     PdfIdentifier,
     extract_first_page_text_pdf,
+    fetch_external_identifier,
 )
 from .identify_settings import IdentifyStrategy
-from .identity import IDENTITY_KEY, IdentityValidationError
+from .identity import IDENTITY_KEY, IdentityValidationError, UnverifiedIdentityError
 from .prefetch import PublicationProfile, load_profile, query_publications
-from .readiness import metadata_ready
+from .readiness import EXTERNAL_METADATA_KEY, METADATA_SHA256_KEY, metadata_ready
 from .registry import open_registry_state
 from .renamer import verify_record_identity
 from .tracked_move import (
@@ -184,6 +186,87 @@ def build_cached_candidate_lookup(
     return lookup
 
 
+def _save_revalidated_external(
+    state: Any,
+    path: Path,
+    snapshot: dict[str, Any],
+    document_snapshot: dict[str, Any] | None,
+    candidate: dict[str, Any],
+    digest: str,
+    *,
+    apply: bool = True,
+) -> None:
+    """Revalidate saved metadata and replace it only if the catalog is unchanged."""
+    original = snapshot["metadata"]
+    incoming = candidate
+    if candidate.get(EXTERNAL_METADATA_KEY):
+        incoming = {
+            key: value
+            for key, value in candidate.items()
+            if key.startswith("_adsfolio_")
+            or key in {"sha256", "identified_at"}
+            or original.get(key) in (None, "", [])
+        }
+    metadata = state.registry.catalog._merge_metadata(original, incoming)
+    metadata[METADATA_SHA256_KEY] = digest
+    metadata[IDENTITY_KEY] = verify_record_identity(
+        path,
+        metadata,
+        sha256=digest,
+        provider_document=candidate,
+    )
+    if metadata[IDENTITY_KEY].get("status") != "verified":
+        raise UnverifiedIdentityError("The provider did not verify this PDF.")
+    previous = original.get(IDENTITY_KEY)
+    if isinstance(previous, dict) and previous != metadata[IDENTITY_KEY]:
+        history = metadata.get("_adsfolio_identity_history", [])
+        if not isinstance(history, list):
+            raise IdentityValidationError("The saved identity history is invalid.")
+        metadata["_adsfolio_identity_history"] = [*history, copy.deepcopy(previous)]
+    metadata["status"] = str(candidate.get("status") or "unresolved")
+    if not apply:
+        return
+    if not state.registry.replace_file_metadata_if_unchanged(
+        state.directory,
+        str(snapshot["relative_path"]),
+        metadata,
+        snapshot,
+        expected_document=document_snapshot,
+        changed_fields=(),
+    ):
+        raise IdentityValidationError(
+            "The catalog changed during identification. Retry the lookup."
+        )
+
+
+def _lookup_verified_external(
+    path: Path,
+    digest: str,
+    dois: Sequence[str],
+    providers: Sequence[DoiProvider],
+) -> dict[str, Any] | None:
+    """Return the first enabled provider record that proves this PDF."""
+    identifier = PdfIdentifier(None)
+    errors: list[Exception] = []
+    for provider in providers:
+        if provider is DoiProvider.ADS:
+            continue
+        for doi in sorted(set(dois)):
+            try:
+                document = fetch_external_identifier("doi", doi, (provider,))
+                if document is None:
+                    continue
+                record = identifier.build_record(document, path, sha256=digest)
+            except (ProviderError, IdentityValidationError, OSError, ValueError) as exc:
+                errors.append(exc)
+                continue
+            if record[IDENTITY_KEY].get("status") == "verified":
+                return record
+    if errors:
+        raise errors[-1]
+    return None
+
+
 def run_identify(
     client: Any,
     directory: Path,
@@ -263,6 +346,10 @@ def run_identify(
     pending_paths: list[Path] = []
     pending_sha256: dict[Path, str] = {}
     pending_original_names: dict[Path, str] = {}
+    external_to_recheck: set[Path] = set()
+    unverified_external: dict[
+        Path, tuple[dict[str, Any], dict[str, Any] | None, str]
+    ] = {}
     unresolved_paths: list[Path] = []
     identity_skipped: dict[Path, str] = {}
     unresolved_first_page_text_cache: dict[Path, str] = {}
@@ -440,6 +527,30 @@ def run_identify(
                     )
                 except (IdentityValidationError, ADSError, OSError) as exc:
                     # Keep the saved record and the file where they are.
+                    if (
+                        isinstance(exc, UnverifiedIdentityError)
+                        and record.get(EXTERNAL_METADATA_KEY)
+                        and record.get("doi")
+                    ):
+                        snapshot = sidecar.registry.find_file_by_relative_path(
+                            sidecar_directory, sidecar_key
+                        )
+                        if snapshot is not None:
+                            document_id = snapshot.get("document_id")
+                            document = (
+                                sidecar.registry.catalog.get_document(document_id)
+                                if document_id is not None
+                                else None
+                            )
+                            unverified_external[pdf_path] = (
+                                snapshot,
+                                document,
+                                str(exc),
+                            )
+                            pending_original_names[pdf_path] = original_name
+                            pending_paths.append(pdf_path)
+                            pending_sha256[pdf_path] = sha256
+                            continue
                     identity_skipped[pdf_path] = str(exc)
                     continue
                 if record.get("current_filename") != sidecar_key:
@@ -459,6 +570,24 @@ def run_identify(
                         },
                     )
                     sidecar_dirty = True
+                external_record = (
+                    ads_enabled
+                    and not is_resolved_record(record)
+                    and bool(record.get(EXTERNAL_METADATA_KEY))
+                )
+                doi = identifier._first_scalar(record.get("doi")).strip()
+                cached_ads = bool(
+                    external_record
+                    and not allow_ads
+                    and doi
+                    and sidecar.registry.find_ads_documents_by_doi(doi)
+                )
+                if external_record and (allow_ads or cached_ads):
+                    external_to_recheck.add(pdf_path)
+                    pending_original_names[pdf_path] = original_name
+                    pending_paths.append(pdf_path)
+                    pending_sha256[pdf_path] = sha256
+                    continue
                 already_identified += 1
                 continue
             pending_original_names[pdf_path] = original_name
@@ -559,6 +688,7 @@ def run_identify(
         providers = tuple(p for p in providers if p is not DoiProvider.ADS)
         allow_network_lookup = bool(providers)
     resolved_map: dict[Path, dict[str, Any] | None] = {}
+    identity_failed: dict[Path, IdentityValidationError] = {}
     if query_targets:
         click.echo(
             f"Step 2/3: running ordered identification for {len(query_targets)} PDFs..."
@@ -578,29 +708,61 @@ def run_identify(
             sidecar.registry,
             list(cached.documents) if cached is not None else [],
         )
+        # A saved external record needs an ADS-specific retry. Otherwise an
+        # earlier external provider can return the same record before ADS runs.
+        ordinary_targets = [
+            p
+            for p in query_targets
+            if p not in external_to_recheck and p not in unverified_external
+        ]
+        ads_retry_targets = [p for p in query_targets if p in external_to_recheck]
+        unverified_targets = [p for p in query_targets if p in unverified_external]
         try:
-            resolved_map.update(
-                identifier.resolve_many(
-                    query_targets,
-                    strategies=strategies,
-                    providers=providers,
-                    sha256_by_path=pending_sha256,
-                    progress_callback=fallback_progress,
-                    ads_documents_callback=ads_documents_callback,
-                    cached_candidate_lookup=cached_candidate_lookup,
-                    allow_network_lookup=allow_network_lookup,
-                )
-            )
+            for batch, batch_providers, callback in (
+                (ordinary_targets, providers, ads_documents_callback),
+                (ads_retry_targets, (DoiProvider.ADS,), ads_documents_callback),
+                (unverified_targets, providers, None),
+            ):
+                if not batch:
+                    continue
+                try:
+                    network_options = (
+                        {"allow_external_network_lookup": True}
+                        if not allow_network_lookup
+                        and any(
+                            provider is not DoiProvider.ADS
+                            for provider in batch_providers
+                        )
+                        else {}
+                    )
+                    resolved_map.update(
+                        identifier.resolve_many(
+                            batch,
+                            strategies=strategies,
+                            providers=batch_providers,
+                            sha256_by_path=pending_sha256,
+                            progress_callback=fallback_progress,
+                            ads_documents_callback=callback,
+                            cached_candidate_lookup=cached_candidate_lookup,
+                            allow_network_lookup=allow_network_lookup,
+                            **network_options,
+                        )
+                    )
+                except (ADSError, ProviderError) as exc:
+                    if batch is not ads_retry_targets:
+                        raise
+                    LOGGER.warning("ADS recheck failed: %s", exc)
+                finally:
+                    identity_failed.update(identifier.identity_failures)
         finally:
             fallback_progress.close()
+        identifier.identity_failures.update(identity_failed)
         click.echo(
             "Step 2/3: ADS fallback identification completed in "
             f"{helpers.format_elapsed(perf_counter() - fallback_started)}."
         )
     apply_started = perf_counter()
-    identity_failed: dict[Path, IdentityValidationError] = dict(
-        identifier.identity_failures
-    )
+    identity_failed.update(identifier.identity_failures)
     apply_progress = helpers.build_progress(
         total=len(pending_paths),
         desc="Apply results",
@@ -608,6 +770,45 @@ def run_identify(
     )
     for pdf_path in pending_paths:
         record = resolved_map.get(pdf_path)
+        if pdf_path in unverified_external:
+            snapshot, document, reason = unverified_external[pdf_path]
+            if record is None:
+                identity_skipped[pdf_path] = str(
+                    identity_failed.get(pdf_path) or reason
+                )
+            else:
+                try:
+                    _save_revalidated_external(
+                        sidecar,
+                        pdf_path,
+                        snapshot,
+                        document,
+                        record,
+                        pending_sha256[pdf_path],
+                    )
+                except (IdentityValidationError, OSError) as exc:
+                    identity_skipped[pdf_path] = str(exc)
+                else:
+                    resolved += 1
+                    click.echo(f"Verified existing metadata: {pdf_path.name}")
+            if apply_progress is not None:
+                apply_progress.update(1)
+            continue
+        if pdf_path in external_to_recheck and (
+            record is None or not is_resolved_record(record)
+        ):
+            if pdf_path in identity_failed:
+                identity_skipped.setdefault(pdf_path, str(identity_failed[pdf_path]))
+            else:
+                already_identified += 1
+                click.secho(
+                    f"ADS bibcode not added for {pdf_path.name}. "
+                    "Existing metadata was kept.",
+                    fg="yellow",
+                )
+            if apply_progress is not None:
+                apply_progress.update(1)
+            continue
         if record is not None:
             try:
                 record[IDENTITY_KEY] = verify_record_identity(

@@ -42,7 +42,7 @@ Key PDF options:
 | `rename --author-format` | Author token style (`surname`, `surname_initials`, etc.) | Match your preferred filename style |
 | `watch --use-watchdog` | Event-driven watcher backend | Lower-latency updates on supported systems |
 | `watch --auto-upgrade` | Periodic arXiv→published upgrade checks | Keep long-lived PDF archives canonical |
-| `watch --upgrade-interval` | Hours between auto-upgrade passes | Balance freshness and API activity |
+| `watch --upgrade-interval` | Hours between ADS rechecks and auto-upgrade passes | Balance freshness and API activity |
 | `upgrade --overwrite-arxiv-with-official` | Replace tracked arXiv file contents | Preserve stable path/filename while updating content |
 | `upgrade --arxiv-backup-if-overwritten` | Save backup before overwrite | Safety rollback path |
 | `upgrade --skip-annotation-port` | Download official PDF without transferring annotations | Fast upgrades or no `pymupdf` environment |
@@ -334,9 +334,15 @@ adsfolio pdf rename ~/Papers --file ~/Papers/first.pdf \
 Omit `--apply` to preview those filenames. With `--allow-ads`, identification
 also targets only those files. Failed matches keep their current paths.
 PDF identity checks and destination-conflict checks still apply.
+If a saved PDF changed, Rename can verify it against the cached ADS record.
+It preserves the existing metadata and history when verification succeeds.
+Preview does not save the recovered record. If verification fails, the log
+states the reason. Review the PDF and retry with Identify or Update by ID.
 
 Rename uses the exact selected template, including when metadata has no ADS bibcode.
-It does not replace `{bibcode}` with `{year}`. Missing fields render as empty components.
+It does not replace `{bibcode}` with `{year}`. If a selected field lacks metadata,
+Rename skips the file and names the field. Add the metadata or choose another
+template. Then retry the rename.
 **Already matches rename rule** means the current filename already equals its target.
 The log reports other skipped files individually.
 Identification alone does not establish an ADS bibcode.
@@ -347,8 +353,7 @@ Available template variables: `{bibcode}`, `{year}`, `{title}`,
 
 The template becomes the filename. `{authors}` adds a trailing `+` when
 `--max-authors` truncates the list. `{authors_N}` uses the same limited list
-without that marker. Missing metadata produces an empty component. Use `{{` and `}}` for
-literal braces.
+without that marker. Use `{{` and `}}` for literal braces.
 
 Filename rendering follows these rules:
 
@@ -415,6 +420,22 @@ At startup, CLI watch reconciles the filesystem. It can process untracked or
 changed PDFs that are already present. It skips catalog entries whose filesystem
 facts still match. Later `--interval` passes reconcile filesystem facts to catch
 missed events. These passes do not hash or re-identify unchanged PDFs.
+
+Watch also rechecks existing catalog records with ADS at startup and every 24
+hours. This check runs independently of `--auto-upgrade`. Set
+`--upgrade-interval` to change the interval. The check uses the effective
+Identify scope and requires ADS to be enabled with a token.
+
+When ADS returns a verified new match or bibcode, Watch updates the record and
+applies the saved Rename settings with `--apply`. Without `--apply`, Watch
+previews the changes. With `filename_bibcode` enabled, a unique exact ADS match
+can associate a PDF when its readable identifiers do not conflict. The filename
+alone does not independently verify PDF contents. This check leaves the filename
+unchanged.
+A failed identity check or existing destination keeps the affected files in
+place. Review the reported issue and retry.
+If separate attachments in different roots share one catalog record, the
+check leaves them unchanged and reports the issue for review.
 
 This initial reconciliation differs from the GUI watcher. The GUI watcher's startup
 scan establishes a baseline and leaves existing PDFs alone. The GUI only offers

@@ -4,6 +4,10 @@
 
 This guide covers ADSfolio {sub-ref}`release`.
 
+For queries or AI agents, install `adsfolio` from PyPI instead of downloading the desktop app.
+This provides the CLI and Python API without Qt or the native app bundle.
+See [CLI/API installation and the agent skill](command-line-and-python.md#cli-and-api-without-the-desktop-app).
+
 1. Download the file for your system from
    [GitHub Releases](https://github.com/ysBach/adsfolio/releases/latest).
 2. Install it as the table shows.

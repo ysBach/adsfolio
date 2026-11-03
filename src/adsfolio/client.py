@@ -4,13 +4,14 @@ Base HTTP client for NASA ADS with rate limiting and caching.
 
 import json
 import logging
+import ntpath
 import os
 import re
 import tempfile
 import threading
 from collections.abc import Sequence
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from urllib.parse import quote, urljoin
 
 import requests
@@ -358,8 +359,21 @@ class ADSClient:
 
     @staticmethod
     def _safe_filename(text: str) -> str:
-        """Convert text to a filesystem-safe filename stem."""
-        return re.sub(r"[^A-Za-z0-9._-]", "_", text)
+        """Validate a PDF filename stem and return it unchanged."""
+        windows_is_reserved = getattr(ntpath, "isreserved", None)
+        filename = f"{text}.pdf"
+        if windows_is_reserved is None:
+            reserved = PureWindowsPath(filename).is_reserved()
+        else:
+            reserved = windows_is_reserved(filename)
+        if (
+            not text
+            or text in {".", ".."}
+            or re.search(r'[<>:"/\\|?*\x00-\x1f\x7f]', text)
+            or reserved
+        ):
+            raise ValueError("Filename stem contains an unsafe name or character.")
+        return text
 
     @staticmethod
     def _is_pdf_response(response: requests.Response) -> bool:
@@ -580,7 +594,7 @@ class ADSClient:
         timeout : int, optional
             Request timeout in seconds.
         printed_suffix : str, optional
-            Suffix for printed fallback files.
+            Suffix for printed fallback files. It must form a safe filename.
 
         Returns
         -------
@@ -588,6 +602,11 @@ class ADSClient:
             Saved PDF path on success, else None. Existing direct and printed
             downloads remain unchanged. A new download receives a numeric suffix
             when its intended filename exists.
+
+        Raises
+        ------
+        ValueError
+            If the bibcode or printed suffix cannot form a safe filename.
 
         Notes
         -----
@@ -603,8 +622,9 @@ class ADSClient:
 
         output_dir = Path(output_dir)
         filename_stem = self._safe_filename(bibcode)
+        printed_filename_stem = self._safe_filename(f"{bibcode}{printed_suffix}")
         direct_pdf_path = output_dir / f"{filename_stem}.pdf"
-        printed_pdf_path = output_dir / f"{filename_stem}{printed_suffix}.pdf"
+        printed_pdf_path = output_dir / f"{printed_filename_stem}.pdf"
 
         ads_headers = {
             "Authorization": f"Bearer {self._base.token}",

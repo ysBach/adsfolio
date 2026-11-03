@@ -4,7 +4,7 @@ from types import SimpleNamespace
 import pytest
 from pdf_identity_fixtures import confirm_metadata, write_pdf
 
-from adsfolio.pdf.renamer import DEFAULT_SCHEME, PdfRenamer
+from adsfolio.pdf.renamer import DEFAULT_SCHEME, MissingTemplateFieldsError, PdfRenamer
 from adsfolio.pdf.sidecar import SIDECAR_FILENAME, Sidecar
 
 
@@ -258,21 +258,20 @@ def test_rename_does_not_replace_selected_bibcode_field_with_year(
     digest = sha256_file(source)
     sidecar = Sidecar(tmp_path)
     sidecar.upsert_file(source.name, metadata)
-    expected = tmp_path / "SmithJ+DoeA+LeeC_-Paper_Title.pdf"
     renamer = PdfRenamer()
 
     if single:
-        assert (
+        with pytest.raises(MissingTemplateFieldsError, match="bibcode"):
             renamer.rename_tracked_file(
                 sidecar, source, metadata, template=DEFAULT_SCHEME, dry_run=dry_run
             )
-            == expected
-        )
     else:
-        assert renamer.batch_rename(
-            sidecar, template=DEFAULT_SCHEME, dry_run=dry_run
-        ) == [(source.name, expected.name)]
-    assert sha256_file(source if dry_run else expected) == digest
+        assert (
+            renamer.batch_rename(sidecar, template=DEFAULT_SCHEME, dry_run=dry_run)
+            == []
+        )
+        assert "bibcode" in renamer.skipped[source.name]
+    assert sha256_file(source) == digest
 
 
 def test_pdf_renamer_strips_ads_html_markup_from_title():

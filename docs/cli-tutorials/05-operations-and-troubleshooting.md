@@ -158,13 +158,14 @@ Rescan and list the records:
 3. Clear the search field.
 
 The recursive scan restores nested locations marked missing and discovers new
-PDFs. Top-level scans leave nested records unchanged. **Needs ADS lookup** is
-a status filter, not a listing of the `unresolved/` directory. See the
+PDFs. Top-level scans leave nested records unchanged. **Needs identification**
+filters current identification evidence. It does not list the `unresolved/` directory. See the
 [GUI guide](../gui.md) for the distinction between root scope and Identify settings.
 
-### A stored bibcode appears under Needs ADS lookup
+### A stored bibcode appears under Needs identification
 
 A saved bibcode and a linked ADS record are separate catalog facts.
+Current verified identities without ADS links appear under **Identified without ADS**.
 Use **ADS Refresh → Look Up Stored Bibcodes…** to link pending records.
 The equivalent command is:
 

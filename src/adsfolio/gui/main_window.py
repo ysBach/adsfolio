@@ -19,7 +19,7 @@ from PySide6.QtCore import (
     Qt,
     QTimer,
 )
-from PySide6.QtGui import QAction, QColor, QFont, QKeySequence, QShortcut
+from PySide6.QtGui import QAction, QActionGroup, QColor, QFont, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QApplication,
     QComboBox,
@@ -82,6 +82,7 @@ from ..references import LocalReferences
 from .about import AboutDialog
 from .ads_library_dialog import AdsLibraryDialog
 from .ads_library_export_dialog import ExportAdsLibraryDialog
+from .ads_recheck_job import AdsRecheckJob, AdsTokenCheck, has_external_providers
 from .appearance import AppearanceDialog
 from .bibtex_export import (
     CitationKeySettingsDialog,
@@ -90,6 +91,7 @@ from .bibtex_export import (
     save_bibtex_file,
 )
 from .citation_styles import CitationStylesDialog
+from .combined_view import CombinedViewController
 from .config import RootEntry, load_config, save_config
 from .cv_dialog import CVDialog
 from .detail_pane import DetailPane
@@ -144,6 +146,12 @@ from .updates import (
     installation_kind,
 )
 from .watch import LibraryWatchController, WatchFailure
+from .watch_sounds import (
+    SILENT_SOUND,
+    WatchSoundChoice,
+    WatchSoundPlayer,
+    normalize_sound_id,
+)
 from .welcome import WelcomePanel
 
 logger = logging.getLogger(__name__)
@@ -151,6 +159,7 @@ logger = logging.getLogger(__name__)
 _SettingsT = TypeVar("_SettingsT")
 DEFAULT_WINDOW_SIZE = (1280, 780)
 DEFAULT_SPLITTER_SIZES = [220, 700, 360]
+ADS_RECHECK_INTERVAL_MS = 24 * 60 * 60 * 1000
 _MERGE_AUDIT_KEY = "_adsfolio_annotation_merge"
 
 
@@ -268,6 +277,31 @@ class _LibraryViewContext:
     scroll: int
 
 
+@dataclass(frozen=True)
+class _PendingPriorityEdit:
+    """Keep the selected PDF and requested action while a recheck stops."""
+
+    root: Path
+    path: Path
+    location_id: int | None
+    attachment_id: int | None
+    catalog_sha256: str | None
+    content_sha256: str
+    identifier: str | None
+    reviewed_candidate: Notice | None
+    notice_key: str | None = None
+
+
+@dataclass(frozen=True)
+class _ConflictReviewContext:
+    """Keep the selected catalog location while its lookup runs."""
+
+    root: Path
+    relative_path: str
+    current_path: str
+    location_id: int
+
+
 class MainWindow(QMainWindow):
     """Browse registered PDF roots with a paged table and metadata pane."""
 
@@ -280,6 +314,16 @@ class MainWindow(QMainWindow):
         super().__init__(parent)
         self.setWindowTitle("ADSfolio")
         self.config = load_config()
+        self._sort_save_pending = False
+        self._saved_sort_selection = (
+            self.config.sort_column,
+            self.config.sort_descending,
+            self.config.secondary_sort_column,
+            self.config.tertiary_sort_column,
+        )
+        self._saved_sort_roots = deepcopy(self.config.roots)
+        self._restoring_config = True
+        self._unrestored_roots: list[RootEntry] = []
         self.columns = build_columns(self.config.citation_styles)
         self.registries: dict[str, PdfRegistry] = {}
         self.root_entries: dict[str, RootEntry] = {}
@@ -324,10 +368,16 @@ class MainWindow(QMainWindow):
         self._candidate_update_notice: Notice | None = None
         self._ads_match_candidates: list[dict[str, str]] = []
         self._ambiguous_ads_match_context: tuple[Path, str, int | None] | None = None
+        self._conflict_review_context: _ConflictReviewContext | None = None
+        self._conflict_review_payload: dict[str, str] | None = None
+        self._conflict_review_line_seen = False
         self._pending_watch_refresh_roots: set[Path] = set()
         self._watch_refresh_selection_id: int | None = None
         self._pending_watch_dialog: tuple[str, Path] | None = None
         self._manual_metadata_target: tuple[Path, Path, str | None] | None = None
+        self._detail_document_snapshot: (
+            tuple[str, int, int | None, dict[str, Any] | None] | None
+        ) = None
         self._edition_merge_target: EditionMergeRequest | None = None
         self._pending_edition_merges: dict[str, EditionMergeRequest] = {}
         self._merge_output_paths: set[Path] = set()
@@ -335,6 +385,7 @@ class MainWindow(QMainWindow):
         self._pending_ads_refresh: (
             tuple[Path, tuple[str, ...], int | None, str | None] | None
         ) = None
+        self._pending_priority_edit: _PendingPriorityEdit | None = None
         # Extra refresh-ads argument lists run after the pending refresh.
         self._pending_ads_follow_ups: tuple[tuple[str, ...], ...] = ()
         self._ads_refresh_root: Path | None = None
@@ -347,15 +398,34 @@ class MainWindow(QMainWindow):
         self._guided_identify_context: _LibraryViewContext | None = None
         self._guided_identify_commands: list[list[str]] = []
         self._foreground_paused_root: Path | None = None
+        self._ads_recheck_job: AdsRecheckJob | None = None
+        self._ads_token_check: AdsTokenCheck | None = None
+        self._ads_recheck_token_available: bool | None = None
+        self._ads_recheck_active_root: Path | None = None
+        self._ads_recheck_roots: list[Path] | None = None
+        self._ads_recheck_again = False
+        self._ads_recheck_startup_pending = True
+        self._ads_recheck_failures: list[str] = []
+        self._ads_recheck_timer = QTimer(self)
+        self._ads_recheck_timer.setInterval(ADS_RECHECK_INTERVAL_MS)
+        self._ads_recheck_timer.timeout.connect(self._queue_ads_rechecks)
+        self._ads_recheck_retry_timer = QTimer(self)
+        self._ads_recheck_retry_timer.setSingleShot(True)
+        self._ads_recheck_retry_timer.setInterval(1000)
+        self._ads_recheck_retry_timer.timeout.connect(self._continue_ads_rechecks)
         self._watch_refresh_timer = QTimer(self)
         self._watch_refresh_timer.setSingleShot(True)
         self._watch_refresh_timer.setInterval(0)
         self._watch_refresh_timer.timeout.connect(self._run_watch_refresh)
         self.watch_controller = watch_controller or LibraryWatchController(self)
+        self.watch_sound_player = WatchSoundPlayer(self)
         self._build_ui()
         self._connect_watch_controller()
         self._restore_config()
+        self.combined.finish_restoring()
+        self._restoring_config = False
         self._sync_welcome()
+        self._ads_recheck_timer.start()
         QTimer.singleShot(0, self._start_configured_watchers)
 
     def _build_ui(self) -> None:
@@ -374,10 +444,11 @@ class MainWindow(QMainWindow):
         self.views_item.setData(0, Qt.UserRole + 1, "views")
         self.views_item.setToolTip(
             0,
-            "ADS groups use saved lookup status. Needs ADS lookup can include bibcodes and complete non-ADS metadata.",
+            "ADS is the primary identification service. Verified non-ADS identities have a separate view. Changed PDFs need identification again.",
         )
         self.sidebar.addTopLevelItem(self.libraries_item)
         self.sidebar.addTopLevelItem(self.views_item)
+        self.combined = CombinedViewController(self)
         self.model = FileTableModel(
             None,
             self.current_query,
@@ -390,12 +461,21 @@ class MainWindow(QMainWindow):
         self.table.setModel(self.model)
         self.table.setRootIsDecorated(False)
         self.table.setUniformRowHeights(True)
+        self._sync_table_sort_indicator()
         self.table.setSortingEnabled(True)
         self.table.setSelectionBehavior(QTreeView.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(QTreeView.SelectionMode.ExtendedSelection)
         self.table.setAlternatingRowColors(True)
         header = self.table.header()
         header.setSectionsMovable(True)
+        header.sortIndicatorChanged.connect(self._remember_table_sort)
+        header.setFirstSectionMovable(True)
+        header.setToolTip(
+            "Drag a header to reorder columns. Right-click a header to change alignment."
+        )
+        self._applying_table_layout = False
+        header.sectionMoved.connect(self._remember_table_column_order)
+        self.model.modelReset.connect(self._sync_sort_after_column_reset)
         header.setContextMenuPolicy(Qt.CustomContextMenu)
         header.customContextMenuRequested.connect(self._show_header_context_menu)
         self._rebuild_table_delegates()
@@ -405,7 +485,7 @@ class MainWindow(QMainWindow):
         self.table.clicked.connect(self._table_clicked)
         self.table.selectionModel().currentChanged.connect(self._current_changed)
         self.table.selectionModel().selectionChanged.connect(
-            lambda *_args: self._sync_detail_and_selection_actions()
+            self._table_selection_changed
         )
         self.table.setContextMenuPolicy(Qt.CustomContextMenu)
         self.table.customContextMenuRequested.connect(self._table_menu)
@@ -585,10 +665,19 @@ class MainWindow(QMainWindow):
         self.reconcile_file_facts_action = QAction("Reconcile File Facts…", self)
         self.load_more_action = QAction("Load Next Page", self)
         self.remove_missing_action = QAction("Remove Missing Registry Records…", self)
+        self.preferences_action = QAction("Settings…", self)
+        self.preferences_action.setMenuRole(QAction.PreferencesRole)
+        preferences_shortcuts = [QKeySequence("Ctrl+,")]
+        for shortcut in QKeySequence.keyBindings(QKeySequence.StandardKey.Preferences):
+            if shortcut not in preferences_shortcuts:
+                preferences_shortcuts.append(shortcut)
+        self.preferences_action.setShortcuts(preferences_shortcuts)
+        self.preferences_action.setShortcutContext(Qt.WindowShortcut)
+        self.preferences_action.triggered.connect(self._open_preferences)
         self.quit_action = QAction("Quit", self)
         self.add_action.triggered.connect(self._add_root)
         self.remove_action.triggered.connect(self._remove_root)
-        self.refresh_action.triggered.connect(lambda: self._refresh_local_files())
+        self.refresh_action.triggered.connect(self._refresh_visible_library)
         self.reconcile_file_facts_action.triggered.connect(
             lambda: self._refresh_local_files()
         )
@@ -603,6 +692,7 @@ class MainWindow(QMainWindow):
             self.reconcile_file_facts_action,
             self.load_more_action,
             self.remove_missing_action,
+            self.preferences_action,
             self.quit_action,
         ):
             file_menu.addAction(action)
@@ -664,6 +754,8 @@ class MainWindow(QMainWindow):
         self.watch_current_action = QAction("Watch Current Library", self)
         self.watch_on_start_action = QAction("Autowatch at Start", self)
         self.auto_process_action = QAction("Automatically Identify && Rename", self)
+        self.watch_sound_action = QAction("New PDF Sound…", self)
+        self.watch_sound_action.triggered.connect(self._choose_watch_sound)
         for action in (
             self.watch_current_action,
             self.watch_on_start_action,
@@ -714,6 +806,7 @@ class MainWindow(QMainWindow):
         tools.addAction(self.watch_current_action)
         tools.addAction(self.watch_on_start_action)
         tools.addAction(self.auto_process_action)
+        tools.addAction(self.watch_sound_action)
         view = self.menuBar().addMenu("View")
         self.log_dock.toggleViewAction().setShortcut("Ctrl+Shift+J")
         view.addAction(self.log_dock.toggleViewAction())
@@ -918,6 +1011,7 @@ class MainWindow(QMainWindow):
                     auto_process_new_pdfs=entry.auto_process_new_pdfs,
                 )
             except (OSError, ValueError) as exc:
+                self._unrestored_roots.append(entry)
                 self.notice_bar.enqueue(
                     Notice(
                         f"root-restore:{entry.path}",
@@ -1028,6 +1122,11 @@ class MainWindow(QMainWindow):
             )
         else:
             return
+        self._unrestored_roots = [
+            entry
+            for entry in self._unrestored_roots
+            if self._config_root_key(entry.path) != key
+        ]
         count = self._safe_count(self.registries[key])
         count_text = str(count) if count is not None else "?"
         root_item = QTreeWidgetItem(
@@ -1037,7 +1136,12 @@ class MainWindow(QMainWindow):
         root_item.setData(0, Qt.UserRole, key)
         root_item.setData(0, Qt.UserRole + 1, "root")
         self.libraries_item.addChild(root_item)
+        self.combined.register_root(root_item, key)
+        if self.combined.enabled:
+            self.combined.update_columns()
         self.libraries_item.setExpanded(True)
+        if not self._restoring_config and not self._ads_recheck_startup_pending:
+            self._queue_added_ads_recheck(path)
 
     def _connect_watch_controller(self) -> None:
         """Connect controller events after the notice surface exists."""
@@ -1067,6 +1171,20 @@ class MainWindow(QMainWindow):
             for key in self.registries
             if key in self.root_entries
         ]
+        registered_paths = set(self.registries)
+        for entry in self._unrestored_roots:
+            key = self._config_root_key(entry.path)
+            if key not in registered_paths:
+                self.config.roots.append(entry)
+                registered_paths.add(key)
+
+    @staticmethod
+    def _config_root_key(path: str) -> str:
+        """Normalize a saved root for comparison, retaining invalid paths."""
+        try:
+            return str(Path(path).expanduser().resolve())
+        except (OSError, RuntimeError, ValueError):
+            return path
 
     def _sync_watch_actions(self) -> None:
         root = self.current_root.resolve() if self.current_root is not None else None
@@ -1079,7 +1197,7 @@ class MainWindow(QMainWindow):
         blockers = [QSignalBlocker(action) for action in actions]
         try:
             for action in actions:
-                action.setEnabled(entry is not None)
+                action.setEnabled(entry is not None and not self.combined.enabled)
             self.watch_current_action.setChecked(
                 root is not None and self.watch_controller.is_watching(root)
             )
@@ -1089,9 +1207,13 @@ class MainWindow(QMainWindow):
             self.auto_process_action.setChecked(
                 entry.auto_process_new_pdfs if entry is not None else False
             )
-            if (
-                self._local_refresh_context is not None
-                and self._local_refresh_context.root == root
+            if root is not None and (
+                self._ads_recheck_active_root == root
+                or (
+                    self._local_refresh_context is not None
+                    and self._local_refresh_context.root == root
+                )
+                or self._detail_edit_block_reason()
             ):
                 self.watch_current_action.setEnabled(False)
         finally:
@@ -1129,12 +1251,12 @@ class MainWindow(QMainWindow):
     def _set_identify_badge(
         self, count: int | None, *, unavailable: bool = False
     ) -> None:
-        """Show how many catalogued PDFs need ADS lookup on the Identify button.
+        """Show how many catalogued PDFs need identification or review.
 
         Parameters
         ----------
         count : int or None
-            Stored records without an ADS link in the whole current library,
+            Records without current identification in the whole current library,
             or `None` when no library is open or the count is unavailable.
         unavailable : bool, optional
             Say in the tooltip that the count could not be read.
@@ -1144,15 +1266,21 @@ class MainWindow(QMainWindow):
         detail = ""
         if unavailable:
             detail = (
-                "The number of catalogued PDFs that need ADS lookup is unavailable."
+                "The number of catalogued PDFs that need identification is unavailable."
             )
         elif count is not None:
             subject = "catalogued PDF needs" if count == 1 else "catalogued PDFs need"
             detail = (
-                f"{count} {subject} ADS lookup (no saved ADS link). Identify can "
+                f"{count} {subject} identification or review. ADS is the primary service. "
+                "Verified non-ADS identities are excluded from this count. Identify can "
                 "skip PDFs that already have usable metadata or are in the "
                 "configured unresolved folder, and also checks PDFs that are "
                 "not catalogued yet."
+            )
+        if self.combined.enabled:
+            detail += (
+                "\nThis action applies to one whole library. "
+                "Right-click its library folder to identify it."
             )
         self._set_action_tooltip(
             self.identify_action,
@@ -1162,12 +1290,58 @@ class MainWindow(QMainWindow):
         self.identify_button.set_badge(count)
         self.identify_button.setAccessibleDescription(self.identify_action.toolTip())
 
+    def _detail_edit_block_reason(self) -> str:
+        """Explain why metadata editing is temporarily unavailable."""
+        if self._pending_priority_edit is not None:
+            return "Wait for the automatic identifier recheck to stop."
+        if self._ads_recheck_active_root is not None:
+            return "Wait for the identifier recheck to finish."
+        if (
+            self.job is not None
+            or self._pending_watch_dialog is not None
+            or self._pending_ads_refresh is not None
+            or self._local_refresh_context is not None
+            or self._manual_metadata_target is not None
+            or self._edition_merge_target is not None
+            or self._close_requested
+        ):
+            return "Wait for the current operation to finish."
+        return ""
+
+    def _can_preempt_ads_recheck(self) -> bool:
+        """Allow a selected-PDF edit when the recheck is the sole blocker."""
+        root = self._ads_recheck_active_root
+        recheck_job = self._ads_recheck_job
+        pending_watch = self._pending_watch_dialog
+        recheck_running = recheck_job is not None and self.job is recheck_job
+        recheck_waiting = self.job is None and pending_watch == ("ads_recheck", root)
+        return bool(
+            root is not None
+            and (recheck_running or recheck_waiting)
+            and (pending_watch is None or pending_watch == ("ads_recheck", root))
+            and self._pending_priority_edit is None
+            and self._pending_ads_refresh is None
+            and self._local_refresh_context is None
+            and self._manual_metadata_target is None
+            and self._edition_merge_target is None
+            and not self._close_requested
+        )
+
     def _sync_refresh_actions(self) -> None:
         """Enable refresh controls only when their root and selection are usable."""
         if not hasattr(self, "refresh_selected_ads_action"):
             return
+        detail_block_reason = self._detail_edit_block_reason()
+        identifier_priority = self._can_preempt_ads_recheck()
+        self.detail.set_read_only(
+            bool(detail_block_reason),
+            reason=detail_block_reason,
+            allow_identifier_update=identifier_priority,
+            allow_manual_metadata=identifier_priority,
+        )
         available = (
             self.current_root is not None
+            and not self.combined.enabled
             and self.job is None
             and self._pending_watch_dialog is None
             and self._pending_ads_refresh is None
@@ -1175,6 +1349,7 @@ class MainWindow(QMainWindow):
             and self._manual_metadata_target is None
             and self._edition_merge_target is None
             and not self._close_requested
+            and not detail_block_reason
         )
         record = self._selected_record()
         bibcode = (
@@ -1186,27 +1361,106 @@ class MainWindow(QMainWindow):
         self._sync_export_action()
         self.identify_action.setEnabled(available)
         self.rename_action.setEnabled(available)
-        self.remove_action.setEnabled(self.current_root is not None)
-        self.refresh_action.setEnabled(available)
+        if self.combined.enabled:
+            library_reason = (
+                "This action applies to one whole library. "
+                "Right-click a library folder to choose the action."
+            )
+            self._set_action_tooltip(
+                self.identify_action, "Identify papers in a library", library_reason
+            )
+            self._set_action_tooltip(
+                self.rename_action, "Rename PDFs in a library", library_reason
+            )
+        else:
+            self._set_action_tooltip(
+                self.rename_action,
+                "Rename: preview and apply saved rename rules to PDFs in the "
+                "current library",
+            )
+        self.remove_action.setEnabled(
+            self.current_root is not None and not self.combined.enabled
+        )
+        self.merge_annotations_action.setEnabled(
+            not self.combined.enabled and self._ads_recheck_active_root is None
+        )
+        self.refresh_action.setEnabled(
+            available or (self.combined.enabled and self.job is None)
+        )
+        self._set_action_tooltip(
+            self.refresh_action,
+            "Refresh: reload the combined view from the catalog"
+            if self.combined.enabled
+            else "Refresh: scan local PDFs in the current library and reconcile "
+            "added, changed, moved, and missing files",
+        )
         self.reconcile_file_facts_action.setEnabled(available)
         self.remove_missing_action.setEnabled(available)
+        selected_available = available or (
+            self.combined.enabled
+            and not detail_block_reason
+            and self._selected_edit_target() is not None
+        )
         self.refresh_selected_ads_action.setEnabled(
-            available
+            selected_available
             and bool(bibcode)
             and not bool((record.get("metadata") or {}).get("_adsfolio_metadata_stale"))
         )
-        self.update_selected_ads_action.setEnabled(available and record is not None)
+        identifier_available = selected_available or (
+            identifier_priority and self._selected_edit_target() is not None
+        )
+        self.update_selected_ads_action.setEnabled(
+            identifier_available and record is not None
+        )
+        selected_reason = detail_block_reason
+        if not selected_reason and self.combined.enabled and not selected_available:
+            selected_reason = "Select exactly one PDF."
+        elif not selected_reason and record is None:
+            selected_reason = "Select a PDF."
+        identifier_reason = selected_reason
+        if identifier_priority and identifier_available:
+            identifier_reason = (
+                "The automatic identifier recheck will stop before this update."
+            )
+        self._set_action_tooltip(
+            self.update_selected_ads_action,
+            "Update and rename the selected PDF by identifier",
+            identifier_reason
+            or "The update uses the selected PDF's library and its Rename settings.",
+        )
+        refresh_reason = selected_reason
+        if not refresh_reason and not bibcode:
+            refresh_reason = "The selected PDF has no saved Bibcode. Use Update by ID."
+        elif not refresh_reason and bool(
+            (record.get("metadata") or {}).get("_adsfolio_metadata_stale")
+        ):
+            refresh_reason = (
+                "The PDF changed. Identify it before refreshing its ADS record."
+            )
+        self._set_action_tooltip(
+            self.refresh_selected_ads_action,
+            "Refresh and rename the selected PDF from ADS",
+            refresh_reason,
+        )
         self.link_bibcodes_action.setEnabled(available)
         self.refresh_all_ads_action.setEnabled(available)
         self.refresh_all_citation_metrics_action.setEnabled(available)
         if hasattr(self, "ads_refresh_button"):
-            self.ads_refresh_button.setEnabled(available)
+            self.ads_refresh_button.setEnabled(available or identifier_available)
+            self.ads_refresh_button.setToolTip(
+                "ADS Refresh menu: selected actions use the PDF's library. "
+                "All-library actions require a single library view."
+                if self.combined.enabled
+                else "ADS Refresh menu: look up stored bibcodes, update ADS metadata, "
+                "or apply saved rename rules"
+            )
         self._sync_watch_actions()
 
     def _can_add_to_ads_library(self) -> bool:
         """Return whether this window can open an ADS library dialog."""
         return (
             self.current_root is not None
+            and not self.combined.enabled
             and self.job is None
             and self._ads_library_dialog is None
             and self._ads_library_export_dialog is None
@@ -1224,7 +1478,11 @@ class MainWindow(QMainWindow):
     def _selected_records(self) -> tuple[dict[str, Any], ...]:
         """Return deep-copied selected records in visual table-row order."""
         rows = sorted(
-            {index.row() for index in self.table.selectionModel().selectedRows()}
+            {
+                source.row()
+                for index in self.table.selectionModel().selectedRows()
+                if (source := self._source_table_index(index)).isValid()
+            }
         )
         return tuple(
             deepcopy(record)
@@ -1302,6 +1560,11 @@ class MainWindow(QMainWindow):
 
     def _start_root_watch(self, root: Path) -> bool:
         normalized = root.expanduser().resolve()
+        if self._detail_edit_block_reason():
+            self.status.showMessage(
+                "Wait for the current operation before starting a watcher."
+            )
+            return False
         entry = self.root_entries.get(str(normalized))
         if entry is None:
             return False
@@ -1330,10 +1593,15 @@ class MainWindow(QMainWindow):
         return self.watch_controller.is_watching(normalized)
 
     def _start_configured_watchers(self) -> None:
+        if self._close_requested:
+            return
         for entry in tuple(self.root_entries.values()):
+            if self._close_requested:
+                return
             if entry.watch_on_start:
                 self._start_root_watch(Path(entry.path))
         self._sync_watch_actions()
+        QTimer.singleShot(0, self._queue_startup_ads_rechecks)
 
     def _toggle_current_watch(self, checked: bool) -> None:
         if self.current_root is None:
@@ -1343,7 +1611,7 @@ class MainWindow(QMainWindow):
         if (
             self._local_refresh_context is not None
             and self._local_refresh_context.root == root
-        ):
+        ) or root == self._ads_recheck_active_root:
             self._sync_watch_actions()
             return
         if checked:
@@ -1386,6 +1654,9 @@ class MainWindow(QMainWindow):
         self._sync_watch_actions()
 
     def _set_root_recursive(self, root: Path, recursive: bool) -> bool:
+        if root.expanduser().resolve() == self._ads_recheck_active_root:
+            self.status.showMessage("Wait for the identifier recheck to finish.")
+            return False
         normalized = root.expanduser().resolve()
         key = str(normalized)
         entry = self.root_entries.get(key)
@@ -1437,7 +1708,12 @@ class MainWindow(QMainWindow):
             return
         self._pending_watch_dialog = None
         self._foreground_paused_root = root
-        if kind == "ads_refresh":
+        if kind == "ads_recheck":
+            if self._pending_priority_edit is not None:
+                self._end_ads_recheck_root()
+            else:
+                self._launch_ads_recheck(root)
+        elif kind == "ads_refresh":
             self._start_pending_ads_refresh(root)
         elif kind == "local_refresh":
             self._launch_local_refresh(root)
@@ -1507,12 +1783,298 @@ class MainWindow(QMainWindow):
             return global_settings
         return CentralPdfRegistryState(registry).rename_settings or global_settings
 
+    def _queue_ads_rechecks(self) -> None:
+        """Queue the registered roots for one serial recheck cycle."""
+        if self._close_requested:
+            return
+        if self._ads_recheck_roots is not None:
+            self._ads_recheck_again = True
+            return
+        self._ads_recheck_roots = [Path(key) for key in self.root_entries]
+        self._ads_recheck_failures = []
+        self._ads_recheck_token_available = None
+        self._continue_ads_rechecks()
+
+    def _queue_startup_ads_rechecks(self) -> None:
+        self._ads_recheck_startup_pending = False
+        self._queue_ads_rechecks()
+
+    def _queue_added_ads_recheck(self, root: Path) -> None:
+        """Check a newly registered root without repeating the current cycle."""
+        if self._close_requested:
+            return
+        roots = self._ads_recheck_roots
+        if roots is None:
+            self._ads_recheck_roots = [root]
+            self._ads_recheck_failures = []
+            self._ads_recheck_token_available = None
+            self._continue_ads_rechecks()
+        elif (
+            not self._ads_recheck_again
+            and root != self._ads_recheck_active_root
+            and root not in roots
+        ):
+            roots.append(root)
+
+    def _ads_token_check_finished(
+        self, check: AdsTokenCheck, available: bool, error: str | None
+    ) -> None:
+        if self._ads_token_check is not check:
+            return
+        self._ads_token_check = None
+        check.deleteLater()
+        if self._close_requested:
+            self.close()
+            return
+        if error:
+            self._ads_recheck_failures.append(f"Could not read the ADS token: {error}")
+        self._ads_recheck_token_available = available
+        self._continue_ads_rechecks()
+
+    def _continue_ads_rechecks(self) -> None:
+        """Start the next eligible root after other GUI operations finish."""
+        roots = self._ads_recheck_roots
+        if roots is None or self._close_requested:
+            return
+        if self._ads_token_check is not None:
+            return
+        if self._ads_recheck_active_root is not None:
+            return
+        if (
+            self.job is not None
+            or self._pending_watch_dialog is not None
+            or self._pending_ads_refresh is not None
+            or self._pending_priority_edit is not None
+            or self._foreground_paused_root is not None
+            or self._local_refresh_context is not None
+            or self._manual_metadata_target is not None
+            or self._edition_merge_target is not None
+            or QApplication.activeModalWidget() is not None
+        ):
+            if not self._ads_recheck_retry_timer.isActive():
+                self._ads_recheck_retry_timer.start()
+            return
+        while roots:
+            root = roots[0]
+            if str(root) not in self.registries:
+                roots.pop(0)
+                continue
+            try:
+                settings = self._effective_identify_settings(root)
+            except (OSError, ValueError, sqlite3.Error) as exc:
+                self._ads_recheck_failures.append(f"{root}: {exc}")
+                roots.pop(0)
+                continue
+            if (
+                DoiProvider.ADS in settings.providers
+                and self._ads_recheck_token_available is None
+            ):
+                check = AdsTokenCheck(self)
+                self._ads_token_check = check
+                check.finished.connect(
+                    lambda available, error, current=check: (
+                        self._ads_token_check_finished(current, available, error)
+                    )
+                )
+                check.start()
+                return
+            roots.pop(0)
+            if (
+                self._ads_recheck_token_available is False
+                and not has_external_providers(settings)
+            ):
+                continue
+            self._ads_recheck_active_root = root
+            self._request_foreground_dialog("ads_recheck", root)
+            return
+        self._finish_ads_recheck_cycle()
+
+    def _launch_ads_recheck(self, root: Path) -> None:
+        """Snapshot current settings after the watcher acknowledges its pause."""
+        try:
+            if self._close_requested or str(root) not in self.registries:
+                self._end_ads_recheck_root()
+                return
+            identify_settings = self._effective_identify_settings(root)
+            ads_enabled = (
+                DoiProvider.ADS in identify_settings.providers
+                and self._ads_recheck_token_available is not False
+            )
+            if not ads_enabled and not has_external_providers(identify_settings):
+                self._end_ads_recheck_root()
+                return
+            rename_settings = self._effective_rename_settings(root)
+            recursive = self.root_entries[str(root)].recursive
+            job = AdsRecheckJob(
+                root,
+                identify_settings,
+                rename_settings,
+                recursive,
+                self,
+                ads_enabled=ads_enabled,
+            )
+            self._ads_recheck_job = job
+            self.job = job
+            job.finished.connect(
+                lambda result, error: self._ads_recheck_finished(
+                    root, job, result, error
+                )
+            )
+            self._sync_refresh_actions()
+            self._sync_ads_library_action()
+            self.cancel_job_action.setEnabled(True)
+            self.status.showMessage(f"Checking identifiers for {root.name}…")
+            job.start()
+        except (OSError, ValueError, sqlite3.Error, RuntimeError) as exc:
+            self._ads_recheck_failures.append(f"{root}: {exc}")
+            self._ads_recheck_job = None
+            self.job = None
+            self._end_ads_recheck_root()
+
+    def _ads_recheck_finished(
+        self, root: Path, job: AdsRecheckJob, result: Any, error: str | None
+    ) -> None:
+        """Collect one result after the worker releases its catalog."""
+        if self._ads_recheck_job is not job:
+            return
+        self._ads_recheck_job = None
+        self.job = None
+        job.deleteLater()
+        if not self._close_requested:
+            if error:
+                self._ads_recheck_failures.append(f"{root}: {error}")
+            if result is not None:
+                activities = getattr(result, "activities", ())
+                if activities:
+                    details = "\n".join(activities)
+                    self.log.appendPlainText(
+                        f"Automatic identifier recheck for {root}:\n{details}"
+                    )
+                failures = result.failures
+                if isinstance(failures, int):
+                    if failures:
+                        self._ads_recheck_failures.append(
+                            f"{root}: {failures} lookup failures"
+                        )
+                elif failures:
+                    self._ads_recheck_failures.extend(
+                        f"{root}: {failure}" for failure in failures
+                    )
+                if (result.updated or result.renamed) and str(root) in self.registries:
+                    self._schedule_watch_refresh(root)
+                    if (
+                        self.combined.enabled
+                        and str(root) not in self.combined.selected
+                    ):
+                        for key in self.combined.selected:
+                            if key in self.registries:
+                                self._schedule_watch_refresh(Path(key))
+                                break
+                    elif self.current_root is not None and self.current_root != root:
+                        self._schedule_watch_refresh(self.current_root)
+                if result.cancelled:
+                    self._ads_recheck_roots = []
+                    self._ads_recheck_again = False
+        self._end_ads_recheck_root()
+
+    def _end_ads_recheck_root(self) -> None:
+        root = self._ads_recheck_active_root
+        self._ads_recheck_active_root = None
+        self.cancel_job_action.setEnabled(False)
+        if self._close_requested:
+            self._foreground_paused_root = None
+            self.close()
+            return
+        self._resume_foreground_watch()
+        self._sync_refresh_actions()
+        self._sync_ads_library_action()
+        if root is not None and self.status.currentMessage() == (
+            f"Checking identifiers for {root.name}…"
+        ):
+            self._update_status()
+        if self._pending_priority_edit is not None:
+            QTimer.singleShot(0, self._run_pending_priority_edit)
+        else:
+            QTimer.singleShot(0, self._continue_ads_rechecks)
+
+    def _finish_ads_recheck_cycle(self) -> None:
+        failures = self._ads_recheck_failures
+        self._ads_recheck_roots = None
+        self._ads_recheck_failures = []
+        self._ads_recheck_token_available = None
+        if failures:
+            details = "\n".join(failures)
+            self.log.appendPlainText(
+                f"Automatic identifier recheck failures:\n{details}"
+            )
+            self.notice_bar.enqueue(
+                Notice(
+                    "ads-recheck-failures",
+                    "Some automatic identifier rechecks failed. See details for the affected libraries.",
+                    severity="warning",
+                    details=details,
+                )
+            )
+        if self._ads_recheck_again:
+            self._ads_recheck_again = False
+            QTimer.singleShot(0, self._queue_ads_rechecks)
+
+    def _choose_watch_sound(self) -> None:
+        """Choose and preview the sound for new PDFs in watched libraries."""
+        dialog = QDialog(self)
+        dialog.setWindowTitle("New PDF Sound")
+        layout = QVBoxLayout(dialog)
+        layout.addWidget(
+            QLabel("Play a sound when a new PDF arrives in a watched library.", dialog)
+        )
+        choice = WatchSoundChoice(
+            dialog, sound_id=self.config.watch_sound, player=self.watch_sound_player
+        )
+        layout.addWidget(choice)
+        feedback = QLabel("", dialog)
+        feedback.setWordWrap(True)
+        layout.addWidget(feedback)
+        choice.preview_failed.connect(
+            lambda: feedback.setText(
+                "Could not play the sound. Check the audio output."
+            )
+        )
+        choice.sound_changed.connect(lambda _sound: feedback.clear())
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.Save | QDialogButtonBox.Cancel, dialog
+        )
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        layout.addWidget(buttons)
+        if dialog.exec() == QDialog.Accepted:
+            previous = self.config.watch_sound
+            self.config.watch_sound = choice.sound_id()
+            self._sync_config_roots()
+            try:
+                save_config(self.config)
+            except OSError as exc:
+                self.config.watch_sound = previous
+                QMessageBox.warning(self, "Cannot save sound", str(exc))
+
     def _handle_watch_detection(self, event: WatchEvent) -> None:
         if not self._is_current_watch_event(event):
             return
         entry = self.root_entries.get(str(event.root.resolve()))
         if entry is None:
             return
+        sound = normalize_sound_id(self.config.watch_sound)
+        if (
+            event.newly_added
+            and sound != SILENT_SOUND
+            and not self.watch_sound_player.play(sound)
+        ):
+            self.notice_bar.enqueue(
+                Notice(
+                    "watch-sound-unavailable",
+                    "Could not play the new PDF sound. Check the audio output.",
+                    severity="warning",
+                )
+            )
         identify_settings = self._effective_identify_settings(event.root)
         try:
             excluded = WatchIdentifyPolicy.from_settings(
@@ -1549,6 +2111,10 @@ class MainWindow(QMainWindow):
     def _handle_watch_outcome(self, outcome: WatchOutcome) -> None:
         event = outcome.event
         if not self._is_current_watch_event(event):
+            return
+        if outcome.annotation_update:
+            self.notice_bar.dismiss(self._watch_notice_key(event))
+            self._schedule_watch_refresh(event.root)
             return
         state = event.state
         destination = outcome.destination or event.path
@@ -1717,6 +2283,7 @@ class MainWindow(QMainWindow):
             or self.job is not None
             or self._pending_watch_dialog is not None
             or self._pending_ads_refresh is not None
+            or self._pending_priority_edit is not None
             or self._edition_merge_target is not None
             or self._foreground_paused_root is not None
             or QApplication.activeModalWidget() is not None
@@ -1799,6 +2366,8 @@ class MainWindow(QMainWindow):
         root = request.root.expanduser().resolve()
         if str(root) not in self.registries:
             return
+        if self.combined.enabled:
+            self.combined.set_enabled(False)
         try:
             paths = {
                 request.source_path.resolve().relative_to(root).as_posix(),
@@ -1922,6 +2491,7 @@ class MainWindow(QMainWindow):
                 self.refresh(root)
         if (
             selection_id is not None
+            and not self.combined.enabled
             and self.current_root is not None
             and self.current_root.resolve() in roots
         ):
@@ -2020,7 +2590,11 @@ class MainWindow(QMainWindow):
             secondary_order_by=self.current_query.secondary_order_by,
             tertiary_order_by=self.current_query.tertiary_order_by,
         )
-        registry = self.registries[str(self.current_root)]
+        registry = (
+            self.combined.registry()
+            if self.combined.enabled
+            else self.registries[str(self.current_root)]
+        )
         self.model.set_registry(registry, self.current_query)
         if kind == "root":
             self._populate_views(registry)
@@ -2043,13 +2617,60 @@ class MainWindow(QMainWindow):
     def _current_changed(self, current: QModelIndex, previous: QModelIndex) -> None:
         del previous
         selected = self.table.selectionModel().selectedRows()
+        source = self._source_table_index(current)
+        selected_source = (
+            self._source_table_index(selected[0])
+            if len(selected) == 1
+            else QModelIndex()
+        )
         record = (
-            self.model.record_at(current.row())
-            if current.isValid() and len(selected) <= 1
+            self.model.record_at(source.row())
+            if source.isValid()
+            and (
+                (selected_source.isValid() and selected_source.row() == source.row())
+                if self.combined.enabled
+                else len(selected) <= 1
+            )
             else None
         )
+        root = (
+            self.combined.root_for(record)
+            if record is not None and self.combined.enabled
+            else self.current_root
+        )
+        if (
+            self.combined.enabled
+            and record is not None
+            and (root is None or self.combined.path_for(record) is None)
+        ):
+            record = None
+        if record is None or root is None or record.get("location_id") is None:
+            self._detail_document_snapshot = None
+        else:
+            document_id = record.get("document_id")
+            snapshot_key = (str(root), int(record["location_id"]), document_id)
+            if (
+                self._detail_document_snapshot is None
+                or self._detail_document_snapshot[:3] != snapshot_key
+            ):
+                try:
+                    registry = self.registries.get(str(root))
+                    if registry is None:
+                        raise ValueError("The PDF's library is unavailable.")
+                    document = (
+                        registry.catalog.get_document(int(document_id))
+                        if document_id is not None
+                        else None
+                    )
+                    if document_id is not None and document is None:
+                        raise ValueError("The paper record is no longer available.")
+                    self._detail_document_snapshot = (*snapshot_key, deepcopy(document))
+                except (ValueError, sqlite3.Error) as exc:
+                    self._detail_document_snapshot = None
+                    self.status.showMessage(f"Cannot check paper details: {exc}")
+                    record = None
         cached_document = None
-        if record is not None and self.current_root is not None:
+        if record is not None and root is not None:
             metadata = record.get("metadata")
             bibcode = (
                 metadata.get("bibcode")
@@ -2059,7 +2680,7 @@ class MainWindow(QMainWindow):
             if bibcode:
                 try:
                     cached_document = self.registries[
-                        str(self.current_root)
+                        str(root)
                     ].find_ads_document_by_bibcode(str(bibcode))
                 except sqlite3.OperationalError as exc:
                     if (
@@ -2070,7 +2691,7 @@ class MainWindow(QMainWindow):
                     self.status.showMessage("Library is busy; try again in a moment.")
         self.detail.set_record(
             record,
-            self.current_root or Path(),
+            root or Path(),
             cached_document,
         )
         self._sync_ads_library_action()
@@ -2080,20 +2701,48 @@ class MainWindow(QMainWindow):
         self._current_changed(self.table.currentIndex(), QModelIndex())
         self._sync_export_action()
 
+    def _table_selection_changed(self, *_args: Any) -> None:
+        """Update detail actions after a table selection changes."""
+        self.combined.selection_changed()
+        self._sync_detail_and_selection_actions()
+
+    def _set_table_model(self, model: Any) -> None:
+        """Replace the visible table model and reconnect selection signals."""
+        old_selection = self.table.selectionModel()
+        if old_selection is not None:
+            for signal, callback in (
+                (old_selection.currentChanged, self._current_changed),
+                (old_selection.selectionChanged, self._table_selection_changed),
+            ):
+                try:
+                    signal.disconnect(callback)
+                except (RuntimeError, TypeError):
+                    pass
+        self.table.setModel(model)
+        selection = self.table.selectionModel()
+        selection.currentChanged.connect(self._current_changed)
+        selection.selectionChanged.connect(self._table_selection_changed)
+        self._sync_table_sort_indicator()
+        self._apply_table_layout()
+
     def _sync_export_action(self) -> None:
         """Enable export for the current library and its selected rows."""
         if hasattr(self, "export_selected_action"):
-            enabled = self.current_root is not None and bool(
-                self.table.selectionModel().selectedRows()
+            enabled = (
+                self.current_root is not None
+                and not self.combined.enabled
+                and bool(self.table.selectionModel().selectedRows())
             )
             self.export_selected_action.setEnabled(enabled)
-            self.export_all_action.setEnabled(self.current_root is not None)
+            self.export_all_action.setEnabled(
+                self.current_root is not None and not self.combined.enabled
+            )
 
     def _open_index(self, index: QModelIndex) -> None:
         if QApplication.keyboardModifiers() != Qt.NoModifier:
             return
-        record = self.model.record_at(index.row())
-        if record is None or self.current_root is None:
+        record = self._record_at_table_index(index)
+        if record is None or (self.current_root is None and not self.combined.enabled):
             return
         columns = self._columns_for_table_model()
         if columns is not None and index.column() < len(columns):
@@ -2111,6 +2760,12 @@ class MainWindow(QMainWindow):
         root: Path | None = None,
     ) -> None:
         """Review the two selected editions, or choose PDFs from file dialogs."""
+        if self._ads_recheck_active_root is not None:
+            self.status.showMessage("Wait for the identifier recheck to finish.")
+            return
+        if self.combined.enabled and root is None:
+            self.status.showMessage("Select one library to merge PDFs.")
+            return
         root = root or self.current_root
         selected = tuple(
             deepcopy(record)
@@ -2332,8 +2987,8 @@ class MainWindow(QMainWindow):
         """Show status details, copy citations, or open links for a table click."""
         if not index.isValid():
             return
-        record = self.model.record_at(index.row())
-        if record is None or self.current_root is None:
+        record = self._record_at_table_index(index)
+        if record is None or (self.current_root is None and not self.combined.enabled):
             return
         columns = self._columns_for_table_model()
         if columns is None or index.column() >= len(columns):
@@ -2364,9 +3019,10 @@ class MainWindow(QMainWindow):
     ) -> None:
         """Open the ADS, arXiv, or filename target of a table cell."""
         if column_key == "filename":
-            if self.current_root is None:
+            path = self._path_for_record(record)
+            if path is None:
                 return
-            target = str(self.current_root / str(record.get("current_path") or ""))
+            target = str(path)
         elif column_key in {"bibcode", "arxiv"}:
             columns = self._columns_for_table_model()
             column = next((c for c in columns or () if c.key == column_key), None)
@@ -2399,9 +3055,9 @@ class MainWindow(QMainWindow):
         QMessageBox.warning(self, "Cannot open link", f"Could not open:\n{url}")
 
     def _open_filename(self, record: dict[str, Any]) -> None:
-        if self.current_root is None:
+        path = self._path_for_record(record)
+        if path is None:
             return
-        path = self.current_root / str(record.get("current_path") or "")
         if self.config.filename_click_action == "reveal":
             if reveal_in_file_manager(path):
                 return
@@ -2414,13 +3070,21 @@ class MainWindow(QMainWindow):
         self._open_pdf_record(record)
 
     def _open_pdf_record(self, record: dict[str, Any]) -> None:
-        if self.current_root is None:
+        path = self._path_for_record(record)
+        if path is None:
             return
-        path = self.current_root / str(record.get("current_path") or "")
         if not open_path(path, self.config.pdf_viewer_command):
             QMessageBox.warning(
                 self, "Cannot open PDF", f"File is missing or cannot be opened:\n{path}"
             )
+
+    def _path_for_record(self, record: dict[str, Any]) -> Path | None:
+        """Resolve a table record through its owning library."""
+        if self.combined.enabled:
+            return self.combined.path_for(record)
+        if self.current_root is None:
+            return None
+        return self.current_root / str(record.get("current_path") or "")
 
     def _open_current(self) -> None:
         """Open the current table selection using the standard PDF action."""
@@ -2428,7 +3092,7 @@ class MainWindow(QMainWindow):
         if focused is not None and self.detail.isAncestorOf(focused):
             return
         index = self.table.currentIndex()
-        record = self.model.record_at(index.row()) if index.isValid() else None
+        record = self._record_at_table_index(index)
         if record is not None:
             self._open_pdf_record(record)
 
@@ -2443,9 +3107,14 @@ class MainWindow(QMainWindow):
             return
         root = Path(str(item.data(0, Qt.UserRole)))
         menu = QMenu(self)
+        menu.setToolTipsVisible(True)
         watch_action = menu.addAction("Watch Current Library")
         watch_action.setCheckable(True)
         watch_action.setChecked(self.watch_controller.is_watching(root))
+        watch_reason = self._detail_edit_block_reason()
+        watch_action.setEnabled(not watch_reason)
+        if watch_reason:
+            watch_action.setToolTip(watch_reason)
         watch_action.triggered.connect(
             lambda checked: self._set_root_watching(root, checked)
         )
@@ -2504,18 +3173,30 @@ class MainWindow(QMainWindow):
 
     def _table_menu(self, position: Any) -> None:
         index = self.table.indexAt(position)
-        record = self.model.record_at(index.row()) if index.isValid() else None
-        if record is None or self.current_root is None:
+        if (
+            self.combined.enabled
+            and self.combined.tree_model is not None
+            and self.combined.tree_model.is_folder_index(index)
+        ):
+            self.combined.folder_menu(index, position)
+            return
+        record = self._record_at_table_index(index)
+        if record is None or (self.current_root is None and not self.combined.enabled):
             return
         selection = self.table.selectionModel()
-        if not selection.isRowSelected(index.row(), QModelIndex()):
+        if not selection.isRowSelected(index.row(), index.parent()):
             selection.clearSelection()
             selection.select(
                 index,
                 QItemSelectionModel.SelectionFlag.Select
                 | QItemSelectionModel.SelectionFlag.Rows,
             )
+        if self.combined.enabled:
+            selection.setCurrentIndex(index, QItemSelectionModel.NoUpdate)
         records = self._selected_records() or (deepcopy(record),)
+        if self.combined.enabled:
+            self.combined.table_menu(records, position)
+            return
         count = len(records)
         root = self.current_root
         paths = [root / str(item.get("current_path") or "") for item in records]
@@ -2634,15 +3315,41 @@ class MainWindow(QMainWindow):
 
     def _show_header_context_menu(self, position: Any) -> None:
         """Show column visibility and layout actions for the table header."""
-        menu = self._create_header_context_menu()
+        menu = self._create_header_context_menu(
+            self.table.header().logicalIndexAt(position)
+        )
         menu.exec(self.table.header().mapToGlobal(position))
 
-    def _create_header_context_menu(self) -> QMenu:
+    def _create_header_context_menu(self, logical_index: int | None = None) -> QMenu:
         """Build the context menu for the table's column header."""
         menu = QMenu(self)
         menu.addAction(self.appearance_action)
         menu.addSeparator()
         header = self.table.header()
+        if logical_index is not None and 0 <= logical_index < len(self.columns):
+            column = self.columns[logical_index]
+            label = column.header or "Resolution marker"
+            alignment_menu = QMenu(f"Align {label}", menu)
+            menu.addMenu(alignment_menu)
+            alignment_group = QActionGroup(alignment_menu)
+            alignment_group.setExclusive(True)
+            selected = self.config.column_alignments.get(column.key, "default")
+            for text, value in (
+                ("Default", "default"),
+                ("Left", "left"),
+                ("Center", "center"),
+                ("Right", "right"),
+            ):
+                action = alignment_menu.addAction(text)
+                action.setCheckable(True)
+                alignment_group.addAction(action)
+                action.setChecked(value == selected)
+                action.triggered.connect(
+                    lambda _checked, key=column.key, choice=value: (
+                        self._set_column_alignment(key, choice)
+                    )
+                )
+            menu.addSeparator()
         visible_count = sum(
             not self.table.isColumnHidden(header.logicalIndex(visual))
             for visual in range(header.count())
@@ -2672,6 +3379,194 @@ class MainWindow(QMainWindow):
         restore.triggered.connect(self._restore_default_column_order)
         return menu
 
+    def _set_column_alignment(self, key: str, alignment: str) -> None:
+        """Apply a column's alignment or restore its default."""
+        previous = self.config.column_alignments.get(key)
+        if alignment == "default":
+            self.config.column_alignments.pop(key, None)
+        elif alignment in {"left", "center", "right"}:
+            self.config.column_alignments[key] = alignment
+        else:
+            return
+        self.model.set_column_alignments(self.config.column_alignments)
+        if self.config.column_alignments.get(key) != previous:
+            self._save_column_preferences()
+
+    def _remember_table_column_order(self, *_args: Any) -> None:
+        """Keep column preferences synchronized with header drags."""
+        if self._restoring_config or self._applying_table_layout:
+            return
+        header = self.table.header()
+        if header.count() != len(self.columns):
+            return
+        logical_indices = [
+            header.logicalIndex(index) for index in range(header.count())
+        ]
+        if any(index < 0 or index >= len(self.columns) for index in logical_indices):
+            return
+        order = [self.columns[index].key for index in logical_indices]
+        if order != self.config.table_column_order:
+            self.config.table_column_order = order
+            self._save_column_preferences()
+
+    def _save_column_preferences(self) -> None:
+        """Save column changes and report errors while keeping the live view."""
+        self._sync_config_roots()
+        try:
+            save_config(self.config)
+        except OSError as exc:
+            self.notice_bar.enqueue(
+                Notice(
+                    "column-preference",
+                    f"Could not save the column settings: {exc}. "
+                    "The changes apply for this session.",
+                    severity="error",
+                )
+            )
+        else:
+            self.notice_bar.dismiss("column-preference")
+
+    def _remember_table_sort(self, logical_index: int, order: Qt.SortOrder) -> None:
+        """Keep window search and reloads consistent with the table sort."""
+        if (
+            self._restoring_config
+            or self._applying_table_layout
+            or not 0 <= logical_index < len(self.columns)
+            or not self.columns[logical_index].sortable
+        ):
+            self._sync_table_sort_indicator()
+            return
+        column = self.columns[logical_index]
+        self.apply_sort(
+            column.key,
+            order == Qt.DescendingOrder,
+            self.current_query.secondary_order_by,
+            self.current_query.tertiary_order_by,
+        )
+
+    def apply_sort(
+        self,
+        primary: str,
+        descending: bool,
+        secondary: str | None = None,
+        tertiary: str | None = None,
+    ) -> bool:
+        """Apply and save sortable column keys and their direction.
+
+        Parameters
+        ----------
+        primary : str
+            Key of the primary sortable column.
+        descending : bool
+            Use descending order for every key when `True`.
+        secondary, tertiary : str or None, optional
+            Keys that order ties, in priority order.
+
+        Returns
+        -------
+        bool
+            `True` when ADSfolio saves the selection. `False` if a key is invalid,
+            initialization is incomplete, or saving fails. A save failure
+            leaves the selection active and shows a notice.
+        """
+        sortable = {column.key for column in self.columns if column.sortable}
+        if (
+            self._restoring_config
+            or primary not in sortable
+            or any(
+                key is not None and key not in sortable for key in (secondary, tertiary)
+            )
+        ):
+            return False
+        self.current_query = replace(
+            self.current_query,
+            view=self.current_view,
+            search=self.search.text(),
+            order_by=primary,
+            descending=descending,
+            secondary_order_by=secondary,
+            tertiary_order_by=tertiary,
+        )
+        self._sync_table_sort_indicator()
+        if self.model.query != self.current_query:
+            self.model.set_query(self.current_query)
+        saved = self._save_sort_preferences()
+        self._update_status()
+        return saved
+
+    def _sync_table_sort_indicator(self) -> None:
+        """Show the current primary sort without starting another sort."""
+        logical_index = next(
+            (
+                index
+                for index, column in enumerate(self.columns)
+                if column.key == self.current_query.order_by and column.sortable
+            ),
+            None,
+        )
+        if logical_index is None:
+            return
+        order = (
+            Qt.DescendingOrder if self.current_query.descending else Qt.AscendingOrder
+        )
+        header = self.table.header()
+        blocker = QSignalBlocker(header)
+        header.setSortIndicator(logical_index, order)
+        del blocker
+
+    def _sync_sort_after_column_reset(self) -> None:
+        """Keep the sort indicator on its column when definitions change."""
+        if self._applying_table_layout:
+            self._sync_table_sort_indicator()
+
+    def _save_sort_preferences(self) -> bool:
+        """Save the current sort and report failures without changing the view."""
+        if self._restoring_config:
+            return False
+        saved = (
+            self.config.sort_column,
+            self.config.sort_descending,
+            self.config.secondary_sort_column,
+            self.config.tertiary_sort_column,
+        )
+        selected = (
+            self.current_query.order_by,
+            self.current_query.descending,
+            self.current_query.secondary_order_by,
+            self.current_query.tertiary_order_by,
+        )
+        self._sync_config_roots()
+        if (
+            selected == saved
+            and selected == self._saved_sort_selection
+            and self.config.roots == self._saved_sort_roots
+            and not self._sort_save_pending
+        ):
+            return True
+        self.config.sort_column = self.current_query.order_by
+        self.config.sort_descending = self.current_query.descending
+        self.config.secondary_sort_column = self.current_query.secondary_order_by
+        self.config.tertiary_sort_column = self.current_query.tertiary_order_by
+        try:
+            save_config(self.config)
+        except OSError as exc:
+            self._sort_save_pending = True
+            self.notice_bar.enqueue(
+                Notice(
+                    "sort-preference",
+                    f"Could not save the sort selection: {exc}. "
+                    "The selection applies for this session.",
+                    severity="error",
+                )
+            )
+            return False
+        else:
+            self._sort_save_pending = False
+            self._saved_sort_selection = selected
+            self._saved_sort_roots = deepcopy(self.config.roots)
+            self.notice_bar.dismiss("sort-preference")
+            return True
+
     def _set_column_visibility(self, key: str, visible: bool) -> None:
         """Set one column's visibility while keeping one column visible."""
         logical = next(
@@ -2693,17 +3588,20 @@ class MainWindow(QMainWindow):
             for index, column in enumerate(self.columns)
             if self.table.isColumnHidden(index)
         ]
+        self.combined.sync_tree_column()
 
     def _show_all_columns(self) -> None:
         """Make every table column visible and update persisted preferences."""
         for index in range(len(self.columns)):
             self.table.setColumnHidden(index, False)
         self.config.hidden_table_columns = []
+        self.combined.sync_tree_column()
 
     def _restore_default_column_order(self) -> None:
         """Restore the declaration order of table columns."""
         self.config.table_column_order = [column.key for column in self.columns]
         self._apply_table_layout()
+        self._save_column_preferences()
 
     def _edit_citation_keys(self) -> None:
         """Choose and save the citation key styles."""
@@ -2720,6 +3618,8 @@ class MainWindow(QMainWindow):
 
     def _records_bibtex(self, records: Sequence[dict[str, Any]]) -> str | None:
         """Return BibTeX for table records, asking for citation keys if needed."""
+        if self.combined.enabled:
+            return None
         ids = document_ids_of(records)
         if not ids or self.current_root is None:
             self.status.showMessage(
@@ -2783,7 +3683,7 @@ class MainWindow(QMainWindow):
         all_papers: bool = False,
     ) -> None:
         """Choose a format for selected PDFs or all current PDFs in this library."""
-        if self.current_root is None:
+        if self.current_root is None or self.combined.enabled:
             return
         if all_papers:
             query = self.model.query
@@ -2838,6 +3738,8 @@ class MainWindow(QMainWindow):
 
     def _refresh_records_ads(self, records: Sequence[dict[str, Any]]) -> None:
         """Refresh several records from ADS, one CLI run per record, in order."""
+        if self.combined.enabled:
+            return
         commands = [
             (
                 "--bibcode",
@@ -2864,7 +3766,7 @@ class MainWindow(QMainWindow):
 
     def _remove_missing_records(self) -> None:
         """Remove stale registry entries after explicit user confirmation."""
-        if self.current_root is None:
+        if self.current_root is None or self.combined.enabled:
             return
         registry = self.registries[str(self.current_root)]
         self.status.showMessage("Checking registry paths for missing files…")
@@ -2896,8 +3798,17 @@ class MainWindow(QMainWindow):
         self.log.appendPlainText(f"Removed {removed} missing registry record(s).")
         self.refresh()
 
+    def _refresh_visible_library(self) -> None:
+        """Refresh the combined table or scan the selected library."""
+        if self.combined.enabled:
+            self.combined.refresh()
+        else:
+            self._refresh_local_files()
+
     def _refresh_local_files(self, root: Path | None = None) -> None:
         """Queue a filesystem scan after any watcher write has finished."""
+        if self.combined.enabled and root is None:
+            return
         root = root or self.current_root
         if (
             root is None
@@ -2942,7 +3853,11 @@ class MainWindow(QMainWindow):
 
     def _restore_library_selection(self, context: _LibraryViewContext) -> None:
         """Restore selected locations, or their unique moved attachments."""
-        if self.current_root != context.root or self.current_query != context.query:
+        if (
+            self.combined.enabled
+            or self.current_root != context.root
+            or self.current_query != context.query
+        ):
             return
         records = self.registries[str(context.root)].query_files(
             **self.current_query.to_filters()
@@ -3018,11 +3933,19 @@ class MainWindow(QMainWindow):
         self.config = original_config
         self._apply_appearance_config()
 
+    def _open_preferences(self) -> None:
+        """Open the unified settings window."""
+        from .preferences import PreferencesDialog
+
+        dialog = PreferencesDialog(self)
+        dialog.exec()
+        dialog.deleteLater()
+
     def _edit_citation_styles(self) -> None:
         """Edit global citation styles and apply accepted definitions live."""
         selected_rows = self.table.selectionModel().selectedRows()
         preview_record = (
-            self.model.record_at(selected_rows[0].row())
+            self._record_at_table_index(selected_rows[0])
             if len(selected_rows) == 1
             else None
         )
@@ -3033,6 +3956,16 @@ class MainWindow(QMainWindow):
         )
         dialog.saved.connect(self._apply_citation_styles)
         dialog.exec()
+
+    def _save_citation_preferences(self, styles: Sequence[CitationStyle]) -> None:
+        """Save citation styles and preserve the in-memory settings on failure."""
+        original = deepcopy(self.config)
+        try:
+            self._sync_config_roots()
+            self._apply_citation_styles(styles)
+        except (OSError, ValueError):
+            self.config = original
+            raise
 
     @staticmethod
     def _merge_citation_order(
@@ -3069,7 +4002,8 @@ class MainWindow(QMainWindow):
             for index, column in enumerate(self.columns)
         }
         current_index = self.table.currentIndex()
-        selected_row = current_index.row() if current_index.isValid() else None
+        source_index = self._source_table_index(current_index)
+        selected_row = source_index.row() if source_index.isValid() else None
         selected_record = (
             self.model.record_at(selected_row) if selected_row is not None else None
         )
@@ -3090,6 +4024,7 @@ class MainWindow(QMainWindow):
         for preferences in (
             self.config.column_widths,
             self.config.column_fonts,
+            self.config.column_alignments,
             self.config.detail_fonts,
         ):
             for key in deleted_keys:
@@ -3119,8 +4054,7 @@ class MainWindow(QMainWindow):
         self.config.citation_styles = list(normalized_styles)
         save_config(self.config)
 
-        self.columns = build_columns(self.config.citation_styles)
-        self.model.set_columns(self.columns)
+        self.combined.update_columns()
         self.detail.set_row_order(self.config.detail_row_order)
         self.detail.set_hidden_rows(self.config.detail_hidden_rows)
         self.detail.set_citation_styles(self.config.citation_styles)
@@ -3142,15 +4076,19 @@ class MainWindow(QMainWindow):
                     None,
                 )
             if restored_row is not None and restored_row < self.model.rowCount():
-                restored_index = self.model.index(restored_row, 0)
-                self.table.setCurrentIndex(restored_index)
-                self._current_changed(restored_index, QModelIndex())
+                restored_index = self._view_table_index(
+                    self.model.index(restored_row, 0)
+                )
+                if restored_index.isValid():
+                    self.table.setCurrentIndex(restored_index)
+                    self._current_changed(restored_index, QModelIndex())
 
     def _apply_appearance_dialog(self, dialog: AppearanceDialog) -> None:
         """Apply the current Appearance dialog values to the running window."""
         self.config.column_fonts = {
             key: dict(value) for key, value in dialog.column_fonts.items()
         }
+        self.config.column_alignments = dict(dialog.column_alignments)
         self.config.detail_fonts = {
             key: dict(value) for key, value in dialog.detail_fonts.items()
         }
@@ -3198,7 +4136,7 @@ class MainWindow(QMainWindow):
             ("Tertiary sort", self.current_query.tertiary_order_by),
         ):
             selector = QComboBox(dialog)
-            selector.addItems(choices)
+            selector.addItems(choices[1:] if label == "Primary sort" else choices)
             selector.setCurrentText(current if current in choices else "(none)")
             layout.addWidget(QLabel(label, dialog))
             layout.addWidget(selector)
@@ -3215,19 +4153,15 @@ class MainWindow(QMainWindow):
             None if selector.currentText() == "(none)" else selector.currentText()
             for selector in selectors
         ]
-        primary = selected[0] or "relative_path"
-        secondary = selected[1] if selected[1] != primary else None
-        tertiary = selected[2] if selected[2] not in {primary, secondary} else None
-        self.current_query = FileQuery(
-            view=self.current_view,
-            search=self.search.text(),
-            order_by=primary,
-            descending=self.current_query.descending,
-            secondary_order_by=secondary,
-            tertiary_order_by=tertiary,
+        primary = selected[0] or self.current_query.order_by
+        secondary = selected[1]
+        tertiary = selected[2]
+        self.apply_sort(
+            primary,
+            self.current_query.descending,
+            secondary,
+            tertiary,
         )
-        self.model.set_query(self.current_query)
-        self._update_status()
 
     def _apply_table_appearance(self) -> None:
         """Apply persisted typography and timestamp display to the table."""
@@ -3245,6 +4179,7 @@ class MainWindow(QMainWindow):
             if color.isValid():
                 colors[key] = color
         self.model.set_column_fonts(fonts, colors)
+        self.model.set_column_alignments(self.config.column_alignments)
         detail_fonts: dict[str, QFont] = {}
         detail_colors: dict[str, QColor] = {}
         for key, settings in self.config.detail_fonts.items():
@@ -3330,12 +4265,17 @@ class MainWindow(QMainWindow):
             )
         )
         header = self.table.header()
-        for visual_index, key in enumerate(order):
-            logical_index = positions[key]
-            header.moveSection(header.visualIndex(logical_index), visual_index)
-            self.table.setColumnHidden(
-                logical_index, key in self.config.hidden_table_columns
-            )
+        self._applying_table_layout = True
+        try:
+            for visual_index, key in enumerate(order):
+                logical_index = positions[key]
+                header.moveSection(header.visualIndex(logical_index), visual_index)
+                self.table.setColumnHidden(
+                    logical_index, key in self.config.hidden_table_columns
+                )
+        finally:
+            self._applying_table_layout = False
+        self.combined.sync_tree_column()
 
     def _add_root(self) -> None:
         selected = QFileDialog.getExistingDirectory(self, "Add Library Root")
@@ -3398,6 +4338,15 @@ class MainWindow(QMainWindow):
         root = root.expanduser().resolve()
         key = str(root)
         if (
+            self._pending_priority_edit is not None
+            and self._pending_priority_edit.root == root
+        ):
+            self.status.showMessage("Wait for the PDF update to start.")
+            return
+        if root == self._ads_recheck_active_root:
+            self.status.showMessage("Wait for the identifier recheck to finish.")
+            return
+        if (
             self._manual_metadata_target is not None
             and self._manual_metadata_target[0] == root
         ):
@@ -3436,6 +4385,7 @@ class MainWindow(QMainWindow):
         if registry is not None:
             registry.close()
         self.root_entries.pop(key, None)
+        self.combined.remove_root(key)
         self.notice_bar.clear_root(root)
         for index in range(self.libraries_item.childCount()):
             item = self.libraries_item.child(index)
@@ -3446,7 +4396,14 @@ class MainWindow(QMainWindow):
             self.current_root = None
             self.model.set_registry(None)
             self.views_item.takeChildren()
+            if self.registries:
+                self._select_root(Path(next(iter(self.registries))))
+            elif self.combined.enabled:
+                self.combined.set_enabled(False)
             self._update_status()
+        elif self.combined.enabled:
+            self.combined.update_columns()
+            self.combined.refresh()
         self._sync_config_roots()
         self._sync_watch_actions()
         self._sync_ads_library_action()
@@ -3470,7 +4427,9 @@ class MainWindow(QMainWindow):
                     f"{marker}{entry.label or root.name or key} ({count if count is not None else '?'})",
                 )
                 break
-        if self.current_root == root:
+        if self.combined.enabled and key in self.combined.selected:
+            self.combined.refresh()
+        elif not self.combined.enabled and self.current_root == root:
             self.model.set_registry(self.registries[key], self.current_query)
             self._populate_views(self.registries[key])
             self._update_status()
@@ -3517,19 +4476,20 @@ class MainWindow(QMainWindow):
         self._sync_welcome()
         explains_ads_group = self.current_root is not None and self.current_view in {
             LibraryView.RESOLVED,
+            LibraryView.IDENTIFIED_WITHOUT_ADS,
             LibraryView.UNRESOLVED,
         }
-        explanation = (
-            (
-                "ADS linked: these papers have saved ADS records. Changed PDFs need identification again."
-                if self.current_view is LibraryView.RESOLVED
-                else "These papers have no saved ADS link. A bibcode or usable non-ADS metadata may already be present. Select Identify papers… to check them."
+        explanation = self.current_view.description if explains_ads_group else ""
+        if self.combined.enabled:
+            explanation = (
+                "Combined view shows the checked libraries. "
+                "Select a PDF to edit its details in its own library. "
+                "Existing watchers keep running."
             )
-            if explains_ads_group
-            else ""
-        )
         self.notification_panel.set_guidance(
-            explanation, identify=self.current_view is LibraryView.UNRESOLVED
+            explanation,
+            identify=self.current_view is LibraryView.UNRESOLVED
+            and not self.combined.enabled,
         )
         self._sync_notifications()
         if self.current_root is None:
@@ -3539,37 +4499,50 @@ class MainWindow(QMainWindow):
             return
         total = self.model.total
         loaded = self.model.rowCount()
-        registry = self.registries[str(self.current_root)]
+        registry = (
+            self.combined.registry()
+            if self.combined.enabled
+            else self.registries[str(self.current_root)]
+        )
         filters = self.current_query.to_filters()
-        resolved_filters = {**filters, "resolved": True}
-        unresolved_filters = {**filters, "resolved": False}
+        resolved_filters = {**filters, "identification": "ads_linked"}
+        external_filters = {**filters, "identification": "identified_without_ads"}
+        unresolved_filters = {**filters, "identification": "needs_identification"}
         resolved = self._safe_count(registry, **resolved_filters)
+        external = self._safe_count(registry, **external_filters)
         unresolved = self._safe_count(registry, **unresolved_filters)
         # The badge counts the whole library. The status counts above share the
         # current view and search, so reuse them only when no other filter applies.
         library_unresolved = (
             unresolved
-            if set(filters) <= {"resolved"}
-            else self._safe_count(registry, resolved=False)
+            if set(filters) <= {"identification"}
+            else self._safe_count(registry, identification="needs_identification")
         )
         self._set_identify_badge(
             library_unresolved, unavailable=library_unresolved is None
         )
-        if resolved is None or unresolved is None:
+        if resolved is None or external is None or unresolved is None:
             return
+        prefix = "Combined libraries · " if self.combined.enabled else ""
+        partial = (
+            " · some libraries unavailable"
+            if self.combined.enabled and registry.unavailable_roots
+            else ""
+        )
         self.status.showMessage(
-            f"{loaded} loaded of {total} · {resolved} ADS linked · "
-            f"{unresolved} need ADS lookup"
+            f"{prefix}{loaded} loaded of {total} · {resolved} ADS linked · "
+            f"{external} identified without ADS · {unresolved} need identification{partial}"
         )
         self.load_more_action.setEnabled(self.model.canFetchMore())
 
-        self.status.setToolTip(LibraryView.RESOLVED.description)
+        self.status.setToolTip(self.current_view.description)
 
     def _guide_identification(self) -> None:
         """Explain identification and start it with one confirmation."""
         root = self.current_root
         if (
             root is None
+            or self.combined.enabled
             or self.job is not None
             or self._pending_watch_dialog is not None
             or self._pending_ads_refresh is not None
@@ -3714,26 +4687,48 @@ class MainWindow(QMainWindow):
         self.status.showMessage(f"Identifying papers: {root.name}")
         job.start()
 
-    def _identify(self, files: Sequence[Path] = ()) -> None:
+    def _identify(
+        self, files: Sequence[Path] = (), *, root: Path | None = None
+    ) -> None:
         """Open Identify for the library, or for `files` only when given."""
-        if self.current_root is None:
+        if self.combined.enabled and root is None:
+            return
+        if self.combined.enabled and self._detail_edit_block_reason():
+            return
+        root = root or self.current_root
+        if root is None or str(root.resolve()) not in self.registries:
             return
         self._refresh_selection_id = None
-        root = self.current_root.resolve()
+        root = root.resolve()
+        if self.combined.enabled and str(root) not in self.combined.selected:
+            return
+        if self.combined.enabled and any(
+            not path.resolve().is_relative_to(root) for path in files
+        ):
+            return
         self._identify_files = tuple(files)
         self._request_foreground_dialog("identify", root)
 
-    def _identify_and_rename(self, files: Sequence[Path]) -> None:
+    def _identify_and_rename(
+        self, files: Sequence[Path], *, root: Path | None = None
+    ) -> None:
         """Identify and rename selected PDFs with saved settings."""
         if (
-            self.current_root is None
+            (self.combined.enabled and root is None)
             or not files
-            or self.job is not None
-            or self._pending_watch_dialog is not None
-            or self._pending_ads_refresh is not None
+            or self._detail_edit_block_reason()
         ):
             return
-        root = self.current_root.resolve()
+        root = root or self.current_root
+        if root is None or str(root.resolve()) not in self.registries:
+            return
+        root = root.resolve()
+        if self.combined.enabled and str(root) not in self.combined.selected:
+            return
+        if self.combined.enabled and any(
+            not path.resolve().is_relative_to(root) for path in files
+        ):
+            return
         self._refresh_selection_id = None
         self._identify_rename_files = tuple(files)
         self._identify_rename_context = _LibraryViewContext(
@@ -3745,6 +4740,40 @@ class MainWindow(QMainWindow):
             scroll=self.table.verticalScrollBar().value(),
         )
         self._request_foreground_dialog("identify_rename", root)
+
+    def _identify_combined_selection(
+        self, records: Sequence[dict[str, Any]], *, rename: bool = False
+    ) -> None:
+        """Identify the captured selection only when it still has one owner."""
+        if not self.combined.enabled or self._detail_edit_block_reason():
+            return
+        selected = self._selected_records()
+
+        def identity(item: dict[str, Any]) -> tuple[str, Any]:
+            return str(item.get("root") or ""), item.get("location_id")
+
+        if (
+            len(selected) != len(records)
+            or len(self.table.selectionModel().selectedRows()) != len(records)
+            or {identity(item) for item in selected}
+            != {identity(item) for item in records}
+        ):
+            self.status.showMessage(
+                "The selection changed. Select the PDFs and try again."
+            )
+            return
+        roots = {self.combined.root_for(item) for item in selected}
+        paths = [self.combined.path_for(item) for item in selected]
+        if len(roots) != 1 or None in roots or any(path is None for path in paths):
+            self.status.showMessage("Select PDFs from one available library.")
+            return
+        root = next(iter(roots))
+        assert root is not None
+        selected_paths = tuple(path for path in paths if path is not None)
+        if rename:
+            self._identify_and_rename(selected_paths, root=root)
+        else:
+            self._identify(selected_paths, root=root)
 
     def _launch_identify_and_rename(self, root: Path) -> None:
         """Run selected identification and renaming after watcher writes pause."""
@@ -3819,7 +4848,9 @@ class MainWindow(QMainWindow):
             self._sync_refresh_actions()
             self.watch_controller.pause_writes(root)
             return
-        if kind == "ads_refresh":
+        if kind == "ads_recheck":
+            self._launch_ads_recheck(root)
+        elif kind == "ads_refresh":
             self._start_pending_ads_refresh(root)
         elif kind == "local_refresh":
             self._launch_local_refresh(root)
@@ -3839,31 +4870,9 @@ class MainWindow(QMainWindow):
     def _open_identify_dialog(self, root: Path) -> None:
         registry = self.registries[str(root)]
         state = CentralPdfRegistryState(registry)
-        persistence = _SettingsPersistenceCoordinator[IdentifySettings](
-            scopes=self.config.identify_scopes,
-            root_key=str(root),
-            load_global=Config.load_identify_settings,
-            save_global=Config.save_identify_settings,
-            load_library=lambda: state.identify_settings,
-            save_library=state.set_identify_settings,
-            save_gui=lambda: save_config(self.config),
-        )
 
-        def save_identify_settings(
-            scope: str,
-            settings: IdentifySettings,
-        ) -> None:
-            saved = settings
-            if scope == "library" and settings.output_unresolved:
-                output = Path(settings.output_unresolved).expanduser()
-                if output.is_absolute():
-                    try:
-                        output = output.resolve().relative_to(root)
-                    except ValueError:
-                        pass
-                saved = settings.with_overrides(output_unresolved=str(output))
-            WatchIdentifyPolicy.from_settings(root, saved)
-            persistence.persist(scope, saved)
+        def save_identify_settings(scope: str, settings: IdentifySettings) -> None:
+            self._persist_identify_defaults(root, scope, settings)
 
         library_settings = state.identify_settings
         dialog = IdentifyDialog(
@@ -3876,10 +4885,65 @@ class MainWindow(QMainWindow):
             parent=self,
         )
         self._identify_files = ()
-        dialog.job_started.connect(self._watch_job)
+
+        def start_identify_job(job: Any) -> None:
+            self._ads_refresh_root = root
+            self._watch_job(job)
+
+        dialog.job_started.connect(start_identify_job)
         dialog.exec()
         if self.job is None:
             self._resume_foreground_watch()
+
+    def _persist_identify_defaults(
+        self, root: Path | None, scope: str, settings: IdentifySettings
+    ) -> None:
+        """Save Identify defaults and retain the existing scope transaction."""
+        self._guard_ads_recheck_settings()
+        if root is None:
+            if scope != "global":
+                raise ValueError("Choose a library first.")
+            if settings.skip_unresolved_directory and settings.output_unresolved:
+                output = Path(settings.output_unresolved).expanduser()
+                if not output.is_absolute() and all(
+                    part == ".." for part in output.parts
+                ):
+                    raise ValueError(
+                        "Cannot skip the unresolved directory because it contains "
+                        "the watched root."
+                    )
+            Config.save_identify_settings(settings)
+            return
+        root = root.expanduser().resolve()
+        registry = self.registries.get(str(root))
+        if registry is None:
+            raise ValueError("The selected library is unavailable.")
+        state = CentralPdfRegistryState(registry)
+
+        def save_gui() -> None:
+            self._sync_config_roots()
+            save_config(self.config)
+
+        persistence = _SettingsPersistenceCoordinator[IdentifySettings](
+            scopes=self.config.identify_scopes,
+            root_key=str(root),
+            load_global=Config.load_identify_settings,
+            save_global=Config.save_identify_settings,
+            load_library=lambda: state.identify_settings,
+            save_library=state.set_identify_settings,
+            save_gui=save_gui,
+        )
+        saved = settings
+        if scope == "library" and settings.output_unresolved:
+            output = Path(settings.output_unresolved).expanduser()
+            if output.is_absolute():
+                try:
+                    output = output.resolve().relative_to(root)
+                except ValueError:
+                    pass
+            saved = settings.with_overrides(output_unresolved=str(output))
+        WatchIdentifyPolicy.from_settings(root, saved)
+        persistence.persist(scope, saved)
 
     def _edit_user_profile(self) -> None:
         """Edit the global identity used for publication prefetching."""
@@ -3921,9 +4985,16 @@ class MainWindow(QMainWindow):
 
     def _refresh_selected_ads(self) -> None:
         """Refresh and rename one selected record from ADS metadata."""
-        if self.current_root is None:
-            return
-        record = self._selected_record()
+        if self.combined.enabled:
+            target = self._selected_edit_target()
+            if target is None:
+                return
+            root, record, _path = target
+        else:
+            root = self.current_root
+            if root is None:
+                return
+            record = self._selected_record()
         metadata = record.get("metadata") if isinstance(record, dict) else {}
         bibcode = metadata.get("bibcode") if isinstance(metadata, dict) else None
         if bibcode is None and isinstance(record, dict):
@@ -3942,6 +5013,7 @@ class MainWindow(QMainWindow):
             str(record["relative_path"]),
             "--citation-metrics",
             selection_id=int(record["location_id"]),
+            root=root,
         )
 
     def _update_from_identifier(
@@ -3951,6 +5023,7 @@ class MainWindow(QMainWindow):
         root: Path | None = None,
         path: Path | None = None,
         reviewed_candidate: Notice | None = None,
+        _identifier_entered: bool = False,
     ) -> bool:
         """Ask for an identifier to update and rename one PDF.
 
@@ -3965,26 +5038,40 @@ class MainWindow(QMainWindow):
         reviewed_candidate
             Explicit Use This ID action bound to the reviewed PDF and candidate.
             Skip text entry and the duplicate identity confirmation.
+        _identifier_entered
+            Use an identifier already entered before the recheck stopped.
 
         Returns
         -------
         bool
-            `True` when the update starts or waits for the watcher to pause.
+            `True` when the update starts or waits for another operation to stop.
         """
+        if self.combined.enabled and root is None and path is None:
+            target = self._selected_edit_target()
+            if target is None:
+                return False
+            root, _record, path = target
         target_root = (
             root.expanduser().resolve() if root is not None else self.current_root
         )
+        if self.combined.enabled and (root is None or path is None):
+            return False
         if (
             target_root is None
             or str(target_root) not in self.registries
             or self._close_requested
         ):
             return False
-        if (
+        priority_update = self._can_preempt_ads_recheck()
+        if not priority_update and (
             self.job is not None
+            or self._ads_recheck_active_root is not None
             or self._pending_watch_dialog is not None
             or self._pending_ads_refresh is not None
+            or self._pending_priority_edit is not None
             or self._local_refresh_context is not None
+            or self._manual_metadata_target is not None
+            or self._edition_merge_target is not None
         ):
             self.status.showMessage(
                 "Wait for the current operation before identifying a PDF."
@@ -4013,7 +5100,7 @@ class MainWindow(QMainWindow):
                 untracked = True
         if record is None:
             return False
-        if reviewed_candidate is None:
+        if reviewed_candidate is None and not _identifier_entered:
             bibcode, accepted = QInputDialog.getText(
                 self,
                 "Update by identifier",
@@ -4031,9 +5118,9 @@ class MainWindow(QMainWindow):
                 "You can replace {bibstem} with the full journal name in either format.\n"
                 "Examples: Last-2020-Nature or Science-123-45\n"
                 "Separate fields with hyphens, underscores, or spaces.\n"
-                "Reference hints search ADS. Candidates must match this PDF.\n"
-                "If none match, its own DOI or arXiv ID can use the enabled providers.\n"
-                "If several papers match, select the correct one.\n\n"
+                "Reference hints search ADS. Review any conflict after the lookup.\n"
+                "Select the correct paper from the ADS matches.\n"
+                "If no reference matches, enter a DOI or Bibcode.\n\n"
                 "The update applies saved Rename settings to this PDF.\n"
                 "DOI and arXiv lookups can use Crossref or DataCite if ADS has no match.",
                 text=initial_identifier,
@@ -4046,6 +5133,10 @@ class MainWindow(QMainWindow):
         pdf_path = target_root / str(
             record.get("current_path") or record["relative_path"]
         )
+        if priority_update:
+            return self._queue_edit_after_recheck(
+                target_root, pdf_path, record, normalized, reviewed_candidate
+            )
         try:
             own_identity = extract_pdf_own_identity(pdf_path)
         except IdentityValidationError as exc:
@@ -4067,6 +5158,8 @@ class MainWindow(QMainWindow):
             "--relative-path",
             str(record["relative_path"]),
         ]
+        if reviewed_candidate is None:
+            arguments.append("--offer-conflict-review")
         if reviewed_candidate is not None:
             if reviewed_candidate.candidate_confirmable:
                 arguments.append("--confirm-identity")
@@ -4079,22 +5172,24 @@ class MainWindow(QMainWindow):
                 ]
             )
         elif not own_identity.has_identifier:
-            confirmation = QMessageBox.question(
-                self,
-                "Confirm PDF identity",
-                f"PDF: {record['relative_path']}\n\n"
-                "This PDF's identity could not be verified from trusted metadata fields.\n"
-                f"Confirm only after checking that {normalized} identifies this PDF.\n\n"
-                "Apply the lookup result and saved Rename settings?",
-                QMessageBox.Yes | QMessageBox.No,
-                QMessageBox.No,
-            )
-            if confirmation != QMessageBox.Yes:
+            if own_identity.blocking_errors:
+                QMessageBox.warning(
+                    self,
+                    "PDF identity unavailable",
+                    "The PDF could not be read for identification. "
+                    "Open the PDF and check that it is readable before retrying.",
+                )
                 return False
-            arguments.append("--confirm-identity")
-        if untracked or (
-            reviewed_candidate is not None
-            and record.get("sha256") != own_identity.sha256
+            # The user chose this PDF and supplied the identifier. Known
+            # conflicts are still rejected by the identity validator.
+            arguments.extend(("--confirm-identity", "--review-reference"))
+        if (
+            untracked
+            or not record.get("sha256")
+            or (
+                reviewed_candidate is not None
+                and record.get("sha256") != own_identity.sha256
+            )
         ):
             try:
                 if sha256_file(pdf_path) != own_identity.sha256:
@@ -4133,14 +5228,142 @@ class MainWindow(QMainWindow):
             self._candidate_update_notice = None
         return started
 
-    def _enter_manual_metadata(self, payload: object = None) -> None:
-        """Open local metadata entry for a warned or selected PDF."""
+    def _queue_edit_after_recheck(
+        self,
+        root: Path,
+        path: Path,
+        record: dict[str, Any],
+        identifier: str | None,
+        reviewed_candidate: Notice | None,
+        notice_key: str | None = None,
+    ) -> bool:
+        """Stop a recheck and retain the exact PDF selected for an edit."""
+        if self._ads_recheck_active_root is not None:
+            if not self._can_preempt_ads_recheck():
+                self.status.showMessage("Wait for the current operation and try again.")
+                return False
+        elif self._detail_edit_block_reason():
+            self.status.showMessage("Wait for the current operation and try again.")
+            return False
+        try:
+            content_sha256 = sha256_file(path)
+        except (OSError, ValueError) as exc:
+            QMessageBox.warning(self, "PDF unavailable", str(exc))
+            return False
+        self._pending_priority_edit = _PendingPriorityEdit(
+            root=root,
+            path=path,
+            location_id=record.get("location_id"),
+            attachment_id=record.get("attachment_id"),
+            catalog_sha256=record.get("sha256"),
+            content_sha256=content_sha256,
+            identifier=identifier,
+            reviewed_candidate=reviewed_candidate,
+            notice_key=notice_key,
+        )
+        self._ads_recheck_roots = []
+        self._ads_recheck_again = False
+        self._sync_refresh_actions()
+        self.status.showMessage(
+            "Stopping the automatic ADS check before editing this PDF…"
+        )
+        if self._ads_recheck_job is not None:
+            self._ads_recheck_job.cancel()
+        elif self._ads_recheck_active_root is None:
+            QTimer.singleShot(0, self._run_pending_priority_edit)
+        return True
+
+    def _run_pending_priority_edit(self) -> None:
+        """Revalidate the selected PDF after the recheck releases its catalog."""
+        pending = self._pending_priority_edit
+        if pending is None or self._close_requested:
+            return
+        if self._ads_recheck_active_root is not None:
+            return
         if (
-            self._close_requested
-            or self.job is not None
+            self.job is not None
             or self._pending_watch_dialog is not None
             or self._pending_ads_refresh is not None
             or self._manual_metadata_target is not None
+            or self._edition_merge_target is not None
+            or self._local_refresh_context is not None
+        ):
+            self._pending_priority_edit = None
+            self._sync_refresh_actions()
+            QMessageBox.warning(
+                self,
+                "Edit cancelled",
+                "Another operation started. Wait for it to finish, then try again.",
+            )
+            QTimer.singleShot(0, self._continue_ads_rechecks)
+            return
+        self._pending_priority_edit = None
+        self._sync_refresh_actions()
+        try:
+            registry = self.registries.get(str(pending.root))
+            if registry is None:
+                raise ValueError("The PDF's library is no longer available.")
+            relative = pending.path.resolve().relative_to(pending.root).as_posix()
+            record = registry.find_file_by_current_path(pending.root, relative)
+            expected = (
+                pending.location_id,
+                pending.attachment_id,
+                pending.catalog_sha256,
+            )
+            actual = (
+                (
+                    record.get("location_id"),
+                    record.get("attachment_id"),
+                    record.get("sha256"),
+                )
+                if record is not None
+                else (None, None, None)
+            )
+            if (
+                actual != expected
+                or (record is not None and record.get("missing_at"))
+                or sha256_file(pending.path) != pending.content_sha256
+            ):
+                raise ValueError(
+                    "The PDF or its catalog entry changed during the recheck."
+                )
+        except (OSError, ValueError, sqlite3.Error) as exc:
+            QMessageBox.warning(
+                self,
+                "Edit cancelled",
+                f"{exc}\n\nRefresh the library and try again.",
+            )
+        else:
+            if pending.identifier is None:
+                self._manual_metadata_target = (
+                    pending.root,
+                    pending.path,
+                    pending.notice_key,
+                )
+                self._request_foreground_dialog("manual_metadata", pending.root)
+            else:
+                self._update_from_identifier(
+                    pending.identifier,
+                    root=pending.root,
+                    path=pending.path,
+                    reviewed_candidate=pending.reviewed_candidate,
+                    _identifier_entered=True,
+                )
+        QTimer.singleShot(0, self._continue_ads_rechecks)
+
+    def _enter_manual_metadata(self, payload: object = None) -> None:
+        """Open local metadata entry for a warned or selected PDF."""
+        priority_edit = self._can_preempt_ads_recheck()
+        if not priority_edit and (
+            self._close_requested
+            or self.job is not None
+            or self._ads_recheck_active_root is not None
+            or self._pending_watch_dialog is not None
+            or self._pending_ads_refresh is not None
+            or self._pending_priority_edit is not None
+            or self._manual_metadata_target is not None
+            or self._local_refresh_context is not None
+            or self._edition_merge_target is not None
         ):
             self.status.showMessage(
                 "Wait for the current operation before entering paper details."
@@ -4151,13 +5374,32 @@ class MainWindow(QMainWindow):
             path = payload.path
             notice_key = self._watch_notice_key(payload)
         else:
-            record = self._selected_record()
-            if record is None or self.current_root is None:
-                return
-            root = self.current_root.resolve()
-            path = root / str(record["relative_path"])
+            if self.combined.enabled:
+                target = self._selected_edit_target()
+                if target is None:
+                    return
+                root, _record, path = target
+            else:
+                record = self._selected_record()
+                if record is None or self.current_root is None:
+                    return
+                root = self.current_root.resolve()
+                path = root / str(record.get("current_path") or record["relative_path"])
             notice_key = None
         if str(root) not in self.registries:
+            return
+        if priority_edit:
+            try:
+                relative = path.resolve().relative_to(root).as_posix()
+                record = self.registries[str(root)].find_file_by_current_path(
+                    root, relative
+                )
+            except (OSError, ValueError, sqlite3.Error) as exc:
+                QMessageBox.warning(self, "PDF unavailable", str(exc))
+                return
+            self._queue_edit_after_recheck(
+                root, path, record or {}, None, None, notice_key
+            )
             return
         self._manual_metadata_target = (root, path, notice_key)
         self._request_foreground_dialog("manual_metadata", root)
@@ -4180,14 +5422,29 @@ class MainWindow(QMainWindow):
             record = self.registries[str(root)].find_file_by_current_path(
                 root, relative_path
             )
-            initial_metadata = record["metadata"] if record is not None else {}
+            initial_metadata = (
+                deepcopy(record["metadata"]) if record is not None else {}
+            )
+            document_id = record.get("document_id") if record is not None else None
+            original_document = (
+                self.registries[str(root)].catalog.get_document(int(document_id))
+                if document_id is not None
+                else None
+            )
+            if document_id is not None and original_document is None:
+                raise ValueError("The PDF's paper record is no longer available.")
 
             def save_manual_metadata(changes: dict[str, Any]) -> None:
                 """Merge changed fields with current metadata and preserve the PDF."""
                 registry = self.registries[str(root)]
                 latest = registry.find_file_by_current_path(root, relative_path)
-                if record is not None and (
-                    latest is None or latest["location_id"] != record["location_id"]
+                if (record is None) != (latest is None) or (
+                    record is not None
+                    and latest is not None
+                    and any(
+                        latest.get(key) != record.get(key)
+                        for key in ("location_id", "attachment_id", "document_id")
+                    )
                 ):
                     raise ValueError(
                         "The PDF's catalog record changed. Reopen the details dialog."
@@ -4199,6 +5456,18 @@ class MainWindow(QMainWindow):
                     raise ValueError(
                         "The PDF changed while this dialog was open. Reopen the details dialog."
                     )
+                if latest is not None:
+                    missing = object()
+                    current_metadata = latest.get("metadata") or {}
+                    if any(
+                        initial_metadata.get(key, missing)
+                        != current_metadata.get(key, missing)
+                        for key in changes
+                    ):
+                        raise ValueError(
+                            "A field changed while this dialog was open. "
+                            "Reopen the details dialog and retry."
+                        )
                 metadata = deepcopy(latest["metadata"] if latest is not None else {})
                 metadata.update(changes)
                 metadata[LOCKED_METADATA_FIELDS_KEY] = sorted(
@@ -4236,15 +5505,26 @@ class MainWindow(QMainWindow):
                     )
                 else:
                     metadata["status"] = latest["status"]
-                    if not registry.replace_file_metadata(
-                        root, relative_path, metadata
-                    ):
+                    try:
+                        saved_metadata = registry.replace_file_metadata_if_unchanged(
+                            root,
+                            relative_path,
+                            metadata,
+                            latest,
+                            expected_document=original_document,
+                            changed_fields=set(changes) | {LOCKED_METADATA_FIELDS_KEY},
+                        )
+                    except RuntimeError as exc:
+                        raise ValueError("The library is busy. Try again.") from exc
+                    if not saved_metadata:
                         raise ValueError(
-                            "The PDF's catalog record is no longer available."
+                            "The PDF or its metadata changed. Reopen the details dialog."
                         )
                 saved = registry.find_file_by_current_path(root, relative_path)
                 self.refresh(root)
-                if self.current_root == root and saved is not None:
+                if (
+                    self.combined.enabled or self.current_root == root
+                ) and saved is not None:
                     self._select_file_id(int(saved["location_id"]))
                 if notice_key is not None:
                     self.notice_bar.dismiss(notice_key)
@@ -4257,7 +5537,7 @@ class MainWindow(QMainWindow):
                 parent=self,
             )
             dialog.exec()
-        except (OSError, ValueError, sqlite3.Error) as exc:
+        except (OSError, ValueError, RuntimeError, sqlite3.Error) as exc:
             QMessageBox.warning(self, "Could not enter paper details", str(exc))
         finally:
             self._manual_metadata_target = None
@@ -4266,11 +5546,35 @@ class MainWindow(QMainWindow):
 
     def _save_detail_metadata(self, metadata: dict[str, Any]) -> None:
         """Persist one selected file's edited metadata and retain its selection."""
-        record = self._selected_record()
-        if record is None or self.current_root is None:
+        block_reason = self._detail_edit_block_reason()
+        if block_reason:
+            self.status.showMessage(block_reason)
+            self._sync_detail_and_selection_actions()
             return
+        if self.combined.enabled:
+            target = self._selected_edit_target()
+            if target is None:
+                return
+            root, record, _path = target
+        else:
+            record = self._selected_record()
+            root = self.current_root
+            if record is None or root is None:
+                return
         location_id = int(record["location_id"])
-        registry = self.registries[str(self.current_root)]
+        registry = self.registries[str(root)]
+        snapshot = self._detail_document_snapshot
+        if snapshot is None or snapshot[:3] != (
+            str(root),
+            location_id,
+            record.get("document_id"),
+        ):
+            QMessageBox.warning(
+                self,
+                "Metadata update failed",
+                "The paper record could not be checked. Select the PDF and retry.",
+            )
+            return
         latest = registry.find_location_by_id(location_id)
         if latest is None:
             QMessageBox.warning(
@@ -4279,8 +5583,31 @@ class MainWindow(QMainWindow):
                 "The selected file is no longer present in the registry.",
             )
             return
+        if any(
+            latest.get(key) != record.get(key)
+            for key in ("attachment_id", "current_path", "sha256", "metadata")
+        ):
+            QMessageBox.warning(
+                self,
+                "Metadata update failed",
+                "The PDF or its metadata changed. Select it again and retry the edit.",
+            )
+            self._detail_document_snapshot = None
+            self.refresh(root)
+            self._select_file_id(location_id)
+            return
         relative_path = str(latest["relative_path"])
         try:
+            changed_fields = self.detail._pending_metadata_changed_fields
+            previous = latest.get("metadata") or {}
+            if changed_fields is not None:
+                edited = metadata
+                metadata = deepcopy(previous)
+                for key in changed_fields:
+                    if key in edited:
+                        metadata[key] = deepcopy(edited[key])
+                    else:
+                        metadata.pop(key, None)
             identity_fields = (
                 "bibcode",
                 "doi",
@@ -4289,35 +5616,50 @@ class MainWindow(QMainWindow):
                 "identifier",
                 "alternate_bibcode",
             )
-            previous = latest.get("metadata") or {}
-            if any(metadata.get(key) != previous.get(key) for key in identity_fields):
+            identity_changed = any(
+                metadata.get(key) != previous.get(key) for key in identity_fields
+            )
+            if identity_changed:
                 bibcode = self._scalar_metadata_value(metadata.get("bibcode"))
                 provider_document = (
                     registry.find_ads_document_by_bibcode(bibcode) if bibcode else None
                 )
                 metadata = deepcopy(metadata)
                 metadata[IDENTITY_KEY] = assert_mutation_allowed(
-                    self.current_root / str(latest["current_path"]),
+                    root / str(latest["current_path"]),
                     metadata,
                     expected_sha256=str(latest.get("sha256") or "") or None,
                     provider_document=provider_document,
                 )
-            saved = registry.replace_file_metadata(
-                self.current_root, relative_path, metadata
+            else:
+                metadata = deepcopy(metadata)
+                metadata["status"] = latest["status"]
+            saved = registry.replace_file_metadata_if_unchanged(
+                root,
+                relative_path,
+                metadata,
+                record,
+                expected_document=snapshot[3],
+                changed_fields=changed_fields,
             )
-        except (ValueError, OSError, sqlite3.Error) as exc:
+        except (ValueError, OSError, RuntimeError, sqlite3.Error) as exc:
             QMessageBox.warning(self, "Metadata update failed", str(exc))
-            self.refresh()
+            self._detail_document_snapshot = None
+            self.refresh(root)
             self._select_file_id(location_id)
             return
         if not saved:
             QMessageBox.warning(
                 self,
                 "Metadata update failed",
-                "The selected file is no longer present in the registry.",
+                "The PDF or its metadata changed. Select it again and retry the edit.",
             )
+            self._detail_document_snapshot = None
+            self.refresh(root)
+            self._select_file_id(location_id)
             return
-        self.refresh()
+        self._detail_document_snapshot = None
+        self.refresh(root)
         self._select_file_id(location_id)
 
     def _set_detail_row_order(self, order: list[str]) -> None:
@@ -4326,8 +5668,72 @@ class MainWindow(QMainWindow):
 
     def _selected_record(self) -> dict[str, Any] | None:
         """Return the single current table record, if one is selected."""
+        return self._record_at_table_index(self.table.currentIndex())
+
+    def _source_table_index(self, index: QModelIndex) -> QModelIndex:
+        """Map a visible table index to the underlying PDF model."""
+        if not index.isValid():
+            return QModelIndex()
+        model = index.model()
+        if model is self.model:
+            return index
+        mapper = getattr(model, "mapToSource", None)
+        if callable(mapper):
+            return mapper(index)
+        return self.model.index(index.row(), index.column())
+
+    def _view_table_index(self, source: QModelIndex) -> QModelIndex:
+        """Map an underlying PDF index to its visible table index."""
+        if not source.isValid():
+            return QModelIndex()
+        model = self.table.model()
+        if model is self.model:
+            return source
+        mapper = getattr(model, "mapFromSource", None)
+        if callable(mapper):
+            return mapper(source)
+        return model.index(source.row(), source.column())
+
+    def _record_at_table_index(self, index: QModelIndex) -> dict[str, Any] | None:
+        """Return the PDF record for a visible table index."""
+        if (
+            index.isValid()
+            and index.model() is not self.model
+            and not callable(getattr(index.model(), "mapToSource", None))
+        ):
+            return self.model.record_at(index.row())
+        source = self._source_table_index(index)
+        return self.model.record_at(source.row()) if source.isValid() else None
+
+    def _selected_edit_target(
+        self,
+    ) -> tuple[Path, dict[str, Any], Path] | None:
+        """Return one selected PDF and its owning library, or ``None``."""
+        rows = self.table.selectionModel().selectedRows()
         index = self.table.currentIndex()
-        return self.model.record_at(index.row()) if index.isValid() else None
+        if len(rows) != 1:
+            return None
+        selected = self._source_table_index(rows[0])
+        current = self._source_table_index(index)
+        if (
+            not selected.isValid()
+            or not current.isValid()
+            or selected.row() != current.row()
+        ):
+            return None
+        record = self.model.record_at(current.row())
+        if record is None:
+            return None
+        if self.combined.enabled:
+            root = self.combined.root_for(record)
+            path = self.combined.path_for(record)
+        else:
+            root = self.current_root
+            relative = str(record.get("current_path") or "")
+            path = root / relative if root is not None and relative else None
+        if root is None or path is None or str(root) not in self.registries:
+            return None
+        return root, record, path
 
     @staticmethod
     def _scalar_metadata_value(value: Any) -> str:
@@ -4341,12 +5747,14 @@ class MainWindow(QMainWindow):
         for row in range(self.model.rowCount()):
             record = self.model.record_at(row)
             if record is not None and record.get("location_id") == location_id:
-                self.table.setCurrentIndex(self.model.index(row, 0))
+                index = self._view_table_index(self.model.index(row, 0))
+                if index.isValid():
+                    self.table.setCurrentIndex(index)
                 return
 
     def _link_stored_bibcodes(self) -> None:
         """Look up all known bibcodes without renaming or moving PDFs."""
-        if self.current_root is None:
+        if self.current_root is None or self.combined.enabled:
             return
         records = [
             record
@@ -4375,7 +5783,7 @@ class MainWindow(QMainWindow):
 
     def _refresh_all_ads(self) -> None:
         """Confirm a batched ADS document refresh without per-paper metrics."""
-        if self.current_root is None:
+        if self.current_root is None or self.combined.enabled:
             return
         count = sum(
             bool(record.get("bibcode"))
@@ -4397,7 +5805,7 @@ class MainWindow(QMainWindow):
 
     def _refresh_all_citation_metrics(self) -> None:
         """Confirm explicit per-paper requests for citation splits."""
-        if self.current_root is None:
+        if self.current_root is None or self.combined.enabled:
             return
         count = sum(
             bool(record.get("bibcode"))
@@ -4528,6 +5936,32 @@ class MainWindow(QMainWindow):
             if ambiguous_relative_path is not None
             else None
         )
+        self._conflict_review_context = None
+        self._conflict_review_payload = None
+        self._conflict_review_line_seen = False
+        if "--offer-conflict-review" in args:
+            try:
+                relative_path = args[args.index("--relative-path") + 1]
+                record = self.registries[str(root)].find_file_by_relative_path(
+                    root, relative_path
+                )
+                if (
+                    record is not None
+                    and not record.get("missing_at")
+                    and str(record.get("relative_path")) == relative_path
+                    and (
+                        selection_id is None
+                        or record.get("location_id") == selection_id
+                    )
+                ):
+                    self._conflict_review_context = _ConflictReviewContext(
+                        root=root,
+                        relative_path=relative_path,
+                        current_path=str(record.get("current_path") or relative_path),
+                        location_id=int(record["location_id"]),
+                    )
+            except (IndexError, KeyError, TypeError, ValueError, sqlite3.Error):
+                logger.warning("Could not bind the PDF conflict review to its record")
         job = CommandJob(
             cli_argv("pdf", "refresh-ads", str(root), *args),
             parent=self,
@@ -4538,6 +5972,11 @@ class MainWindow(QMainWindow):
             ],
         )
         job.output.connect(self._capture_ads_match_candidates)
+        job.output.connect(
+            lambda line: (
+                self._capture_identity_conflict(line) if self.job is job else None
+            )
+        )
         self._watch_job(job)
         job.start()
 
@@ -4565,9 +6004,157 @@ class MainWindow(QMainWindow):
                     "bibcode": bibcode,
                     "first_author": str(value.get("first_author") or ""),
                     "title": str(value.get("title") or ""),
+                    "pdf_sha256": str(value.get("pdf_sha256") or ""),
+                    "identity_fingerprint": str(
+                        value.get("identity_fingerprint") or ""
+                    ),
+                    "review_digest": str(value.get("review_digest") or ""),
                 }
             )
         self._ads_match_candidates = candidates
+
+    def _capture_identity_conflict(self, line: str) -> None:
+        """Keep one complete conflict result from the active lookup."""
+        prefix = "PDF_IDENTITY_CONFLICT_JSON:"
+        if self._conflict_review_context is None or not line.startswith(prefix):
+            return
+        if self._conflict_review_line_seen:
+            self._conflict_review_payload = None
+            return
+        self._conflict_review_line_seen = True
+
+        def unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+            result: dict[str, Any] = {}
+            for key, value in pairs:
+                if key in result:
+                    raise ValueError("Duplicate key in conflict result")
+                result[key] = value
+            return result
+
+        try:
+            payload = json.loads(
+                line.removeprefix(prefix), object_pairs_hook=unique_object
+            )
+        except (ValueError, RecursionError):
+            logger.warning("Could not parse the PDF conflict result")
+            return
+        required = (
+            "identifier",
+            "identifier_option",
+            "identifiers",
+            "conflict",
+            "pdf_sha256",
+            "identity_fingerprint",
+            "review_digest",
+            "catalog_digest",
+        )
+        if not isinstance(payload, dict) or any(
+            not isinstance(payload.get(key), str) or not payload[key].strip()
+            for key in required
+        ):
+            return
+        if payload["identifier_option"] not in {"--identifier", "--bibcode"}:
+            return
+        digest = payload["pdf_sha256"]
+        if len(digest) != 64 or any(c not in "0123456789abcdefABCDEF" for c in digest):
+            return
+        result = {key: payload[key] for key in required}
+        for field, fallback in (
+            ("title", "Unknown title"),
+            ("author", "Unknown author"),
+        ):
+            value = payload.get(field)
+            if value is not None and not isinstance(value, str):
+                return
+            result[field] = value if value and value.strip() else fallback
+        if "year" in payload:
+            year = payload["year"]
+            if isinstance(year, bool) or not isinstance(year, (str, int)):
+                return
+            result["year"] = str(year)
+        self._conflict_review_payload = result
+
+    def _review_identity_conflict(
+        self,
+        context: _ConflictReviewContext,
+        payload: dict[str, str],
+        candidate_notice: Notice | None,
+    ) -> None:
+        """Ask about a conflict, then retry only while the selected PDF is unchanged."""
+        year = f"\nYear: {payload['year']}" if payload.get("year") else ""
+        message = (
+            f"PDF conflict:\n{payload['conflict']}\n\n"
+            f"Retrieved paper:\n{payload['title']}\n{payload['author']}"
+            f"{year}\n{payload['identifiers']}\n\nUse this result?"
+        )
+        question = QMessageBox(
+            QMessageBox.Question,
+            "Conflicting PDF identifiers",
+            message,
+            QMessageBox.Yes | QMessageBox.No,
+            self,
+        )
+        question.setTextFormat(Qt.PlainText)
+        question.setDefaultButton(QMessageBox.No)
+        if question.exec() != QMessageBox.Yes:
+            return
+        registry = self.registries.get(str(context.root))
+        if self._close_requested or registry is None or not context.root.is_dir():
+            QMessageBox.warning(
+                self,
+                "PDF unavailable",
+                "The PDF's library is unavailable. Add the library again. "
+                "Try Update by ID again.",
+            )
+            return
+        try:
+            record = registry.find_location_by_id(context.location_id)
+            if (
+                record is None
+                or record.get("missing_at")
+                or record.get("relative_path") != context.relative_path
+                or (record.get("current_path") or record.get("relative_path"))
+                != context.current_path
+            ):
+                raise FileNotFoundError
+            pdf_path = context.root / context.current_path
+            if not pdf_path.is_file():
+                raise FileNotFoundError
+            if sha256_file(pdf_path).lower() != payload["pdf_sha256"].lower():
+                QMessageBox.warning(
+                    self,
+                    "PDF changed",
+                    "The PDF changed during review. Open Update by ID again.",
+                )
+                return
+        except (OSError, sqlite3.Error):
+            QMessageBox.warning(
+                self,
+                "PDF unavailable",
+                "The PDF moved or is unavailable. Refresh the library. "
+                "Try Update by ID again.",
+            )
+            return
+        self._candidate_update_notice = candidate_notice
+        self._start_ads_refresh(
+            payload["identifier_option"],
+            payload["identifier"],
+            "--relative-path",
+            context.relative_path,
+            "--confirm-conflicting-identity",
+            "--expected-sha256",
+            payload["pdf_sha256"],
+            "--expected-identity",
+            payload["identity_fingerprint"],
+            "--expected-review-digest",
+            payload["review_digest"],
+            "--expected-catalog-digest",
+            payload["catalog_digest"],
+            selection_id=context.location_id,
+            root=context.root,
+        )
+        if self.job is None and self._pending_ads_refresh is None:
+            self._candidate_update_notice = None
 
     def _choose_ambiguous_ads_match(
         self,
@@ -4588,19 +6175,21 @@ class MainWindow(QMainWindow):
         ]
         choice, accepted = QInputDialog.getItem(
             self,
-            "Multiple ADS matches",
-            "Choose the correct record:",
+            "Review ADS match" if len(candidates) == 1 else "Multiple ADS matches",
+            f"Choose the correct record for {relative_path}:",
             labels,
             editable=False,
         )
         if not accepted:
             return
-        bibcode = candidates[labels.index(choice)]["bibcode"]
+        candidate = candidates[labels.index(choice)]
+        bibcode = candidate["bibcode"]
         arguments = [
             "--bibcode",
             bibcode,
             "--relative-path",
             relative_path,
+            "--offer-conflict-review",
         ]
         target_root = (
             root.expanduser().resolve()
@@ -4609,6 +6198,15 @@ class MainWindow(QMainWindow):
                 self.current_root.expanduser().resolve() if self.current_root else None
             )
         )
+        if candidate.get("pdf_sha256") and (
+            target_root is None or str(target_root) not in self.registries
+        ):
+            QMessageBox.warning(
+                self,
+                "PDF unavailable",
+                "The PDF's library is no longer available. Refresh it and retry.",
+            )
+            return
         if target_root is not None and str(target_root) in self.registries:
             record = self.registries[str(target_root)].find_file_by_relative_path(
                 target_root, relative_path
@@ -4616,33 +6214,44 @@ class MainWindow(QMainWindow):
             pdf_path = target_root / str(
                 (record.get("current_path") if record else None) or relative_path
             )
+            if candidate.get("pdf_sha256") and (
+                record is None or not pdf_path.is_file()
+            ):
+                QMessageBox.warning(
+                    self,
+                    "PDF unavailable",
+                    "The PDF moved or is no longer available. Refresh its library and retry.",
+                )
+                return
             if pdf_path.is_file():
                 try:
                     own_identity = extract_pdf_own_identity(pdf_path)
                 except IdentityValidationError as exc:
                     QMessageBox.warning(self, "PDF identity unavailable", str(exc))
                     return
-                if not own_identity.has_identifier:
-                    msg = (
-                        f"PDF: {relative_path}"
-                        + chr(10)
-                        + chr(10)
-                        + "This PDF's identity could not be verified from trusted metadata fields."
-                        + chr(10)
-                        + f"Confirm only after checking that {bibcode} identifies this PDF."
-                        + chr(10)
-                        + chr(10)
-                        + "Apply the lookup result and saved Rename settings?"
-                    )
-                    confirmation = QMessageBox.question(
-                        self,
-                        "Confirm PDF identity",
-                        msg,
-                        QMessageBox.Yes | QMessageBox.No,
-                        QMessageBox.No,
-                    )
-                    if confirmation != QMessageBox.Yes:
+                expected_sha256 = candidate.get("pdf_sha256") or ""
+                expected_identity = candidate.get("identity_fingerprint") or ""
+                if expected_sha256 and expected_identity:
+                    if own_identity.sha256 != expected_sha256:
+                        QMessageBox.warning(
+                            self,
+                            "PDF changed",
+                            "The PDF changed during the lookup. Open Update by ID again.",
+                        )
                         return
+                    arguments.extend(
+                        [
+                            "--expected-sha256",
+                            expected_sha256,
+                            "--expected-identity",
+                            expected_identity,
+                        ]
+                    )
+                    if candidate.get("review_digest"):
+                        arguments.extend(
+                            ["--expected-review-digest", candidate["review_digest"]]
+                        )
+                if not own_identity.has_identifier:
                     arguments.append("--confirm-identity")
         self._start_ads_refresh(
             *arguments,
@@ -4651,26 +6260,28 @@ class MainWindow(QMainWindow):
         )
 
     def _rename(self) -> None:
-        if self.current_root is None:
+        if self.current_root is None or self.combined.enabled:
+            return
+        self._rename_library(self.current_root)
+
+    def _rename_library(self, root: Path) -> None:
+        """Open Rename for one explicitly identified library."""
+        root = root.expanduser().resolve()
+        if (
+            str(root) not in self.registries
+            or (self.combined.enabled and str(root) not in self.combined.selected)
+            or self._detail_edit_block_reason()
+        ):
             return
         self._refresh_selection_id = None
-        self._request_foreground_dialog("rename", self.current_root.resolve())
+        self._request_foreground_dialog("rename", root)
 
     def _open_rename_dialog(self, root: Path) -> None:
         registry = self.registries[str(root)]
         state = CentralPdfRegistryState(registry)
-        persistence = _SettingsPersistenceCoordinator[RenameSettings](
-            scopes=self.config.rename_scopes,
-            root_key=str(root),
-            load_global=Config.load_rename_settings,
-            save_global=Config.save_rename_settings,
-            load_library=lambda: state.rename_settings,
-            save_library=state.set_rename_settings,
-            save_gui=lambda: save_config(self.config),
-        )
 
         def save_rename_settings(scope: str, settings: RenameSettings) -> None:
-            persistence.persist(scope, settings)
+            self._persist_rename_defaults(root, scope, settings)
 
         dialog = RenameDialog(
             root,
@@ -4681,10 +6292,53 @@ class MainWindow(QMainWindow):
             save_settings=save_rename_settings,
             parent=self,
         )
-        dialog.job_started.connect(self._watch_job)
+
+        def start_rename_job(job: Any) -> None:
+            self._ads_refresh_root = root
+            self._watch_job(job)
+
+        dialog.job_started.connect(start_rename_job)
         dialog.exec()
         if self.job is None:
             self._resume_foreground_watch()
+
+    def _persist_rename_defaults(
+        self, root: Path | None, scope: str, settings: RenameSettings
+    ) -> None:
+        """Save Rename defaults and retain the existing scope transaction."""
+        self._guard_ads_recheck_settings()
+        if root is None:
+            if scope != "global":
+                raise ValueError("Choose a library first.")
+            Config.save_rename_settings(settings)
+            return
+        root = root.expanduser().resolve()
+        registry = self.registries.get(str(root))
+        if registry is None:
+            raise ValueError("The selected library is unavailable.")
+        state = CentralPdfRegistryState(registry)
+
+        def save_gui() -> None:
+            self._sync_config_roots()
+            save_config(self.config)
+
+        persistence = _SettingsPersistenceCoordinator[RenameSettings](
+            scopes=self.config.rename_scopes,
+            root_key=str(root),
+            load_global=Config.load_rename_settings,
+            save_global=Config.save_rename_settings,
+            load_library=lambda: state.rename_settings,
+            save_library=state.set_rename_settings,
+            save_gui=save_gui,
+        )
+        persistence.persist(scope, settings)
+
+    def _guard_ads_recheck_settings(self) -> None:
+        """Protect the settings snapshot until the recheck worker stops."""
+        if self._ads_recheck_job is not None:
+            raise ValueError(
+                "Wait for the identifier recheck to finish. Then save these settings."
+            )
 
     def _resume_foreground_watch(self) -> None:
         QTimer.singleShot(0, self._review_next_edition_merge)
@@ -4716,8 +6370,14 @@ class MainWindow(QMainWindow):
         job.finished.connect(lambda code: self._job_finished(code))
 
     def _cancel_job(self) -> None:
-        """Request cancellation of the active identify or rename process."""
+        """Request cancellation of the active job."""
         if self.job is not None:
+            self._conflict_review_context = None
+            self._conflict_review_payload = None
+            if self.job is self._ads_recheck_job:
+                if not self._close_requested:
+                    self._ads_recheck_roots = []
+                self._ads_recheck_again = False
             self.job.cancel()
             self.cancel_job_action.setEnabled(False)
 
@@ -4753,6 +6413,9 @@ class MainWindow(QMainWindow):
         self._ads_refresh_root = None
         self._ads_match_candidates = []
         self._ambiguous_ads_match_context = None
+        self._conflict_review_context = None
+        self._conflict_review_payload = None
+        self._conflict_review_line_seen = False
         self._resume_foreground_watch()
         if self._close_requested:
             self.close()
@@ -4772,6 +6435,8 @@ class MainWindow(QMainWindow):
         self._local_refresh_result = None
         candidates = self._ads_match_candidates
         context = self._ambiguous_ads_match_context
+        conflict_context = self._conflict_review_context
+        conflict_payload = self._conflict_review_payload
         refresh_root = (
             identify_rename_context.root
             if identify_rename_context
@@ -4784,6 +6449,9 @@ class MainWindow(QMainWindow):
         self._ads_refresh_root = None
         self._ads_match_candidates = []
         self._ambiguous_ads_match_context = None
+        self._conflict_review_context = None
+        self._conflict_review_payload = None
+        self._conflict_review_line_seen = False
         if code != 0:
             self.log.appendPlainText(f"Command exited with status {code}")
         self.identify_action.setEnabled(True)
@@ -4831,12 +6499,18 @@ class MainWindow(QMainWindow):
             self._restore_library_selection(identify_context)
             if code == 0:
                 registry = self.registries[str(identify_context.root)]
-                linked = self._safe_count(registry, resolved=True)
-                pending = self._safe_count(registry, resolved=False)
+                linked = self._safe_count(registry, identification="ads_linked")
+                external = self._safe_count(
+                    registry, identification="identified_without_ads"
+                )
+                pending = self._safe_count(
+                    registry, identification="needs_identification"
+                )
                 summary = (
                     f"Identification finished in {identify_context.root.name}: "
-                    f"{linked if linked is not None else 'unknown'} ADS linked, {pending if pending is not None else 'unknown'} without ADS links. "
-                    "Non-ADS papers can still have usable metadata. "
+                    f"{linked if linked is not None else 'unknown'} ADS linked, "
+                    f"{external if external is not None else 'unknown'} identified without ADS, "
+                    f"{pending if pending is not None else 'unknown'} need identification. "
                     "Review the results, then use Rename… if needed."
                 )
             else:
@@ -4870,12 +6544,23 @@ class MainWindow(QMainWindow):
                 and proof.get("identity") == candidate_notice.candidate_fingerprint
             ):
                 self.notice_bar.dismiss(candidate_notice.key)
-        if self._refresh_selection_id is not None and (
-            refresh_root is None or refresh_root == self.current_root
+        if (
+            not self.combined.enabled
+            and self._refresh_selection_id is not None
+            and (refresh_root is None or refresh_root == self.current_root)
         ):
             self._select_file_id(self._refresh_selection_id)
         self._refresh_selection_id = None
         if (
+            conflict_context is not None
+            and conflict_payload is not None
+            and code >= 0
+            and not self._close_requested
+        ):
+            self._review_identity_conflict(
+                conflict_context, conflict_payload, candidate_notice
+            )
+        elif (
             candidates
             and context is not None
             and code == 0
@@ -4891,6 +6576,26 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event: Any) -> None:
         """Persist window state and close registry connections."""
+        self._ads_recheck_timer.stop()
+        self._ads_recheck_retry_timer.stop()
+        self._ads_recheck_roots = None
+        self._ads_recheck_again = False
+        self._pending_priority_edit = None
+        if (
+            self._pending_watch_dialog is not None
+            and self._pending_watch_dialog[0] == "ads_recheck"
+        ):
+            root = self._pending_watch_dialog[1]
+            self._pending_watch_dialog = None
+            self._ads_recheck_active_root = None
+            self.watch_controller.resume_writes(root)
+        if self._ads_token_check is not None and self._ads_token_check.running:
+            self._close_requested = True
+            self._ads_token_check.cancel()
+            if self.job is not None and self.job.running:
+                self._cancel_job()
+            event.ignore()
+            return
         if self.job is not None and self.job.running:
             self._close_requested = True
             self._cancel_job()
@@ -4909,6 +6614,8 @@ class MainWindow(QMainWindow):
             self.watch_controller.resume_writes(pending_root)
         if not self.watch_controller.stop_all():
             self._close_requested = False
+            self._ads_recheck_timer.start()
+            self._sync_refresh_actions()
             self.notice_bar.enqueue(
                 Notice(
                     "watch-shutdown",

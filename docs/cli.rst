@@ -13,7 +13,8 @@ Use ``pdf refresh-ads --identify-scope global`` to select global provider settin
 
 ``pdf rename`` reports each unchanged or skipped filename.
 It uses the exact selected template without substituting another template.
-Missing metadata fields render as empty components.
+If a selected field lacks metadata, Rename skips the file and names the field.
+Add the metadata or select a template without that field. Then retry Rename.
 
 ``pdf identify`` automatically fetches an unverified saved ADS candidate when ADS
 is enabled and available. Matching PDF identifiers establish verification without
