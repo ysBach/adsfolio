@@ -20,9 +20,10 @@ from pypdf import PdfWriter
 from PySide6.QtCore import QItemSelectionModel
 
 from adsfolio.config import Config
-from adsfolio.gui import ads_recheck_job, main_window, watch
+from adsfolio.gui import main_window, watch
 from adsfolio.gui.config import GuiConfig, RootEntry
 from adsfolio.gui.main_window import MainWindow
+from adsfolio.pdf import recheck_worker
 from adsfolio.pdf.registry import PdfRegistry
 
 
@@ -110,7 +111,7 @@ def test_update_by_id_recovers_after_automatic_rechecks(
         def close(self):
             pass
 
-    monkeypatch.setattr(ads_recheck_job, "ADSClient", FakeClient)
+    monkeypatch.setattr(recheck_worker, "ADSClient", FakeClient)
     monkeypatch.setattr(watch, "ADSClient", FakeClient)
 
     original_open = watch.open_registry_state
@@ -149,6 +150,10 @@ def test_update_by_id_recovers_after_automatic_rechecks(
     )
     monkeypatch.setattr(main_window, "load_config", lambda: deepcopy(config))
     monkeypatch.setattr(main_window, "save_config", lambda config: None)
+    # The user answers the start question with yes.
+    monkeypatch.setattr(
+        MainWindow, "_offer_ads_recheck", lambda self: self._queue_ads_rechecks()
+    )
     window = MainWindow()
     qtbot.addWidget(window)
     watcher_failures = []

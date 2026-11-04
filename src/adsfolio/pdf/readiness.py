@@ -12,6 +12,8 @@ METADATA_SHA256_KEY = "_adsfolio_metadata_sha256"
 EXTERNAL_METADATA_KEY = "_adsfolio_external_metadata"
 REFERENCE_METADATA_KEY = "_adsfolio_reference"
 LOCKED_FIELDS_KEY = "_adsfolio_locked_fields"
+# Per-root catalog_meta key for remembered recheck failures (JSON object).
+RECHECK_UNVERIFIED_META_KEY = "recheck_unverified"
 
 
 def _get_field(record: Mapping[str, Any], metadata: Mapping[str, Any], key: str) -> Any:

@@ -58,8 +58,8 @@ CITATION_FIELD_HELP = """Available template fields:
 - {bibcode} — ADS Bibcode, unchanged.
 - {year} — publication year.
 - {title} — first title value, with ADS HTML converted to plain text.
-- {first_author_surname} — surname of the first author only. For 'Bach, Yoonsoo P.', this renders 'Bach'.
-- {first_author_initials} — first-author surname followed by given-name initials. For 'Bach, Yoonsoo P.', this renders 'BachYP'.
+- {first_author_surname} — surname of the first author only. For 'Doe, John A.', this renders 'Doe'.
+- {first_author_initials} — first-author surname followed by given-name initials. For 'Doe, John A.', this renders 'DoeJA'.
 - {authors} — author list using the selected author format and separator. If the total author count exceeds Max authors, retain Authors when truncated leading authors and append the configured truncation suffix.
 - {authors_without_suffix} — the same rendered author list, but never append the truncation suffix.
 - {journal} — first bibstem value, falling back to pub when bibstem is absent.
@@ -329,7 +329,7 @@ def _extract_initials(given_names: str) -> str:
     Parameters
     ----------
     given_names : str
-        Given name string (e.g. 'Yoonsoo P.').
+        Given name string (e.g. 'John A.').
 
     Returns
     -------

@@ -323,9 +323,9 @@ def test_parse_filename_handles_multi_author_stem_with_title_suffix():
 
 def test_parse_filename_allows_letter_prefixed_page():
     identifier, _ = _build_identifier({})
-    parsed = identifier.parse_filename("BachYP_2021_A&A_654_A113_Title.pdf")
+    parsed = identifier.parse_filename("DoeJA_2021_A&A_654_A113_Title.pdf")
     assert parsed == {
-        "author": "Bach",
+        "author": "Doe",
         "year": "2021",
         "journal": "A&A",
         "volume": "654",
@@ -1154,8 +1154,8 @@ def test_title_lookup_preserves_unrelated_api_failures(tmp_path) -> None:
 
 
 def test_resolve_many_skips_disabled_structured_filename_strategy(tmp_path):
-    first = tmp_path / "BachYP_2024_A&A_684_80_title.pdf"
-    second = tmp_path / "BachYP_2021_A&A_654_A113_title.pdf"
+    first = tmp_path / "DoeJA_2024_A&A_684_80_title.pdf"
+    second = tmp_path / "DoeJA_2021_A&A_654_A113_title.pdf"
     _pdf(first, "10.5555/one", "first")
     _pdf(second, "10.5555/two", "second")
 
@@ -1198,19 +1198,19 @@ def test_resolve_many_skips_disabled_structured_filename_strategy(tmp_path):
 
 
 def test_resolve_many_structured_filename_only_skips_pdf_content_extraction(tmp_path):
-    parseable = tmp_path / "BachYP_2024_A&A_684_80_title.pdf"
+    parseable = tmp_path / "DoeJA_2024_A&A_684_80_title.pdf"
     unknown = tmp_path / "mystery.pdf"
     _pdf(parseable, "10.1234/one")
     unknown.write_bytes(b"%PDF-1.4\ntwo\n")
 
-    clause = 'author:"Bach" AND year:2024 AND bibstem:"A&A" AND volume:684 AND page:80'
+    clause = 'author:"Doe" AND year:2024 AND bibstem:"A&A" AND volume:684 AND page:80'
     query = f"({clause})"
     docs = [
         {
             "bibcode": "2024A&A...684A..80B",
             "doi": ["10.1234/one"],
             "title": ["Title One"],
-            "author": ["Bach, Y. P."],
+            "author": ["Doe, J. A."],
             "year": "2024",
             "bibstem": ["A&A"],
             "volume": "684",

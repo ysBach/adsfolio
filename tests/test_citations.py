@@ -23,7 +23,7 @@ RECORD = {
         "bibcode": "2024A&A...123..456B",
         "year": "2024",
         "title": ["Dust <SUP>2</SUP> dynamics"],
-        "author": ["Bach, Yoonsoo P.", "Doe, Alice", "Roe, Bob"],
+        "author": ["Doe, John A.", "Smith, Alice", "Roe, Bob"],
         "bibstem": ["A&A"],
         "pub": "Astronomy &amp; Astrophysics",
         "volume": "123",
@@ -47,7 +47,7 @@ def test_formatter_preserves_citation_text_and_expands_every_field() -> None:
         author_truncation_suffix=" et al.",
     )
     assert CitationFormatter().render(style, RECORD) == (
-        "Bach|BachYP|BachYP et al.|BachYP|2024|Dust 2 dynamics|A&A|A&A|"
+        "Doe|DoeJA|DoeJA et al.|DoeJA|2024|Dust 2 dynamics|A&A|A&A|"
         "Astronomy & Astrophysics|123|456|2024A&A...123..456B|{literal}"
     )
 
@@ -117,14 +117,14 @@ def test_formatter_journal_falls_back_to_pub_only_when_bibstem_absent() -> None:
         "expected_no_suffix",
     ),
     [
-        ("surname", ", ", " et al.", "Bach, Doe et al.", "Bach, Doe"),
-        ("surname_initials", " & ", "...", "BachYP & DoeA...", "BachYP & DoeA"),
+        ("surname", ", ", " et al.", "Doe, Smith et al.", "Doe, Smith"),
+        ("surname_initials", " & ", "...", "DoeJA & SmithA...", "DoeJA & SmithA"),
         (
             "last_comma_first",
             "; ",
             " et al.",
-            "Bach, Yoonsoo P.; Doe, Alice et al.",
-            "Bach, Yoonsoo P.; Doe, Alice",
+            "Doe, John A.; Smith, Alice et al.",
+            "Doe, John A.; Smith, Alice",
         ),
     ],
 )

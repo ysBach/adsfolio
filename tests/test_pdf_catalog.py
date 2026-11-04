@@ -748,7 +748,7 @@ def test_unicode_alias_retains_location_and_content_history(
     catalog = _catalog(monkeypatch, tmp_path)
     root = tmp_path / "library"
     root.mkdir()
-    first_name = "Bockelée-Morvan.pdf"
+    first_name = "Dorémont-Roe.pdf"
     second_name = unicodedata.normalize("NFD", first_name)
     first = root / first_name
     first.write_bytes(b"same PDF")

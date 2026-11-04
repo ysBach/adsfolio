@@ -1,7 +1,10 @@
+"""Resolve and format journal names from ADS bibstems."""
+
 import json
 import re
 import warnings
-from typing import Literal
+from pathlib import Path
+from typing import Any, Literal
 
 try:
     import requests
@@ -99,12 +102,55 @@ def _normalize_name(name: str) -> str:
     return re.sub(r"[^a-z0-9]", "", name.lower())
 
 
+# The loaded map, keyed by the cache file path and its size and mtime.
+_MAP_MEMO: tuple[tuple[Any, ...], dict[str, dict[str, str]]] | None = None
+# Normalized full names of one map, and the map they belong to.
+_INDEX_MEMO: tuple[dict[str, dict[str, str]], dict[str, dict[str, str]]] | None = None
+
+
 def _get_journal_map() -> dict[str, dict[str, str]]:
+    """Return the journal abbreviation map, loading it once per cache state.
+
+    The map maps ``{bibstem: {"full": full_name, "iso4": iso4_name}}``. A
+    changed cache file loads again. When no cache file exists and the fetch
+    fails, the empty result is kept for this process, so a list render does
+    not retry the network for every paper.
     """
-    Load journal abbreviation map from cache or fetch from ADS.
-    Returns dict mapping {bibstem: {"full": full_name, "iso4": iso4_name}}.
-    """
+    global _MAP_MEMO
     cache_path = Config.get_config_dir() / CACHE_FILENAME
+    try:
+        stat = cache_path.stat()
+        state: tuple[Any, ...] = (str(cache_path), stat.st_size, stat.st_mtime_ns)
+    except OSError:
+        state = (str(cache_path), None, None)
+    if _MAP_MEMO is not None and _MAP_MEMO[0] == state:
+        return _MAP_MEMO[1]
+    journal_map = _load_journal_map(cache_path)
+    try:
+        stat = cache_path.stat()
+        state = (str(cache_path), stat.st_size, stat.st_mtime_ns)
+    except OSError:
+        pass
+    _MAP_MEMO = (state, journal_map)
+    return journal_map
+
+
+def _normalized_index(
+    journal_map: dict[str, dict[str, str]],
+) -> dict[str, dict[str, str]]:
+    """Return the first entry for each normalized full name of `journal_map`."""
+    global _INDEX_MEMO
+    if _INDEX_MEMO is not None and _INDEX_MEMO[0] is journal_map:
+        return _INDEX_MEMO[1]
+    index: dict[str, dict[str, str]] = {}
+    for entry in journal_map.values():
+        index.setdefault(_normalize_name(entry.get("full", "")), entry)
+    _INDEX_MEMO = (journal_map, index)
+    return index
+
+
+def _load_journal_map(cache_path: Path) -> dict[str, dict[str, str]]:
+    """Load journal abbreviation map from cache or fetch from ADS."""
 
     if cache_path.exists():
         try:
@@ -218,14 +264,9 @@ def format_journal(
         # If input was a macro (e.g. \aj), full_name is "Astronomical Journal"
         # But cache key is "AJ..." and value has "The Astronomical Journal"
         if not journal_entry:
-            for entry in journal_map.values():
-                # Check matches with normalization
-                normalized_entry = _normalize_name(entry.get("full", ""))
-                normalized_input = _normalize_name(full_name)
-
-                if normalized_entry == normalized_input:
-                    journal_entry = entry
-                    break
+            journal_entry = _normalized_index(journal_map).get(
+                _normalize_name(full_name)
+            )
 
     # Update full_name if entry found (canonical name)
     if journal_entry:

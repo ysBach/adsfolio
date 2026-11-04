@@ -9,7 +9,7 @@ def test_user_profile_normalizes_canonical_and_legacy_fields():
     profile = UserProfile.from_mapping(
         {
             "orcid": " 0000-0002-1825-0097 ",
-            "query_names": [" Bach, Y. P. ", "", "Bach, Y. P."],
+            "query_names": [" Doe, J. A. ", "", "Doe, J. A."],
             "debut_year": "2010",
             "retire_year": 2030,
             "library_ids": ["LIB1", "", "LIB1"],
@@ -18,14 +18,14 @@ def test_user_profile_normalizes_canonical_and_legacy_fields():
 
     assert profile == UserProfile(
         orcid="0000-0002-1825-0097",
-        author_names=("Bach, Y. P.",),
+        author_names=("Doe, J. A.",),
         first_publication_year=2010,
         last_publication_year=2030,
         ads_library_ids=("LIB1",),
     )
     assert profile.to_mapping() == {
         "orcid": "0000-0002-1825-0097",
-        "author_names": ["Bach, Y. P."],
+        "author_names": ["Doe, J. A."],
         "first_publication_year": 2010,
         "last_publication_year": 2030,
         "ads_library_ids": ["LIB1"],

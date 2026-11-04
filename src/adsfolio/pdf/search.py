@@ -80,7 +80,7 @@ def parse_query(query: str) -> tuple[SearchTerm, ...]:
     """Split a query into terms that must all match.
 
     Spaces separate terms. Double quotes keep a phrase together, also after
-    a field name: ``author:"Bach, Y."``. A missing closing quote ends the
+    a field name: ``author:"Doe, J."``. A missing closing quote ends the
     phrase at the end of the query. A prefix that is not a known field name,
     as in ``https://``, stays part of the text.
     """
@@ -225,7 +225,7 @@ def document_matches(
 
 
 def fold_text(text: str) -> str:
-    """Remove accents and letter case, so ``Bockelée`` becomes ``bockelee``.
+    """Remove accents and letter case, so ``Dorémont`` becomes ``doremont``.
 
     The text is decomposed (NFKD), combining marks are removed, and the
     result is case-folded.

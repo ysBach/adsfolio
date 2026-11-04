@@ -46,6 +46,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from .. import __version__
 from ..citations import CitationStyle, citation_preference_key
 from ..client import ADSClient
 from ..config import AuthenticationError, Config
@@ -66,9 +67,11 @@ from ..pdf.identity import (
 )
 from ..pdf.readiness import (
     METADATA_SHA256_KEY,
+    RECHECK_UNVERIFIED_META_KEY,
     metadata_ready,
     stored_bibcode_matches_file,
 )
+from ..pdf.recheck_worker import has_external_providers
 from ..pdf.registry import (
     LOCKED_METADATA_FIELDS_KEY,
     CentralPdfRegistryState,
@@ -84,13 +87,12 @@ from ..references import LocalReferences
 from .about import AboutDialog
 from .ads_library_dialog import AdsLibraryDialog
 from .ads_library_export_dialog import ExportAdsLibraryDialog
-from .ads_recheck_job import AdsRecheckJob, AdsTokenCheck, has_external_providers
+from .ads_recheck_job import AdsRecheckJob, AdsTokenCheck
 from .appearance import AppearanceDialog
 from .bibtex_export import (
     CitationKeySettingsDialog,
     document_ids_of,
     export_bibtex_asking_keys,
-    save_bibtex_file,
 )
 from .citation_styles import CitationStylesDialog
 from .combined_view import CombinedViewController
@@ -109,6 +111,7 @@ from .edition_merge import (
     edition_candidates,
     edition_role,
 )
+from .export_dialog import ExportPapersDialog, ExportScope
 from .icons import (
     ICON_SIZE,
     ActionIconBinder,
@@ -165,6 +168,24 @@ _SettingsT = TypeVar("_SettingsT")
 DEFAULT_WINDOW_SIZE = (1280, 780)
 DEFAULT_SPLITTER_SIZES = [220, 700, 360]
 ADS_RECHECK_INTERVAL_MS = 24 * 60 * 60 * 1000
+# Cost note for checks that read every skipped or unproven PDF again.
+_RETRY_COST_TEXT = (
+    "The check reads each of these PDFs again, so it can take a long time in a "
+    "large library. New PDFs in a watched library wait until its check finishes. "
+    "Cancel in the status bar stops it and keeps its progress."
+)
+# Message labels for operations that wait for a watcher to pause.
+_FOREGROUND_OPERATION_LABELS = {
+    "ads_recheck": "automatic identifier recheck of",
+    "ads_refresh": "ADS update in",
+    "local_refresh": "local refresh of",
+    "identify": "identification in",
+    "identify_rename": "identify and rename in",
+    "guided_identify": "identification in",
+    "manual_metadata": "paper-details entry in",
+    "edition_merge": "annotation merge review in",
+    "rename": "rename in",
+}
 _MERGE_AUDIT_KEY = "_adsfolio_annotation_merge"
 
 
@@ -375,6 +396,8 @@ class MainWindow(QMainWindow):
         self._about_dialog: AboutDialog | None = None
         self._update_dialog: UpdateDialog | None = None
         self.job: Any | None = None
+        # Short noun phrase that names the running job in messages.
+        self._job_description = ""
         self._ads_library_dialog: AdsLibraryDialog | None = None
         self._ads_library_export_dialog: ExportAdsLibraryDialog | None = None
         self._close_requested = False
@@ -420,9 +443,17 @@ class MainWindow(QMainWindow):
         self._ads_recheck_again = False
         self._ads_recheck_startup_pending = True
         self._ads_recheck_failures: list[str] = []
+        # The current cycle checks remembered failures again.
+        self._ads_recheck_retry_remembered = False
+        # The next cycle checks remembered failures again.
+        self._ads_recheck_retry_requested = False
+        # Remembered failures from another ADSfolio version in this cycle.
+        self._ads_recheck_outdated = 0
+        self._ads_recheck_started_at = 0.0
         self._ads_recheck_timer = QTimer(self)
         self._ads_recheck_timer.setInterval(ADS_RECHECK_INTERVAL_MS)
-        self._ads_recheck_timer.timeout.connect(self._queue_ads_rechecks)
+        self._ads_recheck_timer.timeout.connect(self._offer_ads_recheck)
+        self._ads_recheck_offer: QMessageBox | None = None
         self._ads_recheck_retry_timer = QTimer(self)
         self._ads_recheck_retry_timer.setSingleShot(True)
         self._ads_recheck_retry_timer.setInterval(1000)
@@ -554,7 +585,7 @@ class MainWindow(QMainWindow):
         self.search = QLineEdit(self)
         self.search.setClearButtonEnabled(True)
         self.search.setPlaceholderText(
-            "Search, or type a field: author:bach year:2019 title:comet"
+            "Search, or type a field: author:doe year:2019 title:comet"
         )
         self._search_value_cache: tuple[tuple[Any, str], list[str]] | None = None
         self.search_completer = SearchCompleter(self.search, self._search_field_values)
@@ -611,7 +642,7 @@ class MainWindow(QMainWindow):
                 self.search_exact_action,
                 self.config.search_exact,
                 "Exact match: match accents and letter case exactly\n"
-                "When off, “bockelee” finds “Bockelée”.",
+                "When off, “doremont” finds “Dorémont”.",
             ),
             (
                 self.search_wildcards_action,
@@ -635,6 +666,9 @@ class MainWindow(QMainWindow):
         self.log_dock.hide()
         self._last_link_activation: tuple[str, float] | None = None
         self.status = self.statusBar()
+        self.job_label = QLabel(self)
+        self.job_label.hide()
+        self.status.addPermanentWidget(self.job_label)
         self.job_progress = quiet_progress_bar(self)
         self.job_progress.setRange(0, 0)
         self.job_progress.setTextVisible(False)
@@ -642,6 +676,13 @@ class MainWindow(QMainWindow):
         self.job_progress.hide()
         self.status.addPermanentWidget(self.job_progress)
         self._build_actions()
+        # The menu keeps the full action name. The status bar shows "Cancel".
+        self.cancel_job_action.setIconText("Cancel")
+        self.job_cancel_button = QToolButton(self)
+        self.job_cancel_button.setDefaultAction(self.cancel_job_action)
+        self.job_cancel_button.setToolButtonStyle(Qt.ToolButtonTextOnly)
+        self.job_cancel_button.hide()
+        self.status.addPermanentWidget(self.job_cancel_button)
         toolbar.addSeparator()
         toolbar.setToolButtonStyle(Qt.ToolButtonIconOnly)
         toolbar.setIconSize(ICON_SIZE)
@@ -789,14 +830,14 @@ class MainWindow(QMainWindow):
         self.cv_action.triggered.connect(self._open_cv_generator)
         self.export_selected_action = QAction("Export Selection As…", self)
         self.export_selected_action.setToolTip(
-            "Choose BibTeX or a publication list for the selected papers, "
-            "using their stored details without ADS"
+            "Export Papers: write the selected papers as BibTeX, citation text, "
+            "or a publication list, from their stored details without ADS"
         )
         self.export_selected_action.triggered.connect(lambda: self._export_papers())
         self.export_all_action = QAction("Export All As…", self)
         self.export_all_action.setToolTip(
-            "Choose BibTeX or a publication list for every current PDF in this "
-            "library, including filtered and unloaded rows"
+            "Export Papers: write every current PDF in this library as BibTeX, "
+            "citation text, or a publication list"
         )
         self.export_all_action.triggered.connect(
             lambda: self._export_papers(all_papers=True)
@@ -813,6 +854,15 @@ class MainWindow(QMainWindow):
         self.rename_action = QAction("Rename…", self)
         self.rename_action.setShortcut("Ctrl+Shift+R")
         self.cancel_job_action = QAction("Cancel Current Job", self)
+        self.check_ads_updates_action = QAction("Check for ADS Updates", self)
+        self.check_ads_updates_action.setToolTip(
+            "Look up identified papers in ADS and apply changed bibcodes"
+        )
+        self.recheck_remembered_action = QAction("Recheck PDFs That Need Review…", self)
+        self.recheck_remembered_action.setToolTip(
+            "Check again the PDFs that the automatic identifier recheck skips "
+            "because an earlier check failed"
+        )
         self.refresh_selected_ads_action = QAction(
             "Refresh and Rename Selected from ADS", self
         )
@@ -849,6 +899,12 @@ class MainWindow(QMainWindow):
         self.identify_action.triggered.connect(lambda: self._guide_identification())
         self.rename_action.triggered.connect(self._rename)
         self.cancel_job_action.triggered.connect(self._cancel_job)
+        self.check_ads_updates_action.triggered.connect(
+            lambda: self._queue_ads_rechecks()
+        )
+        self.recheck_remembered_action.triggered.connect(
+            self._confirm_remembered_recheck
+        )
         self.refresh_selected_ads_action.triggered.connect(self._refresh_selected_ads)
         self.refresh_all_ads_action.triggered.connect(self._refresh_all_ads)
         self.refresh_all_citation_metrics_action.triggered.connect(
@@ -877,6 +933,8 @@ class MainWindow(QMainWindow):
         tools.addAction(self.rename_action)
         tools.addAction(self.cancel_job_action)
         tools.addSeparator()
+        tools.addAction(self.check_ads_updates_action)
+        tools.addAction(self.recheck_remembered_action)
         tools.addAction(self.refresh_selected_ads_action)
         tools.addAction(self.link_bibcodes_action)
         tools.addAction(self.refresh_all_ads_action)
@@ -1298,8 +1356,30 @@ class MainWindow(QMainWindow):
                 or self._detail_edit_block_reason()
             ):
                 self.watch_current_action.setEnabled(False)
+                if not self.combined.enabled:
+                    self.watch_current_action.setToolTip(self._operation_wait_message())
         finally:
             del blockers
+        self._update_root_watch_tooltips()
+
+    def _update_root_watch_tooltips(self) -> None:
+        """Show each library's watch state in its sidebar tooltip."""
+        for index in range(self.libraries_item.childCount()):
+            item = self.libraries_item.child(index)
+            key = str(item.data(0, Qt.UserRole))
+            entry = self.root_entries.get(key)
+            if entry is None:
+                continue
+            watching = "Yes" if self.watch_controller.is_watching(Path(key)) else "No"
+            autowatch = "On" if entry.watch_on_start else "Off"
+            automatic = "On" if entry.auto_process_new_pdfs else "Off"
+            lines = (
+                key,
+                f"Watching now: {watching}",
+                f"Autowatch at Start: {autowatch}",
+                f"Automatically Identify & Rename: {automatic}",
+            )
+            item.setToolTip(0, "\n".join(lines))
 
     def _sync_ads_library_action(self) -> None:
         """Synchronize ADS library actions with current window activity."""
@@ -1378,12 +1458,86 @@ class MainWindow(QMainWindow):
         self.identify_button.set_badge(count)
         self.identify_button.setAccessibleDescription(self.identify_action.toolTip())
 
+    def _library_name(self, root: Path) -> str:
+        """Return the sidebar name of a library root."""
+        entry = self.root_entries.get(str(root))
+        return (entry.label if entry is not None else "") or root.name or str(root)
+
+    def _operation_text(self) -> str:
+        """Name the operation that holds the library lock.
+
+        Returns
+        -------
+        str
+            A noun phrase such as ``"automatic identifier recheck of Papers"``,
+            or ``""`` when no operation runs or waits.
+        """
+        if self.job is not None:
+            return self._job_description or "library job"
+        if self._pending_priority_edit is not None:
+            return "stop of the automatic identifier recheck"
+        if self._ads_recheck_active_root is not None:
+            root = self._ads_recheck_active_root
+            return f"automatic identifier recheck of {self._library_name(root)}"
+        if self._pending_watch_dialog is not None:
+            kind, root = self._pending_watch_dialog
+            label = _FOREGROUND_OPERATION_LABELS.get(kind, "library operation in")
+            return f"{label} {self._library_name(root)}"
+        if self._manual_metadata_target is not None:
+            return f"paper-details entry for {self._manual_metadata_target[1].name}"
+        if self._edition_merge_target is not None:
+            return "annotation merge review"
+        if self._local_refresh_context is not None:
+            root = self._local_refresh_context.root
+            return f"local refresh of {self._library_name(root)}"
+        if self._guided_identify_context is not None:
+            root = self._guided_identify_context.root
+            return f"identification in {self._library_name(root)}"
+        if self._pending_ads_refresh is not None:
+            return f"ADS update in {self._library_name(self._pending_ads_refresh[0])}"
+        if self._foreground_paused_root is not None:
+            root = self._foreground_paused_root
+            return f"library operation in {self._library_name(root)}"
+        if self._close_requested:
+            return "application shutdown"
+        return ""
+
+    def _operation_wait_message(self, before: str = "") -> str:
+        """Tell the user which operation to wait for, and how to cancel it.
+
+        Parameters
+        ----------
+        before
+            Optional action phrase, such as ``"starting a watcher"``.
+        """
+        operation = self._operation_text() or "current operation"
+        suffix = f" before {before}" if before else ""
+        message = f"Wait for the {operation} to finish{suffix}."
+        if self.job is not None and self.cancel_job_action.isEnabled():
+            message += " To stop it, click Cancel in the status bar."
+        return message
+
+    def _sync_job_indicator(self) -> None:
+        """Show the running job's name beside the status-bar progress bar."""
+        running = self.job is not None
+        if running:
+            text = self._operation_text()
+            self.job_label.setText(text[:1].upper() + text[1:] + "…")
+            self.job_progress.setToolTip(self._operation_wait_message())
+        else:
+            self._job_description = ""
+            self.job_label.clear()
+            self.job_progress.setToolTip("")
+        self.job_label.setVisible(running)
+        self.job_progress.setVisible(running)
+        self.job_cancel_button.setVisible(running)
+
     def _detail_edit_block_reason(self) -> str:
         """Explain why metadata editing is temporarily unavailable."""
         if self._pending_priority_edit is not None:
             return "Wait for the automatic identifier recheck to stop."
         if self._ads_recheck_active_root is not None:
-            return "Wait for the identifier recheck to finish."
+            return self._operation_wait_message()
         if (
             self.job is not None
             or self._pending_watch_dialog is not None
@@ -1393,7 +1547,7 @@ class MainWindow(QMainWindow):
             or self._edition_merge_target is not None
             or self._close_requested
         ):
-            return "Wait for the current operation to finish."
+            return self._operation_wait_message()
         return ""
 
     def _can_preempt_ads_recheck(self) -> bool:
@@ -1475,7 +1629,7 @@ class MainWindow(QMainWindow):
         self.merge_annotations_action.setToolTip(
             COMBINED_VIEW_REASON
             if self.combined.enabled
-            else "Wait for the identifier recheck to finish."
+            else self._operation_wait_message()
             if self._ads_recheck_active_root is not None
             else ""
         )
@@ -1655,6 +1809,7 @@ class MainWindow(QMainWindow):
     def _ads_library_export_dialog_closed(self, dialog: ExportAdsLibraryDialog) -> None:
         """Release the window's ADS export dialog after it closes."""
         if self._ads_library_export_dialog is dialog:
+            self.config.export_exclude_fields = dialog.excluded_fields
             self._ads_library_export_dialog = None
             self._sync_ads_library_action()
             if self._close_requested and self.job is None:
@@ -1711,7 +1866,9 @@ class MainWindow(QMainWindow):
         if not self._can_export_ads_library():
             self._sync_ads_library_action()
             return
-        dialog = ExportAdsLibraryDialog(parent=self)
+        dialog = ExportAdsLibraryDialog(
+            parent=self, exclude_fields=self.config.export_exclude_fields
+        )
         self._ads_library_export_dialog = dialog
         dialog.finished.connect(
             lambda _result: self._ads_library_export_dialog_closed(dialog)
@@ -1722,9 +1879,7 @@ class MainWindow(QMainWindow):
     def _start_root_watch(self, root: Path) -> bool:
         normalized = root.expanduser().resolve()
         if self._detail_edit_block_reason():
-            self.status.showMessage(
-                "Wait for the current operation before starting a watcher."
-            )
+            self.status.showMessage(self._operation_wait_message("starting a watcher"))
             return False
         entry = self.root_entries.get(str(normalized))
         if entry is None:
@@ -1816,7 +1971,7 @@ class MainWindow(QMainWindow):
 
     def _set_root_recursive(self, root: Path, recursive: bool) -> bool:
         if root.expanduser().resolve() == self._ads_recheck_active_root:
-            self.status.showMessage("Wait for the identifier recheck to finish.")
+            self.status.showMessage(self._operation_wait_message())
             return False
         normalized = root.expanduser().resolve()
         key = str(normalized)
@@ -1944,33 +2099,79 @@ class MainWindow(QMainWindow):
             return global_settings
         return CentralPdfRegistryState(registry).rename_settings or global_settings
 
-    def _queue_ads_rechecks(self) -> None:
-        """Queue the registered roots for one serial recheck cycle."""
+    def _queue_ads_rechecks(self, retry_remembered: bool = False) -> None:
+        """Queue the registered roots for one serial recheck cycle.
+
+        Parameters
+        ----------
+        retry_remembered
+            Check again the PDFs whose earlier check failed. A running cycle
+            passes the request to the next cycle.
+        """
         if self._close_requested:
             return
+        if retry_remembered:
+            self._ads_recheck_retry_requested = True
         if self._ads_recheck_roots is not None:
             self._ads_recheck_again = True
             return
         self._ads_recheck_roots = [Path(key) for key in self.root_entries]
+        self._ads_recheck_retry_remembered = self._ads_recheck_retry_requested
+        self._ads_recheck_retry_requested = False
+        self._ads_recheck_outdated = 0
         self._ads_recheck_failures = []
         self._ads_recheck_token_available = None
         self._continue_ads_rechecks()
 
     def _queue_startup_ads_rechecks(self) -> None:
         self._ads_recheck_startup_pending = False
-        self._queue_ads_rechecks()
+        self._offer_ads_recheck()
+
+    def _offer_ads_recheck(self) -> None:
+        """Ask whether to start a recheck cycle. A cycle never starts by itself."""
+        if (
+            self._close_requested
+            or not self.root_entries
+            or self._ads_recheck_roots is not None
+            or self._ads_recheck_offer is not None
+        ):
+            return
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Question)
+        box.setWindowTitle("Check for ADS Updates")
+        box.setText("Check your libraries for ADS updates now?")
+        box.setInformativeText(
+            "ADSfolio looks up your identified papers in ADS in batches. It "
+            "updates changed bibcodes, for example an arXiv paper that is now "
+            "published, and renames those PDFs. It does not open a PDF when ADS "
+            "returns its stored bibcode. New PDFs in a watched library wait until its "
+            "check finishes.\n\nYou can also start the check from Tools > "
+            "Check for ADS Updates."
+        )
+        start = box.addButton("Check Now", QMessageBox.AcceptRole)
+        later = box.addButton("Not Now", QMessageBox.RejectRole)
+        box.setDefaultButton(later)
+        box.setEscapeButton(later)
+        box.setWindowModality(Qt.NonModal)
+        box.finished.connect(lambda _result: self._ads_recheck_offer_closed(box, start))
+        self._ads_recheck_offer = box
+        box.show()
+
+    def _ads_recheck_offer_closed(self, box: QMessageBox, start: Any) -> None:
+        """Start the cycle only when the user chose Check Now."""
+        self._ads_recheck_offer = None
+        box.deleteLater()
+        if box.clickedButton() is start:
+            self._queue_ads_rechecks()
 
     def _queue_added_ads_recheck(self, root: Path) -> None:
-        """Check a newly registered root without repeating the current cycle."""
+        """Add a new root to a running cycle. Without a cycle, start nothing."""
         if self._close_requested:
             return
         roots = self._ads_recheck_roots
         if roots is None:
-            self._ads_recheck_roots = [root]
-            self._ads_recheck_failures = []
-            self._ads_recheck_token_available = None
-            self._continue_ads_rechecks()
-        elif (
+            return
+        if (
             not self._ads_recheck_again
             and root != self._ads_recheck_active_root
             and root not in roots
@@ -2050,6 +2251,86 @@ class MainWindow(QMainWindow):
             return
         self._finish_ads_recheck_cycle()
 
+    def _ads_recheck_summary(self, root: Path, result: Any, error: str | None) -> str:
+        """Return one log line that summarizes a library's recheck."""
+        name = self._library_name(root)
+        elapsed = time.monotonic() - self._ads_recheck_started_at
+        prefix = f"Automatic identifier recheck of {name}"
+        if result is None:
+            return f"{prefix} stopped after {elapsed:.0f} s: {error or 'no result'}"
+        failures = result.failures
+        failure_count = failures if isinstance(failures, int) else len(failures)
+        counts = (
+            f"{result.checked} checked, "
+            f"{getattr(result, 'remembered_skipped', 0)} skipped because an "
+            "earlier check failed, "
+            f"{result.updated} updated, {result.renamed} renamed, "
+            f"{failure_count} failed"
+        )
+        state = "was cancelled" if result.cancelled else "finished"
+        return f"{prefix} {state} after {elapsed:.0f} s: {counts}."
+
+    def _remembered_failure_counts(self) -> dict[Path, int]:
+        """Count remembered recheck failures in each registered library."""
+        counts: dict[Path, int] = {}
+        for key, registry in self.registries.items():
+            try:
+                raw = registry.get_meta(RECHECK_UNVERIFIED_META_KEY)
+                entries = json.loads(raw) if raw else {}
+            except (sqlite3.Error, json.JSONDecodeError):
+                continue
+            if isinstance(entries, dict) and entries:
+                counts[Path(key)] = len(entries)
+        return counts
+
+    def _ask_outdated_recheck(self, outdated: int) -> None:
+        """Ask once per version to recheck failures remembered by an older version."""
+        if self._close_requested:
+            return
+        self.config.remembered_recheck_prompt_version = __version__
+        answer = QMessageBox.question(
+            self,
+            "Recheck PDFs That Need Review",
+            f"{outdated} PDFs failed the identity check in an earlier ADSfolio "
+            "version. The automatic recheck skips them. This version can check "
+            "them again.\n\n"
+            f"{_RETRY_COST_TEXT}\n\nCheck them now? You can also start this "
+            "later from Tools > Recheck PDFs That Need Review.",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if answer == QMessageBox.Yes:
+            self._queue_ads_rechecks(retry_remembered=True)
+
+    def _confirm_remembered_recheck(self) -> None:
+        """Ask before the next recheck cycle checks remembered failures again."""
+        counts = self._remembered_failure_counts()
+        lines = "\n".join(
+            f"{self._library_name(root)}: {count}" for root, count in counts.items()
+        )
+        skipped = (
+            f"The automatic recheck skips {sum(counts.values())} PDFs because an "
+            f"earlier check failed:\n{lines}"
+            if counts
+            else "The automatic recheck skips no PDFs because of an earlier failure."
+        )
+        when = (
+            "after the current recheck"
+            if self._ads_recheck_roots is not None
+            else "now"
+        )
+        answer = QMessageBox.question(
+            self,
+            "Recheck PDFs That Need Review",
+            f"{skipped}\n\nThis check also adds a missing identity proof to "
+            "identified PDFs whose bibcode did not change.\n\n"
+            f"{_RETRY_COST_TEXT}\n\nStart the check {when}?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if answer == QMessageBox.Yes:
+            self._queue_ads_rechecks(retry_remembered=True)
+
     def _launch_ads_recheck(self, root: Path) -> None:
         """Snapshot current settings after the watcher acknowledges its pause."""
         try:
@@ -2073,9 +2354,13 @@ class MainWindow(QMainWindow):
                 recursive,
                 self,
                 ads_enabled=ads_enabled,
+                retry_remembered=self._ads_recheck_retry_remembered,
             )
             self._ads_recheck_job = job
             self.job = job
+            self._job_description = (
+                f"automatic identifier recheck of {self._library_name(root)}"
+            )
             job.finished.connect(
                 lambda result, error: self._ads_recheck_finished(
                     root, job, result, error
@@ -2084,12 +2369,24 @@ class MainWindow(QMainWindow):
             self._sync_refresh_actions()
             self._sync_ads_library_action()
             self.cancel_job_action.setEnabled(True)
+            self._sync_job_indicator()
             self.status.showMessage(f"Checking identifiers for {root.name}…")
+            self._ads_recheck_started_at = time.monotonic()
+            retry_note = (
+                " PDFs that failed before are checked again."
+                if self._ads_recheck_retry_remembered
+                else ""
+            )
+            self.log.appendPlainText(
+                f"Automatic identifier recheck of {self._library_name(root)} "
+                f"started.{retry_note}"
+            )
             job.start()
         except (OSError, ValueError, sqlite3.Error, RuntimeError) as exc:
             self._ads_recheck_failures.append(f"{root}: {exc}")
             self._ads_recheck_job = None
             self.job = None
+            self._sync_job_indicator()
             self._end_ads_recheck_root()
 
     def _ads_recheck_finished(
@@ -2100,11 +2397,16 @@ class MainWindow(QMainWindow):
             return
         self._ads_recheck_job = None
         self.job = None
+        self._sync_job_indicator()
         job.deleteLater()
         if not self._close_requested:
+            self.log.appendPlainText(self._ads_recheck_summary(root, result, error))
             if error:
                 self._ads_recheck_failures.append(f"{root}: {error}")
             if result is not None:
+                self._ads_recheck_outdated += int(
+                    getattr(result, "remembered_outdated", 0) or 0
+                )
                 activities = getattr(result, "activities", ())
                 if activities:
                     details = "\n".join(activities)
@@ -2136,6 +2438,7 @@ class MainWindow(QMainWindow):
                 if result.cancelled:
                     self._ads_recheck_roots = []
                     self._ads_recheck_again = False
+                    self._ads_recheck_retry_requested = False
         self._end_ads_recheck_root()
 
     def _end_ads_recheck_root(self) -> None:
@@ -2160,9 +2463,13 @@ class MainWindow(QMainWindow):
 
     def _finish_ads_recheck_cycle(self) -> None:
         failures = self._ads_recheck_failures
+        retried = self._ads_recheck_retry_remembered
+        outdated = self._ads_recheck_outdated
         self._ads_recheck_roots = None
         self._ads_recheck_failures = []
         self._ads_recheck_token_available = None
+        self._ads_recheck_retry_remembered = False
+        self._ads_recheck_outdated = 0
         if failures:
             details = "\n".join(failures)
             self.log.appendPlainText(
@@ -2179,6 +2486,12 @@ class MainWindow(QMainWindow):
         if self._ads_recheck_again:
             self._ads_recheck_again = False
             QTimer.singleShot(0, self._queue_ads_rechecks)
+        elif (
+            outdated
+            and not retried
+            and self.config.remembered_recheck_prompt_version != __version__
+        ):
+            QTimer.singleShot(0, lambda: self._ask_outdated_recheck(outdated))
 
     def _choose_watch_sound(self) -> None:
         """Choose and preview the sound for new PDFs in watched libraries."""
@@ -2787,7 +3100,7 @@ class MainWindow(QMainWindow):
             "Search fields: choose the fields that words without a field name "
             "search\n"
             f"Now: {', '.join(labels) if labels else 'all fields'}.\n"
-            "Type field:text, for example author:bach or year:2019, to search "
+            "Type field:text, for example author:doe or year:2019, to search "
             "one field."
         )
 
@@ -2980,11 +3293,11 @@ class MainWindow(QMainWindow):
             )
             self.export_all_action.setEnabled(has_library)
             self.export_all_action.setToolTip(
-                "Choose BibTeX or a publication list for every current PDF in the "
-                "checked libraries"
+                "Export Papers: write every current PDF in the checked libraries "
+                "as BibTeX, citation text, or a publication list"
                 if self.combined.enabled
-                else "Choose BibTeX or a publication list for every current PDF in "
-                "this library, including filtered and unloaded rows"
+                else "Export Papers: write every current PDF in this library as "
+                "BibTeX, citation text, or a publication list"
             )
 
     def _open_index(self, index: QModelIndex) -> None:
@@ -3010,7 +3323,7 @@ class MainWindow(QMainWindow):
     ) -> None:
         """Review the two selected editions, or choose PDFs from file dialogs."""
         if self._ads_recheck_active_root is not None:
-            self.status.showMessage("Wait for the identifier recheck to finish.")
+            self.status.showMessage(self._operation_wait_message())
             return
         if self.combined.enabled and root is None:
             self.status.showMessage("Select one library to merge PDFs.")
@@ -3029,9 +3342,7 @@ class MainWindow(QMainWindow):
                 or self._edition_merge_target is not None
                 or self._close_requested
             ):
-                self.status.showMessage(
-                    "Wait for the current operation before merging PDFs."
-                )
+                self.status.showMessage(self._operation_wait_message("merging PDFs"))
                 return
             target_record = next(
                 (record for record in selected if edition_role(record) == "published"),
@@ -3908,19 +4219,6 @@ class MainWindow(QMainWindow):
                 f"Copied BibTeX for {len(document_ids_of(records))} papers.", 5000
             )
 
-    def _save_records_bibtex(self, records: Sequence[dict[str, Any]]) -> None:
-        """Write the BibTeX of the selected papers to a .bib file."""
-        text = self._records_bibtex(records)
-        if text is None:
-            return
-        try:
-            filename = save_bibtex_file(self, text, "Export BibTeX")
-        except OSError as exc:
-            QMessageBox.warning(self, "BibTeX export", str(exc))
-            return
-        if filename:
-            self.status.showMessage(f"Exported BibTeX to {filename}.", 8000)
-
     def _copy_text(self, text: str) -> None:
         QApplication.clipboard().setText(text)
 
@@ -3946,68 +4244,66 @@ class MainWindow(QMainWindow):
         *,
         all_papers: bool = False,
     ) -> None:
-        """Choose a format for selected PDFs or all current PDFs in this library.
+        """Open Export Papers for the selection, the table view, or all PDFs.
 
         In the combined view, "all" means every current PDF in the checked
-        libraries.
+        libraries. Every library uses the same central catalog.
         """
         if self.current_root is None and not self.combined.enabled:
             return
-        if all_papers:
-            query = self.model.query
-            source = (
-                self.combined.registry()
-                if self.combined.enabled
-                else self.registries[str(self.current_root)]
-            )
-            try:
-                papers = source.query_files(
-                    order_by=query.order_by,
-                    descending=query.descending,
-                    secondary_order_by=query.secondary_order_by,
-                    tertiary_order_by=query.tertiary_order_by,
-                )
-            except sqlite3.Error as exc:
-                QMessageBox.warning(self, "Export papers", str(exc))
-                return
-        else:
-            papers = list(records if records is not None else self._selected_records())
-        if not papers:
-            self.status.showMessage(
-                "This library has no current PDFs to export."
-                if all_papers
-                else "Select papers to export first.",
-                5000,
-            )
+        source = self._search_source()
+        if source is None:
             return
-        export_format, accepted = QInputDialog.getItem(
-            self,
-            "Export All As" if all_papers else "Export Selection As",
-            "Format:",
-            ("BibTeX (*.bib)", "Publication list (LaTeX, HTML, Markdown, text)"),
-            0,
-            False,
-        )
-        if not accepted:
+        query = self.model.query
+        try:
+            everything = source.query_files(
+                order_by=query.order_by,
+                descending=query.descending,
+                secondary_order_by=query.secondary_order_by,
+                tertiary_order_by=query.tertiary_order_by,
+            )
+        except sqlite3.Error as exc:
+            QMessageBox.warning(self, "Export papers", str(exc))
             return
-        if export_format == "BibTeX (*.bib)":
-            self._save_records_bibtex(papers)
-        else:
-            self._export_selected_papers(papers)
-
-    def _export_selected_papers(
-        self, records: Sequence[dict[str, Any]] | None = None
-    ) -> None:
-        """Export papers with a CV template from their stored metadata."""
         selected = list(records if records is not None else self._selected_records())
-        if not selected:
-            self.status.showMessage("Select papers to export first.", 5000)
+        scopes = [ExportScope("selected", "Selected rows", selected)]
+        filtered = self.current_view is not LibraryView.ALL or bool(query.search)
+        if filtered:
+            scopes.append(
+                ExportScope(
+                    "view", "Rows in the current table view", self.model.records
+                )
+            )
+        scopes.append(
+            ExportScope(
+                "all",
+                "All PDFs in the checked libraries"
+                if self.combined.enabled
+                else "All PDFs in this library",
+                everything,
+            )
+        )
+        registry = self._export_registry(everything)
+        if registry is None:
+            self.status.showMessage("This library has no current PDFs to export.", 5000)
             return
-        CVDialog(
+        dialog = ExportPapersDialog(
             self,
-            records=selected,
+            scopes,
+            registry.catalog,
+            self.config.citation_styles,
+            initial_scope="all" if all_papers or not selected else "selected",
+            initial_format=self.config.export_format,
             browser_command=self.config.web_browser_command,
-        ).exec()
+            show_unidentified=None
+            if self.combined.enabled
+            else lambda: self._select_view(LibraryView.UNRESOLVED),
+            exclude_fields=self.config.export_exclude_fields,
+        )
+        dialog.exec()
+        self.config.export_format = dialog.format_key
+        self.config.export_exclude_fields = dialog.excluded_fields
+        dialog.deleteLater()
 
     def _refresh_records_ads(self, records: Sequence[dict[str, Any]]) -> None:
         """Refresh several records from ADS, one CLI run per record, in order."""
@@ -4116,7 +4412,7 @@ class MainWindow(QMainWindow):
         self._local_refresh_result = None
         job = LibraryRefreshJob(root, self.root_entries[str(root)].recursive, self)
         job.refreshed.connect(self._capture_local_refresh)
-        self._watch_job(job)
+        self._watch_job(job, f"local refresh of {self._library_name(root)}")
         self.status.showMessage(f"Refreshing local files: {root}")
         job.start()
 
@@ -4559,15 +4855,81 @@ class MainWindow(QMainWindow):
             return
         path = Path(selected)
         recursive = False
-        if str(path.expanduser().resolve()) not in self.registries:
+        watch, auto_process = False, False
+        is_new = str(path.expanduser().resolve()) not in self.registries
+        if is_new:
             choice = self._ask_include_subfolders(path)
             if choice is None:
                 return
             recursive = choice
-        self._register_root(path, recursive=recursive)
+            watch, auto_process = self._ask_watch_new_library(path)
+        self._register_root(
+            path,
+            recursive=recursive,
+            watch_on_start=watch,
+            auto_process_new_pdfs=auto_process,
+        )
+        if is_new:
+            self._sync_config_roots()
+            try:
+                save_config(self.config)
+            except OSError as exc:
+                self.notice_bar.enqueue(
+                    Notice(
+                        f"watch-save:{path}",
+                        f"Could not save the new library settings: {exc}",
+                        severity="error",
+                    )
+                )
+            block_reason = self._detail_edit_block_reason()
+            if watch and not self._start_root_watch(path) and block_reason:
+                self.notice_bar.enqueue(
+                    Notice(
+                        f"watch-start:{path.expanduser().resolve()}",
+                        f"Watching {path.name or path} did not start. {block_reason} "
+                        "Then choose Watch Current Library. Autowatch at Start "
+                        "is on, so watching also starts when ADSfolio opens.",
+                        severity="warning",
+                        root=path.expanduser().resolve(),
+                    )
+                )
         self._select_root(path)
+        self._sync_watch_actions()
         if self.model.total:
             self._guide_identification()
+
+    def _ask_watch_new_library(self, path: Path) -> tuple[bool, bool]:
+        """Ask whether ADSfolio watches a new library for added PDFs.
+
+        Returns
+        -------
+        tuple of bool
+            ``(watch, auto_process)``. ``watch`` turns on Autowatch at Start
+            and starts the watcher now. ``auto_process`` turns on
+            Automatically Identify & Rename.
+        """
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Question)
+        box.setWindowTitle("Watch This Library?")
+        box.setText(f"Watch {path.name or path} for new PDFs?")
+        box.setInformativeText(
+            "A watched library finds PDFs that you add to its folder. "
+            "With automatic processing, ADSfolio also identifies and renames them. "
+            "Each library has its own watch settings. Change them later in the "
+            "Tools menu or on the library's context menu."
+        )
+        automatic = box.addButton("Watch, Identify, and Rename", QMessageBox.YesRole)
+        notify = box.addButton("Watch and Notify Only", QMessageBox.AcceptRole)
+        skip = box.addButton("Do Not Watch", QMessageBox.NoRole)
+        box.setDefaultButton(skip)
+        box.setEscapeButton(skip)
+        box.exec()
+        clicked = box.clickedButton()
+        if clicked is automatic:
+            return True, True
+        if clicked is notify:
+            return True, False
+        return False, False
 
     def _ask_include_subfolders(self, path: Path) -> bool | None:
         """Ask whether a new library includes subfolders.
@@ -4620,7 +4982,7 @@ class MainWindow(QMainWindow):
             self.status.showMessage("Wait for the PDF update to start.")
             return
         if root == self._ads_recheck_active_root:
-            self.status.showMessage("Wait for the identifier recheck to finish.")
+            self.status.showMessage(self._operation_wait_message())
             return
         if (
             self._manual_metadata_target is not None
@@ -4635,7 +4997,7 @@ class MainWindow(QMainWindow):
             for context in (self._local_refresh_context, self._guided_identify_context)
         ):
             self.status.showMessage(
-                "Wait for the library operation to finish before removing this library."
+                self._operation_wait_message("removing this library")
             )
             return
         if (
@@ -4981,7 +5343,7 @@ class MainWindow(QMainWindow):
             working_directory=root,
         )
         self._refresh_selection_id = None
-        self._watch_job(job)
+        self._watch_job(job, f"identification in {self._library_name(root)}")
         self._sync_refresh_actions()
         self.status.showMessage(f"Identifying papers: {root.name}")
         job.start()
@@ -5119,7 +5481,7 @@ class MainWindow(QMainWindow):
         job = CommandJob(
             identify, follow_up_argv=[rename], parent=self, working_directory=root
         )
-        self._watch_job(job)
+        self._watch_job(job, f"identify and rename in {self._library_name(root)}")
         self.status.showMessage(f"Identifying and renaming {len(files)} selected PDFs…")
         job.start()
 
@@ -5187,7 +5549,7 @@ class MainWindow(QMainWindow):
 
         def start_identify_job(job: Any) -> None:
             self._ads_refresh_root = root
-            self._watch_job(job)
+            self._watch_job(job, f"identification in {self._library_name(root)}")
 
         dialog.job_started.connect(start_identify_job)
         dialog.exec()
@@ -5372,9 +5734,7 @@ class MainWindow(QMainWindow):
             or self._manual_metadata_target is not None
             or self._edition_merge_target is not None
         ):
-            self.status.showMessage(
-                "Wait for the current operation before identifying a PDF."
-            )
+            self.status.showMessage(self._operation_wait_message("identifying a PDF"))
             return False
         untracked = False
         if path is None:
@@ -5539,10 +5899,10 @@ class MainWindow(QMainWindow):
         """Stop a recheck and retain the exact PDF selected for an edit."""
         if self._ads_recheck_active_root is not None:
             if not self._can_preempt_ads_recheck():
-                self.status.showMessage("Wait for the current operation and try again.")
+                self.status.showMessage(self._operation_wait_message())
                 return False
         elif self._detail_edit_block_reason():
-            self.status.showMessage("Wait for the current operation and try again.")
+            self.status.showMessage(self._operation_wait_message())
             return False
         try:
             content_sha256 = sha256_file(path)
@@ -5562,6 +5922,7 @@ class MainWindow(QMainWindow):
         )
         self._ads_recheck_roots = []
         self._ads_recheck_again = False
+        self._ads_recheck_retry_requested = False
         self._sync_refresh_actions()
         self.status.showMessage(
             "Stopping the automatic ADS check before editing this PDF…"
@@ -5665,7 +6026,7 @@ class MainWindow(QMainWindow):
             or self._edition_merge_target is not None
         ):
             self.status.showMessage(
-                "Wait for the current operation before entering paper details."
+                self._operation_wait_message("entering paper details")
             )
             return
         if isinstance(payload, WatchEvent):
@@ -6276,7 +6637,7 @@ class MainWindow(QMainWindow):
                 self._capture_identity_conflict(line) if self.job is job else None
             )
         )
-        self._watch_job(job)
+        self._watch_job(job, f"ADS update in {self._library_name(root)}")
         job.start()
 
     def _capture_ads_match_candidates(self, line: str) -> None:
@@ -6594,7 +6955,7 @@ class MainWindow(QMainWindow):
 
         def start_rename_job(job: Any) -> None:
             self._ads_refresh_root = root
-            self._watch_job(job)
+            self._watch_job(job, f"rename in {self._library_name(root)}")
 
         dialog.job_started.connect(start_rename_job)
         dialog.exec()
@@ -6636,7 +6997,7 @@ class MainWindow(QMainWindow):
         """Protect the settings snapshot until the recheck worker stops."""
         if self._ads_recheck_job is not None:
             raise ValueError(
-                "Wait for the identifier recheck to finish. Then save these settings."
+                f"{self._operation_wait_message()} Then save these settings."
             )
 
     def _resume_foreground_watch(self) -> None:
@@ -6648,11 +7009,11 @@ class MainWindow(QMainWindow):
         self.watch_controller.resume_writes(root)
         self._sync_refresh_actions()
 
-    def _watch_job(self, job: Any) -> None:
+    def _watch_job(self, job: Any, description: str = "") -> None:
         job.setParent(self)
         self.job = job
+        self._job_description = description
         self._sync_ads_library_action()
-        self.job_progress.show()
         self.log_dock.show()
         self.identify_action.setEnabled(False)
         self.rename_action.setEnabled(False)
@@ -6661,6 +7022,7 @@ class MainWindow(QMainWindow):
         self.refresh_all_ads_action.setEnabled(False)
         self.refresh_all_citation_metrics_action.setEnabled(False)
         self.cancel_job_action.setEnabled(True)
+        self._sync_job_indicator()
         job.output.connect(self.log.appendPlainText)
         job.failed.connect(
             lambda message: self.log.appendPlainText(f"Failed to start: {message}")
@@ -6677,6 +7039,7 @@ class MainWindow(QMainWindow):
                 if not self._close_requested:
                     self._ads_recheck_roots = []
                 self._ads_recheck_again = False
+                self._ads_recheck_retry_requested = False
             self.job.cancel()
             self.cancel_job_action.setEnabled(False)
 
@@ -6689,8 +7052,8 @@ class MainWindow(QMainWindow):
         self.refresh_all_ads_action.setEnabled(True)
         self.refresh_all_citation_metrics_action.setEnabled(True)
         self.cancel_job_action.setEnabled(False)
-        self.job_progress.hide()
         self.job = None
+        self._sync_job_indicator()
         self._local_refresh_context = None
         self._local_refresh_result = None
         self._identify_rename_context = None
@@ -6760,8 +7123,8 @@ class MainWindow(QMainWindow):
         self.refresh_all_ads_action.setEnabled(True)
         self.refresh_all_citation_metrics_action.setEnabled(True)
         self.cancel_job_action.setEnabled(False)
-        self.job_progress.hide()
         self.job = None
+        self._sync_job_indicator()
         self._sync_ads_library_action()
         self._resume_foreground_watch()
         if refresh_root is None or str(refresh_root) in self.registries:

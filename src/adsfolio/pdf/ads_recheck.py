@@ -3,14 +3,17 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import os
 import sqlite3
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from .. import __version__
 from ..config import ADSError, Config
 from .doi_providers import DoiProvider, ProviderError
 from .identifier import PdfIdentifier
@@ -30,6 +33,7 @@ from .readiness import (
     METADATA_SHA256_KEY,
     METADATA_STALE_KEY,
     PREVIOUS_RESOLUTION_KEY,
+    RECHECK_UNVERIFIED_META_KEY,
     REFERENCE_METADATA_KEY,
     WATCH_PENDING_KEY,
 )
@@ -45,6 +49,17 @@ if TYPE_CHECKING:
 __all__ = ["RecheckResult", "recheck_existing"]
 PENDING_RENAMES_KEY = "_adsfolio_ads_recheck_pending_renames"
 PREVIOUS_IDENTITIES_KEY = "_adsfolio_ads_recheck_previous_identities"
+UNVERIFIED_META_KEY = RECHECK_UNVERIFIED_META_KEY
+# ADS record fields that identity verification reads.
+_VERIFIED_CANDIDATE_FIELDS = (
+    "bibcode",
+    "alternate_bibcode",
+    "doi",
+    "identifier",
+    "arxiv",
+    "arxiv_id",
+    "title",
+)
 
 
 @dataclass
@@ -67,6 +82,11 @@ class RecheckResult:
         Whether cancellation stopped the operation.
     planned_updates, planned_renames
         Counts of checked changes in a preview or applied run.
+    remembered_skipped
+        Number of PDFs skipped because an earlier check failed with the same inputs.
+    remembered_outdated
+        Number of skipped PDFs whose remembered result came from another
+        ADSfolio version.
     """
 
     checked: int = 0
@@ -77,6 +97,119 @@ class RecheckResult:
     planned_updates: int = 0
     planned_renames: int = 0
     activities: list[str] = field(default_factory=list)
+    remembered_skipped: int = 0
+    remembered_outdated: int = 0
+
+
+class _UnverifiedMemory:
+    """Remember check failures that repeat until the PDF or its inputs change.
+
+    An entry is keyed by its check kind and the PDF SHA-256. Its ``key`` value
+    hashes the other inputs of that check. A matching entry skips the PDF read
+    and the provider lookups. Entries from another ADSfolio version still skip
+    the check, but the caller can ask the user to retry them.
+    """
+
+    def __init__(self, previous: dict[str, dict[str, Any]], *, retry: bool) -> None:
+        self.previous = previous
+        self.retry = retry
+        self.current: dict[str, dict[str, Any]] = {}
+        # Hashes of every PDF in the completed catalog scan.
+        self.seen: set[str] = set()
+        self.scan_complete = False
+
+    @classmethod
+    def load(cls, state: CentralPdfRegistryState, *, retry: bool) -> _UnverifiedMemory:
+        raw = state.registry.get_meta(UNVERIFIED_META_KEY)
+        try:
+            entries = json.loads(raw) if raw else {}
+        except json.JSONDecodeError:
+            entries = {}
+        if not isinstance(entries, dict):
+            entries = {}
+        valid = {
+            name: entry
+            for name, entry in entries.items()
+            if isinstance(name, str) and isinstance(entry, dict)
+        }
+        return cls(valid, retry=retry)
+
+    def skip(self, kind: str, sha256: Any, key: str, result: RecheckResult) -> bool:
+        """Return whether a remembered failure covers this check."""
+        if self.retry or not sha256:
+            return False
+        name = f"{kind}:{sha256}"
+        entry = self.previous.get(name)
+        if entry is None or entry.get("key") != key:
+            return False
+        self.current[name] = entry
+        result.remembered_skipped += 1
+        if entry.get("version") != __version__:
+            result.remembered_outdated += 1
+        return True
+
+    def remember(
+        self,
+        kind: str,
+        sha256: Any,
+        key: str,
+        reason: str,
+        path: str,
+        state: CentralPdfRegistryState | None = None,
+    ) -> None:
+        """Record a failed check for a PDF with a known content hash.
+
+        With `state`, also store the entry now, so an interrupted run keeps it.
+        """
+        if not sha256:
+            return
+        self.current[f"{kind}:{sha256}"] = {
+            "key": key,
+            "version": __version__,
+            "reason": reason,
+            "path": path,
+            "checked_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        }
+        if state is not None:
+            self.save(state, cancelled=True)
+
+    def save(self, state: CentralPdfRegistryState, *, cancelled: bool) -> None:
+        """Store new entries, and drop entries whose PDF left the library.
+
+        An entry stays when its check did not run, for example during an ADS
+        outage. Only a complete scan can show that a PDF hash is gone.
+        """
+        if state.registry.catalog._connection.in_transaction:
+            return
+        kept = self.previous
+        if self.scan_complete and not cancelled:
+            kept = {
+                name: entry
+                for name, entry in self.previous.items()
+                if name.partition(":")[2] in self.seen
+            }
+        entries = {**kept, **self.current}
+        if entries == self.previous:
+            return
+        if entries:
+            state.registry.set_meta(
+                UNVERIFIED_META_KEY, json.dumps(entries, sort_keys=True)
+            )
+        else:
+            state.registry.catalog.delete_meta(
+                f"root:{state.directory}:{UNVERIFIED_META_KEY}"
+            )
+
+
+def _candidate_inputs_key(lookup: _LookupItem, candidate: Mapping[str, Any]) -> str:
+    """Hash the record inputs of one ADS identity verification."""
+    payload = {
+        "candidate": {name: candidate.get(name) for name in _VERIFIED_CANDIDATE_FIELDS},
+        "saved": target_identity(lookup.record["metadata"]).fingerprint,
+        "filename_bibcode": lookup.filename_bibcode or "",
+    }
+    encoded = json.dumps(payload, sort_keys=True, default=str).encode()
+    return hashlib.sha256(encoded).hexdigest()
 
 
 @dataclass(frozen=True)
@@ -1084,6 +1217,7 @@ def recheck_existing(
     cancelled: Callable[[], bool] | None = None,
     identify_settings: IdentifySettings | None = None,
     recursive: bool | None = None,
+    retry_remembered: bool = False,
 ) -> RecheckResult:
     """Recheck tracked identifiers with the enabled providers.
 
@@ -1105,6 +1239,8 @@ def recheck_existing(
         Effective Identify settings for this root. The default uses saved settings.
     recursive
         Whether to include subdirectories. The default uses Identify settings.
+    retry_remembered
+        Check again the PDFs whose earlier check failed with the same inputs.
 
     Returns
     -------
@@ -1118,7 +1254,43 @@ def recheck_existing(
     call this function with its own settings to finish its pending locations.
     PDF bytes are not modified. Filesystem writers are not locked, so checks
     cannot eliminate every external filesystem race.
+
+    An applied run remembers two failures per library: an ADS identity
+    verification that the PDF does not confirm, and a PDF without a metadata
+    DOI. Later runs skip such a PDF until its SHA-256 changes. A verification
+    is also checked again when the ADS identifiers or title, the saved
+    identifiers, or the filename bibcode change.
     """
+    memory = _UnverifiedMemory.load(state, retry=retry_remembered)
+    result = _recheck_existing(
+        state,
+        client,
+        rename_settings,
+        memory,
+        ads_enabled=ads_enabled,
+        apply=apply,
+        cancelled=cancelled,
+        identify_settings=identify_settings,
+        recursive=recursive,
+    )
+    if apply:
+        memory.save(state, cancelled=result.cancelled)
+    return result
+
+
+def _recheck_existing(
+    state: CentralPdfRegistryState,
+    client: ADSClient | None,
+    rename_settings: RenameSettings,
+    memory: _UnverifiedMemory,
+    *,
+    ads_enabled: bool,
+    apply: bool,
+    cancelled: Callable[[], bool] | None,
+    identify_settings: IdentifySettings | None,
+    recursive: bool | None,
+) -> RecheckResult:
+    """Run `recheck_existing` with a loaded failure memory."""
     result = RecheckResult()
     if _stop_requested(cancelled):
         result.cancelled = True
@@ -1176,6 +1348,8 @@ def recheck_existing(
         if _stop_requested(cancelled):
             result.cancelled = True
             return result
+        if record.get("sha256"):
+            memory.seen.add(str(record["sha256"]))
         attachment_id = int(record["attachment_id"])
         if attachment_id in seen or not in_scope(record):
             continue
@@ -1194,6 +1368,7 @@ def recheck_existing(
         if (
             not _eligible(record)
             and IdentifyStrategy.PDF_METADATA_DOI in settings.strategies
+            and not memory.skip("metadata_doi", record.get("sha256"), "", result)
         ):
             try:
                 path = _safe_path(
@@ -1205,6 +1380,15 @@ def recheck_existing(
             except (OSError, ValueError) as exc:
                 result.failures.append(f"{record['current_path']}: {exc}")
                 continue
+            if not metadata_doi:
+                memory.remember(
+                    "metadata_doi",
+                    record.get("sha256"),
+                    "",
+                    "The PDF metadata has no DOI.",
+                    str(record["current_path"]),
+                    state if apply else None,
+                )
         if not _eligible(record) and not filename_bibcode and not metadata_doi:
             continue
         if not run_ads and not (identity.dois or metadata_doi):
@@ -1225,6 +1409,7 @@ def recheck_existing(
                 filename_bibcode=filename_bibcode,
             )
         )
+    memory.scan_complete = True
     if not lookups:
         return result
     attempted_prefix: set[int] = set()
@@ -1352,7 +1537,15 @@ def recheck_existing(
                 and not lookup.record["metadata"].get(METADATA_STALE_KEY)
                 and lookup.bibcode.casefold() == new_code.casefold()
             )
-            if same_resolved_code and _saved_proof_current(lookup.record):
+            # ADS confirms the stored identification. Only an explicit retry
+            # adds a missing identity proof, because that reads the PDF again.
+            if same_resolved_code and (
+                not memory.retry or _saved_proof_current(lookup.record)
+            ):
+                continue
+            sha256 = lookup.record.get("sha256")
+            inputs_key = _candidate_inputs_key(lookup, candidate)
+            if memory.skip("ads", sha256, inputs_key, result):
                 continue
             current = state.registry.catalog.get_file(state.directory, name)
             if current != lookup.record:
@@ -1392,9 +1585,12 @@ def recheck_existing(
                     allow_missing_primary=_same_verified_doi(snapshot, candidate),
                     filename_bibcode=matched_filename,
                 )
-            except IdentityValidationError:
+            except IdentityValidationError as exc:
                 if try_external_fallback():
                     continue
+                memory.remember(
+                    "ads", sha256, inputs_key, str(exc), name, state if apply else None
+                )
                 raise
             if not _unchanged(state, snapshot):
                 raise ValueError("The catalog changed during the ADS lookup.")

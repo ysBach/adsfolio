@@ -126,7 +126,7 @@ def test_init_uses_adsfolio_set_orcid_defaults(tmp_path: Path, monkeypatch) -> N
         "adsfolio.cv.cli.Config.load_user_profile",
         lambda: UserProfile(
             orcid="0000-0002-1825-0097",
-            author_names=("Bach, Y. P.", "Bach, Yoonsoo"),
+            author_names=("Doe, J. A.", "Doe, John"),
             first_publication_year=2010,
             last_publication_year=2030,
         ),

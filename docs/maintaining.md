@@ -100,6 +100,36 @@ Persist repaired proof even when an obsolete proof key already exists.
 Reconcile a relocated catalog path before saving its repaired proof.
 Keep exact-record verification separate from broader fallback-search permission.
 
+## Automatic recheck process
+
+Run the automatic identifier recheck in a child process. PDF parsing in a GUI
+thread holds the Python interpreter lock. Each table paint then waits for the
+lock, and scrolling lags.
+
+1. `AdsRecheckJob` writes a request file with `build_request`.
+2. It starts the hidden `adsfolio pdf recheck-worker REQUEST` command.
+3. The worker sets `Config.config_dir_override` to the app's directory.
+4. The worker writes the result file with `write_result`.
+5. The job reads the result and removes its temporary directory.
+
+Cancel creates the request's cancel file. The worker checks it between steps.
+It stores each remembered failure when it finds it, and it prunes old entries
+only after a complete, uncancelled scan. Do not kill the worker during a
+catalog write.
+
+The window never starts a cycle by itself. `_offer_ads_recheck` asks at startup
+and on the 24-hour timer. **Tools → Check for ADS Updates** starts a cycle
+directly. A library added during a running cycle joins it. Otherwise, adding a
+library starts nothing.
+
+A normal cycle skips a resolved PDF when ADS returns its stored bibcode. Only
+`retry_remembered`, from **Recheck PDFs That Need Review…**, reads such a PDF
+to add a missing identity proof.
+
+Tests run `run_request` in a thread through the same files. Mark a test with
+`recheck_process` to start the real child process. The `no_recheck_offer`
+fixture hides the start question. Mark a test with `recheck_offer` to show it.
+
 ## Documentation Check
 
 Run this before committing:

@@ -19,7 +19,7 @@ def test_load_profile_from_saved_setup(monkeypatch):
         "adsfolio.pdf.prefetch.Config.load_user_profile",
         lambda: UserProfile(
             orcid="0000-0002-1825-0097",
-            author_names=("Bach, Y. P.",),
+            author_names=("Doe, J. A.",),
             first_publication_year=2015,
             last_publication_year=2040,
             ads_library_ids=("LIB123",),
@@ -28,7 +28,7 @@ def test_load_profile_from_saved_setup(monkeypatch):
     profile = load_profile()
 
     assert profile.orcid == "0000-0002-1825-0097"
-    assert profile.query_names == ["Bach, Y. P."]
+    assert profile.query_names == ["Doe, J. A."]
     assert profile.debut_year == 2015
     assert profile.retire_year == 2040
     assert profile.library_ids == ["LIB123"]
@@ -52,7 +52,7 @@ def test_query_publications_uses_or_query_and_year_window():
     client = SimpleNamespace(search=_Search())
     profile = PublicationProfile(
         orcid="0000-0002-1825-0097",
-        query_names=["Bach, Y. P.", "Bach, Yoonsoo"],
+        query_names=["Doe, J. A.", "Doe, John"],
         debut_year=2010,
         retire_year=2030,
     )
@@ -61,8 +61,8 @@ def test_query_publications_uses_or_query_and_year_window():
     assert len(docs) == 2
     assert calls
     assert (
-        calls[0]["q"] == '(orcid_pub:"0000-0002-1825-0097" OR author:"Bach, Y. P." OR '
-        'author:"Bach, Yoonsoo") AND year:[2010 TO 2030]'
+        calls[0]["q"] == '(orcid_pub:"0000-0002-1825-0097" OR author:"Doe, J. A." OR '
+        'author:"Doe, John") AND year:[2010 TO 2030]'
     )
     assert calls[0]["page_size"] == 2000
     assert calls[0]["max_records"] == 10000
@@ -121,7 +121,7 @@ def test_match_pdf_from_prefetch_uses_doi_first():
         {
             "bibcode": "2024A&A...684A..80B",
             "doi": ["10.1234/example"],
-            "author": ["Bach, Y. P."],
+            "author": ["Doe, J. A."],
             "year": "2024",
             "bibstem": ["A&A"],
             "volume": "684",
@@ -143,7 +143,7 @@ def test_match_pdf_from_prefetch_ignores_filename_hints_without_doi():
     documents = [
         {
             "bibcode": "2021A&A...654A.113B",
-            "author": ["Bach, Y. P."],
+            "author": ["Doe, J. A."],
             "year": "2021",
             "bibstem": ["A&A"],
             "volume": "654",
@@ -195,7 +195,7 @@ def test_match_pdf_from_prefetch_requires_unique_candidate():
         {
             "bibcode": "A",
             "doi": ["10.1234/example"],
-            "author": ["Bach, Y. P."],
+            "author": ["Doe, J. A."],
             "year": "2024",
             "bibstem": ["A&A"],
             "volume": "684",
@@ -204,7 +204,7 @@ def test_match_pdf_from_prefetch_requires_unique_candidate():
         {
             "bibcode": "B",
             "doi": ["10.1234/example"],
-            "author": ["Bach, Y. P."],
+            "author": ["Doe, J. A."],
             "year": "2024",
             "bibstem": ["A&A"],
             "volume": "684",

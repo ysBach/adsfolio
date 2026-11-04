@@ -1,5 +1,117 @@
 # Changelog
 
+## Unreleased
+
+### Identifier recheck
+
+- The recheck previously started by itself each time ADSfolio opened, and
+  every 24 hours. Now ADSfolio asks first: **Check Now** or **Not Now**.
+  **Tools → Check for ADS Updates** starts it at any time. Adding a library no
+  longer starts it.
+- The recheck previously read again every identified PDF without a stored
+  identity proof, even when ADS returned the same bibcode. It also called
+  Crossref and DataCite for each of those PDFs. In a 2,912-PDF library, that
+  was about 1,370 PDFs. A 25-PDF sample gave about 11 minutes of local work,
+  plus the network calls. Now a PDF keeps its stored record when ADS returns
+  the same bibcode, and the check does not open it. Without network time, the
+  same library took 3.3 s.
+- The recheck previously checked again every PDF that failed an identity
+  check, and read every unidentified PDF without a metadata DOI. Now it
+  remembers these failures for each library. It skips such a PDF until the PDF
+  or the inputs of its check change. It stores each failure when it finds it,
+  so a stopped check does not repeat that work.
+- `adsfolio pdf watch` uses the same recheck rules for unchanged and
+  remembered PDFs.
+- Skipped PDFs previously had no retry action. Now **Tools → Recheck PDFs That
+  Need Review…** shows the count for each library and asks before it starts.
+  This check also adds a missing identity proof to PDFs whose bibcode did not
+  change. After an ADSfolio update, ADSfolio asks once whether to recheck the
+  PDFs that failed the identity check in an earlier version.
+- Scrolling the library table during the recheck previously lagged. The
+  recheck parsed PDFs in a thread of the window's process, and each table
+  paint waited for it. Now the recheck runs in a separate process. In an
+  offscreen test, one table paint took 21 ms with no worker. With a busy
+  worker thread, it took 76 to 104 ms. With a busy worker process, it took 21
+  to 22 ms.
+- The log panel previously showed only file-specific changes from the check.
+  Now each library gets a start line and a summary line. The summary gives
+  the time and counts checked, skipped, updated, renamed, and failed PDFs.
+
+### Busy messages
+
+- Checking **Combine libraries** during a job previously showed "Wait for the
+  current operation to finish." The message did not name the operation. Now
+  it names it, for example "Wait for the automatic identifier recheck of
+  Papers to finish. To stop it, click Cancel in the status bar." Other
+  blocked actions use the same named message.
+- The recheck previously showed no progress bar and no visible way to stop
+  it. Now the status bar shows the running job's name, the progress bar, and a
+  **Cancel** button for every job. A cancelled recheck keeps the failures that
+  it found before it stopped.
+
+### Library table
+
+- Clicking a cell in a partly hidden column previously scrolled the table
+  sideways. A wide column, such as the filename, moved to the left edge. The
+  Up and Down arrow keys did the same. Now a click or an arrow key selects the
+  row, and the horizontal position stays the same.
+
+### Watching
+
+- A library tooltip previously showed only the folder path. Now it also shows
+  **Watching now**, **Autowatch at Start**, and **Automatically Identify &
+  Rename** for that library.
+- Adding a library previously turned watching off with no question. Now
+  ADSfolio asks: **Watch, Identify, and Rename**, **Watch and Notify Only**, or
+  **Do Not Watch** (the default). Libraries that you added earlier keep their
+  settings.
+
+### Export papers
+
+- **Export Selection As…** and **Export All As…** previously asked only for a
+  format. The key styles were in another window, and BibTeX had no preview.
+  Now both open **Export Papers**. One window holds the papers, the format,
+  every setting of that format, and a preview of the first three papers.
+- Export Papers has three formats: BibTeX, citation text with one of your
+  custom citation styles, and a publication list. The publication list uses
+  the same settings as the earlier list window.
+- PDFs without paper details previously dropped out of an export with no
+  message. Now the window counts them, and **Show…** lists their paths.
+  **Show Needs Identification** opens the view that holds them.
+- Papers outside ADS, such as papers from Crossref or DataCite, export with
+  ADS papers. Their keys use the **Other papers** key style.
+- The preview previously could not show a selection that held a paper whose
+  key you must type. Now it shows the other papers, plus a note for that paper.
+- Opening **Export Papers** for 2,776 papers previously took about 25 s. The
+  list settings rendered every paper in the background, and each journal name
+  read the journal file again. Now the window opens in under 1 s.
+  A full BibTeX export takes about 2 s instead of 14 s.
+- A title with a line break previously stopped the whole BibTeX export with
+  "invalid BibTeX syntax". BibTeX reads a run of spaces and line breaks as one
+  space, so the export now accepts the title and keeps its text.
+- The key template previously listed its fields only in a tooltip. Now the
+  window shows every field. A new **{authors}** row sets the author format.
+  **Filename Style** makes keys such as `DoeJA+RoeA_2021A&A...650A.123D`, like
+  the default PDF filenames.
+- Exports previously always wrote every field. Now **Leave out fields** drops
+  the named fields, `abstract` and `adsnote` by default. **Export ADS
+  Library…** uses the same list for its two BibTeX styles.
+
+### Example names
+
+- Examples in the custom citation styles, the template help, and the guides
+  previously used a real name, `Bach, Yoonsoo P.`. Now they use fictional
+  names such as `Doe, John A.`.
+
+### Combined view
+
+- The folder tree previously used the full style indentation for each folding
+  arrow. PDF rows started one step to the right of their folder icon. Now
+  the arrows use half that space, and a PDF row starts under its folder icon.
+  Subfolders keep one step of indentation, so the nesting stays visible.
+- PDF rows previously had no icon. Now they show the system PDF icon next to
+  the folder icons.
+
 ## 0.9.0 (2026-11-04)
 
 ### Large-library speed

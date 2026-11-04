@@ -31,7 +31,7 @@ from PySide6.QtWidgets import (
 from ..config import Config
 from ..pdf.catalog import PdfCatalog
 from ..references import LocalReferences, parse_bibtex
-from .bibtex_export import export_bibtex_asking_keys, save_bibtex_file
+from .bibtex_export import export_bibtex_asking_keys, save_text_file
 
 _REFERENCE_ERRORS = (ValueError, OSError, sqlite3.Error)
 _EDITOR_FIELDS = (
@@ -413,7 +413,7 @@ class ReferencesDialog(QDialog):
             filename = (
                 None
                 if text is None
-                else save_bibtex_file(self, text, "Export selected references")
+                else save_text_file(self, text, "Export selected references")
             )
         except (*_REFERENCE_ERRORS, OSError) as error:
             self.status_label.setText(str(error))

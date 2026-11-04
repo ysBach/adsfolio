@@ -39,7 +39,8 @@ for example `\cite{2024DEMO....1....1R}`.
    It never removes papers from them.
 3. Choose **Tools → Export ADS Library…**, select the library, keep
    **BibTeX**, and choose **Export**. Save the file, for example as
-   `references.bib`.
+   `references.bib`. **Leave out fields** drops `abstract` and `adsnote` by
+   default.
 4. Upload `references.bib` to your Overleaf project, or copy it next to your
    LaTeX file. Use `\bibliography{references}` in the document.
 
@@ -55,8 +56,11 @@ Let ADSfolio identify and rename each PDF that arrives in a folder, for example
 the folder where your browser saves papers.
 
 1. Add the folder with **Add PDF Folder…** or **File → Add Library Root…**.
-2. Right-click the library under **LIBRARIES**.
-3. Choose **Watch Current Library** to start watching now.
+2. When ADSfolio asks, choose **Watch, Identify, and Rename**. This choice
+   starts watching now and at each start. It also processes new PDFs
+   automatically. Then skip the remaining steps.
+3. For a library that you added earlier, right-click it under **LIBRARIES**.
+   Choose **Watch Current Library** to start watching now.
 4. Choose **Automatically Identify & Rename** to process new PDFs without a
    question. Without this choice, a notice offers **Identify & Rename** for
    each new PDF.
@@ -77,14 +81,17 @@ or choose a template without those fields. Then retry the rename.
 If the template requires a bibcode, the watcher can retry enabled ADS after an
 external lookup. ADSfolio must verify any ADS match against the PDF.
 
-ADSfolio also rechecks existing records at startup and every 24 hours while it
-is open. It checks registered libraries even when their watchers are off.
+ADSfolio can also check existing records for ADS updates. At startup and every
+24 hours, it asks first. You can also choose **Tools → Check for ADS Updates**.
+It checks registered libraries even when their watchers are off.
 When ADS provides a verified match or new bibcode, ADSfolio updates the record
 and applies the saved Rename settings. A failed identity check or filename
 collision keeps the affected files in place. Review the reported issue and
 retry. See [Watching library roots](gui.md#watching-library-roots).
 
-A ``●`` beside the library name shows an active watcher. See
+Each library has its own watch settings. ADSfolio does not watch a library
+until you turn watching on for it. A ``●`` beside the library name shows an
+active watcher. The library tooltip shows all three watch settings. See
 [Watching library roots](gui.md#watching-library-roots) for details. For the
 command line, see [Tutorial 4, step 4](cli-tutorials/04-pdf-workflows.md#4-watch-a-folder-for-new-pdfs).
 
@@ -124,7 +131,8 @@ from a script.
 
 The same formats work for any papers in your library, for example a reading
 list or a reference list for a proposal. Select the rows (**⌘**-click or
-**Shift**-click), right-click, and choose **Export Selection As… → Publication list**. ADSfolio
-uses the stored details and needs no ADS token.
+**Shift**-click), right-click, and choose **Export Selection As…**. Then
+choose the **Publication list** format. ADSfolio uses the stored details and
+needs no ADS token.
 
-![Export Selected Papers window with a rendered Markdown preview](_static/tutorial/export-selected.png)
+![Export Papers window with a BibTeX preview of fictional papers](_static/tutorial/export-papers.png)

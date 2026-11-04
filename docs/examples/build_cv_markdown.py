@@ -427,7 +427,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--me-target",
-        default="Bach, Y.",
+        default="Doe, J.",
         help="Author short name used for highlighting in formatted author lists.",
     )
     parser.add_argument(
@@ -442,7 +442,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--me-display",
-        default="Y. P. Bach",
+        default="J. A. Doe",
         help="Display name used for your highlighted author name in talks output.",
     )
     parser.add_argument(

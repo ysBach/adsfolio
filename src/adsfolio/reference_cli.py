@@ -6,12 +6,13 @@ import json
 import sqlite3
 from collections.abc import Iterator
 from contextlib import contextmanager
+from dataclasses import replace
 from pathlib import Path
 from typing import TextIO
 
 import click
 
-from .citekeys import KeyPolicy, KeyStyle
+from .citekeys import KeyStyle
 from .config import Config
 from .pdf.catalog import PdfCatalog
 from .references import CitationKeyError, LocalReferences, parse_bibtex
@@ -268,7 +269,8 @@ def citation_keys(
     policy = Config.load_key_policy()
     if ads_style or other_style or template is not None:
         try:
-            policy = KeyPolicy(
+            policy = replace(
+                policy,
                 ads=KeyStyle(ads_style or policy.ads),
                 other=KeyStyle(other_style or policy.other),
                 template=policy.template if template is None else template,

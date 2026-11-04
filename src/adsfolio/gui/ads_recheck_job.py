@@ -1,38 +1,30 @@
-"""Run one library's automatic identifier recheck outside the GUI thread."""
+"""Run one library's automatic identifier recheck outside the GUI process.
+
+The recheck parses PDFs with Python code. In a thread it competed with the
+window for the Python interpreter lock, and scrolling lagged. A child process
+removes that contention.
+"""
 
 from __future__ import annotations
 
+import json
 import logging
-import os
-from contextlib import ExitStack
-from inspect import signature
+import shutil
+import tempfile
 from pathlib import Path
 from threading import Event
+from types import SimpleNamespace
 from typing import Any
 
-from PySide6.QtCore import QObject, QThread, Signal, Slot
+from PySide6.QtCore import QObject, QProcess, QProcessEnvironment, QThread, Signal, Slot
 
-from ..client import ADSClient
 from ..config import AuthenticationError, Config
-from ..pdf.doi_providers import DoiProvider
 from ..pdf.identify_settings import IdentifySettings
-from ..pdf.registry import open_registry_state
+from ..pdf.recheck_worker import build_request
 from ..pdf.rename_settings import RenameSettings
+from .jobs import cli_argv
 
 logger = logging.getLogger(__name__)
-
-
-def root_is_accessible(root: Path) -> bool:
-    """Return whether a library directory can be read and traversed."""
-    return root.is_dir() and os.access(root, os.R_OK | os.X_OK)
-
-
-def has_external_providers(settings: IdentifySettings) -> bool:
-    """Return whether the settings include a supported non-ADS provider."""
-    return any(
-        provider in settings.providers
-        for provider in (DoiProvider.CROSSREF, DoiProvider.DATACITE)
-    )
 
 
 class _AdsTokenThread(QThread):
@@ -90,93 +82,12 @@ class AdsTokenCheck(QObject):
         self.finished.emit(self._thread.available, self._thread.error)
 
 
-class _AdsRecheckThread(QThread):
-    """Own the catalog and optional ADS client for one library."""
-
-    def __init__(
-        self,
-        root: Path,
-        identify_settings: IdentifySettings,
-        rename_settings: RenameSettings,
-        recursive: bool,
-        parent: QObject,
-        *,
-        ads_enabled: bool = True,
-    ) -> None:
-        super().__init__(parent)
-        self.root = root
-        self.identify_settings = identify_settings
-        self.rename_settings = rename_settings
-        self.recursive = recursive
-        self.ads_enabled = (
-            ads_enabled and DoiProvider.ADS in identify_settings.providers
-        )
-        self.cancel_requested = Event()
-        self.result: Any | None = None
-        self.error: str | None = None
-
-    def run(self) -> None:
-        """Run the backend and release its resources before completion."""
-        try:
-            if self.cancel_requested.is_set() or not root_is_accessible(self.root):
-                return
-            token = None
-            if self.ads_enabled:
-                try:
-                    token = Config.get_token(prompt=False)
-                except AuthenticationError:
-                    pass
-                except Exception as exc:
-                    logger.exception("Could not check the ADS token")
-                    detail = str(exc) or type(exc).__name__
-                    self.error = f"Could not read the ADS token: {detail}"
-            ads_enabled = bool(token)
-            if not ads_enabled and not has_external_providers(self.identify_settings):
-                return
-            if self.cancel_requested.is_set():
-                return
-            if not root_is_accessible(self.root):
-                return
-            from ..pdf.ads_recheck import recheck_existing
-
-            options = {
-                "ads_enabled": ads_enabled,
-                "apply": True,
-                "cancelled": self.cancel_requested.is_set,
-                "identify_settings": self.identify_settings,
-                "recursive": self.recursive,
-            }
-            try:
-                signature(recheck_existing).bind(
-                    None, None, self.rename_settings, **options
-                )
-            except TypeError as exc:
-                raise RuntimeError(
-                    "The ADS recheck backend cannot apply this library's saved scope."
-                ) from exc
-            with ExitStack() as stack:
-                state = open_registry_state(self.root)
-                stack.callback(state.close)
-                if self.cancel_requested.is_set():
-                    return
-                client = ADSClient(token=token) if ads_enabled else None
-                if client is not None:
-                    stack.callback(client.close)
-                if self.cancel_requested.is_set():
-                    return
-                self.result = recheck_existing(
-                    state,
-                    client,
-                    self.rename_settings,
-                    **options,
-                )
-        except Exception as exc:
-            logger.exception("Identifier recheck failed for %s", self.root)
-            self.error = str(exc) or type(exc).__name__
-
-
 class AdsRecheckJob(QObject):
-    """Deliver one recheck result after its worker thread stops."""
+    """Run one library recheck in a child process and deliver its result.
+
+    `finished` carries ``(result, error)``. ``result`` is `None` when the check
+    did not run. Otherwise it has the `RecheckResult` attributes.
+    """
 
     finished = Signal(object, object)
 
@@ -189,30 +100,59 @@ class AdsRecheckJob(QObject):
         parent: QObject | None = None,
         *,
         ads_enabled: bool = True,
+        retry_remembered: bool = False,
     ) -> None:
         super().__init__(parent)
         self.root = root
-        self._thread = _AdsRecheckThread(
+        self._directory = Path(tempfile.mkdtemp(prefix="adsfolio-recheck-"))
+        self.request_path = self._directory / "request.json"
+        self.cancel_path = self._directory / "cancel"
+        self.result_path = self._directory / "result.json"
+        self.request = build_request(
             root,
             identify_settings,
             rename_settings,
             recursive,
-            self,
             ads_enabled=ads_enabled,
+            retry_remembered=retry_remembered,
+            config_dir=Config.get_config_dir(),
+            cancel_path=self.cancel_path,
+            result_path=self.result_path,
         )
-        self._thread.finished.connect(self._complete)
+        self._process: QProcess | None = None
+        self._last_output = ""
         self._started = False
         self._finished = False
 
     def start(self) -> None:
-        """Start the worker once."""
-        if not self._started:
-            self._started = True
-            self._thread.start()
+        """Write the request and start the child process once."""
+        if self._started:
+            return
+        self._started = True
+        self.request_path.write_text(json.dumps(self.request), encoding="utf-8")
+        self._launch(cli_argv("pdf", "recheck-worker", str(self.request_path)))
+
+    def _launch(self, argv: list[str]) -> None:
+        """Start the child process. Tests replace this with an in-process runner."""
+        process = QProcess(self)
+        process.setProcessChannelMode(QProcess.MergedChannels)
+        environment = QProcessEnvironment.systemEnvironment()
+        environment.insert("PYTHONUNBUFFERED", "1")
+        environment.insert("PYTHONIOENCODING", "utf-8")
+        process.setProcessEnvironment(environment)
+        process.readyReadStandardOutput.connect(self._read_output)
+        process.finished.connect(lambda code, _status: self._complete(code))
+        process.errorOccurred.connect(self._process_error)
+        self._process = process
+        process.start(argv[0], argv[1:])
+        process.closeWriteChannel()
 
     def cancel(self) -> None:
-        """Request cancellation at the next backend cancellation check."""
-        self._thread.cancel_requested.set()
+        """Ask the child to stop at its next check. It saves its progress first."""
+        try:
+            self.cancel_path.touch()
+        except OSError:
+            logger.exception("Could not request recheck cancellation")
 
     @property
     def running(self) -> bool:
@@ -220,6 +160,36 @@ class AdsRecheckJob(QObject):
         return self._started and not self._finished
 
     @Slot()
-    def _complete(self) -> None:
+    def _read_output(self) -> None:
+        if self._process is None:
+            return
+        text = bytes(self._process.readAllStandardOutput()).decode(errors="replace")
+        for line in text.splitlines():
+            if line.strip():
+                self._last_output = line
+                logger.info("Recheck worker: %s", line)
+
+    def _process_error(self, error: QProcess.ProcessError) -> None:
+        if error == QProcess.FailedToStart and self._process is not None:
+            self._last_output = self._process.errorString()
+            self._complete(-1)
+
+    def _complete(self, exit_code: int) -> None:
+        """Read the result file, remove temporary files, and report once."""
+        if self._finished:
+            return
+        self._read_output()
         self._finished = True
-        self.finished.emit(self._thread.result, self._thread.error)
+        result: Any = None
+        error: str | None = None
+        try:
+            payload = json.loads(self.result_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            detail = f": {self._last_output}" if self._last_output else ""
+            error = f"The recheck process stopped with exit code {exit_code}{detail}"
+        else:
+            if isinstance(payload.get("result"), dict):
+                result = SimpleNamespace(**payload["result"])
+            error = payload.get("error")
+        shutil.rmtree(self._directory, ignore_errors=True)
+        self.finished.emit(result, error)

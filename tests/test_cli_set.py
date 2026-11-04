@@ -53,7 +53,7 @@ def test_set_command_interactive_saves_token_and_profile(monkeypatch, tmp_path):
         input=(
             "tok-123\n"
             "0000-0002-1825-0097\n"
-            "Bach, Y. P.; Bach, Yoonsoo\n"
+            "Doe, J. A.; Doe, John\n"
             "LIB123;LIB456\n"
             "2010\n"
             "2030\n"
@@ -64,7 +64,7 @@ def test_set_command_interactive_saves_token_and_profile(monkeypatch, tmp_path):
     assert calls["token"] == "tok-123"
     assert calls["setup"] == {
         "orcid": "0000-0002-1825-0097",
-        "query_names": ["Bach, Y. P.", "Bach, Yoonsoo"],
+        "query_names": ["Doe, J. A.", "Doe, John"],
         "debut_year": 2010,
         "retire_year": 2030,
         "library_ids": ["LIB123", "LIB456"],
@@ -109,7 +109,7 @@ def test_set_command_can_reuse_existing_token_and_profile(monkeypatch, tmp_path)
         "adsfolio.cli.commands.Config.get_user_setup",
         lambda: {
             "orcid": "0000-0002-1825-0097",
-            "query_names": ["Bach, Y. P."],
+            "query_names": ["Doe, J. A."],
             "debut_year": 2010,
             "retire_year": 2030,
             "library_ids": ["LIB123"],
@@ -128,7 +128,7 @@ def test_set_command_can_reuse_existing_token_and_profile(monkeypatch, tmp_path)
     assert calls["token"] == "tok-existing-abcdef"
     assert calls["setup"] == {
         "orcid": "0000-0002-1825-0097",
-        "query_names": ["Bach, Y. P."],
+        "query_names": ["Doe, J. A."],
         "debut_year": 2010,
         "retire_year": 2030,
         "library_ids": ["LIB123"],
@@ -172,7 +172,7 @@ def test_set_command_immediately_builds_and_reports_publication_cache(
             "--orcid",
             "0000-0002-1825-0097",
             "--query-name",
-            "Bach, Y. P.",
+            "Doe, J. A.",
             "--debut-year",
             "2010",
             "--end-year",
@@ -245,7 +245,7 @@ def test_set_command_rejects_invalid_year_window():
             "--orcid",
             "0000-0002-1825-0097",
             "--query-name",
-            "Bach, Yoonsoo",
+            "Doe, John",
             "--debut-year",
             "2035",
             "--retire-year",

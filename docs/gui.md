@@ -36,7 +36,7 @@ together, for example `"comet nucleus"`.
 
 ### Search one field
 
-Type a field name, a colon, and the text, for example `author:bach`.
+Type a field name, a colon, and the text, for example `author:doe`.
 
 | Field | Searches |
 |---|---|
@@ -51,7 +51,7 @@ Type a field name, a colon, and the text, for example `author:bach`.
 | `identifier:` | Other identifiers, such as arXiv IDs |
 | `filename:` | Path of the PDF in its library |
 
-Example: `author:"Bockelée-Morvan" year:2026 comet`.
+Example: `author:"Dorémont-Roe" year:2026 comet`.
 
 While you type, a list suggests field names. For example, `f` suggests
 `first_author:` and `filename:`. After `author:`, `first_author:`,
@@ -75,7 +75,7 @@ The Find bar has three toggle buttons. Hover over a button to read its name.
 
 - **Highlight Matches** marks the found text in the table. It is on by default.
 - **Exact Match** matches accents and letter case exactly. By default, search
-  ignores both, so `bockelee` finds `Bockelée`.
+  ignores both, so `doremont` finds `Dorémont`.
 - **Wildcards** reads `%` as any text and `_` as any one character. By
   default, `%` and `_` match only themselves, so `3I_ATLAS` finds only an
   underscore. A wildcard does not cross from one field to another.
@@ -175,7 +175,9 @@ the optional ADS token and publication profile. It also lists the services that
 ADSfolio contacts. Registration discovers PDFs immediately. When the selected
 folder has subfolders, ADSfolio asks **Include Subfolders** or **This Folder
 Only** (the default). When the folder has no subfolders, ADSfolio adds it
-without a question.
+without a question. ADSfolio then asks how to watch the new library:
+**Watch, Identify, and Rename**, **Watch and Notify Only**, or **Do Not Watch**
+(the default). See [Watching library roots](#watching-library-roots).
 
 ### Combine libraries in one view
 
@@ -186,7 +188,8 @@ without a question.
 5. Select one PDF.
 
 Each checked library appears as a collapsible folder group. Its subfolders
-appear as nested groups. The filename tooltip shows its library and full path.
+appear as nested groups. Each PDF shows the system PDF icon and starts under
+its folder icon. The filename tooltip shows its library and full path.
 Search, sorting, and views use the checked libraries. The combined view does
 not move PDFs. Existing watchers keep running.
 
@@ -213,8 +216,12 @@ edit. Refresh the library and try again.
 
 Other editing controls remain unavailable during the recheck. An active job
 can also disable editing. Hover over a disabled control to read its reason.
-Wait for the job or recheck to finish, then retry the action. Start a watcher
-after the active job or recheck finishes.
+The status bar shows the name of the running job, for example
+"Automatic identifier recheck of Papers". A blocked action names the same job.
+Wait for the job or recheck to finish, then retry the action. To stop the job,
+click **Cancel** in the status bar, or choose **Tools → Cancel Current Job**.
+A cancelled recheck keeps the failures that it found before it stopped. Start a
+watcher after the active job or recheck finishes. **Combine libraries** also waits for the active job.
 
 If another process changes a field you edited, the save stops. Reopen the
 dialog and review the current value before you retry.
@@ -311,10 +318,9 @@ The context menu offers these actions:
   **Update and Rename Selected by Identifier…** needs one row, because it asks
   for one identifier.
 - **Add to ADS Library…** adds the selected papers to an ADS library.
-- **Export Selection As…** lets you choose **BibTeX** or **Publication list**
-  for the selected rows. **Export All As…** uses every current PDF in this
-  library, including filtered and unloaded rows. **Copy BibTeX** copies the
-  selection's BibTeX. See [Export BibTeX](local-references.md#export-bibtex).
+- **Export Selection As…** opens [Export Papers](#export-papers) with the
+  selected rows. **Export All As…** opens it with every current PDF in this
+  library. **Copy BibTeX** copies the selection's BibTeX at once.
 
 ![Context menu for three selected papers](_static/tutorial/selection-menu.png)
 
@@ -604,20 +610,71 @@ see [Tutorial 6](cli-tutorials/06-cv-workflows.md). **Save Settings As…** copi
 settings to another file. See the [CV reference](cv.md) for every template
 placeholder.
 
-### Export selected papers
+### Export papers
 
-Select papers in the table, then choose **Export Selection As…** from the
-context menu or the **Tools** menu, then choose **Publication list**.
-The same window opens with the selected papers in the preview. It uses the details stored in this library, so it needs
-no ADS token and makes no network request. The export includes papers without
-a bibcode. Their link uses the DOI when the paper has a stored DOI.
+**Export Papers** writes papers from this library as BibTeX, citation text, or
+a publication list. All settings and a preview are in one window. It uses the
+details stored in the catalog, so it needs no ADS token and makes no network
+request. Papers outside ADS export too, for example papers that Crossref or
+DataCite identified, or details that you entered.
 
-The first export starts from your CV template, or from the Markdown starting
-point, as one list without a header. **Save List** writes the file. The window
-keeps these settings in `cv-selection.yaml`, so they do not change your CV
-settings.
+1. Choose **Tools → Export Selection As…** or **Tools → Export All As…**.
+   You can also right-click selected rows.
+2. Under **Papers**, choose the selected rows, the rows in the current table
+   view, or all PDFs in the library.
+3. Choose a **Format**. The settings below the format change with it.
+4. Check the preview of the first three papers.
+5. Click **Copy** or **Save As…**.
 
-![Export Selected Papers window with a rendered Markdown preview](_static/tutorial/export-selected.png)
+The summary counts ADS papers and other papers. Several PDFs of one paper
+export once. PDFs without paper details cannot export. The window counts
+them, and **Show…** lists them. **Show Needs Identification** closes the
+window and shows the PDFs to identify.
+
+| Format | Settings |
+|---|---|
+| **BibTeX (.bib)** | Citation key style for ADS papers and for other papers, an optional key template, and the fields to leave out. **Keep these key styles as default** saves the key settings for later exports. |
+| **Citation text (custom style)** | One of your [custom citation styles](#custom-citation-styles). Each paper gets one line. |
+| **Publication list** | Your name and the list format, as in the [CV Generator](#cv-generator). The settings stay in `cv-selection.yaml`, so they do not change your CV settings. |
+
+If BibTeX papers need a key that you type, or two papers share a key, ADSfolio
+asks for the keys when you copy or save. The window remembers the last format.
+
+#### Citation keys from a template
+
+Choose **My template** as a key style, then type the template. The window
+lists every field below the template. These fields are the same as for
+[custom citation styles](#custom-citation-styles): `{authors}`,
+`{first_author_surname}`, `{first_author_initials}`, `{year}`, `{bibcode}`,
+`{title}`, `{journal}`, `{bibstem}`, `{pub}`, `{volume}`, and `{page}`.
+
+The **{authors}** row sets how `{authors}` writes the names. It holds the
+name format and the number of authors shown in full. It also holds the number
+kept for a longer list, the text between names, and the text after a
+shortened list.
+
+**Filename Style** makes ADS keys like the default PDF filenames. It sets the
+template to `{authors}_{bibcode}` with surname and initials joined by `+`:
+
+| Authors | Key |
+|---|---|
+| Doe, John A. | `DoeJA_2021A&A...650A.123D` |
+| Doe, John A. and Roe, Alice | `DoeJA+RoeA_2021A&A...650A.123D` |
+| Four authors | `DoeJA+_2021A&A...650A.123D` |
+
+A key cannot hold spaces, commas, braces, parentheses, quotes, `#`, `%`, `~`,
+`\`, or `=`. ADSfolio replaces each of these characters with `_`. For papers
+without a bibcode, choose another style under **Other papers**, because
+`{bibcode}` is empty for them.
+
+#### Leave out fields
+
+Type the BibTeX fields to leave out, separated by commas. The default is
+`abstract, adsnote`. The line below lists the fields that the chosen papers
+hold. Clear the list to export every field. ADSfolio keeps the list for the
+next export.
+
+![Export Papers window with a BibTeX preview of fictional papers](_static/tutorial/export-papers.png)
 
 ## Custom citation styles
 
@@ -678,8 +735,8 @@ conversions, attribute/item access, unknown fields, and unmatched braces.
 | ``{bibcode}`` | ADS Bibcode, unchanged. |
 | ``{year}`` | Publication year. |
 | ``{title}`` | The first title value, with ADS HTML display markup converted to plain text. |
-| ``{first_author_surname}`` | Surname of the first author only. For ``Bach, Yoonsoo P.`` this is ``Bach``. |
-| ``{first_author_initials}`` | First-author surname followed by given-name initials. For ``Bach, Yoonsoo P.`` this is ``BachYP``. |
+| ``{first_author_surname}`` | Surname of the first author only. For ``Doe, John A.`` this is ``Doe``. |
+| ``{first_author_initials}`` | First-author surname followed by given-name initials. For ``Doe, John A.`` this is ``DoeJA``. |
 | ``{authors}`` | The author list in the selected author format and separator. If the total exceeds **Max authors**, retain **Authors when truncated** leading authors and append the configured truncation suffix. |
 | ``{authors_without_suffix}`` | The same rendered author list, but without the truncation suffix. |
 | ``{journal}`` | The first ADS bibstem, falling back to ``pub`` only when bibstem is absent. |
@@ -694,7 +751,7 @@ punctuation, and Unicode. It does not append a ``.pdf`` extension. For example:
 
 ```text
 {first_author_initials} ({year}) {bibstem}, {volume}, {page}
-→ BachYP (2024) A&A, 123, 456
+→ DoeJA (2024) A&A, 123, 456
 ```
 
 Empty names, templates, and IDs, invalid author settings, duplicate names/IDs,
@@ -705,8 +762,8 @@ field.
 The author controls apply only when the template uses ``{authors}`` or
 ``{authors_without_suffix}``:
 
-- **Author format**: **Surname + initials** (for example ``BachYP``),
-  **Surname only** (``Bach``), or **Last, First** (``Bach, Yoonsoo P.``).
+- **Author format**: **Surname + initials** (for example ``DoeJA``),
+  **Surname only** (``Doe``), or **Last, First** (``Doe, John A.``).
 - **Max authors**: the threshold. ADSfolio does not truncate a list at or below
   that count.
 - **Authors when truncated**: how many leading authors remain above the threshold.
@@ -1100,6 +1157,10 @@ This works without adding a local PDF folder and includes libraries where you
 have read permission. It exports the entire selected remote library,
 independent of local table selections.
 
+**Leave out fields** removes BibTeX fields from every entry, for example
+`abstract, adsnote, adsurl, keywords`. The default is `abstract, adsnote`.
+It changes only the two BibTeX styles. Export Papers uses the same list.
+
 BibTeX (`.bib`) is the default. Other choices are BibTeX with abstracts, RIS
 (`.ris`), EndNote, AASTeX, MNRAS, Icarus, Solar Physics, ADS tagged, ProCite,
 RefWorks, and MEDLARS. Journal bibliography styles use `.tex`. The remaining
@@ -1232,9 +1293,13 @@ desktop app includes it.
 
 ## Watching library roots
 
-ADSfolio rechecks existing catalog records at startup and every 24 hours while
-it remains open. This check includes libraries without an active watcher. It
-uses each library's Identify scope and enabled providers. Crossref and DataCite
+At startup, and every 24 hours while it stays open, ADSfolio asks whether to
+check your libraries for ADS updates. Choose **Check Now** to start, or **Not
+Now** to skip. To start the check at any time, choose **Tools → Check for ADS
+Updates**. The check never starts by itself. It includes libraries without an
+active watcher. It uses each library's Identify scope and enabled providers.
+When ADS returns the stored bibcode of an identified PDF, the check keeps the
+stored record and does not open the PDF. Crossref and DataCite
 can verify a PDF's DOI without an ADS token. ADS lookups need an ADS token.
 
 When ADS supplies a verified new match or changes a bibcode, ADSfolio updates
@@ -1248,12 +1313,35 @@ one excluded PDF, select it and choose **Identify Selected PDFs**.
 
 ADSfolio keeps the files if a match is ambiguous, an identity check fails, or
 the destination already exists. The job log names updated and renamed files.
-Review reported failures, then retry identification or rename.
+For each library, the log also shows a start line and a summary line. The
+summary counts checked, skipped, updated, renamed, and failed PDFs, and gives
+the time. Review reported failures, then retry identification or rename.
+
+The check remembers two kinds of failures for each library:
+
+* The PDF fails the identity check against its ADS record.
+* An unidentified PDF has no DOI in its metadata.
+
+Later checks skip such a PDF and do not report it again. The check reads the
+PDF again when its contents change. An identity check also runs again when
+the ADS identifiers or title, the saved identifiers, or the filename bibcode
+change. A remembered failure skips Crossref and DataCite lookups too, so a
+change in their records does not start a new check.
+
+To check skipped PDFs again, choose **Tools → Recheck PDFs That Need Review…**.
+The dialog shows the count for each library and asks before it starts. This
+check also adds a missing identity proof to identified PDFs whose bibcode did
+not change, so it reads more PDFs than the normal check. After an
+ADSfolio update, the first check asks once whether to recheck the PDFs that
+failed the identity check in an earlier version. Choose **Yes** to check them
+now, or **No** to keep skipping them. While ADSfolio checks a library, its
+watcher pauses and new PDFs in that library wait.
 If separate attachments in different libraries share one catalog record, the
 check leaves them unchanged and reports the issue for review.
 
 Each registered root has three independent controls in the **Tools** menu and
-its sidebar context menu:
+its sidebar context menu. Hover over a library in the sidebar to see its
+current values:
 
 * **Watch Current Library** starts or stops a watcher for the current session.
   Starting creates a fresh baseline. The watcher also checks changed cataloged

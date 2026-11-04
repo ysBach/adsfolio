@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 from collections.abc import Mapping, Sequence
+from dataclasses import replace
 from typing import Any
 
 from PySide6.QtCore import QIODevice, QSaveFile, Qt
@@ -144,7 +145,7 @@ _EXAMPLE_PAPERS: tuple[Mapping[str, Any], ...] = (
     },
 )
 
-_STYLE_HELP = {
+STYLE_HELP = {
     KeyStyle.BIBCODE: "The ADS bibcode, for example 2020ApJ...900....1K.",
     KeyStyle.DOI: "The DOI, for example 10.5555/example.2021.",
     KeyStyle.TEMPLATE: "Your template below, for example {first_author_initials}{year}.",
@@ -154,6 +155,25 @@ _STYLE_HELP = {
     ),
     KeyStyle.MANUAL: "You type a key for each paper when you export it.",
 }
+
+
+def key_style_combo(
+    parent: QWidget, current: KeyStyle, *, include_bibcode: bool
+) -> QComboBox:
+    """Return a key-style list with a tooltip for each style.
+
+    `include_bibcode` offers the bibcode style, which only ADS papers have.
+    """
+    combo = QComboBox(parent)
+    for style in KeyStyle:
+        if style is KeyStyle.BIBCODE and not include_bibcode:
+            continue
+        combo.addItem(style.label, style)
+        combo.setItemData(
+            combo.count() - 1, STYLE_HELP[style], Qt.ItemDataRole.ToolTipRole
+        )
+    combo.setCurrentIndex(max(0, combo.findData(current)))
+    return combo
 
 
 class CitationKeySettingsDialog(QDialog):
@@ -180,6 +200,7 @@ class CitationKeySettingsDialog(QDialog):
     ) -> None:
         super().__init__(parent)
         self.setWindowTitle("Citation Keys")
+        self._policy = policy
         self._samples = list(samples) or list(_EXAMPLE_PAPERS)
         layout = QVBoxLayout(self)
         intro = QLabel(
@@ -190,9 +211,9 @@ class CitationKeySettingsDialog(QDialog):
         intro.setWordWrap(True)
         layout.addWidget(intro)
         form = QFormLayout()
-        self.ads_style = self._style_combo(policy.ads, include_bibcode=True)
+        self.ads_style = key_style_combo(self, policy.ads, include_bibcode=True)
         self.ads_style.setToolTip("Key style for papers with an ADS bibcode")
-        self.other_style = self._style_combo(policy.other, include_bibcode=False)
+        self.other_style = key_style_combo(self, policy.other, include_bibcode=False)
         self.other_style.setToolTip(
             "Key style for papers without an ADS bibcode, such as papers that "
             "ADSfolio found through Crossref or DataCite"
@@ -227,18 +248,6 @@ class CitationKeySettingsDialog(QDialog):
         self.setMinimumWidth(560)
         self._update()
 
-    def _style_combo(self, current: KeyStyle, *, include_bibcode: bool) -> QComboBox:
-        combo = QComboBox(self)
-        for style in KeyStyle:
-            if style is KeyStyle.BIBCODE and not include_bibcode:
-                continue
-            combo.addItem(style.label, style)
-            combo.setItemData(
-                combo.count() - 1, _STYLE_HELP[style], Qt.ItemDataRole.ToolTipRole
-            )
-        combo.setCurrentIndex(max(0, combo.findData(current)))
-        return combo
-
     def policy(self) -> KeyPolicy:
         """Return the chosen styles.
 
@@ -247,7 +256,9 @@ class CitationKeySettingsDialog(QDialog):
         ValueError
             If the template is not valid.
         """
-        return KeyPolicy(
+        # Author settings for {authors} come from Export Papers; keep them.
+        return replace(
+            self._policy,
             ads=self.ads_style.currentData(),
             other=self.other_style.currentData(),
             template=self.template.text().strip(),
@@ -261,9 +272,9 @@ class CitationKeySettingsDialog(QDialog):
         self.template.setEnabled(uses_template)
         self.help_label.setText(
             "ADS papers: "
-            + _STYLE_HELP[self.ads_style.currentData()]
+            + STYLE_HELP[self.ads_style.currentData()]
             + "\nPapers outside ADS: "
-            + _STYLE_HELP[self.other_style.currentData()]
+            + STYLE_HELP[self.other_style.currentData()]
         )
         save = self.buttons.button(QDialogButtonBox.StandardButton.Save)
         try:
@@ -302,8 +313,11 @@ def export_bibtex_asking_keys(
     parent: QWidget | None,
     service: LocalReferences,
     document_ids: Sequence[int],
+    exclude_fields: Sequence[str] = (),
 ) -> str | None:
     """Return BibTeX for `document_ids`, asking for keys when needed.
+
+    `exclude_fields` names fields to leave out of every entry.
 
     Returns
     -------
@@ -317,7 +331,7 @@ def export_bibtex_asking_keys(
     """
     while True:
         try:
-            return service.export_bibtex(document_ids)
+            return service.export_bibtex(document_ids, exclude_fields=exclude_fields)
         except CitationKeyError as error:
             dialog = CitationKeyDialog(parent, error)
             if dialog.exec() != QDialog.DialogCode.Accepted:
@@ -336,8 +350,14 @@ def _save_keys(
             return
 
 
-def save_bibtex_file(parent: QWidget | None, text: str, title: str) -> str | None:
-    """Ask for a `.bib` path and write `text` atomically.
+def save_text_file(
+    parent: QWidget | None,
+    text: str,
+    title: str,
+    default_name: str = "references.bib",
+    file_filter: str = "BibTeX (*.bib)",
+) -> str | None:
+    """Ask for a path and write `text` as UTF-8 atomically.
 
     Returns
     -------
@@ -349,9 +369,7 @@ def save_bibtex_file(parent: QWidget | None, text: str, title: str) -> str | Non
     OSError
         When the file cannot be written. An existing file stays unchanged.
     """
-    filename, _ = QFileDialog.getSaveFileName(
-        parent, title, "references.bib", "BibTeX (*.bib)"
-    )
+    filename, _ = QFileDialog.getSaveFileName(parent, title, default_name, file_filter)
     if not filename:
         return None
     output = QSaveFile(filename)

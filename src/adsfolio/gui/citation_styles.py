@@ -60,7 +60,7 @@ BUILTIN_PREVIEW_RECORD: dict[str, Any] = {
         "bibcode": "2024A&A...123..456B",
         "year": "2024",
         "title": ["Dust <SUP>2</SUP> dynamics in protoplanetary disks"],
-        "author": ["Bach, Yoonsoo P.", "Doe, Alice", "Roe, Bob"],
+        "author": ["Doe, John A.", "Smith, Alice", "Roe, Bob"],
         "bibstem": ["A&A"],
         "pub": "Astronomy &amp; Astrophysics",
         "volume": "123",
@@ -209,11 +209,11 @@ class CitationStylesDialog(QDialog):
 
         self.author_format_combo = QComboBox(self)
         self.author_format_combo.addItem(
-            "Surname + initials (e.g. BachYP)", "surname_initials"
+            "Surname + initials (e.g. DoeJA)", "surname_initials"
         )
-        self.author_format_combo.addItem("Surname only (e.g. Bach)", "surname")
+        self.author_format_combo.addItem("Surname only (e.g. Doe)", "surname")
         self.author_format_combo.addItem(
-            "Last, First (e.g. Bach, Yoonsoo P.)", "last_comma_first"
+            "Last, First (e.g. Doe, John A.)", "last_comma_first"
         )
         form_layout.addRow("Author format:", self.author_format_combo)
 

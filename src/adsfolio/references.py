@@ -11,7 +11,7 @@ import hashlib
 import heapq
 import io
 import re
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -32,16 +32,22 @@ from .pdf.catalog import (
 )
 
 
-def _parse_database(text: str) -> BibDatabase:
-    """Reject malformed declarations instead of accepting them as comments."""
-    grammar = BibtexExpression()
-    grammar.implicit_comment.add_condition(
-        lambda tokens: not re.search(r"@[A-Za-z]+\s*[{(]", tokens[0]),
-        message="Malformed BibTeX declaration",
-        fatal=True,
-    )
+def _parse_database(text: str, *, strict: bool = True) -> BibDatabase:
+    """Reject malformed declarations instead of accepting them as comments.
+
+    With `strict` false, the separate declaration check is skipped. Use it
+    only for text that this module wrote, where a comparison of the parsed
+    entries detects any entry that the parser did not read back.
+    """
     try:
-        grammar.parse_file(io.StringIO(text))
+        if strict:
+            grammar = BibtexExpression()
+            grammar.implicit_comment.add_condition(
+                lambda tokens: not re.search(r"@[A-Za-z]+\s*[{(]", tokens[0]),
+                message="Malformed BibTeX declaration",
+                fatal=True,
+            )
+            grammar.parse_file(io.StringIO(text))
         database = BibTexParser(ignore_nonstandard_types=False).parse(text)
         database.preambles = [as_text(value) for value in database.preambles]
         return database
@@ -49,10 +55,71 @@ def _parse_database(text: str) -> BibDatabase:
         raise ValueError(f"Invalid BibTeX: {exc}") from exc
 
 
+def _check_round_trip(
+    entries: Sequence[Mapping[str, Any]], references: Sequence[Mapping[str, Any]]
+) -> None:
+    """Check the BibTeX round trip of all entries with one write and one parse.
+
+    Parsing every entry alone repeats the grammar setup for each entry. When
+    the combined check finds a difference, each reference is checked alone,
+    so the error names the paper and fields as `_validated_entry` does.
+    """
+    if not entries:
+        return
+    database = BibDatabase()
+    database.entries = [dict(entry) for entry in entries]
+    writer = BibTexWriter()
+    writer.order_entries_by = None
+    try:
+        parsed = _parse_database(writer.write(database), strict=False)
+
+        def by_key(items: Sequence[Mapping[str, Any]]) -> list[Mapping[str, Any]]:
+            return sorted(items, key=lambda item: str(item.get("ID")))
+
+        if _same_bibtex_entries(by_key(parsed.entries), by_key(database.entries)):
+            return
+    except ValueError:
+        pass
+    # The check of each entry alone decides, as it did before the combined check.
+    for reference in references:
+        _validated_entry(
+            reference["cite_key"], reference["entry_type"], reference["fields"]
+        )
+
+
+def _same_bibtex_entries(
+    parsed: Sequence[Mapping[str, Any]], expected: Sequence[Mapping[str, Any]]
+) -> bool:
+    """Compare entries as BibTeX reads them.
+
+    BibTeX treats a run of spaces, tabs, and line breaks inside a field value
+    as one space, and the parser collapses such runs. Values that differ only
+    in this way are the same value.
+    """
+
+    def normalized(entry: Mapping[str, Any]) -> dict[str, Any]:
+        return {
+            key: re.sub(r"\s+", " ", value).strip() if isinstance(value, str) else value
+            for key, value in entry.items()
+        }
+
+    return [normalized(entry) for entry in parsed] == [
+        normalized(entry) for entry in expected
+    ]
+
+
 def _validated_entry(
-    cite_key: str, entry_type: str, fields: Mapping[str, str]
+    cite_key: str,
+    entry_type: str,
+    fields: Mapping[str, str],
+    *,
+    round_trip: bool = True,
 ) -> dict[str, Any]:
-    """Validate editable values by checking a semantic BibTeX round trip."""
+    """Validate editable values by checking a semantic BibTeX round trip.
+
+    With `round_trip` false, only the key, type, and field names are checked.
+    The caller then checks the round trip of many entries at once.
+    """
     if not cite_key or re.search(r"[\s,{}()=\\#%\"]", cite_key):
         raise ValueError(
             "Citation key must be nonempty and contain no BibTeX delimiters"
@@ -70,12 +137,12 @@ def _validated_entry(
             raise ValueError(f"BibTeX field {name} must be text")  # noqa: TRY004 -- user-input API
         clean[normalized] = value
     entry = {"ID": cite_key, "ENTRYTYPE": entry_type.lower(), **clean}
-    if clean:
+    if clean and round_trip:
         database = BibDatabase()
         database.entries = [entry]
         try:
             parsed = _parse_database(BibTexWriter().write(database))
-            if parsed.entries != [entry]:
+            if not _same_bibtex_entries(parsed.entries, [entry]):
                 raise ValueError("BibTeX changes field values during validation")
         except ValueError as exc:
             invalid_fields = []
@@ -88,7 +155,7 @@ def _validated_entry(
                 database.entries = [single_entry]
                 try:
                     parsed = _parse_database(BibTexWriter().write(database))
-                    if parsed.entries != [single_entry]:
+                    if not _same_bibtex_entries(parsed.entries, [single_entry]):
                         invalid_fields.append(name)
                 except ValueError:
                     invalid_fields.append(name)
@@ -298,6 +365,26 @@ class LocalReferences:
     def __init__(self, catalog: PdfCatalog, policy: KeyPolicy | None = None) -> None:
         self.catalog = catalog
         self.policy = policy or KeyPolicy()
+        self._export_memo: tuple[Any, list[dict[str, Any]]] | None = None
+
+    def _export_references(self) -> list[dict[str, Any]]:
+        """Return every reference without PDF locations, for BibTeX export.
+
+        The list is kept until the catalog changes or the key policy changes,
+        so repeated previews read the catalog once. Do not change it.
+        """
+        token = getattr(self.catalog, "change_token", None)
+        key = (token(), self.policy) if callable(token) else None
+        if key is not None and self._export_memo is not None:
+            if self._export_memo[0] == key:
+                return self._export_memo[1]
+        references = [
+            _reference_from_document(document, self.policy)
+            for document in self.catalog.list_documents()
+        ]
+        if key is not None:
+            self._export_memo = (key, references)
+        return references
 
     def list(self) -> list[dict[str, Any]]:
         """Return references and their known PDF locations, including missing files."""
@@ -433,14 +520,19 @@ class LocalReferences:
             _validated_entry(key, "misc", {})
         self.catalog.set_document_cite_key(document_id, key)
 
-    def export_bibtex(self, document_ids: Sequence[int]) -> str:
+    def export_bibtex(
+        self, document_ids: Sequence[int], *, exclude_fields: Collection[str] = ()
+    ) -> str:
         """Export selected records offline, including required crossref parents.
+
+        `exclude_fields` names fields to leave out of every entry, ignoring
+        letter case, for example ``("abstract",)``.
 
         Unknown IDs, empty drafts, absent parents, and cycles fail before any
         text is returned. Imports retain original text; output preserves field
         semantics, not original whitespace or macro spelling.
         """
-        references = self.list()
+        references = self._export_references()
         by_id = {item["id"]: item for item in references}
         by_key: dict[str, list[dict[str, Any]]] = {}
         for item in references:
@@ -486,6 +578,8 @@ class LocalReferences:
         ready = [index for index, count in enumerate(pending_children) if count == 0]
         heapq.heapify(ready)
         database = BibDatabase()
+        excluded = {name.lower() for name in exclude_fields}
+        validated: list[dict[str, Any]] = []
         # Stable topological ordering keeps unrelated selections in input order.
         while ready:
             reference = ordered[heapq.heappop(ready)]
@@ -495,13 +589,22 @@ class LocalReferences:
                 pending_children[parent_index] -= 1
                 if pending_children[parent_index] == 0:
                     heapq.heappush(ready, parent_index)
-            if not reference["fields"]:
+            fields = {
+                name: value
+                for name, value in reference["fields"].items()
+                if name.lower() not in excluded
+            }
+            if not fields:
                 raise ValueError(
                     f"Reference {reference['cite_key']} has no bibliography fields; edit it before export"
                 )
             entry = _validated_entry(
-                reference["cite_key"], reference["entry_type"], reference["fields"]
+                reference["cite_key"],
+                reference["entry_type"],
+                fields,
+                round_trip=False,
             )
+            validated.append({**reference, "fields": fields})
             database.entries.append(
                 {
                     "ID": entry["cite_key"],
@@ -512,6 +615,7 @@ class LocalReferences:
             for preamble in reference.get("preambles", []):
                 if preamble not in database.preambles:
                     database.preambles.append(preamble)
+        _check_round_trip(database.entries, validated)
         writer = BibTexWriter()
         writer.order_entries_by = None
         return writer.write(database)

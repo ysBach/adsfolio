@@ -71,14 +71,14 @@ def test_columns_render_full_record():
         "source": "published",
         "metadata": {
             "title": ["A title"],
-            "author": ["Bach, Y.", "Doe, J."],
+            "author": ["Doe, J.", "Doe, J."],
             "bibstem": ["A&A"],
             "doi": ["10.48550/arXiv.2606.12345v2"],
         },
     }
     values = {column.key: column.getter(record) for column in COLUMNS}
     assert values["title"] == "A title"
-    assert values["author"] == "Bach, Y."
+    assert values["author"] == "Doe, J."
     assert values["year"] == "2024"
     assert values["pub"] == "A&A"
     assert values["arxiv"] == "2606.12345v2"
@@ -246,7 +246,7 @@ def test_saved_counts_show_zero_but_leave_missing_values_empty() -> None:
 def _local_metadata() -> dict:
     return {
         "title": ["Notes"],
-        "author": ["Bach, Y."],
+        "author": ["Doe, J."],
         "year": "2024",
         "_adsfolio_locked_fields": ["title"],
     }

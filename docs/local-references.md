@@ -71,8 +71,9 @@ decides which service receives a DOI. These are separate settings.
 
 1. In the main table, select one or more PDFs. ADS papers and other papers can
    be in the same selection.
-2. Right-click, then choose **Copy BibTeX** or **Export Selection As… → BibTeX**. You can also
-   use **Tools → Export Selection As…** and choose **BibTeX**.
+2. Right-click, then choose **Copy BibTeX**. For key choices and a preview,
+   choose **Export Selection As…**, then choose the **BibTeX** format. See
+   [Export papers](gui.md#export-papers).
 
 ### Choose the citation keys
 

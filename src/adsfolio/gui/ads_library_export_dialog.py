@@ -15,12 +15,14 @@ from PySide6.QtWidgets import (
     QFormLayout,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QPushButton,
     QVBoxLayout,
     QWidget,
 )
 
 from ..api.export import ExportAPI
+from ..bibtex.sanitize import DEFAULT_EXCLUDED_FIELDS, remove_fields
 from ..library_sync import LibraryDestination, LibraryExportResult
 from .ads_library_jobs import (
     AdsLibraryFailure,
@@ -80,9 +82,11 @@ class ExportAdsLibraryDialog(QDialog):
         parent: QWidget | None = None,
         *,
         job_factory: Callable[..., AdsLibraryJob] = AdsLibraryJob,
+        exclude_fields: Sequence[str] = DEFAULT_EXCLUDED_FIELDS,
     ) -> None:
         super().__init__(parent)
         self._job_factory = job_factory
+        self._initial_exclude = list(exclude_fields)
         self._destinations: list[LibraryDestination] = []
         self._active_job: AdsLibraryJob | None = None
         self._active_request: AdsLibraryRequest | None = None
@@ -108,6 +112,13 @@ class ExportAdsLibraryDialog(QDialog):
 
         self.format_combo = QComboBox(self)
         form.addRow("Bibliography style", self.format_combo)
+        self.exclude_fields = QLineEdit(", ".join(self._initial_exclude), self)
+        self.exclude_fields.setToolTip(
+            "BibTeX fields to leave out of every entry, separated by commas, "
+            "for example abstract, adsnote, adsurl, keywords. Clear it to keep "
+            "every field. Other styles are not changed."
+        )
+        form.addRow("Leave out fields", self.exclude_fields)
         layout.addLayout(form)
 
         self.status_label = QLabel(self)
@@ -127,6 +138,15 @@ class ExportAdsLibraryDialog(QDialog):
         buttons.addWidget(self.close_button)
         buttons.addWidget(self.export_button)
         layout.addLayout(buttons)
+
+    @property
+    def excluded_fields(self) -> list[str]:
+        """Return the BibTeX field names to leave out, in lowercase."""
+        return [
+            name.strip().lower()
+            for name in self.exclude_fields.text().split(",")
+            if name.strip()
+        ]
 
     def _connect_ui(self) -> None:
         self.library_combo.currentIndexChanged.connect(self._selection_changed)
@@ -341,7 +361,10 @@ class ExportAdsLibraryDialog(QDialog):
             self.status_label.setText("Export cancelled; no file was written.")
             return
         path = Path(selected[0]).expanduser()
-        payload = result.text.encode("utf-8")
+        text = result.text
+        if format_key in {"bibtex", "bibtexabs"}:
+            text = remove_fields(text, self.excluded_fields)
+        payload = text.encode("utf-8")
         save_file = QSaveFile(str(path))
         if not save_file.open(QIODevice.OpenModeFlag.WriteOnly):
             self._set_error(

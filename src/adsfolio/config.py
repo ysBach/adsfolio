@@ -99,6 +99,8 @@ class Config:
     API_BASE = "https://api.adsabs.harvard.edu/v1"
     ENV_VAR = "ADS_API_TOKEN"
     SETUP_FILENAME = "setup.json"
+    # A recheck worker process sets this to the app's configuration directory.
+    config_dir_override: ClassVar[Path | None] = None
     SETUP_SCHEMA_VERSION = 2
     _PROFILE_FLAT_KEYS: ClassVar[set[str]] = {
         "orcid",
@@ -147,6 +149,8 @@ class Config:
     @classmethod
     def get_config_dir(cls) -> Path:
         """Get platform-appropriate config directory."""
+        if cls.config_dir_override is not None:
+            return cls.config_dir_override
         destination = Path(platformdirs.user_config_dir("adsfolio", appauthor=False))
         source = Path(platformdirs.user_config_dir("ads", appauthor=False))
         copy_data_directory(source, destination)

@@ -151,3 +151,31 @@ def test_invalid_saved_policy_falls_back_to_defaults(monkeypatch, tmp_path):
         json.dumps({"citation_keys": {"other": "bibcode"}}), encoding="utf-8"
     )
     assert Config.load_key_policy() == KeyPolicy()
+
+
+@pytest.mark.parametrize(
+    ("authors", "key"),
+    [
+        (["Doe, John A."], "DoeJA_2021A&A...650A.123D"),
+        (["Doe, John A.", "Roe, Alice"], "DoeJA+RoeA_2021A&A...650A.123D"),
+        (
+            ["Doe, John A.", "Roe, Alice", "Lee, Kim", "Kim, Sun"],
+            "DoeJA+_2021A&A...650A.123D",
+        ),
+    ],
+)
+def test_template_keys_can_follow_the_default_filename_pattern(authors, key):
+    policy = KeyPolicy(ads=KeyStyle.TEMPLATE, template="{authors}_{bibcode}")
+    record = {"bibcode": "2021A&A...650A.123D", "author": authors}
+    assert citation_key(record, policy) == key
+
+
+def test_saved_author_settings_round_trip_and_old_settings_use_defaults():
+    policy = KeyPolicy(
+        ads=KeyStyle.TEMPLATE,
+        template="{authors}{year}",
+        max_authors=2,
+        author_separator="-",
+    )
+    assert KeyPolicy.from_mapping(policy.to_mapping()) == policy
+    assert KeyPolicy.from_mapping({"ads": "bibcode", "other": "doi"}) == KeyPolicy()

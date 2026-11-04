@@ -17,6 +17,7 @@ from PySide6.QtCore import (
     QPointF,
     QSize,
     Qt,
+    QTimerEvent,
     Signal,
 )
 from PySide6.QtGui import (
@@ -24,12 +25,15 @@ from PySide6.QtGui import (
     QFont,
     QFontMetrics,
     QInputDevice,
+    QKeyEvent,
+    QMouseEvent,
     QPainter,
     QPalette,
     QPolygonF,
     QWheelEvent,
 )
 from PySide6.QtWidgets import (
+    QAbstractItemView,
     QApplication,
     QStyle,
     QStyledItemDelegate,
@@ -102,6 +106,8 @@ class LibraryTableView(QTreeView):
     def __init__(self, parent: Any = None) -> None:
         super().__init__(parent)
         self._shift_wheel_remainder = 0
+        # True while a click or key press handles a row change.
+        self._user_row_change = False
         for widget in (
             self.header().viewport(),
             self.horizontalScrollBar(),
@@ -202,6 +208,53 @@ class LibraryTableView(QTreeView):
         if scrollbar.value() != before + step or event.phase() == Qt.ScrollEnd:
             self._shift_wheel_remainder = 0
         event.accept()
+
+    def mousePressEvent(self, event: QMouseEvent) -> None:  # noqa: N802
+        """Select the clicked row without scrolling sideways."""
+        self._user_row_change = True
+        try:
+            super().mousePressEvent(event)
+        finally:
+            self._user_row_change = False
+
+    def keyPressEvent(self, event: QKeyEvent) -> None:  # noqa: N802
+        """Move between rows without scrolling sideways."""
+        self._user_row_change = True
+        try:
+            super().keyPressEvent(event)
+        finally:
+            self._user_row_change = False
+
+    def timerEvent(self, event: QTimerEvent) -> None:  # noqa: N802
+        """Keep the horizontal position when Qt's delayed click scroll runs.
+
+        After a mouse press, Qt waits for the double-click interval plus 100 ms
+        and then scrolls to the clicked cell from this timer.
+        """
+        self._user_row_change = True
+        try:
+            super().timerEvent(event)
+        finally:
+            self._user_row_change = False
+
+    def scrollTo(  # noqa: N802 - Qt override
+        self,
+        index: QModelIndex,
+        hint: QAbstractItemView.ScrollHint = QAbstractItemView.EnsureVisible,
+    ) -> None:
+        """Scroll to an index, and keep the horizontal position for user row moves.
+
+        The view selects whole rows. After a click or key press, Qt's default
+        also scrolls sideways to show the current cell, so a click on a partly
+        hidden column moved the table. A direct call still scrolls to the column.
+        """
+        if not self._user_row_change:
+            super().scrollTo(index, hint)
+            return
+        scrollbar = self.horizontalScrollBar()
+        horizontal = scrollbar.value()
+        super().scrollTo(index, hint)
+        scrollbar.setValue(horizontal)
 
 
 # Search fields that each table column displays. A field term highlights
@@ -321,6 +374,26 @@ class RowHeightDelegate(QStyledItemDelegate):
         super().__init__(parent)
         self._row_height: int | None = None
         self.highlight: SearchHighlight | None = None
+
+    def initStyleOption(self, option: QStyleOptionViewItem, index: QModelIndex) -> None:
+        """Move a file row in a folder tree left, under its folder icon.
+
+        A file row has no folding arrow, so its own indentation step is empty.
+        The cell content starts there instead, so the file icon lines up with
+        the folder icon above it. Folder rows keep their indentation.
+        """
+        super().initStyleOption(option, index)
+        view = option.widget
+        model = index.model()
+        if (
+            isinstance(view, QTreeView)
+            and view.rootIsDecorated()
+            and index.column() == view.treePosition()
+            and index.parent().isValid()
+            and getattr(model, "node_kind", None) is not None
+            and model.node_kind(index) == "file"
+        ):
+            option.rect = option.rect.adjusted(-view.indentation(), 0, 0, 0)
 
     def _text_spans(self, index: QModelIndex, text: str) -> list[tuple[int, int]]:
         """Return highlight spans for the displayed text of `index`."""
@@ -646,6 +719,11 @@ class FileTableModel(QAbstractTableModel):
     def total(self) -> int:
         """Return the total number of rows matching the current query."""
         return self._total
+
+    @property
+    def records(self) -> tuple[dict[str, Any], ...]:
+        """Return every record of the current query, loaded or not, in order."""
+        return tuple(self._snapshot)
 
     @property
     def columns(self) -> tuple[Column, ...]:

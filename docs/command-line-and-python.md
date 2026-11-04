@@ -161,6 +161,9 @@ or bibcode updates metadata and uses the saved Rename settings with `--apply`.
 Without `--apply`, it previews those changes. A failed identity check or
 filename collision keeps the files in place. Resolve the reported issue and
 retry.
+The recheck does not open a PDF when ADS returns its stored bibcode. With
+`--apply`, it remembers failed identity checks for each library. It skips
+those PDFs until the PDF, its saved identifiers, or the ADS record changes.
 If the template requires missing metadata, Watch keeps the filename and reports
 the missing fields. Add the metadata or choose another template before retrying.
 Upgrade and Obsidian commands preview their work by default.

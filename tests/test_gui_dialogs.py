@@ -45,7 +45,7 @@ def test_manual_metadata_dialog_saves_only_changed_fields(application) -> None:
         Path("/papers/paper.pdf"), original, save_metadata=saved.append
     )
     dialog.fields["title"].setText("Manual title")
-    dialog.fields["author"].setPlainText(" Bach, Yoonsoo \n\n Another, Author ")
+    dialog.fields["author"].setPlainText(" Doe, John \n\n Another, Author ")
     dialog.fields["doi"].setPlainText("10.1234/one\n10.1234/two")
 
     dialog.buttons.button(QDialogButtonBox.Save).click()
@@ -54,7 +54,7 @@ def test_manual_metadata_dialog_saves_only_changed_fields(application) -> None:
     assert saved == [
         {
             "title": ["Manual title"],
-            "author": ["Bach, Yoonsoo", "Another, Author"],
+            "author": ["Doe, John", "Another, Author"],
             "author_count": 2,
             "doi": ["10.1234/one", "10.1234/two"],
         }
@@ -307,14 +307,14 @@ def test_user_profile_dialog_loads_normalizes_and_saves_profile(application):
     dialog = UserProfileDialog(
         UserProfile(
             orcid="https://orcid.org/0000-0002-1694-233x",
-            author_names=("Bach, Y. P.",),
+            author_names=("Doe, J. A.",),
             first_publication_year=2010,
             last_publication_year=2030,
             ads_library_ids=("LIB1",),
         ),
         save_profile=calls.append,
     )
-    dialog.author_names.setPlainText(" Bach, Y. P. \n\nBach, Yoonsoo\nBach, Y. P.")
+    dialog.author_names.setPlainText(" Doe, J. A. \n\nDoe, John\nDoe, J. A.")
     dialog.library_ids.setPlainText("LIB1\n LIB2 \nLIB1")
 
     dialog.accept()
@@ -322,7 +322,7 @@ def test_user_profile_dialog_loads_normalizes_and_saves_profile(application):
     assert calls == [
         UserProfile(
             orcid="0000-0002-1694-233X",
-            author_names=("Bach, Y. P.", "Bach, Yoonsoo"),
+            author_names=("Doe, J. A.", "Doe, John"),
             first_publication_year=2010,
             last_publication_year=2030,
             ads_library_ids=("LIB1", "LIB2"),

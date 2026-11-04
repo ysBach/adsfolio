@@ -11,6 +11,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
+from ..bibtex.sanitize import DEFAULT_EXCLUDED_FIELDS
 from ..citations import CitationStyle, CitationStyleError, initial_citation_styles
 from ..config import Config, make_private_directory
 from ..pdf.search import SEARCH_FIELDS
@@ -57,6 +58,10 @@ class GuiConfig:
     search_exact: bool = False
     search_wildcards: bool = False
     search_highlight: bool = True
+    export_format: str = "bibtex"
+    export_exclude_fields: list[str] = field(
+        default_factory=lambda: list(DEFAULT_EXCLUDED_FIELDS)
+    )
     search_fields: list[str] = field(default_factory=list)
     watch_sound: str = "silent"
     window_geometry: str | None = None
@@ -82,6 +87,8 @@ class GuiConfig:
     detail_visible: bool = True
     check_updates_automatically: bool = True
     skipped_update_version: str | None = None
+    # ADSfolio version whose remembered-recheck prompt the user answered.
+    remembered_recheck_prompt_version: str | None = None
     show_edit_buttons: bool = True
     show_lock_buttons: bool = True
     filename_click_action: str = "open"
@@ -405,6 +412,14 @@ def _from_mapping(payload: Mapping[str, Any]) -> GuiConfig:
         search_exact=_as_bool(payload.get("search_exact"), False),
         search_wildcards=_as_bool(payload.get("search_wildcards"), False),
         search_highlight=_as_bool(payload.get("search_highlight"), True),
+        export_format=_as_string(payload.get("export_format"), "bibtex") or "bibtex",
+        export_exclude_fields=[
+            name
+            for name in payload.get("export_exclude_fields", [])
+            if isinstance(name, str) and name.strip()
+        ]
+        if isinstance(payload.get("export_exclude_fields"), list)
+        else list(DEFAULT_EXCLUDED_FIELDS),
         search_fields=[
             key
             for key in payload.get("search_fields") or []
@@ -447,6 +462,9 @@ def _from_mapping(payload: Mapping[str, Any]) -> GuiConfig:
             payload.get("check_updates_automatically"), True
         ),
         skipped_update_version=_as_string(payload.get("skipped_update_version")),
+        remembered_recheck_prompt_version=_as_string(
+            payload.get("remembered_recheck_prompt_version")
+        ),
         show_edit_buttons=_as_bool(payload.get("show_edit_buttons"), True),
         show_lock_buttons=_as_bool(payload.get("show_lock_buttons"), True),
         filename_click_action=filename_click_action or "open",

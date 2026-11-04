@@ -13,6 +13,7 @@ well-formed output passes through unchanged.
 
 import logging
 import re
+from collections.abc import Iterable
 
 LOGGER = logging.getLogger(__name__)
 
@@ -186,3 +187,103 @@ def repair_bibtex(text: str) -> str:
         )
         changed = True
     return "".join(lines) if changed else text
+
+
+# Fields that BibTeX exports leave out unless the user changes the list.
+DEFAULT_EXCLUDED_FIELDS = ("abstract", "adsnote")
+
+_ENTRY_HEAD = re.compile(r"@\s*([A-Za-z]+)\s*([{(])")
+
+
+def _closing_index(text: str, start: int, opener: str) -> int | None:
+    """Return the index of the delimiter that closes ``text[start]``."""
+    closer = "}" if opener == "{" else ")"
+    depth = 0
+    in_quote = False
+    for index in range(start, len(text)):
+        char = text[index]
+        if char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if opener == "{" and depth == 0:
+                return index
+        elif char == '"' and depth == (1 if opener == "{" else 0):
+            in_quote = not in_quote
+        elif char == closer and opener == "(" and depth == 0 and not in_quote:
+            return index
+    return None
+
+
+def _split_fields(body: str) -> list[str]:
+    """Split an entry body at commas outside braces and quoted values."""
+    parts: list[str] = []
+    depth = 0
+    in_quote = False
+    start = 0
+    for index, char in enumerate(body):
+        if char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+        elif char == '"' and depth == 0:
+            in_quote = not in_quote
+        elif char == "," and depth == 0 and not in_quote:
+            parts.append(body[start:index])
+            start = index + 1
+    parts.append(body[start:])
+    return parts
+
+
+def remove_fields(text: str, fields: Iterable[str]) -> str:
+    """Remove named fields from every BibTeX entry and keep the other text.
+
+    Parameters
+    ----------
+    text : str
+        BibTeX text, for example from the ADS export service.
+    fields : Iterable[str]
+        Field names to remove, ignoring letter case, for example
+        ``("abstract", "adsnote")``.
+
+    Returns
+    -------
+    str
+        The same text without those fields. Other fields, their order and
+        spacing, comments, and ``@string`` or ``@preamble`` blocks are kept.
+        An entry whose braces do not close is kept unchanged.
+    """
+    drop = {name.strip().lower() for name in fields if name.strip()}
+    if not drop:
+        return text
+    out: list[str] = []
+    position = 0
+    while True:
+        match = _ENTRY_HEAD.search(text, position)
+        if match is None:
+            out.append(text[position:])
+            return "".join(out)
+        kind = match.group(1).lower()
+        end = _closing_index(text, match.end() - 1, match.group(2))
+        if kind in {"comment", "string", "preamble"} or end is None:
+            stop = match.end() if end is None else end + 1
+            out.append(text[position:stop])
+            position = stop
+            continue
+        body = text[match.end() : end]
+        parts = _split_fields(body)
+        head, fields_parts = parts[0], parts[1:]
+        kept = [
+            part
+            for part in fields_parts
+            if part.split("=", 1)[0].strip().lower() not in drop or "=" not in part
+        ]
+        if len(kept) != len(fields_parts):
+            # Keep the original space before the closing delimiter.
+            trailing = body[len(body.rstrip()) :]
+            rebuilt = ",".join([head, *kept]).rstrip()
+            if fields_parts and not fields_parts[-1].strip():
+                rebuilt = rebuilt.rstrip(",") + ","
+            body = rebuilt + trailing
+        out.append(text[position : match.end()] + body + text[end])
+        position = end + 1

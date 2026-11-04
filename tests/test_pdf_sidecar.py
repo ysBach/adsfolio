@@ -182,7 +182,7 @@ def test_sidecar_set_identify_profile_roundtrip(tmp_path):
     changed = sidecar.set_identify_profile(
         {
             "orcid": "0000-0002-1825-0097",
-            "query_names": ["Bach, Y. P.", ""],
+            "query_names": ["Doe, J. A.", ""],
             "debut_year": "2010",
             "retire_year": 2030,
             "library_ids": ["LIB123", "  "],
@@ -194,7 +194,7 @@ def test_sidecar_set_identify_profile_roundtrip(tmp_path):
     reloaded = Sidecar(tmp_path)
     assert reloaded.identify_profile == {
         "orcid": "0000-0002-1825-0097",
-        "query_names": ["Bach, Y. P."],
+        "query_names": ["Doe, J. A."],
         "debut_year": 2010,
         "retire_year": 2030,
         "library_ids": ["LIB123"],
@@ -205,7 +205,7 @@ def test_sidecar_set_identify_profile_no_change_and_clear(tmp_path):
     sidecar = Sidecar(tmp_path)
     profile = {
         "orcid": "0000-0002-1825-0097",
-        "query_names": ["Bach, Y. P."],
+        "query_names": ["Doe, J. A."],
         "debut_year": 2010,
         "retire_year": 2030,
         "library_ids": ["LIB123"],

@@ -13,7 +13,7 @@ import pytest
 pytest.importorskip("PySide6")
 pytest.importorskip("pytestqt")
 
-from PySide6.QtCore import QItemSelectionModel, Qt
+from PySide6.QtCore import QItemSelectionModel, QPoint, Qt
 
 from adsfolio.config import Config
 from adsfolio.gui.config import GuiConfig, RootEntry, load_config, save_config
@@ -532,3 +532,63 @@ def test_recovered_root_retains_its_previous_check_state(
     assert window.config.combined_roots == selected
     window.close()
     assert load_config().combined_roots == selected
+
+
+def _expanded_tree(window):
+    window.combined.set_enabled(True)
+    tree = window.combined.tree_model
+    while tree.is_loading:
+        tree._load_next_page()
+    window.table.expandAll()
+    return tree
+
+
+def test_combined_tree_uses_half_indentation_and_restores_it(combined_window):
+    window, _roots = combined_window
+    default = window.table.indentation()
+    _expanded_tree(window)
+    assert window.table.indentation() == default // 2
+    window.combined.set_enabled(False)
+    assert window.table.indentation() == default
+
+
+def test_combined_tree_shows_icons_and_aligns_files_with_their_folder(
+    combined_window,
+):
+    from PySide6.QtWidgets import QStyleOptionViewItem
+
+    window, _roots = combined_window
+    tree = _expanded_tree(window)
+    column = window.table.treePosition()
+    folder = tree.index(0, column)
+    file_index = tree.index(0, column, tree.index(0, 0))
+    assert tree.node_kind(folder) == "root"
+    assert tree.node_kind(file_index) == "file"
+    assert tree.data(folder, Qt.DecorationRole) is not None
+    assert tree.data(file_index, Qt.DecorationRole) is not None
+
+    delegate = window.table.itemDelegateForIndex(file_index)
+    folder_option = QStyleOptionViewItem()
+    folder_option.widget = window.table
+    folder_option.rect = window.table.visualRect(folder)
+    delegate.initStyleOption(folder_option, folder)
+    file_option = QStyleOptionViewItem()
+    file_option.widget = window.table
+    file_option.rect = window.table.visualRect(file_index)
+    delegate.initStyleOption(file_option, file_index)
+    # The file content starts where the folder content starts.
+    assert file_option.rect.left() == folder_option.rect.left()
+    assert folder_option.rect == window.table.visualRect(folder)
+
+
+def test_click_on_moved_file_icon_selects_the_file(combined_window, qtbot):
+    window, _roots = combined_window
+    tree = _expanded_tree(window)
+    column = window.table.treePosition()
+    window.table.scrollTo(tree.index(0, column))
+    file_index = tree.index(0, column, tree.index(0, 0))
+    rect = window.table.visualRect(file_index)
+    point = QPoint(rect.left() - window.table.indentation() // 2, rect.center().y())
+    qtbot.mouseClick(window.table.viewport(), Qt.LeftButton, pos=point)
+    assert window.table.currentIndex().row() == file_index.row()
+    assert tree.node_kind(window.table.currentIndex()) == "file"

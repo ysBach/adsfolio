@@ -348,22 +348,26 @@ def capture(recorder: Recorder) -> None:
 
     def answer(dialog: Any) -> None:
         buttons = dialog.buttons() if isinstance(dialog, QMessageBox) else []
-        include = next(
-            (button for button in buttons if button.text() == "Include Subfolders"),
-            None,
-        )
-        if include is not None:
+        by_text = {button.text(): button for button in buttons}
+        if "Include Subfolders" in by_text:
             recorder.save(dialog.grab(), "tutorial/subfolder-question.png")
             recorder.frame(
                 _composite(window, dialog),
                 "2. Choose whether to include PDFs in subfolders",
             )
-            include.click()
+            by_text["Include Subfolders"].click()
+        elif "Do Not Watch" in by_text:
+            recorder.save(dialog.grab(), "tutorial/watch-question.png")
+            recorder.frame(
+                _composite(window, dialog),
+                "3. Choose whether ADSfolio watches the folder for new PDFs",
+            )
+            by_text["Do Not Watch"].click()
         else:
             recorder.save(dialog.grab(), "tutorial/identify-prompt.png")
             recorder.frame(
                 _composite(window, dialog),
-                "3. Choose OK to find publication details",
+                "4. Choose OK to find publication details",
             )
             dialog.reject()
 
@@ -416,7 +420,7 @@ def capture(recorder: Recorder) -> None:
     application.processEvents()
     overview = _composite(window)
     recorder.save(overview, "app-overview.png")
-    recorder.frame(overview, "4. Browse papers and edit their details")
+    recorder.frame(overview, "5. Browse papers and edit their details")
 
     def keep(name: str, caption: str) -> Callable[[Any], None]:
         def handle(dialog: Any) -> None:
@@ -479,6 +483,7 @@ def _capture_workflows(
     from adsfolio.gui.ads_library_jobs import AdsLibraryOperation
     from adsfolio.gui.cv_dialog import CVDialog
     from adsfolio.gui.dialogs import IdentifyDialog
+    from adsfolio.gui.export_dialog import ExportPapersDialog, ExportScope
     from adsfolio.library_sync import LibraryDestination
     from adsfolio.pdf.readiness import metadata_ready
 
@@ -613,28 +618,31 @@ def _capture_workflows(
         "Select several papers: each action covers all of them",
         video="workflows",
     )
-    export = CVDialog(
+    registry = window.registries[str(window.current_root)]
+    export = ExportPapersDialog(
         window,
-        settings_path=Path(os.environ["ADSFOLIO_CAPTURE_HOME"]) / "cv-selection.yaml",
-        records=window._selected_records(),
+        [
+            ExportScope("selected", "Selected rows", window._selected_records()),
+            ExportScope("all", "All PDFs in this library", registry.query_files()),
+        ],
+        registry.catalog,
+        window.config.citation_styles,
+        initial_scope="selected",
     )
-    export.me_target.setText("Rivera, A.")
-    export.preset.setCurrentIndex(export.preset.findData("markdown"))
-    export._apply_preset()
-    export.resize(1180, 640)
+    export.resize(820, 760)
     export.show()
     application.processEvents()
-    export._render_sample()
+    export._update_preview()
     application.processEvents()
-    recorder.save(export.grab(), "tutorial/export-selected.png")
+    recorder.save(export.grab(), "tutorial/export-papers.png")
     recorder.frame(
         _composite(
             window,
             export.grab().scaled(
-                1180, 540, Qt.KeepAspectRatio, Qt.SmoothTransformation
+                1180, 640, Qt.KeepAspectRatio, Qt.SmoothTransformation
             ),
         ),
-        "Export the selected papers as a list, without ADS",
+        "Export the selected papers as BibTeX, text, or a list, without ADS",
         video="workflows",
     )
     export.hide()

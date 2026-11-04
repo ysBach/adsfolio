@@ -405,3 +405,48 @@ def test_failure_is_visible_and_close_waits_for_worker(
     finally:
         if dialog.result() == 0:
             dialog.close()
+
+
+ADS_BIBTEX = """@ARTICLE{2020ApJ...900....1D,
+       author = {{Doe}, John A. and {Roe}, Alice},
+        title = "{Dust of Small Stars}",
+     abstract = "{An abstract, with {braces}.}",
+       adsnote = {Provided by the SAO/NASA Astrophysics Data System}
+}
+"""
+
+
+@pytest.mark.parametrize(
+    ("format_key", "kept"),
+    [("bibtex", False), ("aastex", True)],
+)
+def test_bibtex_export_leaves_out_the_chosen_fields(
+    application: QApplication,
+    qtbot: Any,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    format_key: str,
+    kept: bool,
+) -> None:
+    """Leave out fields from BibTeX only; other styles stay as ADS sent them."""
+    import adsfolio.gui.ads_library_export_dialog as export_module
+
+    harness = FakeJobHarness()
+    dialog = _dialog(application, qtbot, harness)
+    try:
+        _load_one_library(dialog, harness, name="Papers")
+        dialog.format_combo.setCurrentIndex(dialog.format_combo.findData(format_key))
+        assert dialog.excluded_fields == ["abstract", "adsnote"]
+        output = tmp_path / "out.txt"
+        FakeSaveDialog.selected_path = output
+        monkeypatch.setattr(export_module, "QFileDialog", FakeSaveDialog)
+        dialog.export_button.click()
+        export_job = harness.started[-1]
+        export_job.succeed(LibraryExportResult(ADS_BIBTEX, ("B1",)))
+        export_job.finish()
+        text = output.read_text(encoding="utf-8")
+        assert ("abstract" in text) is kept
+        assert ("adsnote" in text) is kept
+        assert '        title = "{Dust of Small Stars}"' in text
+    finally:
+        dialog.close()

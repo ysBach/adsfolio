@@ -72,7 +72,7 @@ You can pass values non-interactively:
 adsfolio set \
   --token <your-token> \
   --orcid 0000-0002-1825-0097 \
-  --query-name "Bach, Yoonsoo P." \
+  --query-name "Doe, John A." \
   --debut-year 2010 --end-year 2026 \
   --library-id ABC123XYZ
 ```

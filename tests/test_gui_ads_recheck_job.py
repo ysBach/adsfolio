@@ -25,6 +25,7 @@ from adsfolio.gui import ads_recheck_job, main_window
 from adsfolio.gui.config import GuiConfig, RootEntry
 from adsfolio.gui.main_window import ADS_RECHECK_INTERVAL_MS, MainWindow
 from adsfolio.gui.preferences import PreferencesDialog
+from adsfolio.pdf import recheck_worker
 from adsfolio.pdf.doi_providers import DoiProvider
 from adsfolio.pdf.files import sha256_file
 from adsfolio.pdf.identifier import PdfIdentifier
@@ -129,7 +130,7 @@ def backend(monkeypatch):
 
     module.recheck_existing = recheck
     monkeypatch.setitem(sys.modules, "adsfolio.pdf.ads_recheck", module)
-    open_state = ads_recheck_job.open_registry_state
+    open_state = recheck_worker.open_registry_state
 
     class State:
         def __init__(self, root):
@@ -151,17 +152,22 @@ def backend(monkeypatch):
         def close(self):
             resources.append(("client-close", None, threading.get_ident()))
 
-    monkeypatch.setattr(ads_recheck_job, "open_registry_state", State)
-    monkeypatch.setattr(ads_recheck_job, "ADSClient", Client)
+    monkeypatch.setattr(recheck_worker, "open_registry_state", State)
+    monkeypatch.setattr(recheck_worker, "ADSClient", Client)
     return SimpleNamespace(
         calls=calls, clients=clients, resources=resources, handler=handler
     )
 
 
-def _window(monkeypatch, qtbot, config, *, controller=None):
+def _window(monkeypatch, qtbot, config, *, controller=None, accept_offer=True):
     controller = controller or FakeWatchController()
     monkeypatch.setattr(main_window, "load_config", lambda: deepcopy(config))
     monkeypatch.setattr(main_window, "save_config", lambda _config: None)
+    if accept_offer:
+        # These tests check cycle mechanics. Answer the start question with yes.
+        monkeypatch.setattr(
+            MainWindow, "_offer_ads_recheck", lambda self: self._queue_ads_rechecks()
+        )
     window = MainWindow(watch_controller=controller)
     qtbot.addWidget(window)
     return window, controller
@@ -247,13 +253,13 @@ def test_startup_periodic_settings_and_late_root(monkeypatch, qtbot, tmp_path, b
     late = tmp_path / "late"
     late.mkdir()
     window._register_root(late)
-    qtbot.waitUntil(lambda: len(backend.calls) == 4, timeout=5000)
-    _wait_for_cycle(qtbot, window)
-    assert backend.calls[3][0] == late
+    qtbot.wait(100)
+    # A new library joins only a cycle that the user started.
+    assert len(backend.calls) == 3
     window._ads_recheck_timer.timeout.emit()
-    qtbot.waitUntil(lambda: len(backend.calls) == 8, timeout=5000)
+    qtbot.waitUntil(lambda: len(backend.calls) == 7, timeout=5000)
     _wait_for_cycle(qtbot, window)
-    assert [call[0] for call in backend.calls[4:]] == [
+    assert [call[0] for call in backend.calls[3:]] == [
         watched,
         unwatched,
         external,
@@ -386,7 +392,9 @@ def test_settings_saves_wait_until_recheck_stops(
     target = root if has_root else None
     try:
         qtbot.waitUntil(entered.is_set, timeout=5000)
-        with pytest.raises(ValueError, match="Wait for the identifier recheck"):
+        with pytest.raises(
+            ValueError, match="Wait for the automatic identifier recheck of library"
+        ):
             save(target, scope, settings)
         assert Config.load_identify_settings() == identify_before
         assert Config.load_rename_settings() == rename_before
@@ -443,7 +451,10 @@ def test_preferences_reports_guard_and_saves_unrelated_setting(
         dialog.rename.template.setText("new-{bibcode}")
         assert not dialog.rename._save()
         assert len(errors) == 2
-        assert all("Wait for the identifier recheck" in message for message in errors)
+        assert all(
+            "Wait for the automatic identifier recheck of library" in message
+            for message in errors
+        )
         assert Config.load_identify_settings() == before_identify
         assert Config.load_rename_settings() == before_rename
         item = dialog.categories.findItems("General", Qt.MatchExactly)[0]
@@ -453,6 +464,42 @@ def test_preferences_reports_guard_and_saves_unrelated_setting(
         assert window.config.watch_sound == "chime"
         release.set()
         _wait_for_cycle(qtbot, window)
+    finally:
+        release.set()
+
+
+def test_busy_messages_name_the_running_recheck(monkeypatch, qtbot, tmp_path, backend):
+    root = tmp_path / "Papers"
+    root.mkdir()
+    entered, release = threading.Event(), threading.Event()
+
+    def run(*args, **kwargs):
+        entered.set()
+        assert release.wait(5)
+        return _result()
+
+    backend.handler.run = run
+    window, _ = _window(monkeypatch, qtbot, GuiConfig(roots=[RootEntry(str(root))]))
+    try:
+        qtbot.waitUntil(entered.is_set, timeout=5000)
+        assert window.job_label.isVisibleTo(window)
+        assert window.job_label.text() == "Automatic identifier recheck of Papers…"
+        window.combined.set_enabled(True)
+        assert not window.combined.enabled
+        message = window.status.currentMessage()
+        assert message.startswith("Combine libraries is unavailable now.")
+        assert "automatic identifier recheck of Papers" in message
+        assert "click Cancel in the status bar" in message
+        assert window.job_cancel_button.isVisibleTo(window)
+        assert window.job_cancel_button.text() == "Cancel"
+        assert window.job_cancel_button.isEnabled()
+        release.set()
+        _wait_for_cycle(qtbot, window)
+        assert not window.job_label.isVisibleTo(window)
+        assert not window.job_cancel_button.isVisibleTo(window)
+        assert window._operation_text() == ""
+        window.combined.set_enabled(True)
+        assert window.combined.enabled
     finally:
         release.set()
 
@@ -1153,7 +1200,7 @@ def test_real_backend_updates_and_renames_without_changing_pdf(
         def close(self):
             closed.set()
 
-    monkeypatch.setattr(ads_recheck_job, "ADSClient", Client)
+    monkeypatch.setattr(recheck_worker, "ADSClient", Client)
     window, _ = _window(
         monkeypatch, qtbot, GuiConfig(roots=[RootEntry(str(root), recursive=recursive)])
     )
@@ -1190,3 +1237,178 @@ def test_real_backend_updates_and_renames_without_changing_pdf(
     assert sha256_file(nested_final) == nested_digest
     assert set(root.rglob("*.pdf")) == {target, nested_final, excluded}
     assert not notices
+
+
+def test_recheck_writes_start_and_summary_lines(monkeypatch, qtbot, tmp_path, backend):
+    root = tmp_path / "Papers"
+    root.mkdir()
+    backend.handler.run = lambda *args, **kwargs: _result(
+        checked=4, remembered_skipped=3, failures=["paper.pdf: no match"]
+    )
+    window, _ = _window(monkeypatch, qtbot, GuiConfig(roots=[RootEntry(str(root))]))
+    qtbot.waitUntil(lambda: len(backend.calls) == 1, timeout=5000)
+    _wait_for_cycle(qtbot, window)
+    log = window.log.toPlainText()
+    assert "Automatic identifier recheck of Papers started." in log
+    assert (
+        "4 checked, 3 skipped because an earlier check failed, "
+        "0 updated, 0 renamed, 1 failed." in log
+    )
+
+
+def test_outdated_remembered_failures_ask_once_per_version(
+    monkeypatch, qtbot, tmp_path, backend
+):
+    root = tmp_path / "library"
+    root.mkdir()
+    backend.handler.run = lambda *args, **kwargs: _result(remembered_outdated=2)
+    questions = []
+
+    def answer(*args, **kwargs):
+        questions.append(args[2])
+        return QMessageBox.Yes
+
+    monkeypatch.setattr(QMessageBox, "question", answer)
+    window, _ = _window(monkeypatch, qtbot, GuiConfig(roots=[RootEntry(str(root))]))
+    qtbot.waitUntil(lambda: len(backend.calls) == 2, timeout=5000)
+    _wait_for_cycle(qtbot, window)
+    assert len(questions) == 1
+    assert questions[0].startswith("2 PDFs failed the identity check")
+    assert "retry_remembered" not in backend.calls[0][2]
+    assert backend.calls[1][2]["retry_remembered"] is True
+    assert window.config.remembered_recheck_prompt_version == main_window.__version__
+
+    window._queue_ads_rechecks()
+    qtbot.waitUntil(lambda: len(backend.calls) == 3, timeout=5000)
+    _wait_for_cycle(qtbot, window)
+    assert len(questions) == 1
+    assert "retry_remembered" not in backend.calls[2][2]
+
+
+def test_tools_item_rechecks_remembered_failures_after_confirmation(
+    monkeypatch, qtbot, tmp_path, backend
+):
+    root = tmp_path / "Papers"
+    root.mkdir()
+    window, _ = _window(monkeypatch, qtbot, GuiConfig(roots=[RootEntry(str(root))]))
+    qtbot.waitUntil(lambda: len(backend.calls) == 1, timeout=5000)
+    _wait_for_cycle(qtbot, window)
+    window.registries[str(root.resolve())].set_meta(
+        "recheck_unverified", '{"ads:abc": {"key": "k"}, "metadata_doi:def": {}}'
+    )
+    questions = []
+
+    def answer(*args, **kwargs):
+        questions.append(args[2])
+        return QMessageBox.Yes
+
+    monkeypatch.setattr(QMessageBox, "question", answer)
+    window.recheck_remembered_action.trigger()
+    assert "skips 2 PDFs" in questions[0]
+    assert "Papers: 2" in questions[0]
+    qtbot.waitUntil(lambda: len(backend.calls) == 2, timeout=5000)
+    _wait_for_cycle(qtbot, window)
+    assert backend.calls[1][2]["retry_remembered"] is True
+
+
+def test_status_bar_cancel_stops_the_recheck(monkeypatch, qtbot, tmp_path, backend):
+    roots = [tmp_path / "a", tmp_path / "b"]
+    for root in roots:
+        root.mkdir()
+    entered = threading.Event()
+
+    def run(*args, cancelled, **kwargs):
+        entered.set()
+        while not cancelled():
+            threading.Event().wait(0.01)
+        return _result(cancelled=True)
+
+    backend.handler.run = run
+    config = GuiConfig(roots=[RootEntry(str(root)) for root in roots])
+    window, _ = _window(monkeypatch, qtbot, config)
+    qtbot.waitUntil(entered.is_set, timeout=5000)
+    qtbot.mouseClick(window.job_cancel_button, Qt.LeftButton)
+    assert not window.job_cancel_button.isEnabled()
+    _wait_for_cycle(qtbot, window)
+    assert len(backend.calls) == 1
+    assert "was cancelled" in window.log.toPlainText()
+
+
+@pytest.mark.recheck_process
+def test_child_process_runs_recheck_with_the_app_catalog(monkeypatch, qtbot, tmp_path):
+    home = tmp_path / "child-home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.delenv("ADS_API_TOKEN", raising=False)
+    root = tmp_path / "library"
+    root.mkdir()
+    job = ads_recheck_job.AdsRecheckJob(
+        root,
+        IdentifySettings(providers=(DoiProvider.CROSSREF,)),
+        RenameSettings(),
+        False,
+    )
+    with qtbot.waitSignal(job.finished, timeout=60000) as finished:
+        job.start()
+    result, error = finished.args
+    assert error is None
+    assert (result.checked, result.updated, result.renamed) == (0, 0, 0)
+    assert result.cancelled is False
+    assert (Config.get_config_dir() / "pdf-library.sqlite").is_file()
+    assert not list(home.rglob("pdf-library.sqlite"))
+    assert not job.request_path.parent.exists()
+    assert not job.running
+    assert job._process is not None
+
+
+@pytest.mark.recheck_process
+def test_child_process_stops_when_cancelled(monkeypatch, qtbot, tmp_path):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    root = tmp_path / "library"
+    root.mkdir()
+    job = ads_recheck_job.AdsRecheckJob(
+        root,
+        IdentifySettings(providers=(DoiProvider.CROSSREF,)),
+        RenameSettings(),
+        False,
+    )
+    job.cancel()
+    with qtbot.waitSignal(job.finished, timeout=60000) as finished:
+        job.start()
+    assert finished.args == [None, None]
+
+
+@pytest.mark.recheck_offer
+def test_recheck_waits_for_the_users_start_choice(
+    monkeypatch, qtbot, tmp_path, backend
+):
+    root = tmp_path / "Papers"
+    root.mkdir()
+    config = GuiConfig(roots=[RootEntry(str(root))])
+    window, _ = _window(monkeypatch, qtbot, config, accept_offer=False)
+    qtbot.waitUntil(lambda: window._ads_recheck_offer is not None, timeout=5000)
+    offer = window._ads_recheck_offer
+    assert offer.text() == "Check your libraries for ADS updates now?"
+    assert {button.text() for button in offer.buttons()} == {"Check Now", "Not Now"}
+    qtbot.wait(100)
+    assert backend.calls == []
+
+    next(b for b in offer.buttons() if b.text() == "Not Now").click()
+    qtbot.waitUntil(lambda: window._ads_recheck_offer is None, timeout=5000)
+    qtbot.wait(100)
+    assert backend.calls == []
+    late = tmp_path / "late"
+    late.mkdir()
+    window._register_root(late)
+    qtbot.wait(100)
+    assert backend.calls == []
+
+    window._ads_recheck_timer.timeout.emit()
+    offer = window._ads_recheck_offer
+    next(b for b in offer.buttons() if b.text() == "Check Now").click()
+    qtbot.waitUntil(lambda: len(backend.calls) == 2, timeout=5000)
+    _wait_for_cycle(qtbot, window)
+
+    window.check_ads_updates_action.trigger()
+    qtbot.waitUntil(lambda: len(backend.calls) == 4, timeout=5000)
+    _wait_for_cycle(qtbot, window)

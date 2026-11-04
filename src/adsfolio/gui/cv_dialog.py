@@ -12,7 +12,7 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QFontDatabase
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -231,6 +231,8 @@ def _tip(widget: QWidget, text: str, form: QFormLayout | None = None) -> None:
 class CVDialog(QDialog):
     """Edit CV settings, preview them, and write the publication list.
 
+    `settings_changed` fires after an edit, once the preview timer runs.
+
     In the default mode, the settings live in ``cv.yaml`` in the ADSfolio
     configuration folder, the same file that ``adsfolio cv generate`` reads.
     **Sample papers** preview the format offline. **My ADS publications** and
@@ -252,6 +254,8 @@ class CVDialog(QDialog):
     browser_command : `str`, optional
         Configured browser for links in the rendered preview.
     """
+
+    settings_changed = Signal()
 
     def __init__(
         self,
@@ -1042,8 +1046,39 @@ class CVDialog(QDialog):
             mapping["author"]["query"] = "*:*"
         return config_from_mapping(mapping, self.settings_path)
 
+    def set_records(self, records: Sequence[Mapping[str, Any]]) -> None:
+        """Replace the library papers of a list export and render them again."""
+        self.local_docs = docs_from_records(records)
+        self._render_sample()
+
+    def render_list(self, records: Sequence[Mapping[str, Any]] | None = None) -> str:
+        """Return the list text with the current settings.
+
+        Parameters
+        ----------
+        records : Sequence[Mapping[str, Any]], optional
+            Library table records to render. By default the current papers.
+
+        Raises
+        ------
+        ValueError
+            If the settings cannot render the list.
+        """
+        cfg = self._config()
+        docs = (
+            docs_from_records(records)
+            if records is not None
+            else self._current_docs(cfg)
+        )
+        return render_cv(docs, cfg)
+
+    def save_settings(self) -> bool:
+        """Write the current settings to the settings file."""
+        return self._write_settings(self.settings_path)
+
     def _render_sample(self) -> None:
         """Render sample or selected papers with the current settings, offline."""
+        self.settings_changed.emit()
         if not self.sample_mode.isChecked():
             return
         try:

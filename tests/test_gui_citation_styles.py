@@ -38,7 +38,7 @@ RECORD = {
         "bibcode": "2024A&A...123..456B",
         "year": "2024",
         "title": ["Dust <SUP>2</SUP> dynamics"],
-        "author": ["Bach, Yoonsoo P.", "Doe, Alice", "Roe, Bob"],
+        "author": ["Doe, John A.", "Doe, Alice", "Roe, Bob"],
         "bibstem": ["A&A"],
         "pub": "Astronomy &amp; Astrophysics",
         "volume": "123",
@@ -388,7 +388,7 @@ def test_preview_renders_unsaved_draft_without_mutating_styles(
 
     # Initial preview
     dialog.preview_button.click()
-    assert dialog.preview_label.text() == "BachYP (2024)"
+    assert dialog.preview_label.text() == "DoeJA (2024)"
     assert dialog.styles[0].template == "{first_author_initials} ({year})"
 
     # Edit template without saving, preview updates preview_label

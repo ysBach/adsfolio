@@ -87,7 +87,7 @@ def test_save_and_load_user_setup_roundtrip(monkeypatch, tmp_path):
 
     path = Config.save_user_setup(
         orcid="0000-0002-1825-0097",
-        query_names=["Bach, Y. P.", "Bach, Yoonsoo"],
+        query_names=["Doe, J. A.", "Doe, John"],
         debut_year=2010,
         retire_year=2030,
         library_ids=["LIB123", "LIB456"],
@@ -98,7 +98,7 @@ def test_save_and_load_user_setup_roundtrip(monkeypatch, tmp_path):
     loaded = Config.get_user_setup()
     assert loaded == {
         "orcid": "0000-0002-1825-0097",
-        "query_names": ["Bach, Y. P.", "Bach, Yoonsoo"],
+        "query_names": ["Doe, J. A.", "Doe, John"],
         "debut_year": 2010,
         "end_year": 2030,
         "library_ids": ["LIB123", "LIB456"],
@@ -106,8 +106,8 @@ def test_save_and_load_user_setup_roundtrip(monkeypatch, tmp_path):
     raw = json.loads(path.read_text(encoding="utf-8"))
     assert raw["schema_version"] == Config.SETUP_SCHEMA_VERSION
     assert raw["user_profile"]["author_names"] == [
-        "Bach, Y. P.",
-        "Bach, Yoonsoo",
+        "Doe, J. A.",
+        "Doe, John",
     ]
 
 
@@ -132,14 +132,14 @@ def test_save_user_setup_trims_blank_names(monkeypatch, tmp_path):
     )
     Config.save_user_setup(
         orcid=" id ",
-        query_names=[" ", "Bach, Y. P.", "", "Bach, Yoonsoo"],
+        query_names=[" ", "Doe, J. A.", "", "Doe, John"],
         library_ids=[" ", "LIB123", "", "LIB456"],
     )
     data = json.loads(Config.get_setup_path().read_text(encoding="utf-8"))
     assert data["user_profile"]["orcid"] == "id"
     assert data["user_profile"]["author_names"] == [
-        "Bach, Y. P.",
-        "Bach, Yoonsoo",
+        "Doe, J. A.",
+        "Doe, John",
     ]
     assert data["user_profile"]["ads_library_ids"] == ["LIB123", "LIB456"]
 

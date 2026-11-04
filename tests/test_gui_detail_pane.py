@@ -480,9 +480,9 @@ def test_long_abstract_expands_and_collapses_in_place(
 
 def test_first_author_delegate_separates_surname() -> None:
     """The delegate splits the surname from the given names of an ADS author."""
-    assert FirstAuthorDelegate.split_author("Bach, Yoonsoo P.") == (
-        "Bach",
-        ", Yoonsoo P.",
+    assert FirstAuthorDelegate.split_author("Doe, John A.") == (
+        "Doe",
+        ", John A.",
     )
 
 
@@ -1207,7 +1207,7 @@ def test_detail_pane_narrow_width_wraps_values_and_keeps_buttons_in_bounds(
                     )
                 ],
                 "author": [
-                    "Bach, Yoonsoo P.",
+                    "Doe, John A.",
                     "Ishiguro, Masateru",
                     "Kwon, Yuna G.",
                 ],

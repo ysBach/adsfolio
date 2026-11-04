@@ -277,7 +277,7 @@ class _StaticRegistry:
             {
                 "status": "unresolved",
                 "title": "Fictional title",
-                "author": "Bach, Yoonsoo",
+                "author": "Doe, John",
                 "bibcode": "2026TestLongBibcode",
                 "author_count": 3,
             }

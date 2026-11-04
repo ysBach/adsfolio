@@ -426,6 +426,11 @@ hours. This check runs independently of `--auto-upgrade`. Set
 `--upgrade-interval` to change the interval. The check uses the effective
 Identify scope and requires ADS to be enabled with a token.
 
+The check looks up identifiers in ADS in batches. It does not open a PDF when
+ADS returns its stored bibcode. With `--apply`, it remembers failed identity
+checks and unidentified PDFs without a metadata DOI for each library. It skips
+those PDFs until the PDF, its saved identifiers, or the ADS record changes.
+
 When ADS returns a verified new match or bibcode, Watch updates the record and
 applies the saved Rename settings with `--apply`. Without `--apply`, Watch
 previews the changes. With `filename_bibcode` enabled, a unique exact ADS match

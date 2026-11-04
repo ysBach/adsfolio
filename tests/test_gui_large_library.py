@@ -185,7 +185,7 @@ def test_search_ignores_accents_and_case_unless_exact(tmp_path, monkeypatch):
     root = tmp_path / "library"
     root.mkdir()
     registry = PdfRegistry(root)
-    titles = ["Bockelée-Morvan comet", "BOCKELEE survey", "plain ascii", "100% sure"]
+    titles = ["Dorémont-Roe comet", "DOREMONT survey", "plain ascii", "100% sure"]
     for index, title in enumerate(titles):
         path = root / f"p_{index}.pdf"
         path.write_bytes(f"fictional {index}".encode())
@@ -221,14 +221,14 @@ def test_search_ignores_accents_and_case_unless_exact(tmp_path, monkeypatch):
         assert sql == memory
         return {title for title, location in ids.items() if location in memory}
 
-    both = {"Bockelée-Morvan comet", "BOCKELEE survey"}
-    assert found("bockelee") == both
-    assert found("BOCKELÉE") == both
-    assert found("Bockelée", exact=True) == {"Bockelée-Morvan comet"}
-    assert found("bockelee", exact=True) == set()
+    both = {"Dorémont-Roe comet", "DOREMONT survey"}
+    assert found("doremont") == both
+    assert found("DORÉMONT") == both
+    assert found("Dorémont", exact=True) == {"Dorémont-Roe comet"}
+    assert found("doremont", exact=True) == set()
     assert found("100%") == {"100% sure"}
-    assert found("p_1") == {"BOCKELEE survey"}
-    assert found("p%1", wildcards=True) == {"BOCKELEE survey"}
+    assert found("p_1") == {"DOREMONT survey"}
+    assert found("p%1", wildcards=True) == {"DOREMONT survey"}
     assert found("p%1") == set()
     # A key name alone does not match; only values are searched.
     assert found("title") == set()
@@ -385,9 +385,9 @@ def test_highlight_marks_terms_only_in_matching_columns():
     from adsfolio.gui.models import SearchHighlight
 
     highlight = SearchHighlight()
-    highlight.query = 'author:bockelee "comet nucleus"'
-    assert highlight.spans("author", "Bockelée-Morvan, D.") == [(0, 8)]
-    assert highlight.spans("title", "Bockelée comet nucleus") == [(9, 22)]
+    highlight.query = 'author:doremont "comet nucleus"'
+    assert highlight.spans("author", "Dorémont-Roe, D.") == [(0, 8)]
+    assert highlight.spans("title", "Dorémont comet nucleus") == [(9, 22)]
     assert highlight.spans("filename", "comet nucleus.pdf") == [(0, 13)]
     assert highlight.spans("year", "2019") == []
     highlight.default_fields = ("title",)
@@ -405,19 +405,19 @@ def test_completer_suggests_field_names_and_values(qtbot):
     qtbot.addWidget(line)
     completer = SearchCompleter(
         line,
-        lambda field: ["Bach, Y.", "Bockelée-Morvan, D."] if field == "author" else [],
+        lambda field: ["Doe, J.", "Dorémont-Roe, D."] if field == "author" else [],
     )
     line.setText("comet f")
     line.textEdited.emit(line.text())
     model = completer.completer.completionModel()
     suggestions = {model.index(row, 0).data() for row in range(model.rowCount())}
     assert suggestions == {"first_author:", "filename:"}
-    line.setText("comet author:b")
+    line.setText("comet author:d")
     line.textEdited.emit(line.text())
     model = completer.completer.completionModel()
     assert model.rowCount() == 2
-    completer._insert("Bach, Y.")
-    assert line.text() == 'comet author:"Bach, Y." '
+    completer._insert("Doe, J.")
+    assert line.text() == 'comet author:"Doe, J." '
 
 
 def test_find_bar_uses_icon_toggles_and_a_fields_menu(large_window):

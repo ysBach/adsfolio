@@ -453,3 +453,44 @@ def test_shift_wheel_keeps_native_horizontal_direction(qtbot, scrolling_table):
     native_delta = native.horizontalScrollBar().value() - before_native
     scaled_delta = scrolling_table.horizontalScrollBar().value() - before_scaled
     assert scaled_delta == pytest.approx(native_delta / 10, abs=1)
+
+
+def test_clicking_a_partly_hidden_column_keeps_the_horizontal_position(qtbot):
+    from PySide6.QtCore import QPoint
+    from PySide6.QtGui import QStandardItem, QStandardItemModel
+    from PySide6.QtWidgets import QApplication, QTreeView
+
+    from adsfolio.gui.models import LibraryTableView
+
+    view = LibraryTableView()
+    qtbot.addWidget(view)
+    model = QStandardItemModel(view)
+    for row in range(60):
+        model.appendRow([QStandardItem(f"{row}-{column}") for column in range(12)])
+    view.setModel(model)
+    view.setSelectionBehavior(QTreeView.SelectionBehavior.SelectRows)
+    for column in range(12):
+        view.setColumnWidth(column, 100)
+    view.setColumnWidth(1, 900)
+    view.resize(500, 300)
+    view.show()
+    QApplication.processEvents()
+    scrollbar = view.horizontalScrollBar()
+    for offset in (150, 300):
+        scrollbar.setValue(offset)
+        target = view.indexAt(QPoint(20, 40))
+        assert target.column() == 1
+        qtbot.mouseClick(view.viewport(), Qt.LeftButton, pos=QPoint(20, 40))
+        # Qt scrolls to a clicked cell after the double-click interval plus 100 ms.
+        qtbot.wait(QApplication.doubleClickInterval() + 400)
+        assert view.currentIndex().row() == target.row()
+        assert scrollbar.value() == offset
+
+    for _ in range(40):
+        qtbot.keyClick(view, Qt.Key_Down)
+    assert view.currentIndex().column() == 1
+    assert view.verticalScrollBar().value() > 0
+    assert scrollbar.value() == 300
+
+    view.scrollTo(model.index(0, 1))
+    assert scrollbar.value() == 100

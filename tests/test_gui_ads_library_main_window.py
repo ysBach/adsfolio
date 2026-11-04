@@ -57,6 +57,7 @@ class FakeRegistry:
     def __init__(self, records: list[dict[str, Any]]) -> None:
         self.records = records
         self.calls: list[dict[str, Any]] = []
+        self.catalog = None
 
     def query_files(self, **filters: Any) -> list[dict[str, Any]]:
         self.calls.append(filters)
@@ -95,11 +96,12 @@ class CapturingExportAdsLibraryDialog(QDialog):
 
     instances: ClassVar[list[CapturingExportAdsLibraryDialog]] = []
 
-    def __init__(self, parent=None) -> None:
+    def __init__(self, parent=None, exclude_fields=()) -> None:
         super().__init__(parent)
         self.was_shown = False
         self.active = False
         self.cancel_requested = False
+        self.excluded_fields = list(exclude_fields)
         self.instances.append(self)
 
     def show(self) -> None:
@@ -744,32 +746,40 @@ def test_follow_up_refreshes_run_in_the_same_job(
     assert [command[-3:] for command in follow_up] == [[str(root), "--bibcode", "B2"]]
 
 
-def test_export_selected_papers_opens_the_list_window_with_selected_rows(
+def test_export_selection_opens_export_papers_with_the_selected_rows(
     window: MainWindow, monkeypatch, tmp_path: Path
 ):
-    _set_current_root(window, tmp_path / "library")
-    window.model._rows = _three_records(tmp_path)
+    rows = _three_records(tmp_path)
+    _set_current_root(window, tmp_path / "library", FakeRegistry(rows))
+    window.model._rows = rows
     window.show()
     QApplication.processEvents()
     opened = []
 
     class Dialog:
-        def __init__(self, parent, **kwargs) -> None:
-            opened.append(kwargs)
+        format_key = "bibtex"
+        excluded_fields = ["abstract"]
+
+        def __init__(self, parent, scopes, catalog, styles, **kwargs) -> None:
+            opened.append((scopes, kwargs))
 
         def exec(self) -> int:
             return 0
 
-    monkeypatch.setattr("adsfolio.gui.main_window.CVDialog", Dialog)
-    monkeypatch.setattr(
-        "adsfolio.gui.main_window.QInputDialog.getItem",
-        lambda *args: ("Publication list (LaTeX, HTML, Markdown, text)", True),
-    )
+        def deleteLater(self) -> None:
+            pass
+
+    monkeypatch.setattr("adsfolio.gui.main_window.ExportPapersDialog", Dialog)
     _select_rows(window, [0, 2])
     window._sync_detail_and_selection_actions()
     assert window.export_selected_action.isEnabled()
     window.export_selected_action.trigger()
-    assert [record["location_id"] for record in opened[-1]["records"]] == [0, 2]
+    scopes, kwargs = opened[-1]
+    assert kwargs["initial_scope"] == "selected"
+    selected = next(scope for scope in scopes if scope.key == "selected")
+    assert [record["location_id"] for record in selected.records] == [0, 2]
+    everything = next(scope for scope in scopes if scope.key == "all")
+    assert len(everything.records) == 3
     _select_rows(window, [])
     window._sync_detail_and_selection_actions()
     assert not window.export_selected_action.isEnabled()

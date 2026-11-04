@@ -155,15 +155,15 @@ class TestEscapeAndAuthorFormatting(unittest.TestCase):
     def test_format_author_list_cv_default_me_fmt(self):
         from adsfolio.formatting import format_author_list_cv
 
-        names = ["Bach, Yoonsoo P."]
-        res = format_author_list_cv(names, me_target="Bach, Y.", latex=True)
-        self.assertEqual(res, r"\textbf{Bach, Y. P.}")
+        names = ["Doe, John A."]
+        res = format_author_list_cv(names, me_target="Doe, J.", latex=True)
+        self.assertEqual(res, r"\textbf{Doe, J. A.}")
 
         # Custom template with plain {} placeholder remains exact without heuristics
         res_custom = format_author_list_cv(
-            names, me_target="Bach, Y.", me_fmt="<b>{}</b>", latex=False
+            names, me_target="Doe, J.", me_fmt="<b>{}</b>", latex=False
         )
-        self.assertEqual(res_custom, "<b>Bach, Y. P.</b>")
+        self.assertEqual(res_custom, "<b>Doe, J. A.</b>")
 
     def test_format_author_list_cv_two_authors_use_and(self):
         from adsfolio.formatting import format_author_list_cv
@@ -242,3 +242,32 @@ class TestEscapeAndAuthorFormatting(unittest.TestCase):
         self.assertTrue(res.endswith("et al."))
         self.assertIn("Target, T.", res)
         self.assertNotIn("Zeta, Z.", res)
+
+
+def test_journal_map_loads_once_until_the_cache_file_changes(monkeypatch, tmp_path):
+    import json
+
+    from adsfolio import journal_utils
+    from adsfolio.config import Config
+
+    monkeypatch.setattr(Config, "get_config_dir", classmethod(lambda cls: tmp_path))
+    monkeypatch.setattr(journal_utils, "_MAP_MEMO", None)
+    cache = tmp_path / journal_utils.CACHE_FILENAME
+    cache.write_text(json.dumps({"FJ...": {"full": "Fictional Journal", "iso4": None}}))
+    loads = []
+    original = journal_utils._load_journal_map
+    monkeypatch.setattr(
+        journal_utils,
+        "_load_journal_map",
+        lambda path: loads.append(path) or original(path),
+    )
+    for _ in range(3):
+        assert journal_utils.format_journal("FJ...", fmt="full") == "Fictional Journal"
+    assert len(loads) == 1
+    cache.write_text(
+        json.dumps({"FJ...": {"full": "Renamed Fictional Journal", "iso4": None}})
+    )
+    assert (
+        journal_utils.format_journal("FJ...", fmt="full") == "Renamed Fictional Journal"
+    )
+    assert len(loads) == 2

@@ -888,7 +888,7 @@ def test_identify_syncs_profile_to_registry_when_no_files_resolved(
         "adsfolio.config.Config.load_user_profile",
         lambda: UserProfile(
             orcid="0000-0002-1825-0097",
-            author_names=("Bach, Y. P.",),
+            author_names=("Doe, J. A.",),
             first_publication_year=2010,
             last_publication_year=2030,
             ads_library_ids=("LIB123",),
@@ -904,7 +904,7 @@ def test_identify_syncs_profile_to_registry_when_no_files_resolved(
     try:
         assert state.identify_profile == {
             "orcid": "0000-0002-1825-0097",
-            "query_names": ["Bach, Y. P."],
+            "query_names": ["Doe, J. A."],
             "debut_year": 2010,
             "end_year": 2030,
             "library_ids": ["LIB123"],
@@ -2645,7 +2645,7 @@ def test_refresh_ads_cli_resolves_doi_resolver_url_with_closing_paren(
                         "bibcode": "1998StatM..17.1661B",
                         "doi": ["10.1234/a(b)"],
                         "title": ["Parenthesis DOI Paper"],
-                        "author": ["Bach, Yoonsoo P."],
+                        "author": ["Doe, John A."],
                         "year": "1998",
                         "bibstem": ["StatM"],
                         "volume": "17",

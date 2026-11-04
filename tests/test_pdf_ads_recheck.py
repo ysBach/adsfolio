@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import json
 import re
 import sqlite3
 from pathlib import Path
@@ -622,7 +623,7 @@ def test_unchanged_bibcode_reverifies_old_proof_without_renaming(library):
     digest = sha256_file(path)
     same = {**ADS_DOCUMENT, "bibcode": OLD, "alternate_bibcode": []}
 
-    result = run(state, FakeSearch([same]))
+    result = run(state, FakeSearch([same]), retry_remembered=True)
 
     after = state.registry.catalog.get_file(root, path.name)
     assert (result.updated, result.renamed, result.failures) == (1, 0, [])
@@ -1316,3 +1317,148 @@ def test_quota_is_checked_before_retrying_a_split_query(library, monkeypatch):
     )
     assert state.registry.catalog.get_file(root, first.name) == first_before
     assert state.registry.catalog.get_file(root, second.name) == second_before
+
+
+def _unverifiable_record(state):
+    """Return a PDF whose new ADS bibcode the PDF cannot confirm."""
+    path = state.directory / "paper.pdf"
+    write_pdf(path, doi="")
+    state.upsert_file(
+        path.name, {"bibcode": OLD, "sha256": sha256_file(path), "status": "resolved"}
+    )
+    return path, copy.deepcopy(ADS_DOCUMENT)
+
+
+def test_unverified_pdf_is_remembered_until_an_input_changes(library, monkeypatch):
+    import adsfolio.pdf.ads_recheck as module
+
+    _root, state = library
+    _path, document = _unverifiable_record(state)
+    first = run(state, FakeSearch([document]))
+    assert "needs review" in first.failures[0]
+    assert first.remembered_skipped == 0
+
+    real_extract = module.extract_pdf_own_identity
+    monkeypatch.setattr(
+        module, "extract_pdf_own_identity", lambda *_: pytest.fail("PDF opened")
+    )
+    second = run(state, FakeSearch([document]))
+    assert (second.failures, second.remembered_skipped) == ([], 1)
+    assert second.remembered_outdated == 0
+    monkeypatch.setattr(module, "__version__", "99.0.0")
+    assert run(state, FakeSearch([document])).remembered_outdated == 1
+
+    monkeypatch.setattr(module, "extract_pdf_own_identity", real_extract)
+    retitled = {**document, "title": ["A corrected title"]}
+    assert run(state, FakeSearch([retitled])).remembered_skipped == 0
+    retried = run(state, FakeSearch([retitled]), retry_remembered=True)
+    assert retried.remembered_skipped == 0
+    assert "needs review" in retried.failures[0]
+
+
+def test_pdf_without_metadata_doi_is_read_again_only_after_it_changes(
+    library, monkeypatch
+):
+    root, state = library
+    path = root / "scan.pdf"
+    write_pdf(path, doi="")
+    state.upsert_file(path.name, {"sha256": sha256_file(path), "status": "unresolved"})
+    reads = []
+    real_read = PdfIdentifier.extract_doi_from_metadata
+
+    def spy(self, pdf_path):
+        reads.append(Path(pdf_path).name)
+        return real_read(self, pdf_path)
+
+    monkeypatch.setattr(PdfIdentifier, "extract_doi_from_metadata", spy)
+    run(state, FakeSearch())
+    second = run(state, FakeSearch())
+    assert reads == ["scan.pdf"]
+    assert second.remembered_skipped == 1
+
+    write_pdf(path, doi="", tag="changed bytes")
+    state.upsert_file(path.name, {"sha256": sha256_file(path), "status": "unresolved"})
+    assert run(state, FakeSearch()).remembered_skipped == 0
+    assert reads == ["scan.pdf", "scan.pdf"]
+    from adsfolio.pdf.ads_recheck import UNVERIFIED_META_KEY
+
+    entries = json.loads(state.registry.get_meta(UNVERIFIED_META_KEY))
+    assert list(entries) == [f"metadata_doi:{sha256_file(path)}"]
+
+
+def test_failed_lookups_keep_remembered_failures(library):
+    from adsfolio.pdf.ads_recheck import UNVERIFIED_META_KEY
+
+    _root, state = library
+    _path, document = _unverifiable_record(state)
+    run(state, FakeSearch([document]))
+    remembered = state.registry.get_meta(UNVERIFIED_META_KEY)
+    assert remembered
+    run(state, FakeSearch(error=ADSError("unavailable")))
+    assert state.registry.get_meta(UNVERIFIED_META_KEY) == remembered
+    run(state, FakeSearch(), ads_enabled=False)
+    assert state.registry.get_meta(UNVERIFIED_META_KEY) == remembered
+    assert run(state, FakeSearch([document])).remembered_skipped == 1
+
+
+def test_preview_does_not_remember_failures(library):
+    from adsfolio.pdf.ads_recheck import UNVERIFIED_META_KEY
+
+    _root, state = library
+    _path, document = _unverifiable_record(state)
+    assert run(state, FakeSearch([document]), apply=False).failures
+    assert state.registry.get_meta(UNVERIFIED_META_KEY) is None
+
+
+def test_cancelled_recheck_keeps_old_and_new_failures(library):
+    from adsfolio.pdf.ads_recheck import UNVERIFIED_META_KEY, _UnverifiedMemory
+
+    _root, state = library
+    state.registry.set_meta(UNVERIFIED_META_KEY, json.dumps({"ads:old": {"key": "a"}}))
+    memory = _UnverifiedMemory.load(state, retry=False)
+    memory.scan_complete = True
+    memory.remember("ads", "new", "b", "needs review", "paper.pdf")
+    memory.save(state, cancelled=True)
+    entries = json.loads(state.registry.get_meta(UNVERIFIED_META_KEY))
+    assert set(entries) == {"ads:old", "ads:new"}
+
+
+def test_unchanged_bibcode_without_proof_is_skipped_without_reading_pdf(
+    library, monkeypatch
+):
+    import adsfolio.pdf.ads_recheck as module
+
+    root, state = library
+    path = root / "paper.pdf"
+    write_pdf(path, doi="")
+    state.upsert_file(
+        path.name, {"bibcode": OLD, "sha256": sha256_file(path), "status": "resolved"}
+    )
+    before = state.registry.catalog.get_file(root, path.name)
+    monkeypatch.setattr(
+        module, "extract_pdf_own_identity", lambda *_: pytest.fail("PDF opened")
+    )
+    same = {**ADS_DOCUMENT, "bibcode": OLD, "alternate_bibcode": []}
+    search = FakeSearch([same])
+    result = run(state, search)
+    assert search.queries
+    assert (result.updated, result.failures, result.remembered_skipped) == (0, [], 0)
+    assert state.registry.catalog.get_file(root, path.name) == before
+
+
+def test_failures_are_stored_before_the_run_ends(library, monkeypatch):
+    import adsfolio.pdf.ads_recheck as module
+    from adsfolio.pdf.ads_recheck import UNVERIFIED_META_KEY
+
+    _root, state = library
+    _path, document = _unverifiable_record(state)
+    stored = []
+    real_remember = module._UnverifiedMemory.remember
+
+    def remember(self, *args, **kwargs):
+        real_remember(self, *args, **kwargs)
+        stored.append(state.registry.get_meta(UNVERIFIED_META_KEY))
+
+    monkeypatch.setattr(module._UnverifiedMemory, "remember", remember)
+    run(state, FakeSearch([document]))
+    assert stored and stored[0] is not None

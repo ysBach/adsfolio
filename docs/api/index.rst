@@ -93,6 +93,7 @@ PDF catalog and processing
    adsfolio.pdf.readiness
    adsfolio.pdf.identify
    adsfolio.pdf.identify_settings
+   adsfolio.pdf.recheck_worker
    adsfolio.pdf.rename_settings
    adsfolio.pdf.renamer
    adsfolio.pdf.watcher
@@ -123,6 +124,8 @@ standalone bundle setup.
    adsfolio.gui.update_dialog
    adsfolio.gui.welcome
    adsfolio.gui.cv_dialog
+   adsfolio.gui.export_dialog
+   adsfolio.gui.search_completion
    adsfolio.gui.config
    adsfolio.gui.library
    adsfolio.gui.icons

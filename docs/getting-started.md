@@ -46,8 +46,9 @@ The video shows these steps with fictional sample papers:
 1. A new installation opens with three setup steps.
 2. **Add PDF Folder…** selects a folder of papers.
 3. ADSfolio asks whether to include subfolders.
-4. **OK** in the Identify prompt finds publication details.
-5. The library lists papers and their details.
+4. ADSfolio asks whether to watch the folder for new PDFs.
+5. **OK** in the Identify prompt finds publication details.
+6. The library lists papers and their details.
 
 It ends with the optional token and profile windows and **Software Update**.
 
@@ -59,10 +60,19 @@ It ends with the optional token and profile windows and **Software Update**.
 3. Select your PDF folder.
 4. If the folder has subfolders, choose **Include Subfolders** or
    **This Folder Only**. You can change this later with **Include Subdirectories**.
+5. Choose a watch option for new PDFs in this folder:
+   - **Watch, Identify, and Rename** processes each new PDF automatically.
+   - **Watch and Notify Only** shows a notice for each new PDF.
+   - **Do Not Watch** (the default) turns watching off.
 
 ![Welcome page with three setup steps](_static/welcome.png)
 
 ![Question that asks whether to include subfolders](_static/tutorial/subfolder-question.png)
+
+![Question that asks whether to watch the new library](_static/tutorial/watch-question.png)
+
+Each library has its own watch settings. Hover over a library in the sidebar
+to see them. Change them later on the library's context menu.
 
 Adding a root records file locations. It does not move your PDFs.
 The identification prompt opens next. Choose **OK** to start, or **Cancel** to
@@ -128,11 +138,11 @@ See [My paper is not on ADS](local-references.md).
 ## Find a paper
 
 Type in the **Find** field above the table. Words separated by spaces must
-all match. Search ignores accents and letter case, so `bockelee` finds
-`Bockelée`. To search one field, type its name and a colon:
+all match. Search ignores accents and letter case, so `doremont` finds
+`Dorémont`. To search one field, type its name and a colon:
 
 ```text
-author:"Bockelée-Morvan" year:2026 comet
+author:"Dorémont-Roe" year:2026 comet
 ```
 
 A list suggests field names and stored values while you type. Found text is

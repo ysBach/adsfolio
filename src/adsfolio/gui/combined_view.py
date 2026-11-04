@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from PySide6.QtCore import (
+    QFileInfo,
     QItemSelection,
     QItemSelectionModel,
     QModelIndex,
@@ -16,12 +17,22 @@ from PySide6.QtCore import (
     Qt,
     QTimer,
 )
-from PySide6.QtWidgets import QMenu, QTreeWidgetItem
+from PySide6.QtGui import QIcon
+from PySide6.QtWidgets import (
+    QApplication,
+    QFileIconProvider,
+    QMenu,
+    QStyle,
+    QTreeWidgetItem,
+)
 
 from .combined_library import CombinedLibrary, combined_columns
 from .combined_tree import CombinedTreeProxyModel
 from .library import build_columns
 from .notifications import Notice
+
+# The system PDF icon, found once from an existing PDF.
+_PDF_ICON: QIcon | None = None
 
 
 class CombinedViewController(QObject):
@@ -145,7 +156,10 @@ class CombinedViewController(QObject):
             blocker = QSignalBlocker(window.sidebar)
             self.toggle_item.setCheckState(0, Qt.Unchecked)
             del blocker
-            window.status.showMessage("Wait for the current operation to finish.")
+            window.status.showMessage(
+                "Combine libraries is unavailable now. "
+                + window._operation_wait_message()
+            )
             return
         self.enabled = bool(enabled)
         window.config.combined_view = self.enabled
@@ -181,10 +195,18 @@ class CombinedViewController(QObject):
         window = self.window
         if enabled and self.tree_model is None:
             tree = CombinedTreeProxyModel(window.model, self, root_labels=self.labels())
+            tree.file_icon = self._pdf_icon()
             self.tree_model = tree
             tree.modelAboutToBeReset.connect(self._capture_tree_selection)
             window._set_table_model(tree)
             window.table.setRootIsDecorated(True)
+            # Half the style's indentation keeps the folding arrows compact.
+            window.table.setIndentation(
+                window.table.style().pixelMetric(
+                    QStyle.PM_TreeViewIndentation, None, window.table
+                )
+                // 2
+            )
             if not self._tree_signals_connected:
                 window.table.expanded.connect(self._tree_expansion_changed)
                 window.table.collapsed.connect(self._tree_expansion_changed)
@@ -199,11 +221,31 @@ class CombinedViewController(QObject):
             self.tree_model = None
             window._set_table_model(window.model)
             window.table.setRootIsDecorated(False)
+            window.table.resetIndentation()
             tree.setSourceModel(None)
             tree.deleteLater()
             self._tree_restore_timer.stop()
             self._tree_pending_selection.clear()
             self._tree_pending_current = None
+
+    def _pdf_icon(self) -> QIcon:
+        """Return the system icon for PDF files.
+
+        The system gives its PDF icon only for a file that exists, so the
+        first existing PDF of the table supplies it. Without one, the generic
+        file icon is used. The icon is kept for the session.
+        """
+        global _PDF_ICON
+        if _PDF_ICON is not None:
+            return _PDF_ICON
+        model = self.window.model
+        for row in range(model.rowCount()):
+            record = model.record_at(row)
+            path = self.path_for(record) if record is not None else None
+            if path is not None and path.is_file():
+                _PDF_ICON = QFileIconProvider().icon(QFileInfo(str(path)))
+                return _PDF_ICON
+        return QApplication.style().standardIcon(QStyle.StandardPixmap.SP_FileIcon)
 
     def _capture_tree_selection(self) -> None:
         """Retain tree selection across a source-model reset."""

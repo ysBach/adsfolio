@@ -768,6 +768,20 @@ def _refresh_bibcode_metadata(
     )
 
 
+@pdf.command("recheck-worker", hidden=True)
+@click.argument("request", type=click.Path(exists=True, dir_okay=False, path_type=Path))
+def recheck_worker_command(request: Path) -> None:
+    """Run one automatic identifier recheck for the desktop app."""
+    import logging
+
+    from .recheck_worker import main as run_worker
+
+    logging.basicConfig(
+        level=logging.INFO, format="%(levelname)s %(name)s: %(message)s"
+    )
+    raise SystemExit(run_worker(request))
+
+
 @pdf.command("refresh-ads")
 @click.argument(
     "directory", type=click.Path(exists=True, file_okay=False, path_type=Path)

@@ -153,3 +153,33 @@ def test_parse_bibtex_entries_handles_nested_braces_macros_comments_and_raw_slic
     assert entry.pages == "206--215"
     assert entry.raw.startswith("@ARTICLE{1934JOSA...24..206W,")
     assert entry.raw.endswith("}")
+
+
+def test_remove_fields_keeps_every_other_byte():
+    from adsfolio.bibtex.sanitize import remove_fields
+
+    text = (
+        "@ARTICLE{key1,\n"
+        '  title = "{A, B {and} C}",\n'
+        "  abstract = {Text, with {nested, braces}},\n"
+        "  year = 2020\n"
+        "}\n"
+        "@string{jnl = {Journal}}\n"
+        "@misc{key2, note = {n}, ADSNOTE = {Provided}}\n"
+    )
+    assert remove_fields(text, ["abstract", "adsnote"]) == (
+        "@ARTICLE{key1,\n"
+        '  title = "{A, B {and} C}",\n'
+        "  year = 2020\n"
+        "}\n"
+        "@string{jnl = {Journal}}\n"
+        "@misc{key2, note = {n}}\n"
+    )
+    assert remove_fields(text, []) == text
+
+
+def test_remove_fields_keeps_an_entry_whose_braces_do_not_close():
+    from adsfolio.bibtex.sanitize import remove_fields
+
+    text = "@article{broken, abstract = {open\n"
+    assert remove_fields(text, ["abstract"]) == text

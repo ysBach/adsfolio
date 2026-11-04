@@ -41,7 +41,7 @@ MATCHING_DOC = {
     "bibcode": BIBCODE,
     "doi": [DOI],
     "title": ["Spectroscopic Analysis of Asteroid 2026 AA"],
-    "author": ["Bach, Y.", "Opitom, C."],
+    "author": ["Doe, J.", "Opitom, C."],
     "year": "2026",
 }
 

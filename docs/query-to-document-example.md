@@ -43,7 +43,7 @@ of the example. This leaves the package's dependency declarations unchanged.
 ```bash
 uv run python docs/examples/build_cv_markdown.py \
   --first-author-prefix "bach, y" \
-  --me-target "Bach, Y."
+  --me-target "Doe, J."
 ```
 
 Set `--query` to your ADS query and `--output-dir` to choose a destination.

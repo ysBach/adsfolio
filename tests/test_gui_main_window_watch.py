@@ -183,6 +183,14 @@ def test_f5_reconciles_files_preserving_selection_and_history(
     window.show()
     window.activateWindow()
     qtbot.waitUntil(window.isActiveWindow)
+    # The startup recheck would replace the refresh message in the status bar.
+    qtbot.waitUntil(
+        lambda: (
+            not window._ads_recheck_startup_pending
+            and window._ads_recheck_roots is None
+            and window.job is None
+        )
+    )
 
     qtbot.keyClick(window.table, Qt.Key_F5)
     qtbot.waitUntil(
@@ -1627,7 +1635,7 @@ def test_warning_manual_entry_saves_locally_without_retry_or_lookup(
     def enter_details(dialog) -> int:
         assert controller.pause_calls == [root.resolve()]
         dialog.fields["title"].setText("Manually identified paper")
-        dialog.fields["author"].setPlainText("Bach, Yoonsoo\nAnother, Author")
+        dialog.fields["author"].setPlainText("Doe, John\nAnother, Author")
         dialog.fields["year"].setText("2026")
         dialog.fields["pub"].setText("My Journal")
         dialog.fields["doi"].setPlainText("10.1234/manual")
@@ -1646,7 +1654,7 @@ def test_warning_manual_entry_saves_locally_without_retry_or_lookup(
 
     after = window.registries[str(root)].find_file_by_current_path(root, relative_path)
     assert after["metadata"]["title"] == ["Manually identified paper"]
-    assert after["metadata"]["author"] == ["Bach, Yoonsoo", "Another, Author"]
+    assert after["metadata"]["author"] == ["Doe, John", "Another, Author"]
     assert after["metadata"]["author_count"] == 2
     assert after["metadata"]["year"] == "2026"
     assert after["metadata"]["pub"] == "My Journal"
@@ -2672,6 +2680,7 @@ def test_adding_folder_offers_identification_directly(monkeypatch, qtbot, tmp_pa
     monkeypatch.setattr(
         window, "_guide_identification", lambda: calls.append(window.current_root)
     )
+    monkeypatch.setattr(window, "_ask_watch_new_library", lambda path: (False, False))
     window._add_root()
     assert calls == [root]
 
@@ -2910,10 +2919,83 @@ def test_adding_folder_with_subfolders_uses_the_chosen_scope(
         window, "_ask_include_subfolders", lambda path: asked.append(path) or choice
     )
     monkeypatch.setattr(window, "_guide_identification", lambda: None)
+    monkeypatch.setattr(window, "_ask_watch_new_library", lambda path: (False, False))
     window._add_root()
     assert asked == [root]
     assert window.root_entries[str(root.resolve())].recursive is recursive
     assert (window.model.total > 0) is recursive
+
+
+@pytest.mark.parametrize("choice", [(True, True), (True, False), (False, False)])
+def test_adding_folder_saves_and_applies_the_watch_choice(
+    monkeypatch, qtbot, tmp_path, choice
+):
+    from PySide6.QtWidgets import QFileDialog
+
+    root = tmp_path / "new-library"
+    root.mkdir()
+    window, controller, saves = _window_factory(monkeypatch, qtbot, GuiConfig())
+    monkeypatch.setattr(QFileDialog, "getExistingDirectory", lambda *args: str(root))
+    monkeypatch.setattr(window, "_ask_watch_new_library", lambda path: choice)
+    window._add_root()
+    entry = window.root_entries[str(root.resolve())]
+    assert (entry.watch_on_start, entry.auto_process_new_pdfs) == choice
+    assert saves[-1].roots == [entry]
+    assert controller.is_watching(root) is choice[0]
+    items = [
+        window.libraries_item.child(index)
+        for index in range(window.libraries_item.childCount())
+    ]
+    item = next(
+        item for item in items if item.data(0, Qt.UserRole) == str(root.resolve())
+    )
+    tooltip = item.toolTip(0)
+    assert tooltip.startswith(str(root.resolve()))
+    assert f"Watching now: {'Yes' if choice[0] else 'No'}" in tooltip
+    assert f"Autowatch at Start: {'On' if choice[0] else 'Off'}" in tooltip
+    assert f"Automatically Identify & Rename: {'On' if choice[1] else 'Off'}" in tooltip
+
+
+def test_blocked_watch_start_after_adding_folder_shows_a_notice(
+    monkeypatch, qtbot, tmp_path
+):
+    from PySide6.QtWidgets import QFileDialog
+
+    root = tmp_path / "new-library"
+    root.mkdir()
+    window, controller, _ = _window_factory(monkeypatch, qtbot, GuiConfig())
+    monkeypatch.setattr(QFileDialog, "getExistingDirectory", lambda *args: str(root))
+    monkeypatch.setattr(window, "_ask_watch_new_library", lambda path: (True, True))
+    window.job = object()
+    window._job_description = "local refresh of Papers"
+    try:
+        window._add_root()
+        assert not controller.is_watching(root)
+        key = f"watch-start:{root.resolve()}"
+        assert key in window.notice_bar.queued_keys()
+        assert window.root_entries[str(root.resolve())].watch_on_start
+    finally:
+        window.job = None
+
+
+def test_watch_question_defaults_to_no_watching(monkeypatch, qtbot, tmp_path):
+    from PySide6.QtWidgets import QMessageBox
+
+    window, _, _ = _window_factory(monkeypatch, qtbot, GuiConfig())
+    shown = []
+
+    def exec_box(box):
+        shown.append([button.text() for button in box.buttons()])
+        assert box.defaultButton().text() == "Do Not Watch"
+        return 0
+
+    monkeypatch.setattr(QMessageBox, "exec", exec_box)
+    assert window._ask_watch_new_library(tmp_path) == (False, False)
+    assert set(shown[0]) == {
+        "Watch, Identify, and Rename",
+        "Watch and Notify Only",
+        "Do Not Watch",
+    }
 
 
 def test_cancelling_the_subfolder_question_adds_nothing(monkeypatch, qtbot, tmp_path):

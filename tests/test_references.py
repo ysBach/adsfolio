@@ -463,3 +463,24 @@ def test_export_field_error_identifies_paper_and_corrective_action(
     assert "export again" in message
     assert isinstance(caught.value.__cause__, ValueError)
     assert references.catalog.get_document(document["id"]) == document
+
+
+def test_line_breaks_inside_a_field_do_not_stop_bibtex_export(tmp_path):
+    """BibTeX reads a run of whitespace as one space, so the export keeps it."""
+    from adsfolio.pdf.catalog import PdfCatalog
+    from adsfolio.references import LocalReferences
+
+    catalog = PdfCatalog(tmp_path / "catalog.sqlite")
+    service = LocalReferences(catalog)
+    reference = service.add(
+        cite_key="doe1892medium",
+        entry_type="article",
+        fields={
+            "title": "LVI.\n                    On a fictional medium",
+            "year": "1892",
+        },
+    )
+    text = service.export_bibtex([reference["id"]])
+    assert "@article{doe1892medium," in text
+    assert "On a fictional medium" in text
+    catalog.close()

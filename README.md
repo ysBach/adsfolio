@@ -45,7 +45,7 @@ for the steps.
   libraries or one library.
 - **Make your CV:** write your publication list in LaTeX, HTML, Markdown, or
   your own format.
-- **Find a paper fast:** type `author:bach year:2019`, or plain words. A list
+- **Find a paper fast:** type `author:doe year:2019`, or plain words. A list
   suggests fields and author names, and the table highlights the matches.
 
 See the [daily workflows](https://ysbach.github.io/adsfolio/docs/workflows.html)

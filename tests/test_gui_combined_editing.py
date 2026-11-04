@@ -1171,7 +1171,9 @@ def test_library_dialog_job_refreshes_its_own_root(
             self.job_started.callback(object())
 
     monkeypatch.setattr(f"adsfolio.gui.main_window.{dialog_name}", FakeDialog)
-    monkeypatch.setattr(window, "_watch_job", lambda job: setattr(window, "job", job))
+    monkeypatch.setattr(
+        window, "_watch_job", lambda job, *_: setattr(window, "job", job)
+    )
     monkeypatch.setattr(window, "refresh", lambda root=None: refreshes.append(root))
 
     getattr(window, open_method)(roots[1])

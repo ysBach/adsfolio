@@ -63,7 +63,7 @@ def _sidecar_entry(**overrides):
         "bibcode": "2024arXiv240112345B",
         "doi": "10.48550/arXiv.2401.12345",
         "title": ["Sample Title"],
-        "author": ["Bach, Yoonsoo"],
+        "author": ["Doe, John"],
         "year": "2024",
         "bibstem": ["arXiv"],
         "volume": "",

@@ -23,6 +23,7 @@ from PySide6.QtCore import (
     QTimer,
     Signal,
 )
+from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QApplication, QStyle
 
 from .models import FileTableModel
@@ -123,6 +124,8 @@ class CombinedTreeProxyModel(QAbstractProxyModel):
     ) -> None:
         super().__init__(parent)
         self._root_labels = dict(root_labels or {})
+        # Icon for file rows in the tree column, or `None` for no icon.
+        self.file_icon: QIcon | None = None
         self._virtual_root = _Node("virtual", None, "")
         self._groups: dict[TreeKey, _Node] = {}
         self._files_by_row: dict[int, _Node] = {}
@@ -550,6 +553,12 @@ class CombinedTreeProxyModel(QAbstractProxyModel):
             return None
         if node.kind == "file":
             source = self.sourceModel()
+            if (
+                role == Qt.DecorationRole
+                and index.column() == self._folder_column
+                and self.file_icon is not None
+            ):
+                return self.file_icon
             if index.column() == self._filename_column and node.record is not None:
                 if role == Qt.DisplayRole:
                     path = _path_text(node.record.get("current_path"))

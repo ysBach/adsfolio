@@ -98,36 +98,72 @@ class KeyPolicy:
     template : `str`
         Template for `KeyStyle.TEMPLATE`, with the placeholders of custom
         citation styles, for example ``{first_author_initials}{year}``.
+    author_format, max_authors, authors_when_truncated : `str`, `int`, `int`
+        How ``{authors}`` writes the author list in a template. The defaults
+        match the default Rename filenames: surname and initials, up to three
+        authors, and the first author alone for a longer list.
+    author_separator, author_truncation_suffix : `str`
+        Text between authors, and after a shortened author list. Both default
+        to ``+``, as in ``DoeJA+RoeA`` and ``DoeJA+``.
     """
 
     ads: KeyStyle = KeyStyle.BIBCODE
     other: KeyStyle = KeyStyle.DOI
     template: str = DEFAULT_KEY_TEMPLATE
+    author_format: str = "surname_initials"
+    max_authors: int = 3
+    authors_when_truncated: int = 1
+    author_separator: str = "+"
+    author_truncation_suffix: str = "+"
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "ads", KeyStyle(self.ads))
         object.__setattr__(self, "other", KeyStyle(self.other))
         if self.other is KeyStyle.BIBCODE:
             raise ValueError("Papers without a bibcode cannot use bibcode keys.")
-        # Validates the template syntax once, when the policy is made.
-        _template_style(self.template)
+        # Validates the template and author settings once, when the policy is made.
+        _template_style(self)
 
     @classmethod
     def from_mapping(cls, payload: Mapping[str, Any] | None) -> KeyPolicy:
         """Build a policy from saved settings, using defaults for gaps."""
         payload = payload or {}
+        defaults = cls()
+
+        def number(name: str) -> int:
+            value = payload.get(name, getattr(defaults, name))
+            return (
+                value
+                if isinstance(value, int) and not isinstance(value, bool)
+                else getattr(defaults, name)
+            )
+
+        def text(name: str) -> str:
+            value = payload.get(name, getattr(defaults, name))
+            return value if isinstance(value, str) else getattr(defaults, name)
+
         return cls(
             ads=KeyStyle(str(payload.get("ads", KeyStyle.BIBCODE.value))),
             other=KeyStyle(str(payload.get("other", KeyStyle.DOI.value))),
             template=str(payload.get("template") or DEFAULT_KEY_TEMPLATE),
+            author_format=text("author_format"),
+            max_authors=number("max_authors"),
+            authors_when_truncated=number("authors_when_truncated"),
+            author_separator=text("author_separator"),
+            author_truncation_suffix=text("author_truncation_suffix"),
         )
 
-    def to_mapping(self) -> dict[str, str]:
+    def to_mapping(self) -> dict[str, Any]:
         """Return the policy as JSON-compatible settings."""
         return {
             "ads": self.ads.value,
             "other": self.other.value,
             "template": self.template,
+            "author_format": self.author_format,
+            "max_authors": self.max_authors,
+            "authors_when_truncated": self.authors_when_truncated,
+            "author_separator": self.author_separator,
+            "author_truncation_suffix": self.author_truncation_suffix,
         }
 
 
@@ -149,9 +185,18 @@ class KeyAssignment:
         return not self.missing and not self.clashes
 
 
-def _template_style(template: str) -> CitationStyle:
+def _template_style(policy: KeyPolicy) -> CitationStyle:
     try:
-        return CitationStyle(id="citation-key", name="Citation key", template=template)
+        return CitationStyle(
+            id="citation-key",
+            name="Citation key",
+            template=policy.template,
+            author_format=policy.author_format,
+            max_authors=policy.max_authors,
+            authors_when_truncated=policy.authors_when_truncated,
+            author_separator=policy.author_separator,
+            author_truncation_suffix=policy.author_truncation_suffix,
+        )
     except CitationStyleError as exc:
         raise ValueError(f"Citation key template: {exc}") from exc
 
@@ -234,7 +279,7 @@ def citation_key(
     elif style is KeyStyle.SCHOLAR:
         key = scholar_key(metadata)
     elif style is KeyStyle.TEMPLATE:
-        key = CitationFormatter().render(_template_style(policy.template), metadata)
+        key = CitationFormatter().render(_template_style(policy), metadata)
     else:
         key = ""
     return sanitize_key(key)

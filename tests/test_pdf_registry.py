@@ -614,7 +614,7 @@ def _insert_query_records(registry: PdfRegistry, root: Path) -> None:
                 "bibcode": "2024ApJ...1..001A",
                 "doi": "10.1234/resolved",
                 "title": ["Thermal Paper"],
-                "author": ["Bach, Yoonsoo"],
+                "author": ["Doe, John"],
                 "year": "2024",
                 "source": "published",
                 "pub": "ApJ",
@@ -677,7 +677,7 @@ def test_registry_query_files_filters_searches_and_counts(tmp_path: Path) -> Non
         record["relative_path"] for record in registry.query_files(search="thermal")
     } == {"resolved.pdf", "duplicate.pdf"}
     assert {
-        record["relative_path"] for record in registry.query_files(search="Bach")
+        record["relative_path"] for record in registry.query_files(search="Doe")
     } == {"resolved.pdf", "duplicate.pdf"}
     assert registry.query_files(search="nested/unresolved")[0]["relative_path"] == (
         "nested/unresolved.pdf"
@@ -805,12 +805,12 @@ def test_registry_merges_flat_metadata_and_deletes_selected_records(
     assert registry.replace_file_metadata(
         tmp_path,
         "paper.pdf",
-        {"bibcode": "B1", "author": ["Bach, Yoonsoo"]},
+        {"bibcode": "B1", "author": ["Doe, John"]},
     )
     record = registry.find_file_by_relative_path(tmp_path, "paper.pdf")
 
     assert record is not None
-    assert record["metadata"]["author"] == ["Bach, Yoonsoo"]
+    assert record["metadata"]["author"] == ["Doe, John"]
     assert registry.delete_files_by_ids([file_id]) == 1
     assert registry.count_files() == 0
 
