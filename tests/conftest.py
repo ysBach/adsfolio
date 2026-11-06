@@ -12,31 +12,52 @@ from tempfile import TemporaryDirectory
 import platformdirs
 import pytest
 import requests
+import user_data_guard
+
+from adsfolio.config import Config
+
+# Replace the user directories before pytest imports any test module. The
+# directory stays for the whole session, also for late Qt teardown.
+_SESSION_DIRECTORY = TemporaryDirectory(prefix="adsfolio-pytest-session-")
+user_data_guard.install(Path(_SESSION_DIRECTORY.name))
 
 
 @pytest.fixture(scope="session", autouse=True)
-def isolated_session_fallback_directories():
-    """Keep late Qt teardown away from real user settings and caches."""
-    with TemporaryDirectory(prefix="adsfolio-pytest-session-") as directory:
-        base = Path(directory)
-        platformdirs.user_config_dir = lambda appname, *args, **kwargs: str(
-            base / "config" / appname
-        )
-        platformdirs.user_cache_dir = lambda appname, *args, **kwargs: str(
-            base / "cache" / appname
-        )
+def deny_external_network():
+    """Make every ``requests`` call fail during tests."""
 
-        def deny_network(*args, **kwargs):
-            raise requests.ConnectionError("External network is disabled during tests")
+    def deny_network(*args, **kwargs):
+        raise requests.ConnectionError("External network is disabled during tests")
 
-        requests.Session.request = deny_network
-        yield
+    requests.Session.request = deny_network
+    yield
+
+
+def pytest_sessionfinish(session, exitstatus) -> None:
+    """Fail the run when code outside a test accessed real user data."""
+    found = user_data_guard.take_violations()
+    if found:
+        session.exitstatus = pytest.ExitCode.TESTS_FAILED
+        for test_id, event, path in found:
+            sys.stderr.write(f"Real user data access: {test_id} {event} {path}\n")
 
 
 @pytest.fixture(autouse=True)
-def isolated_application_directories(monkeypatch, tmp_path: Path) -> Iterator[None]:
-    """Give every test its own platform configuration and cache directories."""
+def isolated_application_directories(
+    request, monkeypatch, tmp_path: Path
+) -> Iterator[None]:
+    """Give every test its own platform configuration and cache directories.
+
+    The test fails when it accessed the real user directories, also when
+    application code caught the error.
+    """
     _drain_qt_events()
+    user_data_guard.current_test = request.node.nodeid
+    # A recheck worker sets this override. Clear it, so it cannot pin later
+    # tests to an old directory.
+    monkeypatch.setattr(Config, "config_dir_override", None)
+    # A token in the environment would override the isolated token files.
+    monkeypatch.delenv(Config.ENV_VAR, raising=False)
     monkeypatch.setattr(
         platformdirs,
         "user_config_dir",
@@ -49,6 +70,13 @@ def isolated_application_directories(monkeypatch, tmp_path: Path) -> Iterator[No
     )
     yield
     _drain_qt_events()
+    user_data_guard.current_test = "<outside a test>"
+    found = user_data_guard.take_violations()
+    if found:
+        pytest.fail(
+            "Test accessed real user data:\n"
+            + "\n".join(f"{event} {path}" for _, event, path in found)
+        )
 
 
 def pytest_configure(config) -> None:
