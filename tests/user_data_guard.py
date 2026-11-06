@@ -1,12 +1,13 @@
-"""Stop tests from reading or writing the user's real ADSfolio directories.
+"""Stop tests from reading or writing the user's real ADSfolio data.
 
 Old tests wrote 505 fake papers into the user's real catalog. This guard
-records the real configuration and cache directories before the test
-configuration replaces ``platformdirs``. A Python audit hook then rejects
-file access under those directories.
+records the real configuration and cache directories and the ADS token files
+before the test configuration replaces ``platformdirs``. A Python audit hook
+then rejects file access under those paths.
 
 The hook sees Python file access and ``sqlite3.connect``. It does not see
-child processes or file access from C++ code such as Qt.
+child processes or file access from C++ code such as Qt. It does not see
+``Path.exists()``, so it rejects a token file only when the file exists.
 """
 
 from __future__ import annotations
@@ -51,21 +52,26 @@ class UserDataAccessError(RuntimeError):
     """
 
 
-def real_user_directories() -> list[Path]:
-    """Return the real configuration and cache directories of the user.
+def protected_paths() -> list[Path]:
+    """Return the real user paths that tests must not access.
 
     Call this function before tests replace the ``platformdirs`` functions.
 
     Returns
     -------
     list of `Path`
-        The configuration and cache directories for each application name.
+        The configuration and cache directories for each application name,
+        and the ADS token locations outside them. These are the token paths
+        of ``Config.get_token_paths()``.
     """
-    directories = []
+    paths = []
     for name in _APP_NAMES:
-        directories.append(Path(platformdirs.user_config_dir(name, appauthor=False)))
-        directories.append(Path(platformdirs.user_cache_dir(name, appauthor=False)))
-    return directories
+        paths.append(Path(platformdirs.user_config_dir(name, appauthor=False)))
+        paths.append(Path(platformdirs.user_cache_dir(name, appauthor=False)))
+    paths.append(Path.home() / ".config" / "ads")
+    paths.append(Path.home() / ".ads")
+    paths.append(Path.cwd() / ".ads-token")
+    return paths
 
 
 def _comparable(path: str) -> str:
@@ -108,7 +114,7 @@ def _audit(event: str, args: tuple) -> None:
 
 
 def install(session_directory: Path) -> None:
-    """Protect the real user directories and redirect ``platformdirs``.
+    """Protect the real user paths and redirect ``platformdirs``.
 
     Call this function once, when pytest imports the test configuration.
     Pytest imports test modules later, so module-level code cannot see real
@@ -124,9 +130,9 @@ def install(session_directory: Path) -> None:
     if _installed:
         return
     prefixes = set()
-    for directory in real_user_directories():
-        prefixes.add(_comparable(str(directory)))
-        prefixes.add(_comparable(os.path.realpath(directory)))
+    for path in protected_paths():
+        prefixes.add(_comparable(str(path)))
+        prefixes.add(_comparable(os.path.realpath(path)))
     _protected_prefixes = tuple(sorted(prefixes))
     platformdirs.user_config_dir = lambda appname, *args, **kwargs: str(
         session_directory / "config" / appname

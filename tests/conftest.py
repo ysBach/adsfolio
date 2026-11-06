@@ -56,6 +56,8 @@ def isolated_application_directories(
     # A recheck worker sets this override. Clear it, so it cannot pin later
     # tests to an old directory.
     monkeypatch.setattr(Config, "config_dir_override", None)
+    # A token in the environment would override the isolated token files.
+    monkeypatch.delenv(Config.ENV_VAR, raising=False)
     monkeypatch.setattr(
         platformdirs,
         "user_config_dir",
