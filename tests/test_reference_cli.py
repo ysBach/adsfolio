@@ -319,3 +319,21 @@ def test_export_fetch_ads_failure_keeps_the_existing_file(
     assert result.exit_code == 1
     assert "No file was written" in result.output
     assert output.read_text() == "old master\n"
+
+
+def test_export_leaves_out_abstract_like_the_desktop_export(tmp_path: Path) -> None:
+    runner = CliRunner()
+    args = ["reference", "--catalog", str(tmp_path / "catalog.sqlite")]
+    imported = runner.invoke(
+        main,
+        [*args, "import"],
+        input="@misc{Key2025, title={T}, abstract={Long text}, adsnote={Note}}",
+    )
+    assert imported.exit_code == 0, imported.output
+    default = runner.invoke(main, [*args, "export", "--all"])
+    assert default.exit_code == 0, default.output
+    assert "Long text" not in default.output
+    assert "Note" not in default.output
+    kept = runner.invoke(main, [*args, "export", "--all", "--leave-out", ""])
+    assert "Long text" in kept.output
+    assert "Note" in kept.output

@@ -224,6 +224,9 @@ adsfolio reference export --all --fetch-ads -o references.bib
 - With `--fetch-ads`, the command gets each missing ADS entry once and saves
   it. If ADS fails, the command stops and does not change the output file.
 - The command does not write an output file that already has the same text.
+- The export leaves out `abstract` and `adsnote`, as the desktop export does.
+  ADS abstracts can hold unbalanced braces, and BibTeX then skips the rest of
+  the entry. Use `--leave-out ''` to keep every field.
 - Omit `-o` to write BibTeX to standard output.
 - `reference import -` reads BibTeX from standard input.
 - `reference edit 12 --remove-field url` removes a field.

@@ -13,6 +13,7 @@ from typing import TextIO
 
 import click
 
+from .bibtex.sanitize import DEFAULT_EXCLUDED_FIELDS
 from .citekeys import KeyStyle
 from .config import Config
 from .pdf.catalog import PdfCatalog
@@ -216,6 +217,12 @@ def edit_reference(
     is_flag=True,
     help="First get ADS's own BibTeX for papers without a saved copy. Needs a token.",
 )
+@click.option(
+    "--leave-out",
+    default=", ".join(DEFAULT_EXCLUDED_FIELDS),
+    show_default=True,
+    help="Fields to leave out of every entry, separated by commas. Use '' to keep all.",
+)
 @click.pass_context
 def export_references(
     ctx: click.Context,
@@ -223,6 +230,7 @@ def export_references(
     export_all: bool,
     output: Path | None,
     fetch_ads: bool,
+    leave_out: str,
 ) -> None:
     """Export selected local IDs as BibTeX, including ADS and external entries.
 
@@ -230,6 +238,8 @@ def export_references(
     saved ADS entry then uses its stored fields. With --fetch-ads, the command
     gets and saves the missing ADS entries first. It stops and writes nothing
     when ADS fails. An output file with the same text is not written again.
+    As in the desktop export, the abstract and adsnote fields are left out
+    unless --leave-out names other fields.
     """
     if bool(document_ids) == export_all:
         raise click.UsageError("Supply reference IDs or --all, but not both.")
@@ -243,7 +253,8 @@ def export_references(
             raise ValueError("No references to export.")
         if fetch_ads:
             _fetch_ads_bibtex(ctx, library, ids)
-        text = library.export_bibtex(ids)
+        excluded = [name.strip() for name in leave_out.split(",") if name.strip()]
+        text = library.export_bibtex(ids, exclude_fields=excluded)
         if output is None or str(output) == "-":
             click.echo(text, nl=False)
         elif output.is_file() and output.read_text(encoding="utf-8") == text:

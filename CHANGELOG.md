@@ -157,6 +157,10 @@
 - `reference export -o` previously wrote the file each time. Now it does not
   write a file that already has the same text. A scheduled export then does
   not make Dropbox sync an unchanged file.
+- `reference export` previously wrote every field. In a 2,969-paper export,
+  3 ADS abstracts had unbalanced braces, and BibTeX skipped the rest of those
+  entries. Now the command leaves out `abstract` and `adsnote`, as **Export
+  All As…** does. Use `--leave-out ''` to keep every field.
 
 ### Example names
 
