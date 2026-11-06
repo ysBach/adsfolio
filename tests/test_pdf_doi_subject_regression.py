@@ -261,6 +261,12 @@ def test_unverified_watcher_preserves_candidate_for_review_and_pdf_bytes(
         assert "no explicitly labelled DOI" in outcome.message
         assert pdf.read_bytes() == original
         assert not (root / f"{BIBCODE}.pdf").exists()
+        # The library lists the PDF as unresolved, without candidate metadata.
+        saved = state.registry.find_file_by_current_path(root, pdf.name)
+        assert saved is not None
+        assert saved["status"] == "unresolved"
+        assert saved["sha256"] == sha256_file(pdf)
+        assert not saved["metadata"].get("bibcode")
 
 
 def test_complete_title_doi_automatically_identifies_and_renames(

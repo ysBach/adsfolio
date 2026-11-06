@@ -326,6 +326,13 @@ def recover_stale_record(
     return _recover_stale_record(state, relative_path, apply=apply)
 
 
+def _first_text(value: Any) -> str:
+    """Return the first value of a scalar or list field as stripped text."""
+    if isinstance(value, (list, tuple)):
+        value = value[0] if value else ""
+    return str(value or "").strip()
+
+
 def _recover_stale_record(
     state: Sidecar | CentralPdfRegistryState,
     relative_path: str,
@@ -890,6 +897,34 @@ class PdfRenamer:
                     ]
                     if len(aliases) == 1:
                         selected.add(aliases[0])
+
+        def target_for(source_path: Path, metadata: Mapping[str, Any]) -> Path:
+            """Render the target path from stored metadata without reading the PDF."""
+            self._validate_template_fields(template, metadata)
+            new_name = self.render(
+                template,
+                metadata,
+                author_format,
+                max_authors,
+                authors_when_truncated,
+                char_policy,
+                author_separator,
+                author_truncation_suffix,
+            )
+            target_directory = source_path.parent
+            if (
+                is_resolved_record(dict(metadata))
+                and move_resolved_from is not None
+                and move_resolved_to is not None
+            ):
+                try:
+                    source_path.relative_to(move_resolved_from)
+                except ValueError:
+                    pass
+                else:
+                    target_directory = move_resolved_to
+            return target_directory / new_name
+
         for original_name, metadata in files.items():
             current_name = metadata.get("current_filename", original_name)
             if selected is not None and current_name not in selected:
@@ -907,6 +942,31 @@ class PdfRenamer:
                 self.logger.warning("Missing file for rename: %s", source_path)
                 self.skipped[str(current_name)] = "PDF is missing. Refresh the library."
                 continue
+            if stale and not _first_text(metadata.get("bibcode")):
+                # Recovery needs a saved bibcode. Refuse before hashing the PDF.
+                self.identity_refused[str(current_name)] = (
+                    "Metadata is not ready for renaming. The saved metadata has no "
+                    "ADS bibcode. Review the PDF, then use Update by ID."
+                )
+                continue
+            if not stale:
+                # A file that already has its target name changes nothing, so
+                # it needs no hash or identity check. Only renamed files do.
+                try:
+                    planned = target_for(source_path, metadata)
+                except MissingTemplateFieldsError as exc:
+                    self.skipped[str(current_name)] = str(exc)
+                    continue
+                if planned == source_path or is_same_file_alias(source_path, planned):
+                    self.unchanged[str(current_name)] = planned.name
+                    continue
+                # An existing target blocks the rename whatever the check says.
+                if planned.exists():
+                    self.skipped[str(current_name)] = (
+                        f"Destination exists: {planned}. Review both PDFs before "
+                        "choosing a filename."
+                    )
+                    continue
 
             stored_sha = str(
                 metadata.get("sha256") or metadata.get(METADATA_SHA256_KEY) or ""
@@ -977,34 +1037,11 @@ class PdfRenamer:
                 continue
 
             try:
-                self._validate_template_fields(template, metadata)
-                new_name = self.render(
-                    template,
-                    metadata,
-                    author_format,
-                    max_authors,
-                    authors_when_truncated,
-                    char_policy,
-                    author_separator,
-                    author_truncation_suffix,
-                )
+                target_path = target_for(source_path, metadata)
             except MissingTemplateFieldsError as exc:
                 self.skipped[str(current_name)] = str(exc)
                 continue
-            target_directory = source_path.parent
-            if (
-                is_resolved_record(dict(metadata))
-                and move_resolved_from is not None
-                and move_resolved_to is not None
-            ):
-                try:
-                    source_path.relative_to(move_resolved_from)
-                except ValueError:
-                    pass
-                else:
-                    target_directory = move_resolved_to
-
-            target_path = target_directory / new_name
+            new_name = target_path.name
             unchanged = target_path == source_path or is_same_file_alias(
                 source_path, target_path
             )

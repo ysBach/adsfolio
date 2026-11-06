@@ -910,11 +910,11 @@ def test_rename_dialog_preview_never_saves(application, monkeypatch):
         save_settings=lambda scope, settings: calls.append((scope, settings)),
     )
     monkeypatch.setattr(
-        "adsfolio.gui.dialogs.open_registry_state",
+        "adsfolio.pdf.rename_preview.open_registry_state",
         lambda path: type("FakeState", (), {"close": lambda self: None})(),
     )
     monkeypatch.setattr(
-        "adsfolio.gui.dialogs.PdfRenamer.batch_rename",
+        "adsfolio.pdf.rename_preview.PdfRenamer.batch_rename",
         lambda *args, **kwargs: observed.update(kwargs) or [("old.pdf", "new.pdf")],
     )
 

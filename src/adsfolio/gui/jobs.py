@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+import json
+import logging
+import shutil
 import sys
+import tempfile
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
@@ -172,6 +176,107 @@ class CommandJob(QObject):
             self._process.kill()
 
 
+logger = logging.getLogger(__name__)
+
+
+class JsonWorkerJob(QObject):
+    """Run a hidden ``adsfolio pdf`` worker command in a child process.
+
+    The job writes ``request.json`` to a private temporary directory, starts
+    ``adsfolio pdf COMMAND REQUEST``, and reads ``result.json`` after the child
+    exits. A child process keeps Python work off the window's interpreter lock,
+    so the window stays responsive. `finished` carries ``(payload, error)``.
+
+    Subclasses set `command` and fill `request` after this initializer.
+    """
+
+    finished = Signal(object, object)
+    command = ""
+
+    def __init__(self, parent: QObject | None = None) -> None:
+        super().__init__(parent)
+        self._directory = Path(tempfile.mkdtemp(prefix=f"adsfolio-{self.command}-"))
+        self.request_path = self._directory / "request.json"
+        self.cancel_path = self._directory / "cancel"
+        self.result_path = self._directory / "result.json"
+        self.request: dict[str, Any] = {}
+        self._process: Any = None
+        self._last_output = ""
+        self._started = False
+        self._finished = False
+
+    def start(self) -> None:
+        """Write the request and start the child process once."""
+        if self._started:
+            return
+        self._started = True
+        self.request_path.write_text(json.dumps(self.request), encoding="utf-8")
+        self._launch(cli_argv("pdf", self.command, str(self.request_path)))
+
+    def _launch(self, argv: list[str]) -> None:
+        """Start the child process. Tests replace this with an in-process runner."""
+        process = QProcess(self)
+        process.setProcessChannelMode(QProcess.MergedChannels)
+        environment = QProcessEnvironment.systemEnvironment()
+        environment.insert("PYTHONUNBUFFERED", "1")
+        environment.insert("PYTHONIOENCODING", "utf-8")
+        process.setProcessEnvironment(environment)
+        process.readyReadStandardOutput.connect(self._read_output)
+        process.finished.connect(lambda code, _status: self._complete(code))
+        process.errorOccurred.connect(self._process_error)
+        self._process = process
+        process.start(argv[0], argv[1:])
+        process.closeWriteChannel()
+
+    def cancel(self) -> None:
+        """Ask the child to stop at its next check by creating the cancel file."""
+        try:
+            self.cancel_path.touch()
+        except OSError:
+            logger.exception("Could not request worker cancellation")
+
+    @property
+    def running(self) -> bool:
+        """Return whether the worker still needs to finish."""
+        return self._started and not self._finished
+
+    def _read_output(self) -> None:
+        if self._process is None:
+            return
+        text = bytes(self._process.readAllStandardOutput()).decode(errors="replace")
+        for line in text.splitlines():
+            if line.strip():
+                self._last_output = line
+                logger.info("%s: %s", self.command, line)
+
+    def _process_error(self, error: Any) -> None:
+        if error == QProcess.FailedToStart and self._process is not None:
+            self._last_output = self._process.errorString()
+            self._complete(-1)
+
+    def _complete(self, exit_code: int) -> None:
+        """Read the result file, remove temporary files, and report once."""
+        if self._finished:
+            return
+        self._read_output()
+        self._finished = True
+        payload: dict[str, Any] | None = None
+        error: str | None = None
+        try:
+            loaded = json.loads(self.result_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            detail = f": {self._last_output}" if self._last_output else ""
+            error = f"The worker process stopped with exit code {exit_code}{detail}"
+        else:
+            payload = loaded if isinstance(loaded, dict) else None
+        shutil.rmtree(self._directory, ignore_errors=True)
+        self._deliver(payload, error)
+
+    def _deliver(self, payload: dict[str, Any] | None, error: str | None) -> None:
+        """Emit the result. Subclasses convert the payload first."""
+        self.finished.emit(payload, error)
+
+
 def cli_argv(*args: str) -> list[str]:
     """Build CLI arguments for an installed package or a desktop bundle.
 
@@ -193,4 +298,4 @@ def cli_argv(*args: str) -> list[str]:
     return [sys.executable, "-m", "adsfolio.cli", *args]
 
 
-__all__ = ["CommandJob", "cli_argv"]
+__all__ = ["CommandJob", "JsonWorkerJob", "cli_argv"]

@@ -94,6 +94,7 @@ PDF catalog and processing
    adsfolio.pdf.identify
    adsfolio.pdf.identify_settings
    adsfolio.pdf.recheck_worker
+   adsfolio.pdf.rename_preview
    adsfolio.pdf.rename_settings
    adsfolio.pdf.renamer
    adsfolio.pdf.watcher

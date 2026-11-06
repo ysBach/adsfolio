@@ -52,6 +52,7 @@ from ..pdf.classification import (
     current_identity_proof,
     resolution_state,
 )
+from ..pdf.document_identity_evidence import PAGE_CITATION_AUTHORITY
 from ..pdf.registry import LOCKED_METADATA_FIELDS_KEY
 from .icons import ICON_SIZE, vector_icon
 from .library import (
@@ -1678,6 +1679,12 @@ class DetailPane(QWidget):
                 and proof.get("status") == "manual_confirmed"
                 and proof.get("authority") == "manual"
             )
+            page_citation = (
+                value == "resolved"
+                and current_proof
+                and proof.get("status") == "verified"
+                and proof.get("authority") == PAGE_CITATION_AUTHORITY
+            )
             if verified_external:
                 row.value.setText("Identified (no ADS link)")
             elif reviewed_conflict or manual_associated:
@@ -1692,6 +1699,8 @@ class DetailPane(QWidget):
                     if value == "resolved"
                     else "Identified from filename (no ADS link)"
                 )
+            elif page_citation:
+                row.value.setText("Identified from page 1 (ADS linked)")
             elif value == "unresolved":
                 row.value.setText(
                     "Metadata available (identity unconfirmed)"
@@ -1716,6 +1725,9 @@ class DetailPane(QWidget):
                     else "No ADS record is linked."
                 )
                 if manual_associated
+                else "Page 1 shows this record's title, first author, year, volume, "
+                "and first page. The PDF states no DOI or arXiv ID."
+                if page_citation
                 else "ADS record linked. This does not verify the PDF contents."
                 if value == "resolved"
                 else "The PDF identifier matched a provider record. No ADS record is linked."

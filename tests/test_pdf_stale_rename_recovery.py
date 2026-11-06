@@ -278,14 +278,18 @@ def test_rename_refuses_changes_after_recovery_preview(
     tracked = _scan(state, root, path) if scan_first else before
     renamer = PdfRenamer()
     render = renamer.render
+    calls = []
 
     def render_and_change(*args, **kwargs):
+        # Rename renders once before the recovery preview and once after it.
+        # Each call makes a new change, so a change follows the preview.
         result = render(*args, **kwargs)
+        calls.append(None)
         if change == "pdf":
             path.write_bytes(path.read_bytes() + b"\n% concurrent change\n")
         else:
             changed = deepcopy(tracked["metadata"])
-            changed["notes"] = "Concurrent note"
+            changed["notes"] = f"Concurrent note {len(calls)}"
             state.registry.replace_file_metadata(root, path.name, changed)
         return result
 
@@ -297,7 +301,7 @@ def test_rename_refuses_changes_after_recovery_preview(
     assert saved["document_id"] == (None if scan_first else before["document_id"])
     assert not (root / f"{DOCUMENT['bibcode']}.pdf").exists()
     if change == "metadata":
-        assert saved["metadata"]["notes"] == "Concurrent note"
+        assert saved["metadata"]["notes"] == f"Concurrent note {len(calls)}"
 
 
 @pytest.mark.parametrize("change", ["pdf", "metadata"])

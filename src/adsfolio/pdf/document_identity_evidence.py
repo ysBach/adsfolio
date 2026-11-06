@@ -21,10 +21,16 @@ from pypdf import PdfReader
 from .upgrade_utils import _normalize_doi
 
 __all__ = [
+    "PAGE_CITATION_AUTHORITY",
     "DocumentDoiEvidence",
+    "PageCitationEvidence",
     "check_document_doi_evidence",
+    "check_page_citation_evidence",
     "corroborate_document_doi_evidence",
 ]
+
+# Proof authority for a match shown by the bibliographic data on page 1.
+PAGE_CITATION_AUTHORITY = "page_citation"
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -45,6 +51,18 @@ _TITLE_ENTITY_RE = re.compile(
     r"&(?:[A-Za-z][A-Za-z0-9]*|#(?:[0-9]+|[xX][0-9A-Fa-f]+));"
 )
 _TITLE_DASHES = str.maketrans({character: "-" for character in "‐‑‒–—−"})
+# A word broken across lines with a hyphen, for example "topogra-" + "phy".
+_LINE_END_HYPHEN_RE = re.compile(r"(?<=[^\W\d_])-[ \t]*\r?\n[ \t]*(?=[^\W\d_])")
+# Characters on a line other than letters, such as footnote marks or digits.
+_NO_LETTERS = r"(?:(?![^\W\d_])[^\n])*"
+# A line that holds only a correction-notice heading, such as "ERRATUM". The
+# notice repeats the original title and citation, so the match is refused.
+_CORRECTION_HEADING_RE = re.compile(
+    rf"(?im)^{_NO_LETTERS}"
+    r"(erratum|errata|corrigendum|correction|addendum|retraction)"
+    rf"{_NO_LETTERS}$"
+)
+_PAGE_DOI_TOKEN_RE = re.compile(r"(?i)(?<![A-Za-z0-9_])10\.\d{4,9}/[^\s\"<>]+")
 
 
 @dataclass(frozen=True)
@@ -360,3 +378,155 @@ def corroborate_document_doi_evidence(
     check_document_doi_evidence : Check evidence and explain a refusal.
     """
     return check_document_doi_evidence(pdf_bytes, provider_document).doi
+
+
+@dataclass(frozen=True)
+class PageCitationEvidence:
+    """Store the result of the page-1 citation check.
+
+    Parameters
+    ----------
+    matched : bool
+        `True` when page 1 shows the provider record's citation data.
+    reason : str
+        User-visible reason for a refusal. Empty on success.
+    """
+
+    matched: bool
+    reason: str = ""
+
+
+def _first_text(value: Any) -> str:
+    """Return the first non-empty string of a provider field."""
+    values = value if isinstance(value, (list, tuple)) else [value]
+    for item in values:
+        if item is not None and str(item).strip():
+            return str(item).strip()
+    return ""
+
+
+def _number_token(value: str) -> str:
+    """Return a pattern for `value` as a whole token, not part of a number."""
+    return rf"(?<![\w])(?<!\d\.){re.escape(value)}(?![\w])(?!\.\d)"
+
+
+def check_page_citation_evidence(
+    pdf_bytes: bytes,
+    provider_document: Mapping[str, Any],
+) -> PageCitationEvidence:
+    """Check that page 1 shows the provider record's citation data.
+
+    This check is for PDFs that state no DOI or arXiv ID, such as scans of
+    papers published before DOIs. Page 1 must show all of these:
+
+    1. The full provider title as the only text on its lines. Footnote marks,
+       digits, and punctuation may surround it. Case, spacing, typographic
+       dashes and quotes, and words hyphenated across a line break do not
+       matter.
+    2. The first author's surname as a whole word.
+    3. The publication year as a whole number.
+    4. The volume and then the first page, on one text line, as whole tokens.
+       An example is "ICARUS 73, 462--481 (1988)".
+
+    A DOI on page 1 that the provider record does not list refuses the match.
+    A line that holds only the heading Erratum, Errata, Corrigendum,
+    Correction, Addendum, or Retraction also refuses it. Such a notice repeats
+    the title and citation of the original paper.
+
+    Parameters
+    ----------
+    pdf_bytes : bytes
+        Immutable PDF contents.
+    provider_document : Mapping[str, Any]
+        Authoritative record with title, author, year, volume, and page.
+
+    Returns
+    -------
+    PageCitationEvidence
+        The result and, after a refusal, the first failed condition.
+    """
+    title = _first_text(provider_document.get("title"))
+    author = _first_text(provider_document.get("author"))
+    year = _first_text(provider_document.get("year"))
+    volume = _first_text(provider_document.get("volume"))
+    first_page = _first_text(provider_document.get("page"))
+    if not (title and author and year and volume and first_page):
+        return PageCitationEvidence(
+            False,
+            "The provider record lacks the title, first author, year, volume, "
+            "or first page for the page-1 citation check.",
+        )
+    try:
+        reader = PdfReader(io.BytesIO(bytes(pdf_bytes)))
+        if reader.is_encrypted or len(reader.pages) == 0:
+            return PageCitationEvidence(False, "ADSfolio cannot read page 1.")
+        page_text = reader.pages[0].extract_text() or ""
+    except Exception as exc:  # noqa: BLE001 - parsers raise many types
+        _LOGGER.debug("Failed to extract first page text: %s", exc)
+        return PageCitationEvidence(False, "ADSfolio cannot read page 1.")
+    page_text = unicodedata.normalize("NFKC", page_text)
+
+    provider_dois = {
+        _normalize_doi(str(value))
+        for value in (
+            provider_document.get("doi")
+            if isinstance(provider_document.get("doi"), (list, tuple))
+            else [provider_document.get("doi")]
+        )
+        if value
+    }
+    for match in _PAGE_DOI_TOKEN_RE.finditer(page_text):
+        page_doi = _normalize_doi(match.group().rstrip(").,;"))
+        if page_doi not in provider_dois:
+            return PageCitationEvidence(
+                False,
+                f"Page 1 shows DOI {page_doi}, which the provider record does not list.",
+            )
+
+    heading = _CORRECTION_HEADING_RE.search(page_text)
+    if heading is not None:
+        return PageCitationEvidence(
+            False,
+            f"Warning: page 1 has the heading {heading.group(1)!r}. This PDF can "
+            "be a correction notice and not the paper itself. A correction "
+            "notice repeats the title and citation of the original paper.",
+        )
+
+    # The title must be the only text on its lines, so a title quoted in a
+    # sentence, a reference, or an erratum heading does not count.
+    title_words = _normalize_page_title(_provider_title_text(title)).split()
+    title_pattern = re.compile(
+        rf"(?:^|\n){_NO_LETTERS}"
+        + r"\s+".join(re.escape(word) for word in title_words)
+        + rf"{_NO_LETTERS}(?=\n|$)"
+    )
+    page_variants = [
+        "\n".join(_normalize_page_title(line) for line in text.splitlines())
+        for text in (page_text, _LINE_END_HYPHEN_RE.sub("", page_text))
+    ]
+    if not title_words or not any(title_pattern.search(text) for text in page_variants):
+        return PageCitationEvidence(
+            False, "Page 1 does not show the full provider title on its own lines."
+        )
+
+    surname = _normalize_page_title(author.split(",", 1)[0])
+    if not surname or not re.search(
+        rf"(?<!\w){re.escape(surname)}(?!\w)", " ".join(page_variants[0].split())
+    ):
+        return PageCitationEvidence(
+            False, f"Page 1 does not show the first author's surname ({surname})."
+        )
+
+    if not re.search(_number_token(year), page_text):
+        return PageCitationEvidence(False, f"Page 1 does not show the year {year}.")
+
+    citation = re.compile(
+        _number_token(volume) + r".*?" + _number_token(first_page), re.IGNORECASE
+    )
+    if not any(citation.search(line) for line in page_text.splitlines()):
+        return PageCitationEvidence(
+            False,
+            f"Page 1 does not show volume {volume} and first page {first_page} "
+            "on one line.",
+        )
+    return PageCitationEvidence(True)

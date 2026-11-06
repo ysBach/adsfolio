@@ -10,8 +10,9 @@ import copy
 import hashlib
 import heapq
 import io
+import json
 import re
-from collections.abc import Collection, Mapping, Sequence
+from collections.abc import Collection, Iterable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -21,6 +22,7 @@ from bibtexparser.bparser import BibTexParser
 from bibtexparser.bwriter import BibTexWriter
 from pyparsing import ParseBaseException
 
+from .bibtex.sanitize import remove_fields, split_entry, with_cite_key
 from .citekeys import KeyAssignment, KeyPolicy, assign_keys, citation_key
 from .formatting import html_to_latex
 from .pdf.catalog import (
@@ -30,6 +32,9 @@ from .pdf.catalog import (
     REFERENCE_METADATA_KEY,
     PdfCatalog,
 )
+
+# Length of every ADS bibcode.
+BIBCODE_LENGTH = 19
 
 
 def _parse_database(text: str, *, strict: bool = True) -> BibDatabase:
@@ -304,6 +309,32 @@ def _reference_from_document(
     }
 
 
+def ads_bibtex_fingerprint(metadata: Mapping[str, Any]) -> str:
+    """Return a hash of the ADS fields that a saved ADS BibTeX entry reflects.
+
+    A saved entry is used only while this hash is unchanged. After an ADS
+    refresh changes these fields, export asks ADS for the entry again.
+    """
+    names = sorted({"bibcode", *REFERENCE_FIELD_MAP.values()})
+    payload = json.dumps(
+        {name: metadata.get(name) for name in names}, sort_keys=True, default=str
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _uses_ads_bibtex(document: Mapping[str, Any]) -> bool:
+    """Return whether export may use ADS's own entry for this document.
+
+    Papers with a local reference or a locked bibliographic field keep the
+    local fields, so your edits stay in the export.
+    """
+    metadata = document["metadata"]
+    if not document.get("bibcode") or metadata.get(REFERENCE_METADATA_KEY):
+        return False
+    locked = set(metadata.get(LOCKED_METADATA_FIELDS_KEY) or ())
+    return not locked & set(REFERENCE_FIELD_MAP.values())
+
+
 def _author_names(value: str) -> list[str]:
     """Split the BibTeX `and` separator only outside protected brace groups."""
     names = []
@@ -378,13 +409,93 @@ class LocalReferences:
         if key is not None and self._export_memo is not None:
             if self._export_memo[0] == key:
                 return self._export_memo[1]
-        references = [
-            _reference_from_document(document, self.policy)
-            for document in self.catalog.list_documents()
-        ]
+        saved_entries = getattr(self.catalog, "ads_bibtex_entries", dict)()
+        references = []
+        for document in self.catalog.list_documents():
+            references.append(
+                self._ads_reference(document, saved_entries)
+                or _reference_from_document(document, self.policy)
+            )
         if key is not None:
             self._export_memo = (key, references)
         return references
+
+    def _ads_reference(
+        self,
+        document: Mapping[str, Any],
+        saved_entries: Mapping[str, tuple[str | None, str]],
+    ) -> dict[str, Any] | None:
+        """Return the reference from the saved ADS entry, or `None`."""
+        saved = saved_entries.get(document.get("bibcode") or "")
+        if (
+            saved is None
+            or not saved[0]
+            or not _uses_ads_bibtex(document)
+            or saved[1] != ads_bibtex_fingerprint(document["metadata"])
+        ):
+            return None
+        parts = split_entry(saved[0])
+        if parts is None or not parts[2]:
+            return None
+        metadata = document["metadata"]
+        return {
+            "id": document["id"],
+            "bibcode": document["bibcode"],
+            "cite_key": citation_key(
+                {**metadata, "bibcode": document["bibcode"]},
+                self.policy,
+                own_key=_own_key(metadata),
+            ),
+            "entry_type": parts[0].lower(),
+            "fields": parts[2],
+            "ads_entry": saved[0],
+            "source": "ads",
+            "preambles": [],
+        }
+
+    def ads_bibtex_requests(self, document_ids: Sequence[int]) -> dict[str, str]:
+        """Return ``{bibcode: fingerprint}`` for papers without saved ADS BibTeX.
+
+        A paper is listed when no ADS result is saved for its current ADS
+        metadata. A saved "ADS has no entry" result is not listed again.
+        """
+        wanted = set(document_ids)
+        saved_entries = getattr(self.catalog, "ads_bibtex_entries", dict)()
+        requests: dict[str, str] = {}
+        for document in self.catalog.list_documents():
+            if document["id"] not in wanted or not _uses_ads_bibtex(document):
+                continue
+            fingerprint = ads_bibtex_fingerprint(document["metadata"])
+            saved = saved_entries.get(document["bibcode"])
+            if saved is None or saved[1] != fingerprint:
+                requests[document["bibcode"]] = fingerprint
+        return requests
+
+    def store_ads_bibtex(
+        self, entries: Mapping[str, str], requests: Mapping[str, str]
+    ) -> int:
+        """Save fetched ADS BibTeX for the requested papers.
+
+        Parameters
+        ----------
+        entries
+            Entry text by Bibcode, from ``ExportAPI.export_entries()``.
+        requests
+            The ``{bibcode: fingerprint}`` map from `ads_bibtex_requests`. A
+            requested Bibcode without an entry is saved as "ADS has no entry".
+
+        Returns
+        -------
+        int
+            The number of saved entries.
+        """
+        self.catalog.store_ads_bibtex(
+            {
+                bibcode: (entries.get(bibcode), fingerprint)
+                for bibcode, fingerprint in requests.items()
+            }
+        )
+        return sum(1 for bibcode in requests if entries.get(bibcode))
 
     def list(self) -> list[dict[str, Any]]:
         """Return references and their known PDF locations, including missing files."""
@@ -580,6 +691,8 @@ class LocalReferences:
         database = BibDatabase()
         excluded = {name.lower() for name in exclude_fields}
         validated: list[dict[str, Any]] = []
+        # Output in order: an index into `database.entries`, or ADS's own text.
+        chunks: list[int | str] = []
         # Stable topological ordering keeps unrelated selections in input order.
         while ready:
             reference = ordered[heapq.heappop(ready)]
@@ -598,6 +711,16 @@ class LocalReferences:
                 raise ValueError(
                     f"Reference {reference['cite_key']} has no bibliography fields; edit it before export"
                 )
+            if reference.get("ads_entry"):
+                # ADS's own text, with this export's key and field choices.
+                chunks.append(
+                    remove_fields(
+                        with_cite_key(reference["ads_entry"], reference["cite_key"]),
+                        excluded,
+                    ).strip()
+                    + "\n"
+                )
+                continue
             entry = _validated_entry(
                 reference["cite_key"],
                 reference["entry_type"],
@@ -612,13 +735,73 @@ class LocalReferences:
                     **entry["fields"],
                 }
             )
+            chunks.append(len(database.entries) - 1)
             for preamble in reference.get("preambles", []):
                 if preamble not in database.preambles:
                     database.preambles.append(preamble)
         _check_round_trip(database.entries, validated)
         writer = BibTexWriter()
         writer.order_entries_by = None
-        return writer.write(database)
+        if all(isinstance(chunk, int) for chunk in chunks):
+            return writer.write(database)
+        # Mixed output keeps the selection order and the writer's layout:
+        # preambles first, then entries separated by one blank line.
+        preambles = BibDatabase()
+        preambles.preambles = list(database.preambles)
+        texts = []
+        for chunk in chunks:
+            if isinstance(chunk, int):
+                single = BibDatabase()
+                single.entries = [database.entries[chunk]]
+                texts.append(writer.write(single))
+            else:
+                texts.append(chunk)
+        return writer.write(preambles) + writer.entry_separator.join(texts)
+
+    def check_citations(self, cited_keys: Iterable[str]) -> dict[str, list[str]]:
+        """Find cited keys that are not current keys, and their current keys.
+
+        A key that equals the key of a reference is current. For another key,
+        each 19-character part is compared with the bibcode and the alternate
+        bibcodes of each reference. An ADS bibcode has 19 characters. A
+        preprint bibcode becomes an alternate bibcode after publication.
+
+        Parameters
+        ----------
+        cited_keys
+            Keys that a paper cites, for example from its ``.aux`` file.
+
+        Returns
+        -------
+        dict
+            One item for each cited key that is not current, in input order.
+            The value lists the current keys of the matched references. An
+            empty list means that no reference matched.
+        """
+        references = self._export_references()
+        current = {item["cite_key"] for item in references if item["cite_key"]}
+        alternates = {
+            document["id"]: document["metadata"].get("alternate_bibcode") or []
+            for document in self.catalog.list_documents()
+        }
+        by_bibcode: dict[str, set[str]] = {}
+        for item in references:
+            if not item["cite_key"]:
+                continue
+            codes = alternates.get(item["id"], [])
+            codes = [codes] if isinstance(codes, str) else list(codes)
+            for code in [item.get("bibcode") or "", *codes]:
+                if len(code) == BIBCODE_LENGTH:
+                    by_bibcode.setdefault(code, set()).add(item["cite_key"])
+        result: dict[str, list[str]] = {}
+        for key in dict.fromkeys(cited_keys):
+            if key in current:
+                continue
+            matches: set[str] = set()
+            for start in range(len(key) - BIBCODE_LENGTH + 1):
+                matches |= by_bibcode.get(key[start : start + BIBCODE_LENGTH], set())
+            result[key] = sorted(matches)
+        return result
 
     def attach_pdf(self, document_id: int, path: Path) -> dict[str, Any]:
         """Link a PDF at its current path without copying or renaming it."""

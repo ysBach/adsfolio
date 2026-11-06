@@ -130,6 +130,22 @@ Tests run `run_request` in a thread through the same files. Mark a test with
 `recheck_process` to start the real child process. The `no_recheck_offer`
 fixture hides the start question. Mark a test with `recheck_offer` to show it.
 
+## Rename preview process
+
+Build the Rename preview in a child process, so the window never waits for
+PDF reads. `batch_rename` renders each target name from stored metadata first.
+It hashes and checks a PDF only when the name would change and the target name
+is free. Keep that order: the identity check guards a rename, not a listing.
+
+1. `RenamePreviewJob` writes a request with `rename_preview.build_request`.
+2. It starts the hidden `adsfolio pdf rename-preview REQUEST` command.
+3. The worker writes plans, skipped files, and refused identities as JSON.
+
+`JsonWorkerJob` in `gui/jobs.py` holds the shared process, file, and result
+logic for both workers. A preview changes no files, so `RenamePreviewJob.cancel`
+kills the process. Tests build previews in-process through the same files.
+Mark a test with `rename_preview_process` to start the real child process.
+
 ## Documentation Check
 
 Run this before committing:

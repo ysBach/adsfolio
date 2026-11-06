@@ -2252,6 +2252,41 @@ class PdfCatalog:
             for document in documents:
                 self._upsert_ads_document(document, source=source)
 
+    def ads_bibtex_entries(self) -> dict[str, tuple[str | None, str]]:
+        """Return saved ADS BibTeX as ``{bibcode: (entry, fingerprint)}``.
+
+        A `None` entry means that ADS returned no entry for that Bibcode.
+        """
+        return {
+            row["bibcode"]: (row["entry"], row["metadata_fingerprint"])
+            for row in self._connection.execute(
+                "SELECT bibcode, entry, metadata_fingerprint FROM ads_bibtex"
+            )
+        }
+
+    def store_ads_bibtex(self, entries: Mapping[str, tuple[str | None, str]]) -> None:
+        """Save ADS BibTeX results as ``{bibcode: (entry, fingerprint)}``.
+
+        Save a `None` entry when ADS returned none, so the same metadata is not
+        requested again.
+        """
+        fetched_at = self._utc_timestamp()
+        with self._connection:
+            self._connection.executemany(
+                """
+                INSERT INTO ads_bibtex(bibcode, entry, metadata_fingerprint, fetched_at)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(bibcode) DO UPDATE SET
+                    entry = excluded.entry,
+                    metadata_fingerprint = excluded.metadata_fingerprint,
+                    fetched_at = excluded.fetched_at
+                """,
+                [
+                    (bibcode, entry, fingerprint, fetched_at)
+                    for bibcode, (entry, fingerprint) in entries.items()
+                ],
+            )
+
     def find_ads_document_by_bibcode(self, bibcode: str) -> dict[str, Any] | None:
         """Return a cached provider document by Bibcode."""
         row = self._connection.execute(
@@ -2664,6 +2699,15 @@ class PdfCatalog:
                     source_key TEXT PRIMARY KEY,
                     imported_at TEXT NOT NULL,
                     imported_count INTEGER NOT NULL
+                );
+                -- ADS's own BibTeX entry, fetched once. A NULL entry means
+                -- ADS returned none. The fingerprint names the ADS metadata
+                -- that the entry belongs to.
+                CREATE TABLE IF NOT EXISTS ads_bibtex (
+                    bibcode TEXT PRIMARY KEY,
+                    entry TEXT,
+                    metadata_fingerprint TEXT NOT NULL,
+                    fetched_at TEXT NOT NULL
                 );
                 """
             )

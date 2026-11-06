@@ -10,7 +10,6 @@ from typing import Any
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QAbstractItemView,
-    QApplication,
     QCheckBox,
     QComboBox,
     QDialog,
@@ -24,6 +23,7 @@ from PySide6.QtWidgets import (
     QListWidgetItem,
     QMessageBox,
     QPlainTextEdit,
+    QProgressBar,
     QPushButton,
     QSpinBox,
     QTableWidget,
@@ -46,11 +46,10 @@ from ..pdf.identify_settings import (
     IdentifySettings,
     IdentifyStrategy,
 )
-from ..pdf.registry import open_registry_state
+from ..pdf.rename_preview import build_request as build_preview_request
 from ..pdf.rename_settings import RenameSettings
-from ..pdf.renamer import PdfRenamer
 from ..user_profile import UserProfile, normalize_orcid
-from .jobs import CommandJob, cli_argv
+from .jobs import CommandJob, JsonWorkerJob, cli_argv
 
 
 class ManualMetadataDialog(QDialog):
@@ -773,6 +772,32 @@ class IdentifyDialog(QDialog):
         return job
 
 
+class RenamePreviewJob(JsonWorkerJob):
+    """Build a rename preview in a child process.
+
+    The preview reads every tracked PDF, so it must not run in the window's
+    process. `finished` carries the `run_request` payload and an error.
+    """
+
+    command = "rename-preview"
+
+    def __init__(
+        self, root: Path, options: Mapping[str, Any], parent: Any = None
+    ) -> None:
+        super().__init__(parent)
+        self.request = build_preview_request(
+            root,
+            options,
+            config_dir=Config.get_config_dir(),
+            result_path=self.result_path,
+        )
+
+    def cancel(self) -> None:
+        """Stop the preview at once. A preview changes no files."""
+        if self._process is not None:
+            self._process.kill()
+
+
 class RenameDialog(QDialog):
     """Preview and apply registry-backed PDF renames."""
 
@@ -926,6 +951,13 @@ class RenameDialog(QDialog):
         layout = QVBoxLayout(self)
         layout.addLayout(form)
         layout.addWidget(self.summary)
+        self.preview_progress = QProgressBar(self)
+        self.preview_progress.setRange(0, 0)
+        self.preview_progress.setTextVisible(False)
+        self.preview_progress.hide()
+        layout.addWidget(self.preview_progress)
+        self._preview_job: RenamePreviewJob | None = None
+        self._preview_directories: tuple[Path, Path] | None = None
         layout.addWidget(self.table)
         layout.addWidget(self.skipped_label)
         layout.addWidget(self.skipped_details)
@@ -1051,40 +1083,80 @@ class RenameDialog(QDialog):
             return str(target_path)
 
     def preview(self) -> None:
-        """Build a one-shot in-process preview from the registry state."""
-        state = open_registry_state(self.root)
-        state_directory = Path(getattr(state, "directory", self.root)).resolve()
+        """Start a preview in a child process. The dialog stays responsive."""
+        state_directory = self.root.resolve()
         unresolved_directory = self._unresolved_directory()
-        QApplication.setOverrideCursor(Qt.WaitCursor)
-        try:
-            renamer = PdfRenamer()
-            plans = renamer.batch_rename(
-                state,
-                template=self.template.text(),
-                dry_run=True,
-                author_format=self._format(),
-                max_authors=self.max_authors.value(),
-                authors_when_truncated=self.authors_when_truncated.value(),
-                char_policy=self.char_policy.currentText(),
-                author_separator=self.author_separator.text(),
-                author_truncation_suffix=self.author_truncation_suffix.text(),
-                move_resolved_from=(
-                    unresolved_directory
-                    if state_directory in unresolved_directory.parents
-                    else None
-                ),
-                move_resolved_to=state_directory,
-            )
-        except ValueError as exc:
-            self.summary.setText(str(exc))
-            self.table.setRowCount(0)
-            self.skipped_details.clear()
-            self.skipped_label.hide()
-            self.skipped_details.hide()
+        options = {
+            "template": self.template.text(),
+            "author_format": self._format(),
+            "max_authors": self.max_authors.value(),
+            "authors_when_truncated": self.authors_when_truncated.value(),
+            "char_policy": self.char_policy.currentText(),
+            "author_separator": self.author_separator.text(),
+            "author_truncation_suffix": self.author_truncation_suffix.text(),
+            "move_resolved_from": (
+                str(unresolved_directory)
+                if state_directory in unresolved_directory.parents
+                else None
+            ),
+            "move_resolved_to": str(state_directory),
+        }
+        self._stop_preview()
+        job = RenamePreviewJob(self.root, options, self)
+        self._preview_job = job
+        self._preview_directories = (state_directory, unresolved_directory)
+        job.finished.connect(
+            lambda payload, error, job=job: self._preview_finished(job, payload, error)
+        )
+        self.summary.setText("Checking each PDF's identity for the preview…")
+        self.preview_progress.show()
+        self.preview_button.setEnabled(False)
+        job.start()
+
+    def _stop_preview(self) -> None:
+        """Stop a running preview and ignore its result."""
+        job, self._preview_job = self._preview_job, None
+        if job is not None and job.running:
+            job.cancel()
+        self.preview_progress.hide()
+        self.preview_button.setEnabled(True)
+
+    def done(self, result: int) -> None:
+        """Stop a running preview when the dialog closes."""
+        self._stop_preview()
+        super().done(result)
+
+    def _show_preview_message(self, message: str) -> None:
+        self.summary.setText(message)
+        self.table.setRowCount(0)
+        self.skipped_details.clear()
+        self.skipped_label.hide()
+        self.skipped_details.hide()
+
+    def _preview_finished(
+        self,
+        job: RenamePreviewJob,
+        payload: dict[str, Any] | None,
+        error: str | None,
+    ) -> None:
+        """Show the plans from the worker."""
+        if job is not self._preview_job:
             return
-        finally:
-            state.close()
-            QApplication.restoreOverrideCursor()
+        self._preview_job = None
+        self.preview_progress.hide()
+        self.preview_button.setEnabled(True)
+        if payload is None or payload.get("error") or error:
+            detail = (payload or {}).get("error") or error or "no result"
+            self._show_preview_message(f"Preview failed: {detail}")
+            return
+        if payload.get("invalid"):
+            self._show_preview_message(str(payload["invalid"]))
+            return
+        state_directory, unresolved_directory = self._preview_directories or (
+            self.root.resolve(),
+            self._unresolved_directory(),
+        )
+        plans = [tuple(pair) for pair in payload.get("plans", [])]
         self.table.setRowCount(len(plans))
         for row, (old, new) in enumerate(plans):
             self.table.setItem(row, 0, QTableWidgetItem(old))
@@ -1100,13 +1172,13 @@ class RenameDialog(QDialog):
                     )
                 ),
             )
-        skipped = list(renamer.skipped.items())
+        skipped = list(payload.get("skipped", {}).items())
         skipped.extend(
             (
                 name,
                 f"Identity not verified: {reason}\nReview the PDF identity before renaming.",
             )
-            for name, reason in renamer.identity_refused.items()
+            for name, reason in payload.get("identity_refused", {}).items()
         )
         skipped.sort(key=lambda item: item[0])
         self.skipped_details.setPlainText(

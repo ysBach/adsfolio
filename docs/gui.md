@@ -614,9 +614,10 @@ placeholder.
 
 **Export Papers** writes papers from this library as BibTeX, citation text, or
 a publication list. All settings and a preview are in one window. It uses the
-details stored in the catalog, so it needs no ADS token and makes no network
-request. Papers outside ADS export too, for example papers that Crossref or
-DataCite identified, or details that you entered.
+details stored in the catalog. Only BibTeX contacts ADS, once for each paper,
+as **ADS BibTeX** below explains. Papers outside ADS export too, for
+example papers that Crossref or DataCite identified, or details that you
+entered.
 
 1. Choose **Tools → Export Selection As…** or **Tools → Export All As…**.
    You can also right-click selected rows.
@@ -639,6 +640,33 @@ window and shows the PDFs to identify.
 
 If BibTeX papers need a key that you type, or two papers share a key, ADSfolio
 asks for the keys when you copy or save. The window remembers the last format.
+
+#### ADS BibTeX
+
+For an ADS paper, BibTeX export uses the entry from the ADS export service. So
+a thesis exports as `@PHDTHESIS` with `school`, and every entry keeps `month`,
+`keywords`, and `adsurl`. ADSfolio changes only the citation key and leaves
+out the fields that you choose.
+
+ADSfolio saves each entry in the catalog on this computer. Later exports read
+the saved entry and make no network request.
+
+1. Open **Export Papers** with BibTeX selected.
+2. If some papers have no saved entry, the status line shows "Getting ADS
+   BibTeX". **Copy** and **Save As…** wait until it finishes.
+3. ADSfolio saves the entries. The preview then shows them.
+
+A first export of about 3,000 papers takes about 20 s. ADSfolio requests an
+entry again only after the ADS details of that paper change.
+
+These papers use the details stored in the catalog instead:
+
+- Papers outside ADS.
+- Papers with a locked title, author, year, journal, volume, issue, page, DOI,
+  or abstract. Your locked values stay in the export.
+- Papers for which ADS returns no entry. ADSfolio saves this result too.
+- Papers without a saved entry when ADSfolio cannot reach ADS or has no token.
+  The status line names the cause.
 
 #### Citation keys from a template
 
@@ -782,6 +810,17 @@ completion, ADSfolio reloads catalog records so counts and metadata are fresh.
 Rename shows a dry-run preview before it applies changes. The GUI does not
 render PDFs itself.
 
+**Preview** lists the PDFs whose names would change. Rename renders each new
+name from the stored metadata first. It reads a PDF only when the name would
+change, to check the PDF's identity before the rename. A PDF that already has
+its name, or whose new name another file already has, is not read. The preview
+runs in a separate process. **Cancel** or closing the window stops it. A
+preview changes no files.
+
+**Destination exists** means that another PDF already has the new name. This
+is often a second download of the same paper. Rename never overwrites a file.
+Compare the two PDFs, keep one, and then run Rename again.
+
 **Identify…** opens a short explanation with **OK**, **Advanced options…**, and
 **Cancel**. **OK** starts the lookup directly:
 
@@ -848,6 +887,30 @@ A publisher article DOI also needs agreement with the provider and page 1.
 Page 1 must contain the full provider title and exact DOI. The PDF metadata
 title may omit dashes. Other title characters must still agree.
 
+A PDF can state no DOI or arXiv ID at all. A scan of a paper from before DOIs
+is an example. Such a PDF matches the provider record only when page 1 shows
+all of these items:
+
+1. The full provider title as the only text on its lines. Footnote marks,
+   numbers, and punctuation can be next to it. Case, spacing, dash and
+   quotation-mark styles, and words hyphenated at a line end do not matter.
+2. The first author's surname as a whole word.
+3. The publication year.
+4. The volume and then the first page on one text line, for example
+   "ICARUS 73, 462--481 (1988)".
+
+A title inside a sentence, a reference, or a heading such as "Addendum:" does
+not count. A DOI on page 1 that the provider record does not list stops the
+match.
+
+A correction notice repeats the original title and citation. So a page-1 line
+that holds only Erratum, Errata, Corrigendum, Correction, Addendum, or
+Retraction also stops the match. The notice then starts with a warning that
+the PDF can be a correction notice. Open the PDF before you choose **Use This
+ID**. If the PDF is the original paper, **Use This ID** is correct. After a page-1 match, the details pane shows **Identified from page 1
+(ADS linked)**. Text recognition errors on page 1 can stop a correct match. In
+that case, use **Use This ID** or **Update by ID**.
+
 A displayed bibcode can be a lookup candidate that still needs verification.
 If corroboration fails, the notice names the failed check. For example, it can
 report that a DOI matches but the document titles differ. When a proposed ADS
@@ -864,6 +927,7 @@ The check has four outcomes:
 - **Verified:** the provider's record (ADS, Crossref, or DataCite) lists every
   identifier of the proposed record and every arXiv ID and DOI that the PDF
   states. Identify, Rename, the watcher, and ADS refresh actions can proceed.
+  A PDF with no identifier is also verified when its page-1 citation matches.
 - **Identified from filename:** an exact filename bibcode has one ADS match,
   and readable PDF identifiers do not conflict with it. The details pane marks
   this source. The filename alone does not independently verify PDF contents.
@@ -872,8 +936,8 @@ The check has four outcomes:
   different identifier of the same kind. Automatic actions refuse the change.
   Use **Update by ID** to review and confirm a different record for that PDF.
 - **Unverified:** the PDF states an identifier the record lacks, or a required
-  identity field is unreadable. A PDF without readable identifiers or an exact
-  filename match also remains unverified. Automatic actions leave it unchanged.
+  identity field is unreadable. A PDF without readable identifiers, an exact
+  filename match, or a matching page-1 citation also remains unverified. Automatic actions leave it unchanged.
   Enter an exact identifier with **Update by ID** to choose the record.
   If the PDF states an identifier the provider cannot corroborate, review the
   conflict before confirming the result. ADSfolio stores that confirmation with
@@ -1354,8 +1418,9 @@ current values:
   them to rename resolved PDFs and apply a configured unresolved-file move.
   Automatic renaming applies only to PDFs that pass the
   [PDF identity check](#pdf-identity-checks) as verified. Unverified and
-  conflicting arrivals stay in place with a warning. It
-  is off by default. When it is off, **Notifications** offers
+  conflicting arrivals stay in place with a warning. The library table lists
+  them as unresolved. Use the notice's **Use This ID**, or select the row and
+  use **Update by ID**. It is off by default. When it is off, **Notifications** offers
   **Identify & Rename** and **Dismiss** for each new arrival.
 
 When automatic processing is on, a proven annotation-only save keeps the

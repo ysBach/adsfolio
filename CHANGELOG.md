@@ -49,6 +49,21 @@
   **Cancel** button for every job. A cancelled recheck keeps the failures that
   it found before it stopped.
 
+### Rename
+
+- Rename previously hashed and identity-checked every tracked PDF before it
+  rendered the new name. A preview of a 2,912-PDF library froze the window for
+  an estimated 8 minutes. Now Rename renders the name from stored metadata
+  first. It reads a PDF only when the name would change and no other file has
+  that name. The same preview took 0.7 s. An 812-PDF library of unidentified
+  books took 0.07 s instead of 5 s.
+- **Preview** previously ran on the window thread. Now it runs in a separate
+  process, and **Cancel** or closing the window stops it.
+- Each PDF identity check previously asked PyMuPDF for page images, which it
+  encoded as PNG files that the check never used. Now the check reads only the
+  text. The stamp search took 14 ms per PDF instead of 57 ms, with the same
+  text. A preview took 90 ms per PDF instead of 162 ms.
+
 ### Library table
 
 - Clicking a cell in a partly hidden column previously scrolled the table
@@ -65,6 +80,26 @@
   ADSfolio asks: **Watch, Identify, and Rename**, **Watch and Notify Only**, or
   **Do Not Watch** (the default). Libraries that you added earlier keep their
   settings.
+- A new PDF whose candidate needed review previously did not show in the
+  library table. Only a notice showed it. For example, a 1988 scan with no DOI
+  matched the correct bibcode, but the identity check rejected it.
+  Now the table lists such a PDF as unresolved. Its file and name stay the
+  same. To accept the candidate, use **Use This ID** in the notice. You can
+  also select the row and use **Update by ID**.
+
+### Identify
+
+- A PDF with no DOI or arXiv ID previously could not match a record without
+  your confirmation. For example, a 1988 *Icarus* scan stayed unverified with
+  the correct candidate. Now the PDF matches when page 1 shows the record's
+  full title, first author's surname, year, volume, and first page. The title
+  must be the only text on its lines. The volume and first page must be on
+  one line. Identify, the watcher, and Rename then treat the PDF as verified.
+  The details pane shows **Identified from page 1 (ADS linked)**.
+- A correction notice repeats the title and citation of the original paper.
+  So a page-1 line with only Erratum, Errata, Corrigendum, Correction,
+  Addendum, or Retraction stops a page-1 match. The notice then starts with a
+  warning, for example "Warning: page 1 has the heading 'ERRATUM'."
 
 ### Export papers
 
@@ -96,6 +131,32 @@
 - Exports previously always wrote every field. Now **Leave out fields** drops
   the named fields, `abstract` and `adsnote` by default. **Export ADS
   Library…** uses the same list for its two BibTeX styles.
+- BibTeX export previously built every ADS entry from a few stored fields. A
+  thesis became `@article` with `journal = {Ph.D. Thesis}` and no `school`.
+  Books and conference papers also became `@article`. Now export uses the
+  entry from the ADS export service, for example `@PHDTHESIS` with
+  `school = {University of Colorado, Boulder}`. ADSfolio gets each entry once
+  and saves it in the catalog on this computer. Later exports work offline.
+
+### Citation keys
+
+- Template and Google Scholar keys previously kept accented letters, for
+  example `MuñozO_2021ApJS..256...17M`. Some letters dropped out of Scholar
+  keys, so "Bøgh" became `bgh`. Now both styles use ASCII characters only:
+  `MunozO_…` and `bogh…`. Typed and imported keys keep their characters.
+- Keys of authors with these letters change once. Run `adsfolio reference
+  check` on each paper to find the old keys.
+- New command: `adsfolio reference check main.aux`. It lists cited keys that
+  are not current keys, with the current key of each paper. A preprint key
+  becomes old after ADS publishes the paper. The command reads the catalog
+  only. It does not change files or contact ADS.
+- `adsfolio reference export` previously built ADS entries only from stored
+  fields, so a thesis became `@article`. Now `--fetch-ads` first gets the
+  missing ADS entries, as **Export All As…** does. If ADS fails, the command
+  stops and keeps the output file.
+- `reference export -o` previously wrote the file each time. Now it does not
+  write a file that already has the same text. A scheduled export then does
+  not make Dropbox sync an unchanged file.
 
 ### Example names
 

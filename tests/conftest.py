@@ -60,6 +60,57 @@ def pytest_configure(config) -> None:
         "markers",
         "recheck_offer: show the question that starts an identifier recheck",
     )
+    config.addinivalue_line(
+        "markers",
+        "rename_preview_process: build rename previews in a real child process",
+    )
+    config.addinivalue_line(
+        "markers",
+        "ads_bibtex_fetch: let BibTeX export ask ADS for its own entries",
+    )
+
+
+@pytest.fixture(autouse=True)
+def no_ads_bibtex_fetch(request, monkeypatch) -> None:
+    """Keep BibTeX export from asking ADS in tests that do not need it.
+
+    A developer token on the test computer would otherwise send requests.
+    Mark a test with ``ads_bibtex_fetch`` to use the real fetch code.
+    """
+    if request.node.get_closest_marker("ads_bibtex_fetch"):
+        return
+    try:
+        from adsfolio.gui import bibtex_export, main_window
+        from adsfolio.gui.export_dialog import ExportPapersDialog
+    except ImportError:
+        return
+    monkeypatch.setattr(ExportPapersDialog, "_fetch_ads_bibtex", lambda self: None)
+    monkeypatch.setattr(bibtex_export, "fetch_ads_bibtex_now", lambda *args: "")
+    monkeypatch.setattr(main_window, "fetch_ads_bibtex_now", lambda *args: "")
+
+
+@pytest.fixture(autouse=True)
+def in_process_rename_preview(request, monkeypatch) -> None:
+    """Build rename previews synchronously so test fakes apply.
+
+    The runner uses the same request and result files as the child process.
+    Mark a test with ``rename_preview_process`` to start the real process.
+    """
+    if request.node.get_closest_marker("rename_preview_process"):
+        return
+    try:
+        from adsfolio.gui.dialogs import RenamePreviewJob
+        from adsfolio.pdf import recheck_worker, rename_preview
+    except ImportError:
+        return
+
+    def launch(self, argv) -> None:
+        del argv
+        payload = rename_preview.run_request(self.request)
+        recheck_worker.write_result(self.result_path, payload)
+        self._complete(0)
+
+    monkeypatch.setattr(RenamePreviewJob, "_launch", launch)
 
 
 @pytest.fixture(autouse=True)

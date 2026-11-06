@@ -234,6 +234,73 @@ class ExportAPI:
             + "\n"
         )
 
+    def export_entries(
+        self,
+        bibcodes: Sequence[str],
+        format: str = "bibtexabs",
+        *,
+        cancelled: Callable[[], bool] | None = None,
+        progress: Callable[[int, int], None] | None = None,
+    ) -> dict[str, str]:
+        """Return one exported entry for each Bibcode that ADS knows.
+
+        Parameters
+        ----------
+        bibcodes : sequence of str
+            ADS Bibcodes. Requests use batches of `MAX_RECORDS_PER_REQUEST`.
+        format : str, optional
+            A format in `BIBLIOGRAPHY_FORMATS`. Defaults to ``bibtexabs``.
+        cancelled : callable, optional
+            Cancellation check before each network request.
+        progress : callable, optional
+            Called with the number of requested and total Bibcodes after each
+            batch.
+
+        Returns
+        -------
+        dict
+            Entry text by requested Bibcode. A Bibcode that ADS does not return
+            is absent.
+
+        Raises
+        ------
+        ADSError
+            If ADS returns a malformed response.
+        concurrent.futures.CancelledError
+            If cancellation is requested.
+        """
+        if format not in self.BIBLIOGRAPHY_FORMATS:
+            raise ValueError(f"Unsupported bibliography format: {format}")
+        codes = list(dict.fromkeys(code.strip() for code in bibcodes if code.strip()))
+        requested = {code.lower(): code for code in codes}
+        entries: dict[str, str] = {}
+        for start in range(0, len(codes), self.MAX_RECORDS_PER_REQUEST):
+            if cancelled is not None and cancelled():
+                raise CancelledError("Bibliography export cancelled.")
+            batch = codes[start : start + self.MAX_RECORDS_PER_REQUEST]
+            response = self._client.post(
+                f"/export/{format}",
+                data={"bibcode": batch, "sort": "no sort", "outputformat": 2},
+            )
+            documents = response.get("docs", [])
+            if not isinstance(documents, list):
+                raise ADSError("ADS returned a malformed bibliography response.")
+            for document in documents:
+                if not isinstance(document, dict):
+                    raise ADSError("ADS returned a malformed bibliography record.")
+                code = document.get("bibcode")
+                reference = document.get("reference")
+                if not isinstance(code, str) or not isinstance(reference, str):
+                    raise ADSError("ADS returned a malformed bibliography record.")
+                original = requested.get(code.lower())
+                if original is not None and reference.strip():
+                    if format in BIBTEX_FORMATS:
+                        reference = repair_bibtex(reference)
+                    entries[original] = reference.strip()
+            if progress is not None:
+                progress(min(start + len(batch), len(codes)), len(codes))
+        return entries
+
     def bibtex(
         self,
         bibcodes: list[str],

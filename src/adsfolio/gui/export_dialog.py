@@ -7,7 +7,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import Qt, QThread, QTimer, Signal
 from PySide6.QtGui import QFontDatabase
 from PySide6.QtWidgets import (
     QApplication,
@@ -37,7 +37,7 @@ from PySide6.QtWidgets import (
 from ..bibtex.sanitize import DEFAULT_EXCLUDED_FIELDS
 from ..citations import CITATION_FIELD_HELP, CitationFormatter, CitationStyle
 from ..citekeys import KeyPolicy, KeyStyle
-from ..config import Config
+from ..config import AuthenticationError, Config
 from ..references import CitationKeyError, LocalReferences
 from .bibtex_export import (
     STYLE_HELP,
@@ -222,6 +222,43 @@ class SkippedPdfsDialog(QDialog):
         self.resize(640, 420)
 
 
+class AdsBibtexFetch(QThread):
+    """Fetch ADS's own BibTeX for papers in a worker thread.
+
+    The thread only talks to ADS. The window saves the result in the catalog,
+    because a catalog connection belongs to the thread that opened it.
+    """
+
+    progressed = Signal(int, int)
+    fetched = Signal(object, object)
+
+    def __init__(self, bibcodes: Sequence[str], parent: Any = None) -> None:
+        super().__init__(parent)
+        self._bibcodes = list(bibcodes)
+
+    def run(self) -> None:  # noqa: D102 -- QThread entry point
+        from ..client import ADSClient
+
+        try:
+            client = ADSClient()
+            try:
+                entries = client.export.export_entries(
+                    self._bibcodes,
+                    cancelled=self.isInterruptionRequested,
+                    progress=self.progressed.emit,
+                )
+            finally:
+                client.close()
+        except Exception as exc:  # noqa: BLE001 -- report every failure in the window
+            self.fetched.emit({}, str(exc) or type(exc).__name__)
+            return
+        self.fetched.emit(entries, None)
+
+
+# Running fetches whose window closed. They finish, then save nothing.
+_ORPHAN_FETCHES: set[AdsBibtexFetch] = set()
+
+
 class ExportPapersDialog(QDialog):
     """Choose papers, a format, and its settings, then copy or save the text.
 
@@ -273,6 +310,8 @@ class ExportPapersDialog(QDialog):
         self._show_unidentified = show_unidentified
         self._formatter = CitationFormatter()
         self.summary = summarize_papers(())
+        self._fetch: AdsBibtexFetch | None = None
+        self._fetch_requests: dict[str, str] = {}
         self._preview_timer = QTimer(self)
         self._preview_timer.setSingleShot(True)
         self._preview_timer.setInterval(200)
@@ -568,6 +607,72 @@ class ExportPapersDialog(QDialog):
         # The list dialog renders only what `render` passes it. Giving it all
         # papers would make its hidden preview render the whole list.
         self._settings_changed()
+        self._fetch_ads_bibtex()
+
+    def _fetch_ads_bibtex(self) -> None:
+        """Get ADS's own BibTeX once for papers that have no saved copy."""
+        if self.format_key != FORMAT_BIBTEX or self._fetch is not None:
+            return
+        try:
+            requests = self._references.ads_bibtex_requests(self.summary.document_ids)
+        except (ValueError, sqlite3.Error) as exc:
+            self.status.setText(f"Cannot read saved ADS BibTeX: {exc}")
+            return
+        if not requests:
+            return
+        try:
+            Config.get_token(prompt=False)
+        except AuthenticationError:
+            self.status.setText(
+                f"{_count(len(requests), 'ADS paper')} use local fields. "
+                "Add an ADS token to get ADS's own BibTeX."
+            )
+            return
+        self._fetch_requests = requests
+        self._fetch = AdsBibtexFetch(list(requests), self)
+        self._fetch.progressed.connect(self._fetch_progressed)
+        self._fetch.fetched.connect(self._fetch_finished)
+        self.status.setText(
+            f"Getting ADS BibTeX for {_count(len(requests), 'paper')}. "
+            "ADSfolio saves it on this computer, so this happens once."
+        )
+        self._update_preview()
+        self._fetch.start()
+
+    def _fetch_progressed(self, done: int, total: int) -> None:
+        self.status.setText(
+            f"Getting ADS BibTeX: {done:,} of {total:,} papers. "
+            "ADSfolio saves it on this computer, so this happens once."
+        )
+
+    def _fetch_finished(self, entries: dict[str, str], error: str | None) -> None:
+        fetch, requests = self._fetch, self._fetch_requests
+        self._fetch, self._fetch_requests = None, {}
+        if fetch is not None:
+            fetch.wait()
+            fetch.deleteLater()
+        if error is not None:
+            self.status.setText(
+                f"Could not get ADS BibTeX: {error} "
+                f"{_count(len(requests), 'paper')} use local fields for now."
+            )
+        else:
+            try:
+                saved = self._references.store_ads_bibtex(entries, requests)
+            except (ValueError, sqlite3.Error) as exc:
+                self.status.setText(f"Could not save ADS BibTeX: {exc}")
+            else:
+                missing = len(requests) - saved
+                self.status.setText(
+                    f"Saved ADS BibTeX for {_count(saved, 'paper')} on this computer."
+                    + (
+                        f" ADS has no BibTeX for {_count(missing, 'paper')}. "
+                        "They use local fields."
+                        if missing
+                        else ""
+                    )
+                )
+        self._update_preview()
 
     def _format_changed(self) -> None:
         keys = [key for key, _label, _name, _filter in FORMATS]
@@ -581,6 +686,7 @@ class ExportPapersDialog(QDialog):
         self.panels.setCurrentIndex(index)
         self.panels.adjustSize()
         self._settings_changed()
+        self._fetch_ads_bibtex()
 
     def _settings_changed(self, *_args: object) -> None:
         self._preview_timer.start()
@@ -646,6 +752,8 @@ class ExportPapersDialog(QDialog):
             ready = False
         if not papers:
             text = "No papers with details to export."
+        # Copy and Save wait for ADS BibTeX, so the file has ADS's entries.
+        ready = ready and not (self.format_key == FORMAT_BIBTEX and self._fetch)
         self.preview.setPlainText(text)
         self.copy_button.setEnabled(ready)
         self.save_button.setEnabled(ready)
@@ -773,4 +881,14 @@ class ExportPapersDialog(QDialog):
     def done(self, result: int) -> None:
         """Keep the list settings when the window closes."""
         self.list_dialog.save_settings()
+        fetch = self._fetch
+        if fetch is not None:
+            # Let the network request finish without the closed window.
+            self._fetch = None
+            fetch.fetched.disconnect(self._fetch_finished)
+            fetch.progressed.disconnect(self._fetch_progressed)
+            fetch.requestInterruption()
+            fetch.setParent(None)
+            _ORPHAN_FETCHES.add(fetch)
+            fetch.finished.connect(lambda: _ORPHAN_FETCHES.discard(fetch))
         super().done(result)

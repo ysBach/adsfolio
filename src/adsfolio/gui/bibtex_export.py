@@ -25,6 +25,7 @@ from PySide6.QtWidgets import (
 
 from ..citations import CITATION_FIELD_HELP
 from ..citekeys import KeyPolicy, KeyStyle, citation_key
+from ..config import ADSError, AuthenticationError, Config
 from ..references import CitationKeyError, LocalReferences
 
 _KEY_COLUMN = 3
@@ -382,6 +383,44 @@ def save_text_file(
     if not output.commit():
         raise OSError(output.errorString())
     return filename
+
+
+def fetch_ads_bibtex_now(service: LocalReferences, document_ids: Sequence[int]) -> str:
+    """Get and save ADS's own BibTeX for papers that have no saved copy.
+
+    Each paper is fetched once. Later exports read the saved copy. Use this
+    for a small selection, because it waits for ADS.
+
+    Returns
+    -------
+    str
+        A status message, or ``""`` when every paper already has a saved
+        result.
+    """
+    import requests as http
+
+    from ..client import ADSClient
+
+    wanted = service.ads_bibtex_requests(document_ids)
+    if not wanted:
+        return ""
+    try:
+        Config.get_token(prompt=False)
+    except AuthenticationError:
+        return (
+            f"{len(wanted):,} ADS papers use local fields. "
+            "Add an ADS token to get ADS's own BibTeX."
+        )
+    try:
+        client = ADSClient()
+        try:
+            entries = client.export.export_entries(list(wanted))
+        finally:
+            client.close()
+    except (ADSError, AuthenticationError, OSError, http.RequestException) as exc:
+        return f"Could not get ADS BibTeX: {exc} Local fields are used for now."
+    saved = service.store_ads_bibtex(entries, wanted)
+    return f"Saved ADS BibTeX for {saved:,} papers on this computer."
 
 
 def document_ids_of(records: Sequence[Mapping[str, Any]]) -> list[int]:

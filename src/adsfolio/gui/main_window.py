@@ -93,6 +93,7 @@ from .bibtex_export import (
     CitationKeySettingsDialog,
     document_ids_of,
     export_bibtex_asking_keys,
+    fetch_ads_bibtex_now,
 )
 from .citation_styles import CitationStylesDialog
 from .combined_view import CombinedViewController
@@ -4192,6 +4193,15 @@ class MainWindow(QMainWindow):
             return None
         catalog = registry.catalog
         service = LocalReferences(catalog, Config.load_key_policy())
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        try:
+            message = fetch_ads_bibtex_now(service, ids)
+        except (ValueError, sqlite3.Error) as exc:
+            message = f"Could not save ADS BibTeX: {exc}"
+        finally:
+            QApplication.restoreOverrideCursor()
+        if message:
+            self.status.showMessage(message, 8000)
         try:
             return export_bibtex_asking_keys(self, service, ids)
         except (ValueError, sqlite3.Error) as exc:

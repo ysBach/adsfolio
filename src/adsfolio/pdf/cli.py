@@ -782,6 +782,20 @@ def recheck_worker_command(request: Path) -> None:
     raise SystemExit(run_worker(request))
 
 
+@pdf.command("rename-preview", hidden=True)
+@click.argument("request", type=click.Path(exists=True, dir_okay=False, path_type=Path))
+def rename_preview_command(request: Path) -> None:
+    """Build one rename preview for the desktop app."""
+    import logging
+
+    from .rename_preview import main as run_preview
+
+    logging.basicConfig(
+        level=logging.INFO, format="%(levelname)s %(name)s: %(message)s"
+    )
+    raise SystemExit(run_preview(request))
+
+
 @pdf.command("refresh-ads")
 @click.argument(
     "directory", type=click.Path(exists=True, file_okay=False, path_type=Path)

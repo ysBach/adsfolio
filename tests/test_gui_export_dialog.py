@@ -17,6 +17,7 @@ from adsfolio.config import Config
 from adsfolio.gui.export_dialog import (
     FORMAT_CITATION,
     FORMAT_LIST,
+    AdsBibtexFetch,
     ExportPapersDialog,
     ExportScope,
     SkippedPdfsDialog,
@@ -221,3 +222,74 @@ def test_filename_style_keys_and_left_out_fields(qtbot, records):
     dialog.exclude_fields.setText("")
     dialog._update_preview()
     assert "abstract = {A fictional abstract.}" in dialog.preview.toPlainText()
+
+
+ADS_ENTRY = """@ARTICLE{2020ApJ...900....1D,
+       author = {{Doe}, John A. and {Roe}, Alice},
+        title = "{Dust of Small Stars}",
+      journal = {\\apj},
+         year = 2020,
+        month = may,
+       adsnote = {Provided by the SAO/NASA Astrophysics Data System}
+}"""
+
+
+@pytest.mark.ads_bibtex_fetch
+def test_dialog_gets_ads_bibtex_once_and_saves_it(qtbot, monkeypatch, records):
+    """ADS's entry is fetched once, saved, and reused by later exports."""
+    registry, rows = records
+    monkeypatch.setattr(
+        Config, "get_token", classmethod(lambda cls, *, prompt=True: "token")
+    )
+    starts: list[list[str]] = []
+
+    def start(fetch: AdsBibtexFetch) -> None:
+        starts.append(list(fetch._bibcodes))
+        fetch.fetched.emit({"2020ApJ...900....1D": ADS_ENTRY}, None)
+
+    monkeypatch.setattr(AdsBibtexFetch, "start", start)
+    dialog = _dialog(qtbot, registry, rows)
+    assert starts == [["2020ApJ...900....1D"]]
+    assert dialog.status.text() == "Saved ADS BibTeX for 1 paper on this computer."
+    text = dialog.preview.toPlainText()
+    assert text.startswith("@ARTICLE{2020ApJ...900....1D,")
+    assert "month = may" in text
+    assert "adsnote" not in text
+    assert dialog.save_button.isEnabled()
+
+    _dialog(qtbot, registry, rows)
+    assert len(starts) == 1
+
+
+@pytest.mark.ads_bibtex_fetch
+def test_dialog_keeps_local_fields_when_ads_fails(qtbot, monkeypatch, records):
+    registry, rows = records
+    monkeypatch.setattr(
+        Config, "get_token", classmethod(lambda cls, *, prompt=True: "token")
+    )
+    monkeypatch.setattr(
+        AdsBibtexFetch,
+        "start",
+        lambda fetch: fetch.fetched.emit({}, "Fictional network failure."),
+    )
+    dialog = _dialog(qtbot, registry, rows)
+    assert dialog.status.text().startswith(
+        "Could not get ADS BibTeX: Fictional network failure."
+    )
+    assert dialog.preview.toPlainText().startswith("@article{2020ApJ...900....1D,")
+    assert dialog.save_button.isEnabled()
+
+
+@pytest.mark.ads_bibtex_fetch
+def test_dialog_without_token_uses_local_fields(qtbot, monkeypatch, records):
+    from adsfolio.config import AuthenticationError
+
+    registry, rows = records
+
+    def no_token(cls, *, prompt=True):
+        raise AuthenticationError("No token")
+
+    monkeypatch.setattr(Config, "get_token", classmethod(no_token))
+    monkeypatch.setattr(AdsBibtexFetch, "start", lambda fetch: pytest.fail("fetch"))
+    dialog = _dialog(qtbot, registry, rows)
+    assert "Add an ADS token" in dialog.status.text()

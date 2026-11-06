@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -74,7 +75,7 @@ def _parse_fields(values: tuple[str, ...]) -> dict[str, str]:
 )
 @click.pass_context
 def reference_group(ctx: click.Context, catalog_path: Path | None) -> None:
-    """Keep external references alongside ADS records; no token is required."""
+    """Keep external references alongside ADS records. Only export --fetch-ads needs a token."""
     ctx.ensure_object(dict)
     ctx.obj["reference_catalog"] = catalog_path
 
@@ -210,14 +211,26 @@ def edit_reference(
     default=None,
     help="Write atomically to a .bib file; default is standard output.",
 )
+@click.option(
+    "--fetch-ads",
+    is_flag=True,
+    help="First get ADS's own BibTeX for papers without a saved copy. Needs a token.",
+)
 @click.pass_context
 def export_references(
     ctx: click.Context,
     document_ids: tuple[int, ...],
     export_all: bool,
     output: Path | None,
+    fetch_ads: bool,
 ) -> None:
-    """Export selected local IDs as BibTeX, including ADS and external entries."""
+    """Export selected local IDs as BibTeX, including ADS and external entries.
+
+    Without --fetch-ads, the command works offline. An ADS paper without a
+    saved ADS entry then uses its stored fields. With --fetch-ads, the command
+    gets and saves the missing ADS entries first. It stops and writes nothing
+    when ADS fails. An output file with the same text is not written again.
+    """
     if bool(document_ids) == export_all:
         raise click.UsageError("Supply reference IDs or --all, but not both.")
     with _open_library(ctx) as library:
@@ -228,15 +241,46 @@ def export_references(
         )
         if not ids:
             raise ValueError("No references to export.")
+        if fetch_ads:
+            _fetch_ads_bibtex(ctx, library, ids)
         text = library.export_bibtex(ids)
         if output is None or str(output) == "-":
             click.echo(text, nl=False)
+        elif output.is_file() and output.read_text(encoding="utf-8") == text:
+            click.echo(f"{output} is up to date.", err=True)
         else:
             with click.open_file(
                 str(output), "w", encoding="utf-8", atomic=True
             ) as stream:
                 stream.write(text)
             click.echo(f"Exported bibliography to {output}.", err=True)
+
+
+def _fetch_ads_bibtex(
+    ctx: click.Context, library: LocalReferences, ids: list[int]
+) -> None:
+    """Get and save ADS BibTeX for the papers in `ids` without a saved copy."""
+    wanted = library.ads_bibtex_requests(ids)
+    if not wanted:
+        return
+    import requests
+
+    from .client import ADSClient
+    from .config import ADSError, AuthenticationError
+
+    click.echo(f"Getting ADS BibTeX for {len(wanted):,} papers...", err=True)
+    try:
+        client = ADSClient(token=ctx.obj.get("token"))
+        try:
+            entries = client.export.export_entries(list(wanted))
+        finally:
+            client.close()
+    except (ADSError, AuthenticationError, requests.RequestException) as exc:
+        raise click.ClickException(
+            f"Could not get ADS BibTeX: {exc} No file was written."
+        ) from exc
+    saved = library.store_ads_bibtex(entries, wanted)
+    click.echo(f"Saved ADS BibTeX for {saved:,} papers.", err=True)
 
 
 @reference_group.command("keys")
@@ -281,6 +325,73 @@ def citation_keys(
     click.echo(f"ADS papers: {policy.ads.value}")
     click.echo(f"Papers outside ADS: {policy.other.value}")
     click.echo(f"Template: {policy.template}")
+
+
+_AUX_CITATION = re.compile(r"\\citation\{([^}]*)\}")
+_AUX_INPUT = re.compile(r"\\@input\{([^}]*)\}")
+
+
+def _aux_citations(path: Path, seen: set[Path] | None = None) -> list[str]:
+    """Return the keys in the ``\\citation`` lines of an ``.aux`` file.
+
+    The ``.aux`` files of ``\\include`` files, named in ``\\@input`` lines, are
+    read too. The ``*`` of ``\\nocite{*}`` is not a key and is left out.
+    """
+    seen = set() if seen is None else seen
+    path = path.resolve()
+    if path in seen:
+        return []
+    seen.add(path)
+    text = path.read_text(encoding="utf-8", errors="replace")
+    keys = [
+        key.strip()
+        for group in _AUX_CITATION.findall(text)
+        for key in group.split(",")
+        if key.strip() and key.strip() != "*"
+    ]
+    for name in _AUX_INPUT.findall(text):
+        child = path.parent / name
+        if child.is_file():
+            keys.extend(_aux_citations(child, seen))
+    return keys
+
+
+@reference_group.command("check")
+@click.argument(
+    "aux_file", type=click.Path(exists=True, dir_okay=False, path_type=Path)
+)
+@click.pass_context
+def check_citations(ctx: click.Context, aux_file: Path) -> None:
+    """Find old citation keys in a LaTeX .aux file. Show the current keys.
+
+    Run LaTeX first. The command reads the \\citation lines that BibTeX uses.
+    It does not read biblatex .aux files. It does not change files.
+
+    A preprint key becomes old when ADS publishes the paper with a new
+    bibcode. A key also becomes old when the key style changes.
+    """
+    keys = _aux_citations(aux_file)
+    if not keys:
+        raise click.ClickException(
+            f"{aux_file} has no \\citation lines. Run LaTeX with BibTeX first."
+        )
+    with _open_library(ctx) as library:
+        problems = library.check_citations(keys)
+    old = {key: found for key, found in problems.items() if found}
+    unknown = [key for key, found in problems.items() if not found]
+    cited = len(dict.fromkeys(keys))
+    click.echo(
+        f"{cited} cited keys: {cited - len(problems)} current, "
+        f"{len(old)} old, {len(unknown)} not in the library."
+    )
+    if old:
+        click.echo("Old keys (replace them in your .tex files):")
+        for key, found in old.items():
+            click.echo(f"  {key} -> {' or '.join(found)}")
+    if unknown:
+        click.echo("Keys not in the ADSfolio library (check them by hand):")
+        for key in unknown:
+            click.echo(f"  {key}")
 
 
 @reference_group.command("set-key")

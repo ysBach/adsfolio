@@ -134,6 +134,45 @@ adsfolio reference set-key 12 Roe2019Grains
 ```
 
 A key from `set-key`, or from imported BibTeX, always wins over the style.
+Template and `scholar` keys contain ASCII characters only. For example,
+"Muñoz, O." gives `MunozO`.
+
+### Find old keys in a paper
+
+A citation key can become old after you cite it. Two changes cause this:
+
+- ADS publishes a preprint, and the paper gets a journal bibcode.
+- You change the key style.
+
+`reference check` finds these keys. It reads the `.aux` file of your paper.
+
+1. Run LaTeX on the paper.
+2. Run the check on the `.aux` file:
+
+   ```bash
+   adsfolio reference check main.aux
+   ```
+
+3. Replace each old key in your `.tex` files with the key after `->`.
+
+Example output:
+
+```text
+33 cited keys: 28 current, 2 old, 3 not in the library.
+Old keys (replace them in your .tex files):
+  DoeJ_2023arXiv230112345D -> DoeJ_2024ApJ...960...12D
+  HanušJ_2015Icar..256..101H -> HanusJ_2015Icar..256..101H
+Keys not in the ADSfolio library (check them by hand):
+  Smith2025Report
+```
+
+- The command compares each key with the current keys of your library.
+- It finds the paper through the bibcode in the key. It also uses the old
+  bibcodes that ADS keeps for each paper.
+- It cannot match a key without a bibcode, for example a `scholar` key.
+- It reads the `\citation` lines that BibTeX uses. It does not read biblatex
+  `.aux` files.
+- It does not change files, and it does not contact ADS.
 
 ### Books, theses, and Google Scholar citations
 
@@ -174,8 +213,17 @@ adsfolio reference export 12 19 -o manuscript.bib
 
 # Export the entire local bibliography.
 adsfolio reference export --all -o references.bib
+
+# Get missing ADS entries first, then export. This needs an ADS token.
+adsfolio reference export --all --fetch-ads -o references.bib
 ```
 
+- Without `--fetch-ads`, the export works offline. An ADS paper without a
+  saved ADS entry then uses its stored fields. A thesis then becomes
+  `@article`.
+- With `--fetch-ads`, the command gets each missing ADS entry once and saves
+  it. If ADS fails, the command stops and does not change the output file.
+- The command does not write an output file that already has the same text.
 - Omit `-o` to write BibTeX to standard output.
 - `reference import -` reads BibTeX from standard input.
 - `reference edit 12 --remove-field url` removes a field.

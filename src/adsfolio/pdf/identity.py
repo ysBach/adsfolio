@@ -417,7 +417,10 @@ def _fitz_stamp_arxiv_ids(data: bytes) -> set[str]:
         try:
             if document.page_count == 0:
                 return found
-            blocks = document[0].get_text("dict")["blocks"]
+            # Text only. The default "dict" flags also encode every page image
+            # as PNG, which took about three quarters of this call's time.
+            flags = fitz.TEXTFLAGS_DICT & ~fitz.TEXT_PRESERVE_IMAGES
+            blocks = document[0].get_text("dict", flags=flags)["blocks"]
             for block in blocks:
                 for line in block.get("lines", ()):
                     dx, dy = line["dir"]
@@ -1114,6 +1117,24 @@ def assert_mutation_allowed(
         and not contradicted
     ):
         proof = _stamp(metadata, "verified", evidence.sha256, target)
+        from .document_identity_evidence import PAGE_CITATION_AUTHORITY
+
+        if (
+            proof is not None
+            and proof.get("authority") == PAGE_CITATION_AUTHORITY
+            and not evidence.has_identifier
+            and not evidence.subject_dois
+            and not proof.get("own_arxiv")
+            and not proof.get("own_doi")
+        ):
+            # The page-1 citation proof stays bound to this file hash and record.
+            return _provenance(
+                "verified",
+                PAGE_CITATION_AUTHORITY,
+                evidence,
+                target,
+                previous_proof=proof,
+            )
         if (
             proof is not None
             and proof.get("authority")
@@ -1155,7 +1176,11 @@ def assert_mutation_allowed(
             raise IdentityValidationError(
                 f"{name} changed while checking document evidence"
             )
-        from .document_identity_evidence import check_document_doi_evidence
+        from .document_identity_evidence import (
+            PAGE_CITATION_AUTHORITY,
+            check_document_doi_evidence,
+            check_page_citation_evidence,
+        )
 
         document_evidence = check_document_doi_evidence(pdf_bytes, provider_document)
         corroborated_doi = document_evidence.doi
@@ -1181,6 +1206,30 @@ def assert_mutation_allowed(
                     _stamp(metadata, "verified", evidence.sha256, target)
                     or _stamp(metadata, "manual_confirmed", evidence.sha256, target)
                 ),
+            )
+        # A PDF that states no identifier, such as a scan from before DOIs,
+        # can match by the citation data printed on page 1.
+        if (
+            corroborated_doi is None
+            and not evidence.has_identifier
+            and not evidence.subject_dois
+        ):
+            citation = check_page_citation_evidence(pdf_bytes, provider_document)
+            if citation.matched:
+                return _provenance(
+                    "verified",
+                    PAGE_CITATION_AUTHORITY,
+                    evidence,
+                    target,
+                    previous_proof=(
+                        _stamp(metadata, "verified", evidence.sha256, target)
+                        or _stamp(metadata, "manual_confirmed", evidence.sha256, target)
+                    ),
+                )
+            # The page-1 reason comes first, so a correction-notice warning
+            # leads the notice.
+            document_evidence_reason = " ".join(
+                part for part in (citation.reason, document_evidence_reason) if part
             )
 
     if (

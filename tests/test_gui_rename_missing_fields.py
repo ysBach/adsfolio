@@ -242,3 +242,47 @@ def test_preview_clears_old_skips_when_template_changes_or_fails(
     assert dialog.table.rowCount() == 0
     assert dialog.skipped_details.isHidden()
     dialog.close()
+
+
+@pytest.mark.rename_preview_process
+def test_preview_runs_in_a_child_process_without_blocking(
+    application, rename_library, qtbot, monkeypatch, tmp_path
+):
+    home = tmp_path / "child-home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    before = {path: path.read_bytes() for path in rename_library.rglob("*.pdf")}
+    dialog = _dialog(rename_library)
+    dialog.template.setText("{title}")
+    dialog.show()
+
+    dialog.preview()
+
+    # The call returns at once. The child process builds the preview.
+    assert dialog.summary.text().startswith("Checking each PDF's identity")
+    assert dialog.preview_progress.isVisible()
+    assert not dialog.preview_button.isEnabled()
+    qtbot.waitUntil(lambda: dialog._preview_job is None, timeout=60000)
+    assert dialog.summary.text() == "1 change(s)"
+    assert dialog.table.item(0, 1).text() == "Dust_Tail.pdf"
+    assert not dialog.preview_progress.isVisible()
+    assert dialog.preview_button.isEnabled()
+    assert {p: p.read_bytes() for p in rename_library.rglob("*.pdf")} == before
+    assert not list(home.rglob("pdf-library.sqlite"))
+    dialog.close()
+
+
+@pytest.mark.rename_preview_process
+def test_closing_the_dialog_stops_a_running_preview(
+    application, rename_library, qtbot, monkeypatch, tmp_path
+):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    dialog = _dialog(rename_library)
+    dialog.show()
+    dialog.preview()
+    job = dialog._preview_job
+    assert job is not None and job.running
+    dialog.reject()
+    assert dialog._preview_job is None
+    qtbot.waitUntil(lambda: not job.running, timeout=60000)
+    assert dialog.summary.text().startswith("Checking each PDF's identity")

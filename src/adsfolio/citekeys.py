@@ -5,16 +5,21 @@ and one for other papers. A key that the user typed, or that came with an
 imported BibTeX entry, always wins over the style. `assign_keys` never makes
 up a key: it reports papers without a key and keys that two papers share, so
 that the caller can ask the user.
+
+Template and Scholar keys contain ASCII characters only. ``anyascii`` changes
+other characters, for example "Muñoz" to "Munoz" and "Straße" to "Strasse".
+Typed and imported keys keep their characters.
 """
 
 from __future__ import annotations
 
 import enum
 import re
-import unicodedata
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from typing import Any
+
+from anyascii import anyascii
 
 from .citations import CitationFormatter, CitationStyle, CitationStyleError
 from .formatting import html_to_text
@@ -208,10 +213,8 @@ def _first(value: Any) -> str:
 
 
 def _ascii_word(text: str) -> str:
-    """Return lowercase ASCII letters and digits of `text` without accents."""
-    decomposed = unicodedata.normalize("NFKD", text)
-    plain = decomposed.encode("ascii", "ignore").decode("ascii").lower()
-    return re.sub(r"[^a-z0-9]", "", plain)
+    """Return the lowercase ASCII letters and digits of `text` after ``anyascii``."""
+    return re.sub(r"[^a-z0-9]", "", anyascii(text).lower())
 
 
 def sanitize_key(key: str) -> str:
@@ -279,7 +282,7 @@ def citation_key(
     elif style is KeyStyle.SCHOLAR:
         key = scholar_key(metadata)
     elif style is KeyStyle.TEMPLATE:
-        key = CitationFormatter().render(_template_style(policy), metadata)
+        key = anyascii(CitationFormatter().render(_template_style(policy), metadata))
     else:
         key = ""
     return sanitize_key(key)

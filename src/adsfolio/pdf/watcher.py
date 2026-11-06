@@ -169,6 +169,20 @@ class PdfWatcher:
         except ValueError as exc:
             raise ValueError(f"PDF is outside watched root: {path}") from exc
 
+    @staticmethod
+    def _track_unresolved(sidecar: Sidecar, relative_path: str, sha256: str) -> None:
+        """Save the PDF location as unresolved, without metadata."""
+        sidecar.upsert_file(
+            relative_path,
+            {
+                "current_filename": relative_path,
+                "sha256": sha256,
+                "status": "unresolved",
+                WATCH_PENDING_KEY: False,
+            },
+        )
+        sidecar.save()
+
     def _unique_destination(self, output_dir: Path, filename: str) -> Path:
         destination = output_dir / filename
         if not destination.exists():
@@ -398,19 +412,18 @@ class PdfWatcher:
             # Identifiers without failure tracking report no failures.
             failure = getattr(self.identifier, "identity_failures", {}).get(path)
             if failure is not None:
+                # List the PDF as unresolved, like a PDF with no candidate, so
+                # it shows in the library. Keep the file in place for review,
+                # and keep any resolved record at this path.
+                if apply and (
+                    existing_at_path is None
+                    or not is_resolved_record(existing_at_path[1])
+                ):
+                    self._track_unresolved(sidecar, relative_path, sha256)
                 raise failure
         if record is None:
             if apply:
-                sidecar.upsert_file(
-                    relative_path,
-                    {
-                        "current_filename": relative_path,
-                        "sha256": sha256,
-                        "status": "unresolved",
-                        WATCH_PENDING_KEY: False,
-                    },
-                )
-                sidecar.save()
+                self._track_unresolved(sidecar, relative_path, sha256)
             self._move_unresolved(path, sidecar, output_unresolved, apply)
             return None
 

@@ -17,7 +17,16 @@ from collections.abc import Iterable
 
 LOGGER = logging.getLogger(__name__)
 
-__all__ = ["BIBTEX_FORMATS", "brace_balanced", "repair_bibtex", "repair_field_text"]
+__all__ = [
+    "BIBTEX_FORMATS",
+    "DEFAULT_EXCLUDED_FIELDS",
+    "brace_balanced",
+    "remove_fields",
+    "repair_bibtex",
+    "repair_field_text",
+    "split_entry",
+    "with_cite_key",
+]
 
 #: ADS export formats whose output is BibTeX.
 BIBTEX_FORMATS = frozenset({"bibtex", "bibtexabs"})
@@ -193,6 +202,7 @@ def repair_bibtex(text: str) -> str:
 DEFAULT_EXCLUDED_FIELDS = ("abstract", "adsnote")
 
 _ENTRY_HEAD = re.compile(r"@\s*([A-Za-z]+)\s*([{(])")
+_DELIMITER = re.compile(r'[{}",]')
 
 
 def _closing_index(text: str, start: int, opener: str) -> int | None:
@@ -287,3 +297,64 @@ def remove_fields(text: str, fields: Iterable[str]) -> str:
             body = rebuilt + trailing
         out.append(text[position : match.end()] + body + text[end])
         position = end + 1
+
+
+def split_entry(text: str) -> tuple[str, str, dict[str, str]] | None:
+    """Return the type, key, and raw field values of the first entry.
+
+    Parameters
+    ----------
+    text : str
+        BibTeX text that starts with one entry, for example from ADS.
+
+    Returns
+    -------
+    tuple or None
+        ``(entry_type, cite_key, fields)``. Field names are lower case. Values
+        keep their delimiters and macros, for example ``jan``. `None` when no
+        complete entry is found.
+    """
+    match = _ENTRY_HEAD.search(text)
+    if match is None or match.group(2) != "{":
+        return None
+    if match.group(1).lower() in {"comment", "string", "preamble"}:
+        return None
+    # One pass over the delimiters only, which is fast for long abstracts.
+    depth = 1
+    in_quote = False
+    cuts = [match.end()]
+    end = None
+    for token in _DELIMITER.finditer(text, match.end()):
+        char = token.group()
+        if char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                end = token.start()
+                break
+        elif char == '"' and depth == 1:
+            in_quote = not in_quote
+        elif char == "," and depth == 1 and not in_quote:
+            cuts.append(token.start() + 1)
+    if end is None:
+        return None
+    cuts.append(end + 1)
+    parts = [text[start : stop - 1] for start, stop in zip(cuts, cuts[1:])]
+    fields: dict[str, str] = {}
+    for part in parts[1:]:
+        if "=" in part:
+            name, value = part.split("=", 1)
+            fields[name.strip().lower()] = value.strip()
+    return match.group(1), parts[0].strip(), fields
+
+
+def with_cite_key(text: str, cite_key: str) -> str:
+    """Return the text with the citation key of the first entry replaced."""
+    match = _ENTRY_HEAD.search(text)
+    if match is None:
+        return text
+    comma = text.find(",", match.end())
+    if comma < 0:
+        return text
+    return text[: match.end()] + cite_key + text[comma:]

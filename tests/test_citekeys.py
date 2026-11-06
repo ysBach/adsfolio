@@ -170,6 +170,33 @@ def test_template_keys_can_follow_the_default_filename_pattern(authors, key):
     assert citation_key(record, policy) == key
 
 
+@pytest.mark.parametrize(
+    ("author", "key"),
+    [
+        ("Muñoz, Olga", "MunozO_2021ApJS..256...17M"),
+        ("Bøgh, Søren", "BoghS_2021ApJS..256...17M"),
+        ("Straße, Łukasz", "StrasseL_2021ApJS..256...17M"),
+        ("van der Berg, Jan", "van_der_BergJ_2021ApJS..256...17M"),
+    ],
+)
+def test_template_keys_are_ascii(author, key):
+    policy = KeyPolicy(
+        ads=KeyStyle.TEMPLATE, template="{first_author_initials}_{bibcode}"
+    )
+    record = {"bibcode": "2021ApJS..256...17M", "author": [author]}
+    assert citation_key(record, policy) == key
+
+
+def test_scholar_keys_keep_letters_without_accent_marks():
+    record = {"author": ["Bøgh, S."], "year": "2020", "title": ["Straße"]}
+    assert scholar_key(record) == "bogh2020strasse"
+
+
+def test_own_key_keeps_its_characters():
+    policy = KeyPolicy(ads=KeyStyle.TEMPLATE, template="{first_author_initials}")
+    assert citation_key(ADS, policy, own_key="Muñoz2020") == "Muñoz2020"
+
+
 def test_saved_author_settings_round_trip_and_old_settings_use_defaults():
     policy = KeyPolicy(
         ads=KeyStyle.TEMPLATE,

@@ -98,6 +98,10 @@ words. It is not Google's list.
 A key that you typed, or that came with imported BibTeX, always wins over the
 style.
 
+Template and Google Scholar keys contain ASCII characters only. For example,
+"Muñoz, O." gives `MunozO`, and "Straße" gives `Strasse`. Typed and imported
+keys keep their characters.
+
 ### When papers need a key
 
 Export stops when a paper has no key, or when two papers share a key. ADSfolio

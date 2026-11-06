@@ -57,6 +57,7 @@ dependencies = [
     "pyyaml>=6.0",
     "bibtexparser>=1.4.3,<2",
     "pyparsing>=3.0",
+    "anyascii>=0.3",
 ]
 
 [project.optional-dependencies]

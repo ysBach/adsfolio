@@ -228,6 +228,12 @@ def test_reviewed_identifier_conflict_is_labeled_as_manual(qtbot, tmp_path, stat
             "unresolved",
             "Manually identified (no ADS link)",
         ),
+        (
+            "verified",
+            "page_citation",
+            "resolved",
+            "Identified from page 1 (ADS linked)",
+        ),
     ],
 )
 def test_detail_status_names_the_identity_source(
