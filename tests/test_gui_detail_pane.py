@@ -571,9 +571,13 @@ def test_table_header_context_menu_controls_column_visibility(
         action.text(): action for action in menu.actions() if not action.isSeparator()
     }
 
-    assert {column.header or "Resolution marker" for column in COLUMNS}.issubset(
-        actions
-    )
+    # The Duplicates view shows the Duplicate column by itself.
+    assert {
+        column.header or "Resolution marker"
+        for column in COLUMNS
+        if column.key != "duplicate_kind"
+    }.issubset(actions)
+    assert "Duplicate" not in actions
     assert actions["Bibcode"].isCheckable()
     assert actions["Bibcode"].isChecked()
 

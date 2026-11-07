@@ -105,6 +105,24 @@
   time and pauses after the current PDF. In a test with 16 queued PDFs,
   Update by ID started after 0.1 s and finished after 1.6 s.
 
+### Duplicates
+
+- The **Duplicates** view previously listed only PDFs with the same bytes. A
+  second download of a paper, for example `Li_2026_ApJL_999_L12.pdf` next to
+  its renamed copy, did not appear. Now the view also lists PDFs of the same
+  paper record. A new **Duplicate** column says **Same file** or **Same
+  paper**. A preprint and its published edition are not listed. In a
+  2,782-PDF library, the view lists 141 PDFs in about 0.1 s.
+- A rename conflict previously offered only **Show Both PDFs**, and the notice
+  read "destination already exists". Now the notice says whether the new PDF
+  is the same file, another copy of the paper, or a different paper.
+  **Review Both PDFs…** opens a window that compares the copies. It shows the
+  size, the dates, and the number of annotations.
+- In that window, or with **Review Duplicates…** in the Duplicates view, you
+  can move the older or the newer copy to the Trash. ADSfolio asks first. It
+  moves the copy only if the bytes did not change. When one identified copy
+  remains, ADSfolio renames it with your Rename settings.
+
 ### Identify
 
 - A PDF with no DOI or arXiv ID previously could not match a record without

@@ -6,7 +6,7 @@ import json
 import logging
 import sqlite3
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from copy import deepcopy
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -78,6 +78,7 @@ from ..pdf.registry import (
     LibraryRefresh,
     PdfRegistry,
     RecordFact,
+    pdf_edition,
 )
 from ..pdf.rename_settings import RenameSettings
 from ..pdf.search import FIELD_SEPARATOR, SEARCH_FIELDS
@@ -106,6 +107,7 @@ from .dialogs import (
     RenameDialog,
     UserProfileDialog,
 )
+from .duplicate_review import DuplicateCopy, DuplicateReviewDialog
 from .edition_merge import (
     EditionMergeDialog,
     EditionMergeRequest,
@@ -186,6 +188,7 @@ _FOREGROUND_OPERATION_LABELS = {
     "manual_metadata": "paper-details entry in",
     "edition_merge": "annotation merge review in",
     "rename": "rename in",
+    "rename_file": "rename in",
 }
 _MERGE_AUDIT_KEY = "_adsfolio_annotation_merge"
 
@@ -280,6 +283,10 @@ class _SettingsPersistenceCoordinator(Generic[_SettingsT]):
                     f"{exc}; rollback failed: {'; '.join(rollback_failures)}"
                 ) from exc
             raise _SettingsPersistenceError(str(exc)) from exc
+
+
+# Column that only the Duplicates view shows.
+DUPLICATE_COLUMN = "duplicate_kind"
 
 
 @dataclass(frozen=True)
@@ -412,6 +419,8 @@ class MainWindow(QMainWindow):
         self._pending_watch_refresh_roots: set[Path] = set()
         self._watch_refresh_selection_id: int | None = None
         self._pending_watch_dialog: tuple[str, Path] | None = None
+        # PDF to rename after a duplicate copy moved to the Trash.
+        self._pending_file_rename: Path | None = None
         self._manual_metadata_target: tuple[Path, Path, str | None] | None = None
         self._detail_document_snapshot: (
             tuple[str, int, int | None, dict[str, Any] | None] | None
@@ -2044,6 +2053,8 @@ class MainWindow(QMainWindow):
             self._open_manual_metadata(root)
         elif kind == "edition_merge":
             self._open_edition_merge(root)
+        elif kind == "rename_file":
+            self._launch_file_rename(root)
         else:
             self._open_rename_dialog(root)
 
@@ -2606,22 +2617,9 @@ class MainWindow(QMainWindow):
                 conflict_path=outcome.conflict_path,
                 event=event,
             )
-            # Conservative recommendation: check whether hashes match
-            try:
-                from ..pdf.files import sha256_file
-
-                src_hash = sha256_file(destination)
-                dst_hash = sha256_file(outcome.conflict_path)
-                same_hash = src_hash == dst_hash
-            except OSError:
-                same_hash = False
-
-            recommendation = (
-                " Both copies share identical content hash; one can be safely discarded."
-                if same_hash
-                else " Both copies exist with distinct content; review both to keep or merge annotations."
+            message = self._conflict_notice_text(
+                event.root, destination, outcome.conflict_path
             )
-            message = f"{destination.name}: destination already exists ({outcome.conflict_path.name}).{recommendation}"
 
         self.notice_bar.enqueue(
             Notice(
@@ -2836,6 +2834,234 @@ class MainWindow(QMainWindow):
         if self._update_from_identifier("", root=payload.root, path=payload.path):
             self.notice_bar.dismiss(self._watch_notice_key(payload))
 
+    def _conflict_copies(
+        self, root: Path, paths: Sequence[Path]
+    ) -> list[DuplicateCopy]:
+        """Return catalog facts for PDFs in a name conflict."""
+        root = root.expanduser().resolve()
+        registry = self.registries.get(str(root))
+        copies = []
+        for path in paths:
+            try:
+                relative = path.resolve().relative_to(root).as_posix()
+            except ValueError:
+                continue
+            record = (
+                registry.find_file_by_current_path(root, relative)
+                if registry is not None
+                else None
+            )
+            copy = (
+                self._duplicate_copy(root, record)
+                if record is not None
+                else DuplicateCopy(root=root, relative_path=relative)
+            )
+            if copy.sha256 is None:
+                # Hash only a PDF that the catalog has no digest for.
+                try:
+                    copy = replace(copy, sha256=sha256_file(copy.path))
+                except OSError:
+                    pass
+            copies.append(copy)
+        return copies
+
+    def _conflict_notice_text(
+        self, root: Path, destination: Path, conflict: Path
+    ) -> str:
+        """Say why a new PDF kept its name, from the stored catalog facts."""
+        copies = self._conflict_copies(root, (conflict, destination))
+        if (
+            len(copies) == 2
+            and copies[0].sha256
+            and copies[0].sha256 == copies[1].sha256
+        ):
+            reason = "It has the same bytes as"
+        elif (
+            len(copies) == 2
+            and copies[0].document_id is not None
+            and copies[0].document_id == copies[1].document_id
+        ):
+            reason = "It is another copy of the paper in"
+        else:
+            reason = "Another PDF already has its filename:"
+        return (
+            f"{destination.name}: not renamed. {reason} {conflict.name}. "
+            "Review both PDFs to keep one."
+        )
+
+    def _duplicate_copy(self, root: Path, record: Mapping[str, Any]) -> DuplicateCopy:
+        """Return the duplicate-window facts of one catalog record."""
+        return DuplicateCopy(
+            root=root,
+            relative_path=str(record.get("current_path") or record["relative_path"]),
+            sha256=str(record.get("sha256") or "") or None,
+            first_seen_at=record.get("first_seen_at"),
+            document_id=record.get("document_id"),
+        )
+
+    def _review_conflict(self, request: RenameConflictRequest) -> None:
+        """Open the duplicate window for a new PDF whose name is taken."""
+        copies = self._conflict_copies(
+            request.root, (request.conflict_path, request.source_path)
+        )
+        if len(copies) != 2:
+            self._show_collision_pair(request)
+            return
+        old, new = copies
+        if old.sha256 and old.sha256 == new.sha256:
+            message = (
+                f"{new.path.name} has the same bytes as {old.path.name}. "
+                "ADSfolio did not rename it, because that name is taken."
+            )
+        elif old.document_id is not None and old.document_id == new.document_id:
+            message = (
+                f"{new.path.name} is another copy of the paper in {old.path.name}. "
+                "The bytes differ, for example by annotations. ADSfolio did not "
+                "rename it, because that name is taken."
+            )
+        else:
+            message = (
+                f"{new.path.name} and {old.path.name} are different papers that get "
+                f"the same filename from the Rename settings. ADSfolio did not "
+                f"rename {new.path.name}."
+            )
+        self._open_duplicate_review(
+            copies, message, lambda: self._show_collision_pair(request)
+        )
+
+    def _review_duplicates(self, record: Mapping[str, Any]) -> None:
+        """Open the duplicate window for the group of one Duplicates-view row."""
+        registry = (
+            self.combined.registry()
+            if self.combined.enabled
+            else self.registries.get(str(self.current_root))
+        )
+        if registry is None:
+            return
+        document_id = record.get("document_id")
+        digest = record.get("sha256")
+        edition = pdf_edition(record)
+
+        def same_group(item: Mapping[str, Any]) -> bool:
+            if digest and item.get("sha256") == digest:
+                return True
+            other = pdf_edition(item)
+            return (
+                document_id is not None
+                and item.get("document_id") == document_id
+                and (not edition or not other or other == edition)
+            )
+
+        try:
+            group = [
+                item
+                for item in registry.query_records(duplicates_only=True)
+                if same_group(item)
+            ]
+        except (OSError, sqlite3.Error) as exc:
+            self.status.showMessage(f"Could not read the duplicate PDFs: {exc}")
+            return
+        copies = [
+            self._duplicate_copy(Path(str(item.get("root") or self.current_root)), item)
+            for item in group
+        ]
+        if len(copies) < 2:
+            self.status.showMessage("This PDF has no other copy.")
+            return
+        title = self._record_value(dict(record), "title")
+        bibcode = self._record_value(dict(record), "bibcode")
+        same_bytes = len({copy.sha256 for copy in copies}) == 1 and copies[0].sha256
+        message = (
+            "These PDFs have the same bytes."
+            if same_bytes
+            else "These PDFs are copies of one paper"
+            + (f": {title}" if title else "")
+            + (f" ({bibcode})" if bibcode else "")
+            + ". The bytes differ, for example by annotations."
+        )
+        self._open_duplicate_review(copies, message, lambda: None)
+
+    def _open_duplicate_review(
+        self,
+        copies: Sequence[DuplicateCopy],
+        message: str,
+        show_in_table: Callable[[], None],
+    ) -> None:
+        """Show the duplicate window, then rename a single remaining copy."""
+        dialog = DuplicateReviewDialog(self, copies, message)
+        moved: list[DuplicateCopy] = []
+        dialog.trashed.connect(
+            lambda copy: (moved.append(copy), self._duplicate_trashed(copy))
+        )
+        dialog.show_in_table.connect(show_in_table)
+        dialog.exec()
+        remaining = list(dialog.copies)
+        dialog.deleteLater()
+        if moved and len(remaining) == 1:
+            self._rename_kept_copy(remaining[0])
+
+    def _duplicate_trashed(self, copy: DuplicateCopy) -> None:
+        """Record a copy that moved to the Trash and refresh its library."""
+        registry = self.registries.get(str(copy.root))
+        if registry is not None:
+            try:
+                registry.catalog.mark_location_missing(copy.root, copy.relative_path)
+            except (ValueError, sqlite3.Error) as exc:
+                self.log.appendPlainText(
+                    f"Could not mark {copy.path} as removed: {exc}"
+                )
+        self.log.appendPlainText(f"Moved duplicate PDF to the Trash: {copy.path}")
+        self._schedule_watch_refresh(copy.root)
+
+    def _rename_kept_copy(self, copy: DuplicateCopy) -> None:
+        """Give the remaining identified copy its name from the Rename settings."""
+        registry = self.registries.get(str(copy.root))
+        record = (
+            registry.find_file_by_current_path(copy.root, copy.relative_path)
+            if registry is not None
+            else None
+        )
+        if record is None or record.get("status") != "resolved":
+            return
+        if (
+            self.job is not None
+            or self._pending_watch_dialog is not None
+            or self._pending_ads_refresh is not None
+        ):
+            self.status.showMessage(
+                "Another operation is running. Use Tools → Rename later to rename "
+                f"{copy.path.name}."
+            )
+            return
+        self._pending_file_rename = copy.path
+        self._request_foreground_dialog("rename_file", copy.root)
+
+    def _launch_file_rename(self, root: Path) -> None:
+        """Rename one PDF with the saved Rename settings. No ADS request."""
+        path = self._pending_file_rename
+        self._pending_file_rename = None
+        if path is None or not path.is_file() or str(root) not in self.registries:
+            self._resume_foreground_watch()
+            return
+        job = CommandJob(
+            cli_argv(
+                "pdf",
+                "rename",
+                str(root),
+                "--settings-scope",
+                self.config.rename_scopes.get(str(root), "global"),
+                "--file",
+                str(path),
+                "--apply",
+            ),
+            parent=self,
+            working_directory=root,
+        )
+        self._ads_refresh_root = root
+        self._watch_job(job, f"rename in {self._library_name(root)}")
+        self.status.showMessage(f"Renaming {path.name}")
+        job.start()
+
     def _show_collision_pair(self, request: RenameConflictRequest) -> None:
         """Select the two exact conflict paths in the main table."""
         root = request.root.expanduser().resolve()
@@ -2898,7 +3124,7 @@ class MainWindow(QMainWindow):
 
     def _handle_notice_action(self, payload: object) -> None:
         if isinstance(payload, RenameConflictRequest):
-            self._show_collision_pair(payload)
+            self._review_conflict(payload)
             return
         if isinstance(payload, EditionMergeRequest):
             if payload.event is not None and self._is_current_watch_event(
@@ -3077,6 +3303,7 @@ class MainWindow(QMainWindow):
             else self.registries[str(self.current_root)]
         )
         self.model.set_registry(registry, self.current_query)
+        self._sync_duplicate_column()
         if kind == "root":
             self._populate_views(registry)
         self._update_status()
@@ -3770,6 +3997,14 @@ class MainWindow(QMainWindow):
             "Reveal in File Manager" if count == 1 else f"Reveal {count} Files",
             lambda: self._reveal_paths(paths),
         )
+        if (
+            count == 1
+            and self.current_view is LibraryView.DUPLICATES
+            and records[0].get("duplicate_kind")
+        ):
+            menu.addAction(
+                "Review Duplicates…", lambda: self._review_duplicates(records[0])
+            )
         if count > 1:
             merge = menu.addAction(
                 "Merge Selected PDFs…",
@@ -3918,6 +4153,9 @@ class MainWindow(QMainWindow):
         for visual in range(header.count()):
             logical = header.logicalIndex(visual)
             column = self.columns[logical]
+            if column.key == DUPLICATE_COLUMN:
+                # The Duplicates view shows this column by itself.
+                continue
             label = column.header or "Resolution marker"
             action = menu.addAction(label)
             action.setCheckable(True)
@@ -4853,11 +5091,28 @@ class MainWindow(QMainWindow):
                 logical_index = positions[key]
                 header.moveSection(header.visualIndex(logical_index), visual_index)
                 self.table.setColumnHidden(
-                    logical_index, key in self.config.hidden_table_columns
+                    logical_index,
+                    key in self.config.hidden_table_columns
+                    or (
+                        key == DUPLICATE_COLUMN
+                        and self.current_view is not LibraryView.DUPLICATES
+                    ),
                 )
         finally:
             self._applying_table_layout = False
         self.combined.sync_tree_column()
+
+    def _sync_duplicate_column(self) -> None:
+        """Show the Duplicate column only in the Duplicates view."""
+        for logical_index, column in enumerate(self.columns):
+            if column.key == DUPLICATE_COLUMN:
+                self._applying_table_layout = True
+                try:
+                    self.table.setColumnHidden(
+                        logical_index, self.current_view is not LibraryView.DUPLICATES
+                    )
+                finally:
+                    self._applying_table_layout = False
 
     def _add_root(self) -> None:
         selected = QFileDialog.getExistingDirectory(self, "Add Library Root")
@@ -5535,6 +5790,8 @@ class MainWindow(QMainWindow):
             self._open_manual_metadata(root)
         elif kind == "edition_merge":
             self._open_edition_merge(root)
+        elif kind == "rename_file":
+            self._launch_file_rename(root)
         else:
             self._open_rename_dialog(root)
 

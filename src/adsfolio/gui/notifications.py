@@ -46,7 +46,7 @@ class NoticeAction(str, Enum):
     RETRY = "Retry"
     VIEW_RELEASE = "Update Details"
     MERGE_EDITIONS = "Review Merge…"
-    SHOW_CONFLICT = "Show Both PDFs"
+    SHOW_CONFLICT = "Review Both PDFs…"
 
 
 @dataclass(frozen=True)

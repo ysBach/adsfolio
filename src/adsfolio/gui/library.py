@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from collections import Counter
 from collections.abc import Callable, Collection, Iterable, Sequence
 from dataclasses import dataclass
 from datetime import datetime
@@ -15,7 +14,7 @@ from ..citations import CitationFormatter, CitationStyle, citation_preference_ke
 from ..formatting import html_to_text
 from ..pdf.arxiv import arxiv_id
 from ..pdf.classification import ResolutionState, resolution_state, verification_stale
-from ..pdf.registry import RecordFact, stored_count
+from ..pdf.registry import DUPLICATE_LABELS, RecordFact, duplicate_kinds, stored_count
 
 ISO8601_TIMESTAMP_FORMAT = "iso8601"
 STALE_VERIFICATION_TOOLTIP = (
@@ -280,8 +279,8 @@ def count_matching(
     """Count facts with the filters that ``FileQuery(view).to_filters()`` sets.
 
     The filters apply in the registry order: search, identification group,
-    source, and then duplicates. Duplicates are digests that occur more than
-    once among the rows that remain after the earlier filters.
+    source, and then duplicates. Duplicates are digests or paper records that
+    occur more than once among the rows that remain after the earlier filters.
 
     Parameters
     ----------
@@ -304,8 +303,10 @@ def count_matching(
         rows = [fact for fact in rows if fact.source == "arxiv"]
     if view is LibraryView.DUPLICATES:
         rows = list(rows)
-        digests = Counter(fact.sha256 for fact in rows if fact.sha256)
-        return sum(1 for fact in rows if fact.sha256 and digests[fact.sha256] > 1)
+        kinds = duplicate_kinds(
+            [(fact.sha256, fact.document_id, fact.edition) for fact in rows]
+        )
+        return sum(1 for kind in kinds if kind)
     return sum(1 for _fact in rows)
 
 
@@ -338,6 +339,15 @@ BASE_COLUMNS: tuple[Column, ...] = (
         lambda record: format_first_seen(record, ISO8601_TIMESTAMP_FORMAT),
     ),
     Column("mtime_ns", "Modified", 140, _mtime),
+    # Shown only in the Duplicates view.
+    Column(
+        "duplicate_kind",
+        "Duplicate",
+        90,
+        lambda record: DUPLICATE_LABELS.get(
+            str(record.get("duplicate_kind") or ""), ""
+        ),
+    ),
 )
 
 COLUMNS = BASE_COLUMNS

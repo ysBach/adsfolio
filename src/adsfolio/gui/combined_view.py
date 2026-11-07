@@ -28,7 +28,7 @@ from PySide6.QtWidgets import (
 
 from .combined_library import CombinedLibrary, combined_columns
 from .combined_tree import CombinedTreeProxyModel
-from .library import build_columns
+from .library import LibraryView, build_columns
 from .notifications import Notice
 
 # The system PDF icon, found once from an existing PDF.
@@ -573,6 +573,15 @@ class CombinedViewController(QObject):
             "Copy Paths", lambda: self.window._copy_text("\n".join(map(str, paths)))
         )
         copy.setEnabled(bool(paths))
+        if (
+            len(records) == 1
+            and self.window.current_view is LibraryView.DUPLICATES
+            and records[0].get("duplicate_kind")
+        ):
+            menu.addAction(
+                "Review Duplicates…",
+                lambda: self.window._review_duplicates(records[0]),
+            )
         roots = {self.root_for(record) for record in records}
         one_root = len(roots) == 1 and None not in roots and len(paths) == len(records)
         reason = self.window._detail_edit_block_reason()

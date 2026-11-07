@@ -1092,11 +1092,12 @@ file moves and catalog locations together, with rollback on catalog failure.
 Equivalent filename spellings for the same file need no move. For example,
 macOS can store an accented letter differently from its displayed spelling.
 ADSfolio does not treat that spelling difference as a second PDF.
-For a watched rename conflict between different files, select **Show Both PDFs**
-in the notice. The main panel selects the source and the existing destination.
-Compare the files before deciding which copy to keep. If their contents differ,
-use **Merge Selected PDFs…** to review annotation transfers. A filename conflict
-alone does not establish that two PDFs contain the same paper.
+A watched rename conflict gives a notice. The notice says one of three things.
+The new PDF has the same bytes, is another copy of the paper, or only has the
+same filename. Select
+**Review Both PDFs…** to open the duplicate window, as
+[Duplicate PDFs](#duplicate-pdfs) explains. A filename conflict alone does not
+establish that two PDFs contain the same paper.
 Automatic return applies only to an unresolved subtree inside the library root.
 When you select an external folder as a root, ADSfolio infers no parent library.
 
@@ -1247,6 +1248,34 @@ An empty library produces no file. Cancelling the operation or Save dialog leave
 existing files intact. Saving uses an atomic replacement after any native
 overwrite confirmation. This action does not change ADS library membership,
 local PDFs, or the local catalog.
+
+## Duplicate PDFs
+
+The **Duplicates** view lists two kinds of duplicate PDFs. Its **Duplicate**
+column names the kind:
+
+- **Same file:** another PDF has the same bytes.
+- **Same paper:** another PDF links to the same paper record, but the bytes
+  differ. A second download or an annotated copy is an example.
+
+A preprint and its published edition are not duplicates, even when ADS links
+both to one paper record. ADSfolio reads the identifiers that each PDF states.
+A journal DOI marks the published edition. To review a duplicate group:
+
+1. Select the **Duplicates** view.
+2. Right-click a PDF and choose **Review Duplicates…**.
+3. Compare the copies. The window shows the size, the modification date, the
+   date that ADSfolio added each copy, and the number of annotations.
+4. Choose **Move to Trash…** on the copy to remove, the older or the newer one.
+5. Confirm. ADSfolio moves the copy only if its bytes did not change after the
+   window opened.
+
+You can restore a moved copy from the Trash. When one identified copy remains,
+ADSfolio gives it the name from your Rename settings. This step makes no ADS
+request. **Keep All** closes the window and keeps every copy.
+
+A new PDF can get a filename that another copy already has. Then the watcher
+notice offers **Review Both PDFs…**, which opens the same window.
 
 ## Merging annotations from another edition
 

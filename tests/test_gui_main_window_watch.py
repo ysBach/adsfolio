@@ -3137,12 +3137,26 @@ def test_watch_rename_collision_shows_notice_and_selects_both_rows(
     notice = window.notice_bar._current()
     assert notice is not None
     assert notice.action == NoticeAction.SHOW_CONFLICT
-    assert notice.action_label == "Show Both PDFs"
-    assert "destination already exists" in notice.message
+    assert notice.action_label == "Review Both PDFs…"
+    assert notice.message == (
+        "incoming.pdf: not renamed. Another PDF already has its filename: "
+        "existing.pdf. Review both PDFs to keep one."
+    )
     assert isinstance(notice.payload, RenameConflictRequest)
 
-    # Trigger action to show both PDFs
+    # The action opens the duplicate window. Its Show in Table selects both.
+    from adsfolio.gui.duplicate_review import DuplicateReviewDialog
+
+    reviewed = []
+
+    def show_both(dialog):
+        reviewed.append([copy.path.name for copy in dialog.copies])
+        dialog.show_in_table.emit()
+        return 0
+
+    monkeypatch.setattr(DuplicateReviewDialog, "exec", show_both)
     window.notice_bar.action_button.click()
+    assert reviewed == [["existing.pdf", "incoming.pdf"]]
 
     selected = window._selected_records()
     assert len(selected) == 2
@@ -3240,4 +3254,4 @@ def test_watch_rename_collision_identical_hash_recommendation(
     notice = window.notice_bar._current()
     assert notice is not None
     assert notice.action == NoticeAction.SHOW_CONFLICT
-    assert "identical content hash" in notice.message
+    assert "It has the same bytes as existing.pdf" in notice.message

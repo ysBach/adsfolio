@@ -2,13 +2,12 @@
 
 from __future__ import annotations
 
-from collections import Counter
 from collections.abc import Mapping, Sequence
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
-from ..pdf.registry import SORTABLE_COLUMNS, PdfRegistry, RecordFact
+from ..pdf.registry import SORTABLE_COLUMNS, PdfRegistry, RecordFact, mark_duplicates
 from .library import Column
 
 
@@ -78,7 +77,8 @@ class CombinedLibrary:
         """Return filtered locations before the requested sort.
 
         Records follow the selected-root order. Each root keeps its
-        ``relative_path`` order. Duplicates compare digests across all roots.
+        ``relative_path`` order. Duplicates compare digests and paper records
+        across all roots.
         """
         duplicates_only = bool(filters.pop("duplicates_only", False))
         unavailable = set(self.unavailable_roots)
@@ -89,12 +89,7 @@ class CombinedLibrary:
             for record in registry.query_files(**filters)
         ]
         if duplicates_only:
-            counts = Counter(str(record.get("sha256") or "") for record in records)
-            records = [
-                record
-                for record in records
-                if record.get("sha256") and counts[str(record["sha256"])] > 1
-            ]
+            records = mark_duplicates(records)
         return records
 
     def sort_records(

@@ -5,7 +5,7 @@ from __future__ import annotations
 import copy
 import json
 from collections import Counter
-from collections.abc import Callable, Collection, Iterator, Mapping
+from collections.abc import Callable, Collection, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, NamedTuple
@@ -22,8 +22,10 @@ from .catalog import (
 from .classification import IDENTIFICATION_GROUPS, identification_group
 from .files import sha256_file
 from .identify_settings import IdentifySettings
+from .identity import IDENTITY_KEY
 from .readiness import METADATA_STALE_KEY, stored_bibcode_matches_file
 from .search import document_matches, fold_document, record_search_document
+from .upgrade_utils import is_arxiv_doi
 
 if TYPE_CHECKING:
     from .rename_settings import RenameSettings
@@ -45,6 +47,95 @@ class RecordFact(NamedTuple):
     group: str
     source: str
     sha256: str
+    document_id: int | None = None
+    edition: str = ""
+
+
+DUPLICATE_SAME_FILE = "same_file"
+DUPLICATE_SAME_PAPER = "same_paper"
+DUPLICATE_LABELS = {
+    DUPLICATE_SAME_FILE: "Same file",
+    DUPLICATE_SAME_PAPER: "Same paper",
+}
+
+
+def pdf_edition(record: Mapping[str, Any]) -> str:
+    """Return ``"preprint"``, ``"published"``, or ``""`` from the PDF's own IDs.
+
+    The identity proof lists the identifiers that the PDF states. A journal
+    DOI marks the published edition. An arXiv ID or arXiv DOI alone marks the
+    preprint. ADS can link both editions to one paper record.
+    """
+    metadata = record.get("metadata")
+    proof = metadata.get(IDENTITY_KEY) if isinstance(metadata, Mapping) else None
+    if not isinstance(proof, Mapping):
+        return ""
+    dois = [str(value) for value in proof.get("own_doi") or ()]
+    if any(not is_arxiv_doi(value) for value in dois):
+        return "published"
+    if proof.get("own_arxiv") or dois:
+        return "preprint"
+    return ""
+
+
+def duplicate_kinds(keys: Sequence[tuple[str, int | None, str]]) -> list[str]:
+    """Return the duplicate kind of each PDF, or ``""`` for a single copy.
+
+    Parameters
+    ----------
+    keys
+        ``(sha256, document_id, edition)`` of each PDF, with the edition from
+        `pdf_edition`. An empty digest or a `None` document does not group.
+
+    Returns
+    -------
+    list of str
+        `DUPLICATE_SAME_FILE` when another PDF has the same bytes. Otherwise
+        `DUPLICATE_SAME_PAPER` when another PDF links to the same paper record
+        and is the same edition. An unknown edition matches either edition. A
+        preprint and its published edition are not duplicates.
+    """
+    digests = Counter(digest for digest, _document, _edition in keys if digest)
+    editions: dict[int, list[str]] = {}
+    for _digest, document, edition in keys:
+        if document is not None:
+            editions.setdefault(document, []).append(edition)
+
+    def same_paper(document: int | None, edition: str) -> bool:
+        if document is None:
+            return False
+        others = list(editions[document])
+        others.remove(edition)
+        return any(not edition or not other or other == edition for other in others)
+
+    return [
+        DUPLICATE_SAME_FILE
+        if digest and digests[digest] > 1
+        else DUPLICATE_SAME_PAPER
+        if same_paper(document, edition)
+        else ""
+        for digest, document, edition in keys
+    ]
+
+
+def mark_duplicates(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Return the duplicate records, each with its ``duplicate_kind``."""
+    kinds = duplicate_kinds(
+        [
+            (
+                str(record.get("sha256") or ""),
+                record.get("document_id"),
+                pdf_edition(record),
+            )
+            for record in records
+        ]
+    )
+    marked = []
+    for record, kind in zip(records, kinds, strict=True):
+        if kind:
+            record["duplicate_kind"] = kind
+            marked.append(record)
+    return marked
 
 
 SCHEMA_VERSION = CATALOG_SCHEMA_VERSION
@@ -91,6 +182,7 @@ SORTABLE_COLUMNS = {
         "first_seen_at",
         "updated_at",
         "identified_at",
+        "duplicate_kind",
     )
 }
 
@@ -137,8 +229,14 @@ def stored_count(record: Mapping[str, Any], key: str) -> int | None:
 
 __all__ = [
     "ADS_METADATA_FIELDS",
+    "DUPLICATE_LABELS",
+    "DUPLICATE_SAME_FILE",
+    "DUPLICATE_SAME_PAPER",
     "LOCKED_METADATA_FIELDS_KEY",
     "REGISTRY_FILENAME",
+    "duplicate_kinds",
+    "mark_duplicates",
+    "pdf_edition",
     "SCHEMA_VERSION",
     "SORTABLE_COLUMNS",
     "STORED_COUNT_KEYS",
@@ -253,6 +351,8 @@ class CentralPdfRegistry:
                 identification_group(record),
                 str(record.get("source") or ""),
                 str(record.get("sha256") or ""),
+                record.get("document_id"),
+                pdf_edition(record),
             )
             for record in self.catalog.query_files(root=self.directory)
         )
@@ -611,7 +711,7 @@ class CentralPdfRegistry:
 
         Counts in SQL when the filters allow it. The `source` filter reads
         metadata JSON. Identification groups also read current identity evidence.
-        `duplicates_only` compares digests across the
+        `duplicates_only` compares digests and paper records across the
         filtered rows, so those still load the records.
         """
         sql_filters = dict(filters)
@@ -810,16 +910,7 @@ class CentralPdfRegistry:
                 if str(record.get("source") or "") == str(source)
             ]
         if duplicates_only:
-            counts: dict[str, int] = {}
-            for record in records:
-                digest = str(record.get("sha256") or "")
-                if digest:
-                    counts[digest] = counts.get(digest, 0) + 1
-            records = [
-                record
-                for record in records
-                if counts.get(str(record.get("sha256") or ""), 0) > 1
-            ]
+            records = mark_duplicates(records)
         return records
 
     @staticmethod

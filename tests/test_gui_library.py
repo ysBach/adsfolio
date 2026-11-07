@@ -100,6 +100,7 @@ def test_columns_render_full_record():
         "size_bytes",
         "first_seen_at",
         "mtime_ns",
+        "duplicate_kind",
     }
 
 
