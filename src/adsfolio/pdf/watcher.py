@@ -223,9 +223,14 @@ class PdfWatcher:
         return target
 
     @staticmethod
-    def _file_facts(path: Path) -> tuple[int, int, int, int]:
+    def _file_facts(path: Path) -> tuple[int, int, int]:
+        """Return size, modification time, and inode.
+
+        The device number is left out. macOS can change it after a restart
+        while the file stays the same.
+        """
         stat = path.stat()
-        return stat.st_size, stat.st_mtime_ns, stat.st_dev, stat.st_ino
+        return stat.st_size, stat.st_mtime_ns, stat.st_ino
 
     def _ready_sha256(self, path: Path) -> str:
         try:
@@ -650,11 +655,10 @@ class PdfWatcher:
         )
 
     @staticmethod
-    def _catalog_facts(record: dict[str, Any]) -> tuple[int, int, int, int]:
+    def _catalog_facts(record: dict[str, Any]) -> tuple[int, int, int]:
         return (
             int(record["size_bytes"]),
             int(record["mtime_ns"]),
-            int(record.get("device") or 0),
             int(record.get("inode") or 0),
         )
 
@@ -663,7 +667,7 @@ class PdfWatcher:
         directory: Path,
         sidecar: Sidecar,
         recursive: bool,
-        last_facts: dict[str, tuple[int, int, int, int]],
+        last_facts: dict[str, tuple[int, int, int]],
     ) -> tuple[list[Path], set[str]]:
         """Return changed PDFs and the relative paths seen in a complete scan.
 
@@ -705,7 +709,7 @@ class PdfWatcher:
         directory: Path,
         sidecar: Sidecar,
         recursive: bool,
-        last_facts: dict[str, tuple[int, int, int, int]],
+        last_facts: dict[str, tuple[int, int, int]],
     ) -> tuple[list[Path], set[str]] | None:
         """Scan once, returning `None` and logging if the scan was incomplete."""
         try:
@@ -724,7 +728,7 @@ class PdfWatcher:
         sidecar: Sidecar,
         path: Path,
         handler: Callable[[Path], Any],
-        last_facts: dict[str, tuple[int, int, int, int]],
+        last_facts: dict[str, tuple[int, int, int]],
     ) -> None:
         try:
             facts = self._file_facts(path)
@@ -780,7 +784,7 @@ class PdfWatcher:
         )
         upgrade_schedule = _WatchSchedule(upgrade_interval_hours)
         recheck_schedule = _WatchSchedule(upgrade_interval_hours)
-        last_facts: dict[str, tuple[int, int, int, int]] = {}
+        last_facts: dict[str, tuple[int, int, int]] = {}
 
         while True:
             if (
@@ -863,7 +867,7 @@ class PdfWatcher:
         pending_paths: queue.Queue[Path] = queue.Queue()
         queued_paths: set[Path] = set()
         queue_lock = threading.Lock()
-        last_facts: dict[str, tuple[int, int, int, int]] = {}
+        last_facts: dict[str, tuple[int, int, int]] = {}
 
         def enqueue(path: Path) -> None:
             candidate = Path(path)

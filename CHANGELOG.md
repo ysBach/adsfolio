@@ -86,6 +86,14 @@
   Now the table lists such a PDF as unresolved. Its file and name stay the
   same. To accept the candidate, use **Use This ID** in the notice. You can
   also select the row and use **Update by ID**.
+- After a computer restart, the app previously processed every PDF again and
+  refreshed the table for each one. The window was almost frozen. macOS had
+  given the Dropbox volume a new device number, and ADSfolio read this as a
+  changed file. In a 3,774-PDF catalog, ADSfolio marked 2,756 PDFs and hashed
+  all 3,669 files at startup. Now ADSfolio ignores the device number. It
+  marks a PDF only when the file is new or its content changed. The same
+  startup scan took 0.5 s and hashed no file. The first start of this version
+  clears the 2,681 marks that a new device number alone set.
 
 ### Identify
 

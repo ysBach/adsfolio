@@ -17,6 +17,7 @@ from .catalog import (
     LEGACY_REGISTRY_FILENAME,
     LOCKED_METADATA_FIELDS_KEY,
     PdfCatalog,
+    file_facts_changed,
 )
 from .classification import IDENTIFICATION_GROUPS, identification_group
 from .files import sha256_file
@@ -355,13 +356,7 @@ class CentralPdfRegistry:
             except OSError:
                 missing += 1
                 continue
-            facts_match = (
-                stat.st_size == record["size_bytes"]
-                and stat.st_mtime_ns == record["mtime_ns"]
-                and stat.st_dev == record["device"]
-                and stat.st_ino == record["inode"]
-            )
-            if facts_match:
+            if not file_facts_changed(record, stat):
                 continue
             try:
                 sha256 = sha256_file(path)

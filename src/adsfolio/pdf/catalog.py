@@ -6,6 +6,7 @@ import copy
 import hashlib
 import itertools
 import json
+import logging
 import os
 import re
 import sqlite3
@@ -67,6 +68,29 @@ REFERENCE_FIELD_MAP = {
     "doi": "doi",
     "abstract": "abstract",
 }
+
+
+logger = logging.getLogger(__name__)
+
+# One-time repair of watch flags set by a new device number alone.
+_DEVICE_PENDING_REPAIR = "repair:watch-pending-device-number"
+
+
+def file_facts_changed(previous: Mapping[str, Any], stat: os.stat_result) -> bool:
+    """Return whether size, modification time, or inode differ from the record.
+
+    The device number is not compared. macOS can give a volume a new device
+    number after a restart, while every file on it stays the same. A copy or a
+    replacement file gets a new inode.
+    """
+    return any(
+        previous[key] is not None and previous[key] != value
+        for key, value in (
+            ("size_bytes", stat.st_size),
+            ("mtime_ns", stat.st_mtime_ns),
+            ("inode", stat.st_ino),
+        )
+    )
 
 
 @dataclass(frozen=True)
@@ -1617,15 +1641,7 @@ class PdfCatalog:
                 if active is not None:
                     previous = known_locations.get(int(active["id"]))
             if previous is not None and previous["sha256"]:
-                needs_digest = needs_digest or any(
-                    previous[key] is not None and previous[key] != value
-                    for key, value in (
-                        ("size_bytes", stat.st_size),
-                        ("mtime_ns", stat.st_mtime_ns),
-                        ("device", stat.st_dev),
-                        ("inode", stat.st_ino),
-                    )
-                )
+                needs_digest = needs_digest or file_facts_changed(previous, stat)
             digest = None
             if needs_digest:
                 try:
@@ -1636,6 +1652,8 @@ class PdfCatalog:
         seen_paths: set[str] = set()
         discovered = 0
         with self._connection:
+            if not self._migration_complete(_DEVICE_PENDING_REPAIR):
+                self._repair_device_pending()
             root_id = self._ensure_root(str(normalized_root))
             active_spellings = {
                 unicodedata.normalize("NFC", row["relative_path"])
@@ -1663,14 +1681,10 @@ class PdfCatalog:
                         and (
                             previous is None
                             or previous["missing_at"] is not None
-                            or any(
-                                previous[key] is not None and previous[key] != value
-                                for key, value in (
-                                    ("size_bytes", stat.st_size),
-                                    ("mtime_ns", stat.st_mtime_ns),
-                                    ("device", stat.st_dev),
-                                    ("inode", stat.st_ino),
-                                )
+                            or (
+                                digest != previous["sha256"]
+                                if digest is not None and previous["sha256"]
+                                else file_facts_changed(previous, stat)
                             )
                         )
                         else None
@@ -2480,6 +2494,46 @@ class PdfCatalog:
                         ),
                     )
         return LegacyMigrationReport(imported=imported)
+
+    def _repair_device_pending(self) -> None:
+        """Clear watch flags that a new device number alone set.
+
+        Older scans flagged every PDF after macOS gave the volume a new device
+        number, for example after a restart. Content did not change, so no new
+        content version was made. A real change or a new file has a current
+        content version from the same scan as its flag. Run once.
+        """
+        cursor = self._connection.execute(
+            f"""
+            UPDATE attachments
+            SET metadata_json = json_set(
+                metadata_json, '$.{WATCH_PENDING_KEY}', json('false')
+            )
+            WHERE json_extract(metadata_json, '$.{WATCH_PENDING_KEY}') = 1
+              AND EXISTS (
+                SELECT 1 FROM file_locations AS location
+                WHERE location.attachment_id = attachments.id
+                  AND location.missing_at IS NULL
+              )
+              AND NOT EXISTS (
+                SELECT 1 FROM file_locations AS location
+                LEFT JOIN content_versions AS version
+                    ON version.id = location.current_version_id
+                WHERE location.attachment_id = attachments.id
+                  AND location.missing_at IS NULL
+                  AND (version.observed_at IS NULL
+                       OR version.observed_at >= attachments.updated_at)
+              )
+            """
+        )
+        logger.info(
+            "Cleared %d watch flags that a new device number set", cursor.rowcount
+        )
+        self._connection.execute(
+            "INSERT INTO catalog_migrations(source_key, imported_at, imported_count) "
+            "VALUES (?, ?, ?)",
+            (_DEVICE_PENDING_REPAIR, self._utc_timestamp(), cursor.rowcount),
+        )
 
     def _migration_complete(self, source_key: str) -> bool:
         row = self._connection.execute(
@@ -3361,6 +3415,7 @@ class PdfCatalog:
 
 
 __all__ = [
+    "file_facts_changed",
     "CATALOG_FILENAME",
     "CATALOG_SCHEMA_VERSION",
     "CatalogObservation",

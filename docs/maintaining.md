@@ -224,6 +224,15 @@ discovery.
   catalog changes.
 - Matching cannot check a stored location without a digest. Such a location
   matches by inode alone, and a reused inode can inherit that attachment.
+- Change checks compare size, modification time, and inode. They do not
+  compare the device number, because macOS can give a volume a new device
+  number after a restart. `file_facts_changed` holds this rule for
+  `discover_root`, `reconcile_file_facts`, and the command-line watcher.
+- `discover_root` marks a known path for the watcher only when the path is new
+  or its SHA-256 changed. A row without a stored digest uses the fact check.
+- Earlier versions marked every PDF after a new device number. A one-time
+  repair (`repair:watch-pending-device-number` in `catalog_migrations`) clears
+  a mark when the current content version is older than the mark.
 
 **GUI file table**
 
