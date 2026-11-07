@@ -400,7 +400,13 @@ def test_watcher_reports_reason_when_stale_recovery_cannot_verify(library):
     assert outcome.event.state is WatchState.FAILED
     assert "contradicts" in outcome.message
     assert "Update by ID" in outcome.message
-    assert state.registry.catalog.get_file(root, path.name) == stale
+    # Only the watch mark changes, so the next start does not retry this PDF.
+    saved = state.registry.catalog.get_file(root, path.name)
+    assert not saved["metadata"].get(WATCH_PENDING_KEY)
+    for record in (saved, stale):
+        record.pop(WATCH_PENDING_KEY, None)
+        record["metadata"].pop(WATCH_PENDING_KEY, None)
+    assert saved == stale
 
 
 @pytest.mark.parametrize(

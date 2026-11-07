@@ -335,7 +335,7 @@ def test_worker_stop_between_resumed_processes_discards_second(
     started = []
     monkeypatch.setattr(
         worker,
-        "process",
+        "_process_now",
         lambda event, identify, rename: started.append(event),
     )
     monkeypatch.setattr(worker, "thread", lambda: None)
@@ -386,7 +386,7 @@ def test_worker_rejects_replaced_identity_before_processing(tmp_path):
     outcomes = []
     worker.outcome.connect(outcomes.append)
 
-    worker.process(event, IdentifySettings(), RenameSettings())
+    worker._process_now(event, IdentifySettings(), RenameSettings())
 
     watcher.process_event.assert_not_called()
     assert outcomes[0].event.state is WatchState.STALE
@@ -589,9 +589,10 @@ def test_reconcile_while_paused_writes_nothing_and_runs_on_resume(
     reopened.registry.catalog.mark_missing_locations.assert_called_once()
 
 
-def test_startup_baseline_queues_only_stale_pending_or_changed_catalog_files(
+def test_startup_baseline_queues_only_pending_or_changed_catalog_files(
     tmp_path,
 ):
+    """A stale record alone is not tried again on every start."""
     import adsfolio.gui.watch as watch_module
     from adsfolio.pdf.watch_session import FileSnapshot
 
@@ -620,8 +621,8 @@ def test_startup_baseline_queues_only_stale_pending_or_changed_catalog_files(
 
     baseline, changed = worker._split_startup_snapshots(snaps)
 
-    assert {s.path.stem for s in changed} == {"stale", "pending", "facts", "nested"}
-    assert {s.path.stem for s in baseline} == {"plain", "untracked"}
+    assert {s.path.stem for s in changed} == {"pending", "facts"}
+    assert {s.path.stem for s in baseline} == {"plain", "stale", "untracked", "nested"}
 
 
 def test_start_emits_catalog_changed_file_as_created_arrival(monkeypatch, tmp_path):
@@ -635,7 +636,7 @@ def test_start_emits_catalog_changed_file_as_created_arrival(monkeypatch, tmp_pa
             "current_path": "a.pdf",
             "size_bytes": 1,
             "mtime_ns": 0,
-            "metadata": {"_adsfolio_metadata_stale": True},
+            "metadata": {watch_module.WATCH_PENDING_KEY: True},
         }
     ]
     monkeypatch.setattr(watch_module, "open_registry_state", lambda r: registry)
@@ -714,7 +715,7 @@ def test_process_announces_change_made_while_processing(tmp_path):
     detected = []
     worker.detected.connect(detected.append)
 
-    worker.process(event, IdentifySettings(), RenameSettings())
+    worker._process_now(event, IdentifySettings(), RenameSettings())
 
     assert [e.identity.generation for e in detected] == [1]
 
@@ -735,3 +736,40 @@ def test_controller_forwards_reconciled_for_current_root(qtbot, tmp_path):
     controller._handles[root].worker.reconciled.emit(root)
     assert received == [root]
     controller.stop_all()
+
+
+def test_pause_runs_between_queued_pdfs(qtbot, monkeypatch, tmp_path) -> None:
+    """Update by ID pauses the watcher after the current PDF, not after all."""
+    import adsfolio.gui.watch as watch_module
+
+    root = tmp_path / "library"
+    worker = watch_module._LibraryWatchWorker(root, "session-1")
+    worker._session = MagicMock()
+    worker._watcher = MagicMock()
+    worker._registry = MagicMock()
+    monkeypatch.setattr(worker, "thread", lambda: None)
+    processed = []
+    monkeypatch.setattr(
+        worker,
+        "_process_now",
+        lambda event, identify, rename: processed.append(event.path.name),
+    )
+    events = [
+        WatchEvent(
+            root=root,
+            session_id="session-1",
+            identity=ArrivalIdentity(1, number, None, 0),
+            path=root / f"paper{number}.pdf",
+            state=WatchState.DETECTED,
+        )
+        for number in range(1, 4)
+    ]
+    for event in events:
+        worker.process(event, IdentifySettings(), RenameSettings())
+    # A foreground job asks for a pause after the three requests.
+    QTimer.singleShot(0, worker.pause_writes)
+    qtbot.waitUntil(lambda: worker._paused)
+    qtbot.wait(20)
+
+    assert processed == ["paper1.pdf"]
+    assert len(worker._pending_processes) == 2

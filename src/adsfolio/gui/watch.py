@@ -18,7 +18,7 @@ from ..config import AuthenticationError
 from ..pdf.files import iter_pdf_paths
 from ..pdf.identify import PdfIdentifier
 from ..pdf.identify_settings import IdentifySettings
-from ..pdf.readiness import METADATA_STALE_KEY, WATCH_PENDING_KEY
+from ..pdf.readiness import WATCH_PENDING_KEY
 from ..pdf.registry import CentralPdfRegistryState, open_registry_state
 from ..pdf.rename_settings import RenameSettings
 from ..pdf.renamer import PdfRenamer
@@ -163,9 +163,12 @@ class _LibraryWatchWorker(QObject):
 
         Files with no catalog record, or whose record matches the file, are the
         baseline. A catalogued file is eligible when its record is marked
-        metadata-stale or watch-pending (set by the startup discovery scan for
-        content that changed or arrived while no watcher was running), or when
-        its size or modification time differ from the record.
+        watch-pending (set by the startup discovery scan for content that
+        changed or arrived while no watcher was running), or when its size or
+        modification time differ from the record.
+
+        A metadata-stale record alone is not eligible. It needs review, and a
+        new attempt gives the same result, so it is not tried on every start.
         """
         if self._registry is None:
             return snapshots, []
@@ -192,10 +195,7 @@ class _LibraryWatchWorker(QObject):
     def _catalog_record_changed(record: Any, snapshot: FileSnapshot) -> bool:
         metadata = record.get("metadata")
         metadata = metadata if isinstance(metadata, dict) else {}
-        flagged = any(
-            record.get(key) or metadata.get(key)
-            for key in (METADATA_STALE_KEY, WATCH_PENDING_KEY)
-        )
+        flagged = bool(record.get(WATCH_PENDING_KEY) or metadata.get(WATCH_PENDING_KEY))
         return (
             flagged
             or record.get("size_bytes") != snapshot.size_bytes
@@ -372,9 +372,30 @@ class _LibraryWatchWorker(QObject):
         identify_settings: IdentifySettings,
         rename_settings: RenameSettings,
     ) -> None:
+        """Queue one event. The worker processes one PDF per event-loop turn.
+
+        A pause request from a foreground job, for example Update by ID, then
+        runs before the next PDF instead of after every queued PDF.
+        """
         if self._stopping or self._session is None or self._watcher is None:
             return
         if event.session_id != self.session_id or event.root.resolve() != self.root:
+            return
+        self._pending_processes[event.identity] = (
+            event,
+            identify_settings,
+            rename_settings,
+        )
+        self._schedule_pending_process()
+
+    def _process_now(
+        self,
+        event: WatchEvent,
+        identify_settings: IdentifySettings,
+        rename_settings: RenameSettings,
+    ) -> None:
+        """Process one queued event now."""
+        if self._stopping or self._session is None or self._watcher is None:
             return
         if self._paused:
             self._pending_processes[event.identity] = (
@@ -567,7 +588,7 @@ class _LibraryWatchWorker(QObject):
         event, identify_settings, rename_settings = self._pending_processes.pop(
             identity
         )
-        self.process(event, identify_settings, rename_settings)
+        self._process_now(event, identify_settings, rename_settings)
         self._schedule_pending_process()
 
     @Slot()

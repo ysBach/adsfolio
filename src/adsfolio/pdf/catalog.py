@@ -1697,6 +1697,30 @@ class PdfCatalog:
         self.mark_missing_locations(normalized_root, seen_paths, recursive=recursive)
         return discovered
 
+    def clear_watch_pending(self, root: Path, relative_path: str) -> bool:
+        """Clear the watch mark of one active location. Change nothing else.
+
+        Returns
+        -------
+        bool
+            `True` when a marked row was changed.
+        """
+        record = self.get_file(root, relative_path)
+        if record is None or not record["metadata"].get(WATCH_PENDING_KEY):
+            return False
+        with self._connection:
+            cursor = self._connection.execute(
+                f"""
+                UPDATE attachments
+                SET metadata_json = json_set(
+                    metadata_json, '$.{WATCH_PENDING_KEY}', json('false')
+                )
+                WHERE id = ?
+                """,
+                (record["attachment_id"],),
+            )
+        return cursor.rowcount > 0
+
     def update_file_status(self, root: Path, relative_path: str, status: str) -> bool:
         """Update the attachment status for one observed location."""
         record = self.get_file(root, relative_path)

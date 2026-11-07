@@ -230,6 +230,12 @@ discovery.
   `discover_root`, `reconcile_file_facts`, and the command-line watcher.
 - `discover_root` marks a known path for the watcher only when the path is new
   or its SHA-256 changed. A row without a stored digest uses the fact check.
+- The watcher's startup pass takes only watch-marked or changed rows. A
+  metadata-stale row alone does not qualify, because a retry gives the same
+  result. After a deterministic failure (an identity refusal or a move
+  conflict), `PdfWatcher` clears the mark. Network and file errors keep it.
+- The watch worker queues each request and processes one PDF per event-loop
+  turn. A pause request from a foreground job runs before the next PDF.
 - Earlier versions marked every PDF after a new device number. A one-time
   repair (`repair:watch-pending-device-number` in `catalog_migrations`) clears
   a mark when the current content version is older than the mark.

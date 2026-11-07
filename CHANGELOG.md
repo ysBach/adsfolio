@@ -94,6 +94,16 @@
   marks a PDF only when the file is new or its content changed. The same
   startup scan took 0.5 s and hashed no file. The first start of this version
   clears the 2,681 marks that a new device number alone set.
+- Each start previously sent every stale PDF to the watcher again, 866 PDFs
+  in one library. Each failed the same way, added an error notice, and
+  refreshed the table. A failed PDF also kept its mark, so it ran again at
+  the next start. Now a stale PDF runs only when its content is new. After a
+  failure that a retry cannot change, ADSfolio clears the mark. A network
+  error keeps the mark, so the next start tries again.
+- **Update by ID** previously waited until the watcher processed every
+  queued PDF, so it seemed to do nothing. Now the watcher handles one PDF at a
+  time and pauses after the current PDF. In a test with 16 queued PDFs,
+  Update by ID started after 0.1 s and finished after 1.6 s.
 
 ### Identify
 

@@ -169,6 +169,22 @@ class PdfWatcher:
         except ValueError as exc:
             raise ValueError(f"PDF is outside watched root: {path}") from exc
 
+    def _clear_watch_pending(
+        self, state: Sidecar | CentralPdfRegistryState, source: Path
+    ) -> None:
+        """Clear the watch mark after an outcome that a retry cannot change.
+
+        Network and file errors keep the mark, so the next start retries them.
+        """
+        catalog = getattr(getattr(state, "registry", None), "catalog", None)
+        if catalog is None:
+            return
+        root = Path(state.directory)
+        try:
+            catalog.clear_watch_pending(root, self._relative_path(root, source))
+        except (SQLiteError, ValueError) as exc:
+            self.logger.warning("Could not clear the watch mark of %s: %s", source, exc)
+
     @staticmethod
     def _track_unresolved(sidecar: Sidecar, relative_path: str, sha256: str) -> None:
         """Save the PDF location as unresolved, without metadata."""
@@ -585,6 +601,9 @@ class PdfWatcher:
                 _check_annotation_revision=False,
             )
         except IdentityValidationError as exc:
+            # The same PDF fails the same way on every start, so the startup
+            # scan must not hand it to the watcher again.
+            self._clear_watch_pending(state, source)
             return WatchOutcome(
                 event=replace(event, state=WatchState.FAILED),
                 message=str(exc),
@@ -609,6 +628,7 @@ class PdfWatcher:
                 ),
             )
         except TrackedMoveConflictError as exc:
+            self._clear_watch_pending(state, source)
             return WatchOutcome(
                 event=replace(event, state=WatchState.FAILED),
                 destination=source,
