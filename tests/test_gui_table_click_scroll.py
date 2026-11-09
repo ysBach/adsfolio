@@ -7,9 +7,9 @@ from pathlib import Path
 import pytest
 from PySide6.QtCore import QPoint, Qt
 from PySide6.QtWidgets import QApplication
+from test_gui_main_window_watch import _window_factory
 
 from adsfolio.gui.config import GuiConfig, RootEntry
-from tests.test_gui_main_window_watch import _window_factory
 
 
 def _library_window(monkeypatch, qtbot, tmp_path: Path):
