@@ -323,3 +323,25 @@ def test_export_all_handles_abstract_braces_and_reports_invalid_math(
         )
         assert target.read_text() == "Existing bibliography"
     assert catalog.get_document(document["id"]) == saved
+
+
+def test_export_window_keeps_working_after_a_library_refresh(window, monkeypatch):
+    """A watcher refresh replaces the library's catalog connection meanwhile."""
+    previews: list[str] = []
+
+    def run(dialog: ExportPapersDialog) -> int:
+        window.refresh(window.current_root)
+        dialog.format_choice.setCurrentIndex(
+            dialog.format_choice.findData(FORMAT_BIBTEX)
+        )
+        dialog._update_preview()
+        previews.append(dialog.preview.toPlainText())
+        assert dialog._references.store_ads_bibtex({}, {}) == 0
+        return QDialog.DialogCode.Rejected
+
+    monkeypatch.setattr(ExportPapersDialog, "exec", run)
+    window._export_papers(all_papers=True)
+
+    assert previews
+    assert "Cannot render" not in previews[0]
+    assert "@" in previews[0]

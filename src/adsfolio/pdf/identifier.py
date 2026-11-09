@@ -353,11 +353,16 @@ class PdfIdentifier:
         return digest.hexdigest()
 
     def pdf_is_readable(self, pdf_path: Path) -> bool:
-        """Return whether a PDF can be parsed and contains at least one page."""
+        """Return whether a PDF can be parsed and contains at least one page.
+
+        An encrypted PDF is readable when its user password is empty. Many
+        journal PDFs set only an owner password, which limits printing or
+        copying but needs no password to open.
+        """
         try:
             with self._quiet_pypdf_logs():
                 reader = self._load_reader(Path(pdf_path))
-                if getattr(reader, "is_encrypted", False):
+                if getattr(reader, "is_encrypted", False) and not reader.decrypt(""):
                     return False
                 return len(reader.pages) > 0
         except (OSError, ValueError):

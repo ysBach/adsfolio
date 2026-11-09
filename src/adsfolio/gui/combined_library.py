@@ -7,7 +7,13 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
-from ..pdf.registry import SORTABLE_COLUMNS, PdfRegistry, RecordFact, mark_duplicates
+from ..pdf.registry import (
+    SORTABLE_COLUMNS,
+    PdfRegistry,
+    RecordFact,
+    mark_duplicates,
+    order_duplicate_groups,
+)
 from .library import Column
 
 
@@ -63,6 +69,7 @@ class CombinedLibrary:
             raise ValueError("limit must be non-negative or None")
         if offset < 0:
             raise ValueError("offset must be non-negative")
+        duplicates_only = bool(filters.get("duplicates_only"))
         records = self.query_records(**filters)
         self.sort_records(
             records,
@@ -71,6 +78,8 @@ class CombinedLibrary:
             secondary_order_by=secondary_order_by,
             tertiary_order_by=tertiary_order_by,
         )
+        if duplicates_only:
+            order_duplicate_groups(records)
         return records[offset:] if limit is None else records[offset : offset + limit]
 
     def query_records(self, **filters: Any) -> list[dict[str, Any]]:

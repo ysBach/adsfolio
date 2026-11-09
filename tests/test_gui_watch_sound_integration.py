@@ -43,7 +43,7 @@ class Controller(QObject):
     def dismiss(self, event):
         pass
 
-    def stop_all(self):
+    def stop_all(self, *, wait_ms: int = 5000):
         return True
 
 

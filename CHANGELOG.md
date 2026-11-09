@@ -104,15 +104,46 @@
   queued PDF, so it seemed to do nothing. Now the watcher handles one PDF at a
   time and pauses after the current PDF. In a test with 16 queued PDFs,
   Update by ID started after 0.1 s and finished after 1.6 s.
+- Closing the window during a batch previously froze it for up to 5 s for
+  each watched library. If the watcher was still busy with a PDF, ADSfolio
+  cancelled the close, and only a notice said so. Now the window stays responsive
+  and shows "Closing after the watcher finishes the current PDF…". It closes
+  when the last watcher stops. Network requests have time limits, so the
+  current PDF finishes.
+- A new PDF whose other edition was already in the library previously opened
+  **Merge PDF editions** by itself. That window blocked the main window and
+  paused the watcher until you answered it. Now ADSfolio adds a **Review
+  Merge…** notice only. Click it to open the review.
+- A PDF with an owner password previously stayed "not readable yet" forever.
+  Many journal PDFs use an owner password to limit printing or copying, but
+  need no password to open. The watcher deferred such a PDF and processed it
+  again at every start. Now ADSfolio reads it like any other PDF. A PDF that
+  needs a password to open still waits.
+- A PDF whose metadata lacked a field of your Rename template, for example
+  `{bibcode}`, previously failed again at every start. Now the failure notice
+  stays, and the next start skips the PDF. **Retry** tries it again.
+
+### Notifications
+
+- A batch of new PDFs previously made the window slower with each notice.
+  Each new notice restyled every earlier notice and redrew their icons. In an
+  offscreen test with 200 notices, the last notice took 198 ms. The 200
+  notices took 20 s together. Now each notice takes about 4 ms, and 200
+  notices take 0.7 s. Dismissing the top notice took 324 ms. Now it takes
+  23 ms.
 
 ### Duplicates
 
 - The **Duplicates** view previously listed only PDFs with the same bytes. A
   second download of a paper, for example `Li_2026_ApJL_999_L12.pdf` next to
   its renamed copy, did not appear. Now the view also lists PDFs of the same
-  paper record. A new **Duplicate** column says **Same file** or **Same
-  paper**. A preprint and its published edition are not listed. In a
-  2,782-PDF library, the view lists 141 PDFs in about 0.1 s.
+  paper record. A preprint and its published edition are not listed. In a
+  2,782-PDF library, the view lists 141 PDFs in 68 groups in about 0.1 s.
+- The copies of one paper form a numbered group and stay together in every
+  sort order. A new **Duplicate** column shows the group and the kind, for
+  example **2 · Same paper**. With **Combine libraries**, the Duplicates view
+  shows a flat list instead of folders, so copies in different folders stay
+  together.
 - A rename conflict previously offered only **Show Both PDFs**, and the notice
   read "destination already exists". Now the notice says whether the new PDF
   is the same file, another copy of the paper, or a different paper.
@@ -122,6 +153,11 @@
   can move the older or the newer copy to the Trash. ADSfolio asks first. It
   moves the copy only if the bytes did not change. When one identified copy
   remains, ADSfolio renames it with your Rename settings.
+- Selecting two PDFs previously offered no way to compare them, and the
+  combined view offered no merge at all. Now a selection of two or more PDFs
+  offers **Compare Selected PDFs…** in the context menu and in the Tools
+  menu, in every view. For two different copies in one library, the window
+  also offers **Merge Annotations…**.
 
 ### Identify
 
@@ -149,6 +185,11 @@
 - PDFs without paper details previously dropped out of an export with no
   message. Now the window counts them, and **Show…** lists their paths.
   **Show Needs Identification** opens the view that holds them.
+- Export Papers previously failed with "Cannot operate on a closed database"
+  when the watcher processed PDFs while the window was open. A watcher refresh
+  closed the catalog connection that the window used. The preview and the
+  ADS BibTeX save then failed. Now Export Papers and **Copy BibTeX** use their
+  own connection.
 - Papers outside ADS, such as papers from Crossref or DataCite, export with
   ADS papers. Their keys use the **Other papers** key style.
 - The preview previously could not show a selection that held a paper whose

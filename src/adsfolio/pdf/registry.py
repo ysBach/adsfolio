@@ -119,23 +119,55 @@ def duplicate_kinds(keys: Sequence[tuple[str, int | None, str]]) -> list[str]:
 
 
 def mark_duplicates(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Return the duplicate records, each with its ``duplicate_kind``."""
+    """Return the duplicate records with ``duplicate_kind`` and ``duplicate_group``.
+
+    Copies of one paper share a group, including copies with the same bytes.
+    When ADS links a preprint and its published edition to one record, each
+    edition forms its own group. Copies without a paper record group by bytes.
+    """
+    editions = [pdf_edition(record) for record in records]
     kinds = duplicate_kinds(
         [
-            (
-                str(record.get("sha256") or ""),
-                record.get("document_id"),
-                pdf_edition(record),
-            )
-            for record in records
+            (str(record.get("sha256") or ""), record.get("document_id"), edition)
+            for record, edition in zip(records, editions, strict=True)
         ]
     )
+    known: dict[int, set[str]] = {}
+    for record, edition, kind in zip(records, editions, kinds, strict=True):
+        if kind and edition and record.get("document_id") is not None:
+            known.setdefault(record["document_id"], set()).add(edition)
     marked = []
-    for record, kind in zip(records, kinds, strict=True):
-        if kind:
-            record["duplicate_kind"] = kind
-            marked.append(record)
+    for record, edition, kind in zip(records, editions, kinds, strict=True):
+        if not kind:
+            continue
+        document = record.get("document_id")
+        if document is None:
+            group = f"file:{record.get('sha256')}"
+        elif len(known.get(document, ())) > 1:
+            group = f"paper:{document}:{edition}"
+        else:
+            group = f"paper:{document}"
+        record["duplicate_kind"] = kind
+        record["duplicate_group"] = group
+        marked.append(record)
     return marked
+
+
+def order_duplicate_groups(records: list[dict[str, Any]]) -> None:
+    """Keep each duplicate group together and number the groups, in place.
+
+    The first copy of each group keeps its place in the current sort. The
+    other copies of that group follow it. Groups are numbered from 1 in that
+    order, in ``duplicate_group_number``.
+    """
+    order: dict[str, int] = {}
+    for record in records:
+        order.setdefault(str(record.get("duplicate_group") or ""), len(order))
+    records.sort(key=lambda record: order[str(record.get("duplicate_group") or "")])
+    for record in records:
+        record["duplicate_group_number"] = (
+            order[str(record.get("duplicate_group") or "")] + 1
+        )
 
 
 SCHEMA_VERSION = CATALOG_SCHEMA_VERSION
@@ -236,6 +268,7 @@ __all__ = [
     "REGISTRY_FILENAME",
     "duplicate_kinds",
     "mark_duplicates",
+    "order_duplicate_groups",
     "pdf_edition",
     "SCHEMA_VERSION",
     "SORTABLE_COLUMNS",
@@ -757,6 +790,7 @@ class CentralPdfRegistry:
         )
         if invalid is not None:
             raise ValueError(f"Unsortable column: {invalid!r}")
+        duplicates_only = bool(filters.get("duplicates_only"))
         records = self.query_records(**filters)
         self.sort_records(
             records,
@@ -765,6 +799,8 @@ class CentralPdfRegistry:
             secondary_order_by=secondary_order_by,
             tertiary_order_by=tertiary_order_by,
         )
+        if duplicates_only:
+            order_duplicate_groups(records)
         if limit is None:
             return records[offset:]
         return records[offset : offset + int(limit)]

@@ -177,7 +177,7 @@ class CombinedViewController(QObject):
             # otherwise capture and restore its whole selection.
             self._set_tree_enabled(False)
         self.update_columns()
-        self._set_tree_enabled(self.enabled)
+        self._set_tree_enabled(self._wants_tree())
         if self.enabled:
             self.refresh()
         else:
@@ -189,6 +189,18 @@ class CombinedViewController(QObject):
                 window._populate_views(registry)
         window._update_status()
         window._sync_ads_library_action()
+
+    def _wants_tree(self) -> bool:
+        """Return whether the combined table groups rows by library folder.
+
+        The Duplicates view uses a flat list, so the copies of one paper stay
+        together even when they are in different folders or libraries.
+        """
+        return self.enabled and self.window.current_view is not LibraryView.DUPLICATES
+
+    def sync_tree_mode(self) -> None:
+        """Use the folder tree or the flat list that the current view needs."""
+        self._set_tree_enabled(self._wants_tree())
 
     def _set_tree_enabled(self, enabled: bool) -> None:
         """Switch the table between flat and grouped library models."""
@@ -582,6 +594,15 @@ class CombinedViewController(QObject):
                 "Review Duplicates…",
                 lambda: self.window._review_duplicates(records[0]),
             )
+        if len(records) > 1:
+            compare = menu.addAction(
+                "Compare Selected PDFs…",
+                lambda: self.window._compare_selected(records),
+            )
+            compare.setToolTip(
+                "Compare the PDFs. Move a copy to the Trash or merge annotations."
+            )
+            compare.setEnabled(len(paths) == len(records))
         roots = {self.root_for(record) for record in records}
         one_root = len(roots) == 1 and None not in roots and len(paths) == len(records)
         reason = self.window._detail_edit_block_reason()

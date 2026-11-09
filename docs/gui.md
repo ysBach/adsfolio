@@ -1251,8 +1251,11 @@ local PDFs, or the local catalog.
 
 ## Duplicate PDFs
 
-The **Duplicates** view lists two kinds of duplicate PDFs. Its **Duplicate**
-column names the kind:
+The **Duplicates** view lists two kinds of duplicate PDFs. The copies of one
+paper form a numbered group, and they stay together in every sort order. The
+**Duplicate** column shows the group number and the kind, for example
+**2 · Same paper**. With **Combine libraries**, this view shows a flat list, so
+copies in different folders stay together. The kinds are:
 
 - **Same file:** another PDF has the same bytes.
 - **Same paper:** another PDF links to the same paper record, but the bytes
@@ -1274,6 +1277,12 @@ You can restore a moved copy from the Trash. When one identified copy remains,
 ADSfolio gives it the name from your Rename settings. This step makes no ADS
 request. **Keep All** closes the window and keeps every copy.
 
+To compare any PDFs, select two or more rows in any view. Then right-click and
+choose **Compare Selected PDFs…**, or choose **Tools → Compare Selected
+PDFs…**. Identical copies get the advice to keep one and move the others to the
+Trash. For two different copies in one library, **Merge Annotations…** opens the
+annotation merge.
+
 A new PDF can get a filename that another copy already has. Then the watcher
 notice offers **Review Both PDFs…**, which opens the same window.
 
@@ -1286,18 +1295,24 @@ serves as the proposed **target**. You can change which PDF supplies the pages
 before reviewing the **source** annotations. With no pair selected, the Tools
 action lets you choose the target and source files.
 
-After it identifies a watched PDF, ADSfolio prompts to review an existing
-edition when a bibcode, alternate bibcode, DOI, or version-free arXiv identifier
-links the files. Identification retains ADS's `identifier` and
-`alternate_bibcode` fields for this purpose. The prompt stays tied to the
-arrival even if you select another library. It pauses watcher writes during
-review.
+After it identifies a watched PDF, ADSfolio checks for an existing edition. A
+bibcode, alternate bibcode, DOI, or version-free arXiv identifier can link the
+files. Identification retains ADS's `identifier` and `alternate_bibcode` fields
+for this purpose. When an edition exists, ADSfolio adds a **Review Merge…**
+notice. It does not open the review window by itself, so a batch of new PDFs
+continues without a stop.
 
-If no existing PDF shares an identifier, ADSfolio shows no automatic merge
-prompt. If one PDF matches, it preselects both files. If several PDFs match, it
-asks you to choose among those files. You can still select two PDFs and start
+1. Open **Notifications**.
+2. Click **Review Merge…** on the notice.
+
+The notice stays tied to the arrival even if you select another library. The
+watcher pauses its writes while the review window is open.
+
+If no existing PDF shares an identifier, ADSfolio adds no merge notice. If one
+PDF matches, the review preselects both files. If several PDFs match, it asks
+you to choose among those files. You can still select two PDFs and start
 **Merge Selected PDFs…** manually when their stored identifiers do not link them.
-Cancel keeps a linked arrival's **Review Merge…** notice available.
+Cancel keeps the **Review Merge…** notice available.
 
 The review stays in one window. Selecting an annotation opens its source page
 and the suggested target page automatically. Both panes center the marked area

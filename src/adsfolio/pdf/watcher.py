@@ -640,6 +640,13 @@ class PdfWatcher:
                 event=replace(event, state=WatchState.DEFERRED),
                 message=str(exc),
             )
+        except MissingTemplateFieldsError as exc:
+            # The same metadata and template fail again on every start.
+            self._clear_watch_pending(state, source)
+            return WatchOutcome(
+                event=replace(event, state=WatchState.FAILED),
+                message=str(exc),
+            )
         except (ADSError, ProviderError, OSError, SQLiteError, ValueError) as exc:
             return WatchOutcome(
                 event=replace(event, state=WatchState.FAILED),

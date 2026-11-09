@@ -20,6 +20,7 @@ from adsfolio.pdf.registry import (
     DUPLICATE_SAME_PAPER,
     duplicate_kinds,
     mark_duplicates,
+    order_duplicate_groups,
     pdf_edition,
 )
 
@@ -156,3 +157,66 @@ def test_changed_copy_does_not_move(qtbot, monkeypatch, copies, fake_trash) -> N
 
     assert copies[1].path.exists()
     assert list(fake_trash.iterdir()) == []
+
+
+def test_copies_of_one_paper_share_a_group_and_stay_together() -> None:
+    records = [
+        {"sha256": "a1", "document_id": 1, "current_path": "x.pdf"},
+        {"sha256": "b1", "document_id": 2, "current_path": "y.pdf"},
+        {"sha256": "a2", "document_id": 1, "current_path": "unresolved/x.pdf"},
+        {"sha256": "b1", "document_id": 2, "current_path": "y copy.pdf"},
+        {"sha256": "a3", "document_id": 1, "current_path": "x2.pdf"},
+    ]
+    marked = mark_duplicates(records)
+    assert {record["duplicate_group"] for record in marked} == {"paper:1", "paper:2"}
+
+    order_duplicate_groups(marked)
+
+    assert [record["current_path"] for record in marked] == [
+        "x.pdf",
+        "unresolved/x.pdf",
+        "x2.pdf",
+        "y.pdf",
+        "y copy.pdf",
+    ]
+    assert [record["duplicate_group_number"] for record in marked] == [1, 1, 1, 2, 2]
+
+
+def test_each_edition_of_a_shared_record_forms_its_own_group() -> None:
+    def record(path, sha, **proof):
+        return {
+            "sha256": sha,
+            "document_id": 4,
+            "current_path": path,
+            "metadata": {"_adsfolio_identity": proof},
+        }
+
+    marked = mark_duplicates(
+        [
+            record("pre1.pdf", "p1", own_arxiv=["1711.09809"]),
+            record("pre2.pdf", "p2", own_arxiv=["1711.09809"]),
+            record("pub1.pdf", "j1", own_doi=["10.1051/0004-6361/201731937"]),
+            record("pub2.pdf", "j2", own_doi=["10.1051/0004-6361/201731937"]),
+        ]
+    )
+    groups = {record["current_path"]: record["duplicate_group"] for record in marked}
+    assert groups["pre1.pdf"] == groups["pre2.pdf"] != groups["pub1.pdf"]
+    assert groups["pub1.pdf"] == groups["pub2.pdf"]
+
+
+def test_merge_button_appears_only_when_offered(qtbot, copies) -> None:
+    from PySide6.QtWidgets import QPushButton
+
+    plain = DuplicateReviewDialog(None, copies, "Same bytes.")
+    qtbot.addWidget(plain)
+    assert "Merge Annotations…" not in {
+        b.text() for b in plain.findChildren(QPushButton)
+    }
+
+    dialog = DuplicateReviewDialog(None, copies, "Two copies.", can_merge=True)
+    qtbot.addWidget(dialog)
+    merge = next(
+        b for b in dialog.findChildren(QPushButton) if b.text() == "Merge Annotations…"
+    )
+    merge.click()
+    assert dialog.merge_chosen

@@ -644,6 +644,7 @@ class _RootHandle:
     worker: _WorkerProtocol
     started: bool = False
     stopped: bool = False
+    stop_requested: bool = False
     stopped_ack: threading.Event = field(default_factory=threading.Event)
 
 
@@ -772,14 +773,33 @@ class LibraryWatchController(QObject):
         if not handle.started:
             self.stop_root(root)
 
-    def stop_root(self, root: Path) -> bool:
-        """Stop one root and wait for worker acknowledgement and thread finish."""
+    def stop_root(self, root: Path, *, wait_ms: int = 5000) -> bool:
+        """Stop one root and wait for worker acknowledgement and thread finish.
+
+        Parameters
+        ----------
+        root : Path
+            Library root to stop.
+        wait_ms : int, optional
+            Longest wait for the worker thread, in milliseconds. ``0`` only
+            checks. The worker finishes its current PDF before it stops.
+
+        Returns
+        -------
+        bool
+            `True` when the worker stopped and its resources are released.
+            `False` keeps the handle, and a later call checks again.
+        """
         key = self._root_key(root)
         handle = self._handles.get(key)
         if handle is None:
             return False
-        self._request(handle.worker, "stop_requested", "stop")
-        stopped = handle.thread.wait(5000)
+        if not handle.stop_requested:
+            # Ask once. A busy worker receives queued requests only after its
+            # current PDF, so repeated requests would only pile up.
+            handle.stop_requested = True
+            self._request(handle.worker, "stop_requested", "stop")
+        stopped = handle.thread.wait(wait_ms)
         if not stopped or not handle.stopped_ack.is_set():
             return False
         if not handle.stopped:
@@ -790,11 +810,23 @@ class LibraryWatchController(QObject):
         handle.thread.deleteLater()
         return True
 
-    def stop_all(self) -> bool:
-        """Stop all roots, retaining handles if any worker cannot stop."""
+    def stop_all(self, *, wait_ms: int = 5000) -> bool:
+        """Stop all roots, retaining handles if any worker cannot stop.
+
+        Parameters
+        ----------
+        wait_ms : int, optional
+            Longest wait for each worker thread, in milliseconds. ``0`` asks
+            every worker to stop and returns without a wait.
+
+        Returns
+        -------
+        bool
+            `True` when every worker stopped.
+        """
         result = True
         for root in list(self._handles):
-            result = self.stop_root(root) and result
+            result = self.stop_root(root, wait_ms=wait_ms) and result
         return result
 
     def is_watching(self, root: Path) -> bool:

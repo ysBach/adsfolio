@@ -492,3 +492,48 @@ def test_success_acknowledgement_keeps_queue_and_payload_behavior(qtbot):
     bar.dismiss_button.click()
     assert bar.dismiss_button.text() == "Dismiss"
     assert bar.dismiss_button.accessibleName() == "Dismiss"
+
+
+class _StyleChangeCounter:
+    """Count style changes that reach the widgets of one notice."""
+
+    def __init__(self, bar: NoticeBar) -> None:
+        from PySide6.QtCore import QObject
+
+        self.count = 0
+        counter = self
+
+        class _Filter(QObject):
+            def eventFilter(self, _watched, event):
+                if event.type() == QEvent.StyleChange:
+                    counter.count += 1
+                return False
+
+        self._filter = _Filter()
+        for widget in (bar, *bar.findChildren(QToolButton)):
+            widget.installEventFilter(self._filter)
+
+
+def test_new_and_dismissed_notices_do_not_restyle_the_other_notices(qtbot):
+    """A long notice list stays responsive: one change restyles one notice."""
+    bar = NoticeBar()
+    qtbot.addWidget(bar)
+    severities = ("warning", "error", "info", "success")
+    for index in range(6):
+        bar.enqueue(
+            Notice(f"n{index}", f"Notice {index}", severity=severities[index % 4])
+        )
+    earlier = next(
+        row for row in bar.findChildren(NoticeBar) if row.message.text() == "Notice 3"
+    )
+    counter = _StyleChangeCounter(earlier)
+
+    for index in range(6, 12):
+        bar.enqueue(
+            Notice(f"n{index}", f"Notice {index}", severity=severities[index % 4])
+        )
+    bar.dismiss("n0")  # the top notice changes from warning to error
+    bar.dismiss("n1")
+
+    assert bar.message.text() == "Notice 2"
+    assert counter.count == 0

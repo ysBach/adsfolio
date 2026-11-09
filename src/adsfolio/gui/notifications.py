@@ -159,11 +159,18 @@ class NoticeBar(QFrame):
         self._additional_bars: dict[str, NoticeBar] = {}
         layout = QVBoxLayout(self)
         self._layout = layout
-        layout.setContentsMargins(8, 4, 8, 4)
+        layout.setContentsMargins(0, 0, 0, 0)
+        # The severity color applies to this card only. The other notices are
+        # siblings of the card, so a color change does not restyle them all.
+        self._card = QFrame(self)
+        self._card.setObjectName("notice_card")
+        card_layout = QVBoxLayout(self._card)
+        card_layout.setContentsMargins(8, 4, 8, 4)
         message_row = QHBoxLayout()
         actions = QHBoxLayout()
-        layout.addLayout(message_row)
-        layout.addLayout(actions)
+        card_layout.addLayout(message_row)
+        card_layout.addLayout(actions)
+        layout.addWidget(self._card)
         self.severity_icon = VectorIconLabel("info", "Information", self)
         self.message = QLabel(self)
         self.message.setWordWrap(True)
@@ -507,9 +514,10 @@ class NoticeBar(QFrame):
             "success": ("#dff6dd", "#165c26"),
         }
         background, foreground = colors.get(notice.severity, ("#eef3f8", "#1f2933"))
-        self.setStyleSheet(
-            f"NoticeBar {{ background: {background}; color: {foreground}; }}"
-        )
+        style = f"#notice_card {{ background: {background}; color: {foreground}; }}"
+        # Qt restyles every child widget on each call, even with the same text.
+        if self._card.styleSheet() != style:
+            self._card.setStyleSheet(style)
 
         severity = notice.severity if notice.severity in colors else "info"
         self.severity_icon.set_icon(severity, severity.capitalize())

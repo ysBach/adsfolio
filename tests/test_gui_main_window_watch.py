@@ -80,7 +80,7 @@ class FakeWatchController(QObject):
             self.stopped.emit(session_id)
         return True
 
-    def stop_all(self) -> bool:
+    def stop_all(self, *, wait_ms: int = 5000) -> bool:
         if not self.stop_all_result:
             return False
         active = tuple(self.active.items())
@@ -608,9 +608,10 @@ def test_remove_root_stops_worker_before_closing_registry(monkeypatch, qtbot, tm
     assert str(root.resolve()) not in window.registries
 
 
-def test_window_close_refuses_when_watch_workers_cannot_stop(
+def test_window_close_waits_for_busy_watchers_without_blocking(
     monkeypatch, qtbot, tmp_path
 ):
+    """A busy watcher delays close. The window stays responsive, then closes."""
     root = tmp_path / "library"
     root.mkdir()
     window, controller, _saves = _window_factory(
@@ -618,18 +619,31 @@ def test_window_close_refuses_when_watch_workers_cannot_stop(
         qtbot,
         GuiConfig(roots=[RootEntry(str(root))]),
     )
+    window.show()
     registry = window.registries[str(root.resolve())]
     close_calls = []
     original_close = registry.close
     registry.close = lambda: (close_calls.append(True), original_close())[-1]
+    waits = []
+    stop_all = controller.stop_all
+
+    def busy_stop_all(*, wait_ms: int = 5000) -> bool:
+        waits.append(wait_ms)
+        return stop_all(wait_ms=wait_ms)
+
+    controller.stop_all = busy_stop_all
     controller.stop_all_result = False
 
     assert not window.close()
+    assert waits == [0]
     assert close_calls == []
-    assert "could not stop" in window.notice_bar.message.text().lower()
+    assert window.isVisible()
+    assert "closing after" in window.status.currentMessage().lower()
+    assert "watch-shutdown" not in window.notice_bar.queued_keys()
 
     controller.stop_all_result = True
-    window.close()
+    qtbot.waitUntil(lambda: not window.isVisible(), timeout=3000)
+    assert close_calls == [True]
 
 
 def test_recursive_edit_is_rejected_while_root_is_watched(monkeypatch, qtbot, tmp_path):

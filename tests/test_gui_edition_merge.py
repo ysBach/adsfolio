@@ -334,9 +334,10 @@ def test_ads_bibcode_lookup_accepts_only_unique_aliases(
     assert result[old] == (None if ambiguous else published)
 
 
-def test_watch_arrival_automatically_opens_review_and_dismiss_stops_future_prompt(
+def test_watch_arrival_posts_merge_notice_and_opens_review_only_on_click(
     monkeypatch, qtbot, tmp_path: Path
 ) -> None:
+    """A batch arrival must not open a modal window or pause the watcher."""
     make_pdf(tmp_path / "preprint.pdf")
     make_pdf(tmp_path / "new-0.pdf")
     window, controller, _saves = _window_factory(
@@ -364,6 +365,12 @@ def test_watch_arrival_automatically_opens_review_and_dismiss_stops_future_promp
 
     monkeypatch.setattr(EditionMergeDialog, "exec", cancel)
     controller.outcome.emit(WatchOutcome(event, destination=event.path))
+    qtbot.wait(50)
+    assert opened == []
+    assert controller.pause_calls == []
+    assert window.notice_bar._current().action is NoticeAction.MERGE_EDITIONS
+
+    window.notice_bar.action_button.click()
     qtbot.waitUntil(lambda: len(opened) == 1)
     assert opened[0].linked
     assert controller.pause_calls == [tmp_path.resolve()]

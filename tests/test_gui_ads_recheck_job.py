@@ -63,7 +63,7 @@ class FakeWatchController(QObject):
             self.stopped.emit(session)
         return session is not None
 
-    def stop_all(self) -> bool:
+    def stop_all(self, *, wait_ms: int = 5000) -> bool:
         for root in tuple(self.active):
             self.stop_root(root)
         return True

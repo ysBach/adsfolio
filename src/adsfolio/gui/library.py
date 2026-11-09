@@ -310,6 +310,13 @@ def count_matching(
     return sum(1 for _fact in rows)
 
 
+def _duplicate(record: dict[str, Any]) -> str:
+    """Return the group number and kind, for example ``3 · Same paper``."""
+    label = DUPLICATE_LABELS.get(str(record.get("duplicate_kind") or ""), "")
+    number = record.get("duplicate_group_number")
+    return f"{number} · {label}" if label and number else label
+
+
 BASE_COLUMNS: tuple[Column, ...] = (
     Column("title", "Title", 380, _title),
     Column("author", "First author", 160, _author),
@@ -343,10 +350,8 @@ BASE_COLUMNS: tuple[Column, ...] = (
     Column(
         "duplicate_kind",
         "Duplicate",
-        90,
-        lambda record: DUPLICATE_LABELS.get(
-            str(record.get("duplicate_kind") or ""), ""
-        ),
+        110,
+        _duplicate,
     ),
 )
 

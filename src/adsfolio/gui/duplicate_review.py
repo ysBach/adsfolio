@@ -105,6 +105,9 @@ class DuplicateReviewDialog(QDialog):
         Two or more copies.
     message : str
         Text above the list that says why the copies are shown.
+    can_merge : bool, optional
+        Show **Merge Annotations…**. The caller opens the merge after the
+        window closes with `merge_chosen` set.
 
     Signals
     -------
@@ -124,10 +127,14 @@ class DuplicateReviewDialog(QDialog):
         parent: QWidget | None,
         copies: Sequence[DuplicateCopy],
         message: str,
+        *,
+        can_merge: bool = False,
     ) -> None:
         super().__init__(parent)
         self.setWindowTitle("Duplicate PDFs")
         self.copies: list[DuplicateCopy] = list(copies)
+        # True after Merge Annotations…. The caller then opens the merge.
+        self.merge_chosen = False
         self._facts: dict[Path, tuple[int, int]] = {}
         layout = QVBoxLayout(self)
         intro = QLabel(message, self)
@@ -159,6 +166,13 @@ class DuplicateReviewDialog(QDialog):
         show.clicked.connect(self._show_in_table)
         buttons.addWidget(show)
         buttons.addStretch(1)
+        if can_merge:
+            merge = QPushButton("Merge Annotations…", self)
+            merge.setToolTip(
+                "Copy annotations from one PDF onto the other and save a new PDF"
+            )
+            merge.clicked.connect(self._choose_merge)
+            buttons.addWidget(merge)
         keep = QPushButton("Keep All", self)
         keep.setToolTip("Close this window and keep every copy")
         keep.setDefault(True)
@@ -211,6 +225,10 @@ class DuplicateReviewDialog(QDialog):
         from PySide6.QtGui import QDesktopServices
 
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
+
+    def _choose_merge(self) -> None:
+        self.merge_chosen = True
+        self.accept()
 
     def _show_in_table(self) -> None:
         self.show_in_table.emit()

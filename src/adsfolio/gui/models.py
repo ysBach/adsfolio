@@ -42,6 +42,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..pdf.classification import current_identity_proof
+from ..pdf.registry import order_duplicate_groups
 from ..pdf.search import parse_query, search_spans
 from .library import (
     BASE_COLUMNS,
@@ -1026,6 +1027,8 @@ class FileTableModel(QAbstractTableModel):
             secondary_order_by=self._query.secondary_order_by,
             tertiary_order_by=self._query.tertiary_order_by,
         )
+        if filters.get("duplicates_only"):
+            order_duplicate_groups(records)
         return records
 
     def _report_query_error(self, exc: sqlite3.OperationalError) -> None:

@@ -56,6 +56,7 @@ from ..pdf.annotation_merge import (
     MergeReport,
     MissingDependencyError,
 )
+from ..pdf.catalog import PdfCatalog
 from ..pdf.doi_providers import DOI_PROVIDER_LABELS, DoiProvider
 from ..pdf.files import sha256_file
 from ..pdf.identify_settings import IdentifySettings
@@ -78,7 +79,6 @@ from ..pdf.registry import (
     LibraryRefresh,
     PdfRegistry,
     RecordFact,
-    pdf_edition,
 )
 from ..pdf.rename_settings import RenameSettings
 from ..pdf.search import FIELD_SEPARATOR, SEARCH_FIELDS
@@ -171,6 +171,9 @@ _SettingsT = TypeVar("_SettingsT")
 DEFAULT_WINDOW_SIZE = (1280, 780)
 DEFAULT_SPLITTER_SIZES = [220, 700, 360]
 ADS_RECHECK_INTERVAL_MS = 24 * 60 * 60 * 1000
+# How often a pending close checks whether every watcher has stopped. This
+# sets only how soon the window closes after the last watcher stops.
+WATCH_STOP_CHECK_MS = 200
 # Cost note for checks that read every skipped or unproven PDF again.
 _RETRY_COST_TEXT = (
     "The check reads each of these PDFs again, so it can take a long time in a "
@@ -777,6 +780,14 @@ class MainWindow(QMainWindow):
         file_menu = self.menuBar().addMenu("File")
         self.add_action = QAction("Add Library Root…", self)
         self.local_references_action = QAction("Local References…", self)
+        self.compare_selected_action = QAction("Compare Selected PDFs…", self)
+        self.compare_selected_action.setToolTip(
+            "Compare two or more selected PDFs. Move a copy to the Trash or merge "
+            "annotations."
+        )
+        self.compare_selected_action.triggered.connect(
+            lambda: self._compare_selected(self._selected_records())
+        )
         self.merge_annotations_action = QAction("Merge Annotations…", self)
         self.merge_annotations_action.triggered.connect(
             lambda: self._merge_annotations()
@@ -938,6 +949,7 @@ class MainWindow(QMainWindow):
         tools.addAction(self.citation_keys_action)
         tools.addAction(self.citation_styles_action)
         tools.addSeparator()
+        tools.addAction(self.compare_selected_action)
         tools.addAction(self.merge_annotations_action)
         tools.addAction(self.identify_action)
         tools.addAction(self.rename_action)
@@ -2723,7 +2735,8 @@ class MainWindow(QMainWindow):
             event=event,
         )
         key = self._watch_notice_key(event)
-        self._pending_edition_merges[key] = request
+        # Post a notice only. A modal window that opens by itself blocks the
+        # main window and pauses the watcher. **Review Merge…** opens it.
         message = (
             f"{destination.name}: another edition shares its identifiers. Review annotation merging?"
             if linked
@@ -2746,10 +2759,9 @@ class MainWindow(QMainWindow):
                 ),
             )
         )
-        QTimer.singleShot(0, self._review_next_edition_merge)
 
     def _review_next_edition_merge(self) -> None:
-        """Show the next arrival's merge prompt when no other operation is active."""
+        """Open the next merge review that the user asked for, when nothing else runs."""
         if (
             not self.isVisible()
             or self._close_requested
@@ -2938,25 +2950,12 @@ class MainWindow(QMainWindow):
         )
         if registry is None:
             return
-        document_id = record.get("document_id")
-        digest = record.get("sha256")
-        edition = pdf_edition(record)
-
-        def same_group(item: Mapping[str, Any]) -> bool:
-            if digest and item.get("sha256") == digest:
-                return True
-            other = pdf_edition(item)
-            return (
-                document_id is not None
-                and item.get("document_id") == document_id
-                and (not edition or not other or other == edition)
-            )
-
+        group_key = record.get("duplicate_group")
         try:
             group = [
                 item
                 for item in registry.query_records(duplicates_only=True)
-                if same_group(item)
+                if group_key and item.get("duplicate_group") == group_key
             ]
         except (OSError, sqlite3.Error) as exc:
             self.status.showMessage(f"Could not read the duplicate PDFs: {exc}")
@@ -2987,8 +2986,15 @@ class MainWindow(QMainWindow):
         message: str,
         show_in_table: Callable[[], None],
     ) -> None:
-        """Show the duplicate window, then rename a single remaining copy."""
-        dialog = DuplicateReviewDialog(self, copies, message)
+        """Show the duplicate window, then rename or merge as the user chose."""
+        records = self._copy_records(copies)
+        can_merge = (
+            len(copies) == 2
+            and len(records) == 2
+            and copies[0].root == copies[1].root
+            and copies[0].sha256 != copies[1].sha256
+        )
+        dialog = DuplicateReviewDialog(self, copies, message, can_merge=can_merge)
         moved: list[DuplicateCopy] = []
         dialog.trashed.connect(
             lambda copy: (moved.append(copy), self._duplicate_trashed(copy))
@@ -2996,9 +3002,59 @@ class MainWindow(QMainWindow):
         dialog.show_in_table.connect(show_in_table)
         dialog.exec()
         remaining = list(dialog.copies)
+        merge_chosen = dialog.merge_chosen
         dialog.deleteLater()
-        if moved and len(remaining) == 1:
+        if merge_chosen and can_merge:
+            self._merge_annotations(records, root=copies[0].root)
+        elif moved and len(remaining) == 1:
             self._rename_kept_copy(remaining[0])
+
+    def _copy_records(self, copies: Sequence[DuplicateCopy]) -> list[dict[str, Any]]:
+        """Return the catalog records of the copies that the catalog tracks."""
+        records = []
+        for copy in copies:
+            registry = self.registries.get(str(copy.root))
+            record = (
+                registry.find_file_by_current_path(copy.root, copy.relative_path)
+                if registry is not None
+                else None
+            )
+            if record is not None:
+                records.append(record)
+        return records
+
+    def _compare_selected(self, records: Sequence[Mapping[str, Any]]) -> None:
+        """Open the duplicate window for two or more selected PDFs."""
+        if len(records) < 2:
+            self.status.showMessage("Select two or more PDFs to compare.")
+            return
+        copies = [
+            self._duplicate_copy(
+                Path(str(record.get("root") or self.current_root)), record
+            )
+            for record in records
+        ]
+        digests = {copy.sha256 for copy in copies}
+        documents = {copy.document_id for copy in copies}
+        count = len(copies)
+        if len(digests) == 1 and None not in digests:
+            message = (
+                f"These {count} PDFs have the same bytes. Keep one and move the "
+                "others to the Trash."
+            )
+        elif len(documents) == 1 and None not in documents:
+            title = self._record_value(dict(records[0]), "title")
+            message = (
+                "These PDFs are copies of one paper"
+                + (f": {title}" if title else "")
+                + ". The bytes differ, for example by annotations."
+            )
+        else:
+            message = (
+                "These PDFs are not copies of one paper record. Check each PDF "
+                "before you move one to the Trash."
+            )
+        self._open_duplicate_review(copies, message, lambda: None)
 
     def _duplicate_trashed(self, copy: DuplicateCopy) -> None:
         """Record a copy that moved to the Trash and refresh its library."""
@@ -3304,6 +3360,7 @@ class MainWindow(QMainWindow):
         )
         self.model.set_registry(registry, self.current_query)
         self._sync_duplicate_column()
+        self.combined.sync_tree_mode()
         if kind == "root":
             self._populate_views(registry)
         self._update_status()
@@ -4006,6 +4063,12 @@ class MainWindow(QMainWindow):
                 "Review Duplicates…", lambda: self._review_duplicates(records[0])
             )
         if count > 1:
+            compare = menu.addAction(
+                "Compare Selected PDFs…", lambda: self._compare_selected(records)
+            )
+            compare.setToolTip(
+                "Compare the PDFs. Move a copy to the Trash or merge annotations."
+            )
             merge = menu.addAction(
                 "Merge Selected PDFs…",
                 lambda: self._merge_annotations(records, root=root),
@@ -4429,22 +4492,27 @@ class MainWindow(QMainWindow):
                 8000,
             )
             return None
-        catalog = registry.catalog
-        service = LocalReferences(catalog, Config.load_key_policy())
-        QApplication.setOverrideCursor(Qt.WaitCursor)
+        # Use an own connection to the central catalog. The key window below
+        # lets a watcher refresh close and replace the library's connection.
+        catalog = PdfCatalog()
         try:
-            message = fetch_ads_bibtex_now(service, ids)
-        except (ValueError, sqlite3.Error) as exc:
-            message = f"Could not save ADS BibTeX: {exc}"
+            service = LocalReferences(catalog, Config.load_key_policy())
+            QApplication.setOverrideCursor(Qt.WaitCursor)
+            try:
+                message = fetch_ads_bibtex_now(service, ids)
+            except (ValueError, sqlite3.Error) as exc:
+                message = f"Could not save ADS BibTeX: {exc}"
+            finally:
+                QApplication.restoreOverrideCursor()
+            if message:
+                self.status.showMessage(message, 8000)
+            try:
+                return export_bibtex_asking_keys(self, service, ids)
+            except (ValueError, sqlite3.Error) as exc:
+                QMessageBox.warning(self, "BibTeX export", str(exc))
+                return None
         finally:
-            QApplication.restoreOverrideCursor()
-        if message:
-            self.status.showMessage(message, 8000)
-        try:
-            return export_bibtex_asking_keys(self, service, ids)
-        except (ValueError, sqlite3.Error) as exc:
-            QMessageBox.warning(self, "BibTeX export", str(exc))
-            return None
+            catalog.close()
 
     def _export_registry(self, records: Sequence[dict[str, Any]]) -> PdfRegistry | None:
         """Return an open registry whose central catalog holds `records`."""
@@ -4535,23 +4603,30 @@ class MainWindow(QMainWindow):
         if registry is None:
             self.status.showMessage("This library has no current PDFs to export.", 5000)
             return
-        dialog = ExportPapersDialog(
-            self,
-            scopes,
-            registry.catalog,
-            self.config.citation_styles,
-            initial_scope="all" if all_papers or not selected else "selected",
-            initial_format=self.config.export_format,
-            browser_command=self.config.web_browser_command,
-            show_unidentified=None
-            if self.combined.enabled
-            else lambda: self._select_view(LibraryView.UNRESOLVED),
-            exclude_fields=self.config.export_exclude_fields,
-        )
-        dialog.exec()
-        self.config.export_format = dialog.format_key
-        self.config.export_exclude_fields = dialog.excluded_fields
-        dialog.deleteLater()
+        # The window uses its own connection to the central catalog. A watcher
+        # refresh closes and replaces the library's connection while the window
+        # is open.
+        catalog = PdfCatalog()
+        try:
+            dialog = ExportPapersDialog(
+                self,
+                scopes,
+                catalog,
+                self.config.citation_styles,
+                initial_scope="all" if all_papers or not selected else "selected",
+                initial_format=self.config.export_format,
+                browser_command=self.config.web_browser_command,
+                show_unidentified=None
+                if self.combined.enabled
+                else lambda: self._select_view(LibraryView.UNRESOLVED),
+                exclude_fields=self.config.export_exclude_fields,
+            )
+            dialog.exec()
+            self.config.export_format = dialog.format_key
+            self.config.export_exclude_fields = dialog.excluded_fields
+            dialog.deleteLater()
+        finally:
+            catalog.close()
 
     def _refresh_records_ads(self, records: Sequence[dict[str, Any]]) -> None:
         """Refresh several records from ADS, one CLI run per record, in order."""
@@ -7541,17 +7616,15 @@ class MainWindow(QMainWindow):
             self._pending_ads_refresh = None
             self._pending_watch_dialog = None
             self.watch_controller.resume_writes(pending_root)
-        if not self.watch_controller.stop_all():
-            self._close_requested = False
-            self._ads_recheck_timer.start()
-            self._sync_refresh_actions()
-            self.notice_bar.enqueue(
-                Notice(
-                    "watch-shutdown",
-                    "The window could not stop all library watchers; close was cancelled.",
-                    severity="error",
-                )
+        if not self.watch_controller.stop_all(wait_ms=0):
+            # A watcher stops after its current PDF. Keep the window responsive
+            # and close when every watcher has stopped. Network requests have
+            # timeouts, so the current PDF finishes.
+            self._close_requested = True
+            self.status.showMessage(
+                "Closing after the watcher finishes the current PDF…"
             )
+            QTimer.singleShot(WATCH_STOP_CHECK_MS, self.close)
             event.ignore()
             return
         self._close_requested = True
