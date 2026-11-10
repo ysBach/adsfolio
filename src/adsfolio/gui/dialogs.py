@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import json
+import shutil
 import sqlite3
+import tempfile
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
@@ -798,6 +801,43 @@ class RenamePreviewJob(JsonWorkerJob):
             self._process.kill()
 
 
+class RenameApplyJob(CommandJob):
+    """Apply the immutable actions from one completed preview."""
+
+    def __init__(
+        self, root: Path, actions: list[Mapping[str, Any]], parent: Any = None
+    ):
+        self._request_directory = Path(
+            tempfile.mkdtemp(prefix="adsfolio-rename-apply-")
+        )
+        request_path = self._request_directory / "request.json"
+        result_path = self._request_directory / "result.json"
+        try:
+            from ..pdf.rename_preview import build_apply_request
+
+            request = build_apply_request(
+                root,
+                actions,
+                config_dir=Config.get_config_dir(),
+                result_path=result_path,
+            )
+            request_path.write_text(json.dumps(request), encoding="utf-8")
+            super().__init__(
+                cli_argv("pdf", "rename-preview", str(request_path)),
+                parent=parent,
+                working_directory=root,
+            )
+        except Exception:
+            shutil.rmtree(self._request_directory, ignore_errors=True)
+            raise
+        self.finished.connect(self._cleanup_request)
+        self.failed.connect(self._cleanup_request)
+
+    def _cleanup_request(self, *_args: Any) -> None:
+        """Remove the private request and result files after the job ends."""
+        shutil.rmtree(self._request_directory, ignore_errors=True)
+
+
 class RenameDialog(QDialog):
     """Preview and apply registry-backed PDF renames."""
 
@@ -852,6 +892,7 @@ class RenameDialog(QDialog):
         self.char_policy.addItems(["keep", "ascii"])
         self.table = QTableWidget(0, 2, self)
         self.table.setHorizontalHeaderLabels(["Current location", "Target location"])
+        self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.summary = QLabel("No preview generated", self)
         self.skipped_label = QLabel("Skipped files and reasons", self)
         self.skipped_details = QPlainTextEdit(self)
@@ -957,7 +998,7 @@ class RenameDialog(QDialog):
         self.preview_progress.hide()
         layout.addWidget(self.preview_progress)
         self._preview_job: RenamePreviewJob | None = None
-        self._preview_directories: tuple[Path, Path] | None = None
+        self._preview_actions: list[dict[str, Any]] | None = None
         layout.addWidget(self.table)
         layout.addWidget(self.skipped_label)
         layout.addWidget(self.skipped_details)
@@ -984,6 +1025,15 @@ class RenameDialog(QDialog):
         buttons.addButton(self.preview_button, QDialogButtonBox.ActionRole)
         buttons.addButton(self.save_defaults_button, QDialogButtonBox.ActionRole)
         buttons.addButton(self.apply_button, QDialogButtonBox.AcceptRole)
+        self.preview_button.setDefault(True)
+        self.preview_button.setAutoDefault(True)
+        self.save_defaults_button.setDefault(False)
+        self.save_defaults_button.setAutoDefault(False)
+        self.apply_button.setDefault(False)
+        self.apply_button.setAutoDefault(False)
+        cancel_button = buttons.button(QDialogButtonBox.Cancel)
+        cancel_button.setDefault(False)
+        cancel_button.setAutoDefault(False)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
         self.preview_button.clicked.connect(self.preview)
@@ -995,6 +1045,15 @@ class RenameDialog(QDialog):
         )
         self.scope.setCurrentIndex(index)
         self._load_selected_scope()
+        self.scope.currentIndexChanged.connect(self._invalidate_preview)
+        self.template.textChanged.connect(self._invalidate_preview)
+        self.author_format.currentTextChanged.connect(self._invalidate_preview)
+        self.max_authors.valueChanged.connect(self._invalidate_preview)
+        self.authors_when_truncated.valueChanged.connect(self._invalidate_preview)
+        self.char_policy.currentTextChanged.connect(self._invalidate_preview)
+        self.author_separator.textChanged.connect(self._invalidate_preview)
+        self.author_truncation_suffix.textChanged.connect(self._invalidate_preview)
+        self._invalidate_preview()
 
     def _load_selected_scope(self, *_args: Any) -> None:
         """Populate reusable controls from the selected scope."""
@@ -1055,38 +1114,28 @@ class RenameDialog(QDialog):
             directory = self.root / directory
         return directory.resolve()
 
-    def _target_display_path(
-        self,
-        current_name: str,
-        new_name: str,
-        *,
-        state_directory: Path,
-        unresolved_directory: Path,
-    ) -> str:
-        """Render a preview target relative to the library root.
-
-        ``PdfRenamer.batch_rename`` returns only a filename for the rendered
-        target.  Reconstructing its destination here makes nested renames and
-        moves out of the unresolved subtree visible before the subprocess runs.
-        """
-        source_path = state_directory / current_name
-        target_directory = source_path.parent
-        if (
-            state_directory in unresolved_directory.parents
-            and unresolved_directory in source_path.parents
-        ):
-            target_directory = state_directory
-        target_path = target_directory / new_name
-        try:
-            return target_path.relative_to(state_directory).as_posix()
-        except ValueError:
-            return str(target_path)
-
     def preview(self) -> None:
         """Start a preview in a child process. The dialog stays responsive."""
+        self._preview_actions = None
+        self.apply_button.setEnabled(False)
+        self._stop_preview()
         state_directory = self.root.resolve()
+        options = self._preview_options(state_directory)
+        job = RenamePreviewJob(self.root, options, self)
+        self._preview_job = job
+        job.finished.connect(
+            lambda payload, error, job=job: self._preview_finished(job, payload, error)
+        )
+        self.summary.setText("Checking each PDF's identity for the preview…")
+        self.preview_progress.show()
+        self.preview_button.setEnabled(False)
+        job.start()
+
+    def _preview_options(self, state_directory: Path | None = None) -> dict[str, Any]:
+        """Return preview options from the current controls."""
+        state_directory = state_directory or self.root.resolve()
         unresolved_directory = self._unresolved_directory()
-        options = {
+        return {
             "template": self.template.text(),
             "author_format": self._format(),
             "max_authors": self.max_authors.value(),
@@ -1101,17 +1150,6 @@ class RenameDialog(QDialog):
             ),
             "move_resolved_to": str(state_directory),
         }
-        self._stop_preview()
-        job = RenamePreviewJob(self.root, options, self)
-        self._preview_job = job
-        self._preview_directories = (state_directory, unresolved_directory)
-        job.finished.connect(
-            lambda payload, error, job=job: self._preview_finished(job, payload, error)
-        )
-        self.summary.setText("Checking each PDF's identity for the preview…")
-        self.preview_progress.show()
-        self.preview_button.setEnabled(False)
-        job.start()
 
     def _stop_preview(self) -> None:
         """Stop a running preview and ignore its result."""
@@ -1145,6 +1183,8 @@ class RenameDialog(QDialog):
         self._preview_job = None
         self.preview_progress.hide()
         self.preview_button.setEnabled(True)
+        self._preview_actions = None
+        self.apply_button.setEnabled(False)
         if payload is None or payload.get("error") or error:
             detail = (payload or {}).get("error") or error or "no result"
             self._show_preview_message(f"Preview failed: {detail}")
@@ -1152,26 +1192,28 @@ class RenameDialog(QDialog):
         if payload.get("invalid"):
             self._show_preview_message(str(payload["invalid"]))
             return
-        state_directory, unresolved_directory = self._preview_directories or (
-            self.root.resolve(),
-            self._unresolved_directory(),
-        )
-        plans = [tuple(pair) for pair in payload.get("plans", [])]
-        self.table.setRowCount(len(plans))
-        for row, (old, new) in enumerate(plans):
-            self.table.setItem(row, 0, QTableWidgetItem(old))
-            self.table.setItem(
-                row,
-                1,
-                QTableWidgetItem(
-                    self._target_display_path(
-                        old,
-                        new,
-                        state_directory=state_directory,
-                        unresolved_directory=unresolved_directory,
-                    )
-                ),
+        actions = payload.get("actions")
+        if not isinstance(actions, list):
+            self._show_preview_message(
+                "Preview failed: no valid action plan was returned."
             )
+            return
+        if any(
+            not isinstance(action, dict)
+            or not isinstance(action.get("source"), str)
+            or not isinstance(action.get("target"), str)
+            for action in actions
+        ):
+            self._show_preview_message(
+                "Preview failed: no valid action plan was returned."
+            )
+            return
+        self._preview_actions = [dict(action) for action in actions]
+        self.apply_button.setEnabled(bool(self._preview_actions))
+        self.table.setRowCount(len(actions))
+        for row, action in enumerate(actions):
+            self.table.setItem(row, 0, QTableWidgetItem(action["source"]))
+            self.table.setItem(row, 1, QTableWidgetItem(action["target"]))
         skipped = list(payload.get("skipped", {}).items())
         skipped.extend(
             (
@@ -1186,46 +1228,40 @@ class RenameDialog(QDialog):
         )
         self.skipped_label.setVisible(bool(skipped))
         self.skipped_details.setVisible(bool(skipped))
-        summary = f"{len(plans)} change(s)" if plans else "No changes"
+        summary = f"{len(actions)} change(s)" if actions else "No changes"
         if skipped:
             summary += f", {len(skipped)} skipped"
         self.summary.setText(summary)
 
-    def build_argv(self) -> list[str]:
-        """Return the CLI argv represented by the dialog."""
-        flags = [
-            "--scheme",
-            self.template.text(),
-            "--author-format",
-            self._format(),
-            "--max-authors",
-            str(self.max_authors.value()),
-            "--authors-when-truncated",
-            str(self.authors_when_truncated.value()),
-            "--char-policy",
-            self.char_policy.currentText(),
-            "--author-separator",
-            self.author_separator.text(),
-            "--author-truncation-suffix",
-            self.author_truncation_suffix.text(),
-            "--output-unresolved",
-            str(self._unresolved_directory()),
-        ]
-        return cli_argv("pdf", "rename", str(self.root), *flags, "--apply")
-
     def apply(self) -> None:
         """Start the confirmed rename subprocess."""
-        if (
-            not self.table.rowCount()
-            and QMessageBox.question(
-                self, "No changes", "No preview changes exist. Apply anyway?"
-            )
-            != QMessageBox.Yes
-        ):
+        actions = self._preview_actions
+        if not actions:
             return
         if not self._save():
             return
-        job = CommandJob(self.build_argv(), parent=self, working_directory=self.root)
-        job.start()
+        try:
+            job = RenameApplyJob(self.root, actions, self)
+        except (OSError, ValueError, RuntimeError) as exc:
+            QMessageBox.critical(self, "Could not start Rename", str(exc))
+            return
         self.job_started.emit(job)
+        try:
+            job.start()
+        except (OSError, RuntimeError, ValueError, TypeError) as exc:
+            job._cleanup_request()
+            job.failed.emit(str(exc))
+            QMessageBox.critical(self, "Could not start Rename", str(exc))
+            return
         super().accept()
+
+    def _invalidate_preview(self, *_args: Any) -> None:
+        """Discard a plan when its settings change."""
+        self._preview_actions = None
+        self.apply_button.setEnabled(False)
+        self._stop_preview()
+        self.table.setRowCount(0)
+        self.summary.setText("No preview generated")
+        self.skipped_details.clear()
+        self.skipped_label.hide()
+        self.skipped_details.hide()

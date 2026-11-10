@@ -15,6 +15,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 pytest.importorskip("PySide6")
 
 from PySide6.QtCore import QItemSelectionModel, QObject, Qt, Signal
+from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QDialog, QDialogButtonBox, QMessageBox
 
 from adsfolio.citations import CitationStyle
@@ -847,18 +848,23 @@ def test_rename_dialog_apply_saves_settings_before_starting_job(
         RenameSettings(template="{bibcode}"),
         save_settings=lambda scope, settings: events.append(("save", scope, settings)),
     )
-    dialog.table.setRowCount(1)
+    dialog._preview_actions = [{"source": "old.pdf", "target": "new.pdf"}]
+    dialog.apply_button.setEnabled(True)
     dialog.job_started.connect(lambda job: events.append(("emit", job)))
 
-    monkeypatch.setattr(
-        "adsfolio.gui.dialogs.CommandJob.start",
-        lambda self: events.append(("start", self)),
-    )
+    class FakeJob:
+        def __init__(self, root, actions, parent):
+            self.actions = actions
+
+        def start(self):
+            events.append(("start", self))
+
+    monkeypatch.setattr("adsfolio.gui.dialogs.RenameApplyJob", FakeJob)
 
     dialog.apply()
 
     assert events[0] == ("save", "global", dialog.selected_settings())
-    assert [event[0] for event in events] == ["save", "start", "emit"]
+    assert [event[0] for event in events] == ["save", "emit", "start"]
     assert dialog.result() == QDialog.Accepted
     dialog.close()
 
@@ -877,11 +883,14 @@ def test_rename_dialog_apply_save_failure_does_not_start_job_or_close(
         RenameSettings(),
         save_settings=failing_save,
     )
-    dialog.table.setRowCount(1)
+    dialog._preview_actions = [{"source": "old.pdf", "target": "new.pdf"}]
+    dialog.apply_button.setEnabled(True)
     dialog.job_started.connect(lambda job: events.append(("emit", job)))
     monkeypatch.setattr(
-        "adsfolio.gui.dialogs.CommandJob.start",
-        lambda self: events.append(("start", self)),
+        "adsfolio.gui.dialogs.RenameApplyJob",
+        lambda *args: type(
+            "FakeJob", (), {"start": lambda self: events.append(("start", self))}
+        )(),
     )
     monkeypatch.setattr(
         QMessageBox,
@@ -897,6 +906,32 @@ def test_rename_dialog_apply_save_failure_does_not_start_job_or_close(
     dialog.close()
 
 
+def test_rename_dialog_return_never_applies_stale_or_fresh_plan(
+    application, monkeypatch
+):
+    dialog = RenameDialog(Path("/papers"))
+    dialog.show()
+    started = []
+    previewed = []
+    dialog._preview_actions = [{"source": "old.pdf", "target": "new.pdf"}]
+    dialog.apply_button.setEnabled(True)
+    monkeypatch.setattr(dialog, "preview", lambda: previewed.append(True))
+    monkeypatch.setattr(dialog, "apply", lambda: started.append(True))
+
+    dialog.template.setText("{title}")
+    assert not dialog.apply_button.isEnabled()
+    QTest.keyClick(dialog.template, Qt.Key_Return)
+    assert previewed == [True]
+    assert started == []
+
+    dialog._preview_actions = [{"source": "old.pdf", "target": "new.pdf"}]
+    dialog.apply_button.setEnabled(True)
+    QTest.keyClick(dialog.template, Qt.Key_Return)
+    assert previewed == [True, True]
+    assert started == []
+    dialog.close()
+
+
 def test_rename_dialog_preview_never_saves(application, monkeypatch):
     calls = []
     observed = {}
@@ -909,19 +944,39 @@ def test_rename_dialog_preview_never_saves(application, monkeypatch):
         ),
         save_settings=lambda scope, settings: calls.append((scope, settings)),
     )
-    monkeypatch.setattr(
-        "adsfolio.pdf.rename_preview.open_registry_state",
-        lambda path: type("FakeState", (), {"close": lambda self: None})(),
-    )
-    monkeypatch.setattr(
-        "adsfolio.pdf.rename_preview.PdfRenamer.batch_rename",
-        lambda *args, **kwargs: observed.update(kwargs) or [("old.pdf", "new.pdf")],
-    )
+
+    class FakePreviewJob(QObject):
+        finished = Signal(object, object)
+
+        @property
+        def running(self):
+            return False
+
+        def __init__(self, root, options, parent):
+            super().__init__(parent)
+            observed.update(options)
+
+        def start(self):
+            self.finished.emit(
+                {
+                    "plans": [["old.pdf", "new.pdf"]],
+                    "actions": [{"source": "old.pdf", "target": "new.pdf"}],
+                },
+                None,
+            )
+
+        def cancel(self):
+            pass
+
+    monkeypatch.setattr("adsfolio.gui.dialogs.RenamePreviewJob", FakePreviewJob)
 
     dialog.preview()
 
     assert calls == []
     assert dialog.table.rowCount() == 1
+    assert dialog.table.item(0, 1).text() == "new.pdf"
+    assert dialog.table.editTriggers() == dialog.table.EditTrigger.NoEditTriggers
+    assert dialog.apply_button.isEnabled()
     assert observed["author_separator"] == "~"
     assert observed["authors_when_truncated"] == 2
     assert observed["author_truncation_suffix"] == "++"
@@ -958,7 +1013,7 @@ def test_rename_dialog_authors_when_truncated_maximum_syncs_with_max_authors(
     dialog.close()
 
 
-def test_rename_dialog_settings_and_argv_carry_author_join_options(application):
+def test_rename_dialog_preview_options_carry_author_join_settings(application):
     dialog = RenameDialog(
         Path("/papers"),
         RenameSettings(
@@ -970,14 +1025,94 @@ def test_rename_dialog_settings_and_argv_carry_author_join_options(application):
     )
 
     settings = dialog.selected_settings()
-    argv = dialog.build_argv()
+    options = dialog._preview_options()
 
     assert settings.author_separator == "~"
     assert settings.authors_when_truncated == 2
     assert settings.author_truncation_suffix == "++"
-    assert argv[argv.index("--authors-when-truncated") + 1] == "2"
-    assert argv[argv.index("--author-separator") + 1] == "~"
-    assert argv[argv.index("--author-truncation-suffix") + 1] == "++"
+    assert options["authors_when_truncated"] == 2
+    assert options["author_separator"] == "~"
+    assert options["author_truncation_suffix"] == "++"
+    dialog.close()
+
+
+def test_rename_apply_start_exception_emits_failed_after_job_registration(
+    application, monkeypatch
+):
+    events = []
+
+    class FakeJob(QObject):
+        failed = Signal(str)
+
+        def __init__(self, *args):
+            super().__init__()
+
+        def start(self):
+            raise OSError("spawn failed")
+
+        def _cleanup_request(self):
+            events.append("cleanup")
+
+    dialog = RenameDialog(Path("/papers"))
+    dialog._preview_actions = [{"source": "old.pdf", "target": "new.pdf"}]
+    monkeypatch.setattr(
+        QMessageBox,
+        "critical",
+        lambda parent, title, message: events.append((title, message)),
+    )
+    monkeypatch.setattr("adsfolio.gui.dialogs.RenameApplyJob", FakeJob)
+    dialog.job_started.connect(
+        lambda job: job.failed.connect(lambda message: events.append(message))
+    )
+
+    dialog.apply()
+
+    assert events == [
+        "cleanup",
+        "spawn failed",
+        ("Could not start Rename", "spawn failed"),
+    ]
+    assert dialog.result() == 0
+    dialog.close()
+
+
+def test_rename_dialog_preview_is_the_only_auto_default(application):
+    dialog = RenameDialog(Path("/papers"))
+    cancel = dialog.findChild(QDialogButtonBox).button(QDialogButtonBox.Cancel)
+
+    assert dialog.preview_button.isDefault()
+    assert dialog.preview_button.autoDefault()
+    assert not dialog.save_defaults_button.isDefault()
+    assert not dialog.save_defaults_button.autoDefault()
+    assert not dialog.apply_button.isDefault()
+    assert not dialog.apply_button.autoDefault()
+    assert not cancel.isDefault()
+    assert not cancel.autoDefault()
+    dialog.close()
+
+
+def test_rename_apply_constructor_failure_does_not_register_job(
+    application, monkeypatch
+):
+    events = []
+
+    def fail_constructor(*args):
+        raise ValueError("bad request")
+
+    dialog = RenameDialog(Path("/papers"))
+    dialog._preview_actions = [{"source": "old.pdf", "target": "new.pdf"}]
+    dialog.job_started.connect(lambda job: events.append(job))
+    monkeypatch.setattr("adsfolio.gui.dialogs.RenameApplyJob", fail_constructor)
+    monkeypatch.setattr(
+        QMessageBox,
+        "critical",
+        lambda parent, title, message: events.append((title, message)),
+    )
+
+    dialog.apply()
+
+    assert events == [("Could not start Rename", "bad request")]
+    assert dialog.result() == 0
     dialog.close()
 
 

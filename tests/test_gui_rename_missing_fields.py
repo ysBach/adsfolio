@@ -77,7 +77,7 @@ def test_template_help_explains_missing_fields(application, rename_library):
     dialog.close()
 
 
-def test_preview_shows_skipped_reason_and_preserves_no_change_confirmation(
+def test_preview_shows_skipped_reason_without_apply_or_confirmation(
     application, rename_library, monkeypatch
 ):
     root = rename_library
@@ -105,7 +105,8 @@ def test_preview_shows_skipped_reason_and_preserves_no_change_confirmation(
     assert "bibcode" in details
     assert "Add metadata or choose a template" in details
     dialog.apply()
-    assert len(questions) == 1
+    assert questions == []
+    assert not dialog.apply_button.isEnabled()
     assert (root / "missing.pdf").read_bytes() == original_bytes
     assert _files(root) == original_records
     dialog.close()

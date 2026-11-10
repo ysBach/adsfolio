@@ -844,6 +844,7 @@ class PdfRenamer:
         author_separator: str = "+",
         author_truncation_suffix: str = "+",
         current_filenames: Sequence[str] | None = None,
+        _action_sink: list[dict[str, Any]] | None = None,
     ) -> list[tuple[str, str]]:
         """Rename tracked PDFs with verified ADS or ready local metadata.
 
@@ -859,6 +860,10 @@ class PdfRenamer:
         paths relative to the catalog root. An empty sequence selects no files.
         A Unicode alias selects a current path only when its directory entry
         proves the match.
+
+        `_action_sink`, when supplied, receives the exact root-relative plan,
+        verified file digest, catalog snapshot, and stale-record recovery flag.
+        It does not change the legacy return value.
 
         Use the selected template without substitution. Skip records when a
         referenced field has no value. Record unchanged targets in `unchanged`
@@ -929,6 +934,7 @@ class PdfRenamer:
             current_name = metadata.get("current_filename", original_name)
             if selected is not None and current_name not in selected:
                 continue
+            planning_metadata = dict(metadata)
             stale = bool(metadata.get(METADATA_STALE_KEY))
             if not stale and not (
                 is_resolved_record(dict(metadata)) or metadata_ready(metadata)
@@ -983,12 +989,12 @@ class PdfRenamer:
                 changed and catalog is not None and metadata.get("bibcode")
             )
             recovery_snapshot = None
+            if catalog is not None and (needs_recovery or _action_sink is not None):
+                recovery_snapshot = catalog.get_file(
+                    sidecar.directory, str(current_name)
+                )
             if needs_recovery:
                 try:
-                    if catalog is not None:
-                        recovery_snapshot = catalog.get_file(
-                            sidecar.directory, str(current_name)
-                        )
                     if recovery_snapshot is None:
                         raise IdentityValidationError(
                             "This record cannot be recovered in this library."
@@ -1026,7 +1032,7 @@ class PdfRenamer:
                 continue
 
             try:
-                verify_record_identity(
+                identity_proof = verify_record_identity(
                     source_path, metadata, sha256=stored_sha or None, state=sidecar
                 )
             except (IdentityValidationError, OSError) as exc:
@@ -1083,6 +1089,78 @@ class PdfRenamer:
             if unchanged:
                 self.unchanged[str(current_name)] = new_name
                 continue
+            if _action_sink is not None:
+                if catalog is None or recovery_snapshot is None:
+                    self.identity_refused[str(current_name)] = (
+                        "The catalog record cannot be bound to this preview."
+                    )
+                    continue
+                if (
+                    CentralPdfRegistryState._record_view(recovery_snapshot)
+                    != planning_metadata
+                ):
+                    self.identity_refused[str(current_name)] = (
+                        "The catalog changed during Rename preview. Retry Rename."
+                    )
+                    continue
+                try:
+                    before_hash = source_path.stat()
+                    verified_sha = sha256_file(source_path)
+                    final_stat = source_path.stat()
+                except OSError as exc:
+                    self.identity_refused[str(current_name)] = str(exc)
+                    continue
+                proof_sha = str(identity_proof.get("sha256") or "")
+                if not proof_sha or verified_sha != proof_sha:
+                    self.identity_refused[str(current_name)] = (
+                        "The verified PDF bytes changed during Rename preview. Retry Rename."
+                    )
+                    continue
+                if (
+                    before_hash.st_dev,
+                    before_hash.st_ino,
+                    before_hash.st_size,
+                    before_hash.st_mtime_ns,
+                ) != (
+                    final_stat.st_dev,
+                    final_stat.st_ino,
+                    final_stat.st_size,
+                    final_stat.st_mtime_ns,
+                ):
+                    self.identity_refused[str(current_name)] = (
+                        "The PDF changed during Rename preview. Retry Rename."
+                    )
+                    continue
+                current_snapshot = catalog.get_file(
+                    sidecar.directory, str(current_name)
+                )
+                if (
+                    current_snapshot is None
+                    or current_snapshot.get("missing_at") is not None
+                    or current_snapshot != recovery_snapshot
+                ):
+                    self.identity_refused[str(current_name)] = (
+                        "The catalog record changed during Rename preview. Retry Rename."
+                    )
+                    continue
+                root = Path(sidecar.directory).resolve()
+                try:
+                    source_relative = source_path.relative_to(root).as_posix()
+                    target_relative = target_path.relative_to(root).as_posix()
+                except ValueError:
+                    self.identity_refused[str(current_name)] = (
+                        "A planned path is outside the library."
+                    )
+                    continue
+                _action_sink.append(
+                    {
+                        "source": source_relative,
+                        "target": target_relative,
+                        "sha256": verified_sha,
+                        "catalog": recovery_snapshot,
+                        "recovery": needs_recovery,
+                    }
+                )
             if needs_recovery and not dry_run:
                 try:
                     current = catalog.get_file(sidecar.directory, str(current_name))
@@ -1104,6 +1182,37 @@ class PdfRenamer:
             if dry_run:
                 continue
             move_tracked_file(sidecar, source_path, target_path)
+        if dry_run and _action_sink is not None:
+            target_groups: dict[str, list[dict[str, Any]]] = {}
+            for action in _action_sink:
+                key = unicodedata.normalize("NFC", action["target"]).casefold()
+                target_groups.setdefault(key, []).append(action)
+            conflicts = {
+                key: group for key, group in target_groups.items() if len(group) > 1
+            }
+            if conflicts:
+                conflicting_sources: set[str] = set()
+                for group in conflicts.values():
+                    target_names = ", ".join(
+                        sorted({str(action["target"]) for action in group})
+                    )
+                    for action in group:
+                        source = str(action["source"])
+                        conflicting_sources.add(source)
+                        other_count = len(group) - 1
+                        self.skipped[source] = (
+                            f"Planned target conflicts by Unicode-normalized, "
+                            f"case-insensitive path: {target_names}. "
+                            f"Conflicts with {other_count} other planned source(s)."
+                        )
+                _action_sink[:] = [
+                    action
+                    for action in _action_sink
+                    if str(action["source"]) not in conflicting_sources
+                ]
+                plans = [
+                    plan for plan in plans if str(plan[0]) not in conflicting_sources
+                ]
         return plans
 
     def rename_tracked_file(

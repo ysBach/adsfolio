@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### Rename
+
+- **Apply** uses the source and target paths from the confirmed preview.
+  If you edit the options, generate a new preview. Pressing **Return** does
+  not apply an old preview.
+
 ### Speed
 
 - Sidebar and status counts read only the catalog fields they need. The app

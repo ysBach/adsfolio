@@ -812,11 +812,9 @@ It uses the preceding tokens as given names.
 
 ## Identify and Rename
 
-**Tools → Identify** and **Tools → Rename** run the same CLI commands as the
-terminal application, as subprocesses. Output streams to the log dock. After
-completion, ADSfolio reloads catalog records so counts and metadata are fresh.
-Rename shows a dry-run preview before it applies changes. The GUI does not
-render PDFs itself.
+**Tools → Identify** and **Tools → Rename** run in separate processes.
+The log dock shows the results. ADSfolio reloads catalog records when the job
+ends. The GUI opens PDFs in your viewer.
 
 **Preview** lists the PDFs whose names would change. Rename renders each new
 name from the stored metadata first. It reads a PDF only when the name would
@@ -824,6 +822,11 @@ change, to check the PDF's identity before the rename. A PDF that already has
 its name, or whose new name another file already has, is not read. The preview
 runs in a separate process. **Cancel** or closing the window stops it. A
 preview changes no files.
+
+Review the current and target paths in **Preview**. Select **Apply** to start
+those moves. If you edit the rename options, generate a new preview before you
+apply. If a PDF or its destination changes after the preview, check the job log.
+Open **Rename** again and generate a new preview.
 
 **Destination exists** means that another PDF already has the new name. This
 is often a second download of the same paper. Rename never overwrites a file.
