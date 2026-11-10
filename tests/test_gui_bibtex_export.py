@@ -229,7 +229,7 @@ def test_export_as_bibtex_respects_scope_and_uses_all_current_rows(
         monkeypatch.setattr("adsfolio.gui.models.PAGE_SIZE", 1)
         window.model.set_query(FileQuery(order_by="relative_path"))
     assert window.model.rowCount() == 1
-    window.table.setCurrentIndex(window.model.index(0, 0))
+    window.table.setCurrentIndex(window._view_table_index(window.model.index(0, 0)))
     selected_id = window._selected_records()[0]["document_id"]
     target = tmp_path / "export.bib"
     scopes = []
@@ -279,7 +279,7 @@ def test_cancelling_export_format_does_not_ask_for_keys_or_a_filename(
     window, monkeypatch
 ) -> None:
     """Cancel the export window before BibTeX key edits or file writes begin."""
-    window.table.setCurrentIndex(window.model.index(0, 0))
+    window.table.setCurrentIndex(window._view_table_index(window.model.index(0, 0)))
     _export_with(monkeypatch, FORMAT_BIBTEX, "cancel")
 
     def unexpected_dialog(*args) -> None:

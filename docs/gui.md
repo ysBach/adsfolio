@@ -188,6 +188,21 @@ without a question. ADSfolio then asks how to watch the new library:
 **Watch, Identify, and Rename**, **Watch and Notify Only**, or **Do Not Watch**
 (the default). See [Watching library roots](#watching-library-roots).
 
+### Show folders
+
+The table shows the folders of the selected library. Its folders and PDFs are
+the top-level rows. Expand a folder to see its subfolders and PDFs. To get one
+flat list of PDFs, press **Command+Shift+O** (**Ctrl+Shift+O** on Windows and
+Linux). The folder button in the toolbar and **View → Show Folders** do the
+same. Press it again to show folders. This choice also applies to combined
+libraries. The **Duplicates** view always shows a flat list.
+The toggle keeps selected PDFs and the current PDF when it changes the table.
+It keeps multiple selections, including PDFs inside closed folders. A selected
+folder has no row in the flat list, so the toggle cannot keep a folder selection.
+
+**Select All** (**Command+A** or **Ctrl+A**) selects every PDF of the view. It
+also selects PDFs in closed folders and rows that the table has not loaded yet.
+
 ### Combine libraries in one view
 
 1. Show the **Libraries** sidebar from the **View** menu.
@@ -339,7 +354,8 @@ The context menu offers these actions:
 
 To identify and rename in one run, use a single-library view:
 
-1. Select the PDF rows.
+1. Select the PDF rows. To include every PDF of the library, select one row and
+   press **Command+A** (**Ctrl+A** on Windows and Linux).
 2. Right-click and choose **Identify & Rename Selected PDF** or its multiple-file equivalent.
 
 This action starts immediately. It uses the saved Identify and Rename scopes
@@ -1631,6 +1647,8 @@ The View menu shows the shortcuts available on your system.
 | Show or hide the Find bar | Command/Ctrl+Shift+F |
 | Clear Find and focus the table | Escape twice |
 | Show or hide Libraries | Command/Ctrl+Shift+L |
+| Show or hide folders in the table | Command/Ctrl+Shift+O |
+| Select every PDF of the view | Command/Ctrl+A |
 | Show or hide Details | Command/Ctrl+Shift+D |
 | Show or hide the job log | Command/Ctrl+Shift+J |
 | Reconcile local files | F5 or the system Refresh shortcut |

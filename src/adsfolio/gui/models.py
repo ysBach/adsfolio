@@ -11,13 +11,14 @@ from typing import Any
 from PySide6.QtCore import (
     QAbstractTableModel,
     QEvent,
+    QItemSelection,
+    QItemSelectionModel,
     QModelIndex,
     QObject,
     QPoint,
     QPointF,
     QSize,
     Qt,
-    QTimerEvent,
     Signal,
 )
 from PySide6.QtGui import (
@@ -25,8 +26,6 @@ from PySide6.QtGui import (
     QFont,
     QFontMetrics,
     QInputDevice,
-    QKeyEvent,
-    QMouseEvent,
     QPainter,
     QPalette,
     QPolygonF,
@@ -109,7 +108,6 @@ class LibraryTableView(QTreeView):
         super().__init__(parent)
         self._shift_wheel_remainder = 0
         # True while a click or key press handles a row change.
-        self._user_row_change = False
         for widget in (
             self.header().viewport(),
             self.horizontalScrollBar(),
@@ -211,52 +209,94 @@ class LibraryTableView(QTreeView):
             self._shift_wheel_remainder = 0
         event.accept()
 
-    def mousePressEvent(self, event: QMouseEvent) -> None:  # noqa: N802
-        """Select the clicked row without scrolling sideways."""
-        self._user_row_change = True
-        try:
-            super().mousePressEvent(event)
-        finally:
-            self._user_row_change = False
-
-    def keyPressEvent(self, event: QKeyEvent) -> None:  # noqa: N802
-        """Move between rows without scrolling sideways."""
-        self._user_row_change = True
-        try:
-            super().keyPressEvent(event)
-        finally:
-            self._user_row_change = False
-
-    def timerEvent(self, event: QTimerEvent) -> None:  # noqa: N802
-        """Keep the horizontal position when Qt's delayed click scroll runs.
-
-        After a mouse press, Qt waits for the double-click interval plus 100 ms
-        and then scrolls to the clicked cell from this timer.
-        """
-        self._user_row_change = True
-        try:
-            super().timerEvent(event)
-        finally:
-            self._user_row_change = False
-
     def scrollTo(  # noqa: N802 - Qt override
         self,
         index: QModelIndex,
         hint: QAbstractItemView.ScrollHint = QAbstractItemView.EnsureVisible,
     ) -> None:
-        """Scroll to an index, and keep the horizontal position for user row moves.
+        """Scroll up or down to show the row of `index`, never sideways.
 
-        The view selects whole rows. After a click or key press, Qt's default
-        also scrolls sideways to show the current cell, so a click on a partly
-        hidden column moved the table. A direct call still scrolls to the column.
+        The view selects whole rows, so the column of the current cell has no
+        meaning for the user. Qt scrolls to the current cell after a click, a
+        key press, or a restored selection. Without this rule, a click on a
+        partly hidden column, or a library change with a selected PDF, moved
+        the table to the first column. Only the user scrolls sideways.
+
+        Qt receives a fully visible column of the same row, so it does not
+        scroll sideways. A sideways scroll repaints the whole table. Without
+        such a column, the horizontal position is set back after the scroll.
         """
-        if not self._user_row_change:
-            super().scrollTo(index, hint)
-            return
+        column = self._fully_visible_column()
+        if index.isValid() and column is not None and column != index.column():
+            index = index.siblingAtColumn(column)
         scrollbar = self.horizontalScrollBar()
         horizontal = scrollbar.value()
         super().scrollTo(index, hint)
-        scrollbar.setValue(horizontal)
+        if scrollbar.value() != horizontal:
+            scrollbar.setValue(horizontal)
+
+    def selectAll(self) -> None:  # noqa: N802 - Qt override
+        """Select every PDF of the current view, also rows not shown yet.
+
+        Qt selects only loaded rows, and in a folder tree only rows inside
+        open folders. The table loads its rows in pages, so Select All
+        previously missed PDFs further down and PDFs in closed folders. An
+        action on all selected PDFs then skipped them without notice.
+        """
+        model = self.model()
+        selection_model = self.selectionModel()
+        if (
+            model is None
+            or selection_model is None
+            or self.selectionMode()
+            in (
+                QAbstractItemView.SelectionMode.NoSelection,
+                QAbstractItemView.SelectionMode.SingleSelection,
+            )
+        ):
+            super().selectAll()
+            return
+        source = getattr(model, "sourceModel", None)
+        for target in (model, source() if callable(source) else None):
+            while target is not None and target.canFetchMore(QModelIndex()):
+                before = target.rowCount()
+                target.fetchMore(QModelIndex())
+                if target.rowCount() == before:
+                    break
+        selection = QItemSelection()
+        parents = [QModelIndex()]
+        last_column = max(0, model.columnCount() - 1)
+        while parents:
+            parent = parents.pop()
+            rows = model.rowCount(parent)
+            if not rows:
+                continue
+            selection.select(
+                model.index(0, 0, parent), model.index(rows - 1, last_column, parent)
+            )
+            parents.extend(
+                index
+                for row in range(rows)
+                if model.rowCount(index := model.index(row, 0, parent)) > 0
+            )
+        selection_model.select(
+            selection,
+            QItemSelectionModel.SelectionFlag.ClearAndSelect
+            | QItemSelectionModel.SelectionFlag.Rows,
+        )
+
+    def _fully_visible_column(self) -> int | None:
+        """Return the leftmost logical column that the viewport shows whole."""
+        header = self.header()
+        width = self.viewport().width()
+        for visual in range(header.count()):
+            column = header.logicalIndex(visual)
+            if header.isSectionHidden(column):
+                continue
+            left = header.sectionViewportPosition(column)
+            if left >= 0 and left + header.sectionSize(column) <= width:
+                return column
+        return None
 
 
 # Search fields that each table column displays. A field term highlights
@@ -383,6 +423,11 @@ class RowHeightDelegate(QStyledItemDelegate):
         A file row has no folding arrow, so its own indentation step is empty.
         The cell content starts there instead, so the file icon lines up with
         the folder icon above it. Folder rows keep their indentation.
+
+        This applies only to a tree with library nodes. A tree of one library
+        also has files at the top level. With the standard indentation, top-level
+        files then line up with top-level folders, and folder contents stay one
+        step to the right.
         """
         super().initStyleOption(option, index)
         view = option.widget
@@ -393,6 +438,7 @@ class RowHeightDelegate(QStyledItemDelegate):
             and index.column() == view.treePosition()
             and index.parent().isValid()
             and getattr(model, "node_kind", None) is not None
+            and getattr(model, "root_nodes", False)
             and model.node_kind(index) == "file"
         ):
             option.rect = option.rect.adjusted(-view.indentation(), 0, 0, 0)
@@ -965,18 +1011,24 @@ class FileTableModel(QAbstractTableModel):
             self._close_page_snapshot()
 
     def sort(self, column: int, order: Qt.SortOrder = Qt.AscendingOrder) -> None:
-        """Re-query SQLite using the selected sortable column."""
+        """Re-query SQLite using the selected sortable column.
+
+        Qt asks for the current order again when a view gets a new model.
+        The rows already have that order, so the model does not reload them.
+        """
         if not 0 <= column < len(self._columns):
             return
         target_column = self._columns[column]
         if not target_column.sortable:
             return
+        descending = order == Qt.DescendingOrder
+        if (
+            self._query.order_by == target_column.key
+            and self._query.descending == descending
+        ):
+            return
         self.set_query(
-            replace(
-                self._query,
-                order_by=target_column.key,
-                descending=order == Qt.DescendingOrder,
-            )
+            replace(self._query, order_by=target_column.key, descending=descending)
         )
 
     def _reload(self) -> None:

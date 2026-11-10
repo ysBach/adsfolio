@@ -42,7 +42,7 @@ def lookup(monkeypatch, qtbot, tmp_path: Path):
     window, controller, _saves = _window_factory(
         monkeypatch, qtbot, GuiConfig(roots=[RootEntry(str(root))])
     )
-    window.table.setCurrentIndex(window.model.index(0, 0))
+    window.table.setCurrentIndex(window._view_table_index(window.model.index(0, 0)))
     window.watch_current_action.trigger()
     jobs = []
     _ads_refresh_job_factory(monkeypatch, jobs)
@@ -432,7 +432,7 @@ def test_gui_review_uses_the_cli_protocol_without_changing_pdf_contents(
     window, _controller, _saves = _window_factory(
         monkeypatch, qtbot, GuiConfig(roots=[RootEntry(str(root))])
     )
-    window.table.setCurrentIndex(window.model.index(0, 0))
+    window.table.setCurrentIndex(window._view_table_index(window.model.index(0, 0)))
     registry = window.registries[str(root)]
     before = registry.find_file_by_relative_path(root, source.name)
     assert bool(before["sha256"]) is catalog_hash

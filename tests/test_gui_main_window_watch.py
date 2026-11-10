@@ -169,7 +169,7 @@ def test_f5_reconciles_files_preserving_selection_and_history(
     for row in range(window.model.rowCount()):
         record = window.model.record_at(row)
         if record["current_path"] in {"keep.pdf", "move.pdf"}:
-            index = window.model.index(row, 0)
+            index = window._view_table_index(window.model.index(row, 0))
             window.table.selectionModel().select(
                 index, QItemSelectionModel.Select | QItemSelectionModel.Rows
             )
@@ -367,7 +367,7 @@ def test_ads_toolbar_reuses_selected_and_identifier_refresh(
     registry.replace_file_metadata(root, "paper.pdf", {"bibcode": "B1"})
     registry.update_file_status(root, "paper.pdf", "resolved")
     window.refresh()
-    window.table.setCurrentIndex(window.model.index(0, 0))
+    window.table.setCurrentIndex(window._view_table_index(window.model.index(0, 0)))
     calls = []
     monkeypatch.setattr(
         window,
@@ -419,7 +419,7 @@ def test_deleted_selected_file_and_empty_views_clear_stale_detail_and_actions(
     )
     registry.update_file_status(first.resolve(), "paper.pdf", "resolved")
     window.refresh()
-    window.table.setCurrentIndex(window.model.index(0, 0))
+    window.table.setCurrentIndex(window._view_table_index(window.model.index(0, 0)))
     assert window.detail._metadata.get("bibcode") == "B1"
     assert window.refresh_selected_ads_action.isEnabled()
     assert window.update_selected_ads_action.isEnabled()
@@ -440,7 +440,7 @@ def test_deleted_selected_file_and_empty_views_clear_stale_detail_and_actions(
     # Restore search and selection, then externally unlink paper and press Refresh
     window.search.clear()
     window._search_changed()
-    window.table.setCurrentIndex(window.model.index(0, 0))
+    window.table.setCurrentIndex(window._view_table_index(window.model.index(0, 0)))
     assert window.detail._metadata.get("bibcode") == "B1"
 
     paper.unlink()
@@ -1191,7 +1191,7 @@ def test_file_notice_reveals_its_path_independently_of_selection(
         event = replace(event, state=WatchState(notice_source))
         controller.outcome.emit(WatchOutcome(event, destination=destination))
     window._select_root(other)
-    window.table.setCurrentIndex(window.model.index(0, 0))
+    window.table.setCurrentIndex(window._view_table_index(window.model.index(0, 0)))
     revealed = []
     if file_action == "reveal":
         monkeypatch.setattr(
@@ -1336,7 +1336,7 @@ def test_unresolved_notice_identifies_its_pdf_independently_of_selection(
     assert window.notice_bar.dismiss_button.text() == "Dismiss"
     if selection == "other":
         window._select_root(other)
-        window.table.setCurrentIndex(window.model.index(0, 0))
+        window.table.setCurrentIndex(window._view_table_index(window.model.index(0, 0)))
     elif selection == "filtered":
         window.search.setText("no matching paper")
         window._search_changed()
@@ -1643,7 +1643,7 @@ def test_warning_manual_entry_saves_locally_without_retry_or_lookup(
     else:
         controller.outcome.emit(WatchOutcome(event, destination=destination))
     window._select_root(other)
-    window.table.setCurrentIndex(window.model.index(0, 0))
+    window.table.setCurrentIndex(window._view_table_index(window.model.index(0, 0)))
     assert not window.notice_bar.manual_entry_button.isHidden()
 
     def enter_details(dialog) -> int:
@@ -1706,7 +1706,7 @@ def test_detail_pane_manual_entry_works_without_a_warning(
     window, controller, _saves = _window_factory(
         monkeypatch, qtbot, GuiConfig(roots=[RootEntry(str(root))])
     )
-    window.table.setCurrentIndex(window.model.index(0, 0))
+    window.table.setCurrentIndex(window._view_table_index(window.model.index(0, 0)))
 
     def enter_details(dialog) -> int:
         dialog.fields["title"].setText("Manually entered title")
@@ -2558,7 +2558,7 @@ def test_guided_ok_runs_safe_steps_and_retains_selection(monkeypatch, qtbot, tmp
     window, controller, _ = _window_factory(
         monkeypatch, qtbot, GuiConfig(roots=[RootEntry(str(root))])
     )
-    window.table.setCurrentIndex(window.model.index(0, 0))
+    window.table.setCurrentIndex(window._view_table_index(window.model.index(0, 0)))
     location = window._selected_record()["location_id"]
     window.watch_current_action.trigger()
     jobs = []
@@ -2864,7 +2864,7 @@ def test_guided_cli_steps_preserve_cached_metadata_and_content_history(
     window, _, _ = _window_factory(
         monkeypatch, qtbot, GuiConfig(roots=[RootEntry(str(root))])
     )
-    window.table.setCurrentIndex(window.model.index(0, 0))
+    window.table.setCurrentIndex(window._view_table_index(window.model.index(0, 0)))
     _answer_guided_prompt(monkeypatch)
 
     def no_network(*args, **kwargs):
@@ -3090,7 +3090,7 @@ def test_watch_refresh_follows_selected_attachment_to_its_replacement(
     original = register(state, old, notes="Keep")
     window.refresh()
     state = CentralPdfRegistryState(window.registries[str(root)])
-    window.table.setCurrentIndex(window.model.index(0, 0))
+    window.table.setCurrentIndex(window._view_table_index(window.model.index(0, 0)))
     old.unlink()
     new = root / "new.pdf"
     make_pdf(new, revision="replacement")

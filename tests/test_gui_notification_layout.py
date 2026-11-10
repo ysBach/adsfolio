@@ -56,7 +56,7 @@ def test_view_help_and_long_notifications_never_move_the_panes(
         assert pane_rectangles(window) == baseline
         assert not window.notification_panel.isVisible()
 
-    window.table.setCurrentIndex(window.model.index(5, 0))
+    window.table.setCurrentIndex(window._view_table_index(window.model.index(5, 0)))
     scroll = window.table.verticalScrollBar()
     scroll.setValue(scroll.maximum() // 2)
     selected = window._selected_record()["location_id"]

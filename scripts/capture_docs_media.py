@@ -416,7 +416,9 @@ def capture(recorder: Recorder) -> None:
         for row in range(window.model.rowCount())
         if window.model.index(row, title_column).data() == title
     )
-    window.table.setCurrentIndex(window.model.index(row, 0))
+    # The table shows folders. Open them so every sample paper is visible.
+    window.table.expandAll()
+    window.table.setCurrentIndex(window._view_table_index(window.model.index(row, 0)))
     application.processEvents()
     overview = _composite(window)
     recorder.save(overview, "app-overview.png")
@@ -595,14 +597,16 @@ def _capture_workflows(
     for row in range(window.model.rowCount()):
         if metadata_ready(window.model.record_at(row)):
             selection.select(
-                window.model.index(row, 0),
+                window._view_table_index(window.model.index(row, 0)),
                 QItemSelectionModel.SelectionFlag.Select
                 | QItemSelectionModel.SelectionFlag.Rows,
             )
     application.processEvents()
     main_window_module.QMenu = CapturedMenu
     try:
-        point = window.table.visualRect(window.model.index(1, 0)).center()
+        point = window.table.visualRect(
+            window._view_table_index(window.model.index(1, 0))
+        ).center()
         window._table_menu(point)
     finally:
         main_window_module.QMenu = original_menu

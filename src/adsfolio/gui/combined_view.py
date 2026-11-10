@@ -270,10 +270,10 @@ class CombinedViewController(QObject):
             item = window.libraries_item.child(index)
             if item.data(0, Qt.UserRole + 1) == "root":
                 self._set_root_checkbox(item, str(item.data(0, Qt.UserRole)))
-        if not self.enabled:
-            # Remove the tree first. A column reset under the tree would
-            # otherwise capture and restore its whole selection.
-            self._set_tree_enabled(False)
+        # Remove the tree first. A column reset under the tree would otherwise
+        # capture and restore its whole selection. The combined tree and the
+        # one-library tree also differ in their top-level library nodes.
+        self._set_tree_enabled(False)
         self.update_columns()
         self._set_tree_enabled(self._wants_tree())
         if self.enabled:
@@ -289,22 +289,163 @@ class CombinedViewController(QObject):
         window._sync_ads_library_action()
 
     def _wants_tree(self) -> bool:
-        """Return whether the combined table groups rows by library folder.
+        """Return whether the table groups rows by folder.
 
-        The Duplicates view uses a flat list, so the copies of one paper stay
-        together even when they are in different folders or libraries.
+        View > Show Folders controls the folder tree for one library and for
+        combined libraries. The Duplicates view uses a flat list, so the copies
+        of one paper stay together even when they are in different folders or
+        libraries.
         """
-        return self.enabled and self.window.current_view is not LibraryView.DUPLICATES
+        window = self.window
+        return (
+            window.config.show_folders
+            and (self.enabled or window.current_root is not None)
+            and window.current_view is not LibraryView.DUPLICATES
+        )
 
     def sync_tree_mode(self) -> None:
         """Use the folder tree or the flat list that the current view needs."""
         self._set_tree_enabled(self._wants_tree())
 
-    def _set_tree_enabled(self, enabled: bool) -> None:
-        """Switch the table between flat and grouped library models."""
+    def sync_tree_mode_preserving_selection(self) -> None:
+        """Switch the explicit folder view while retaining selected PDFs."""
         window = self.window
+        target_tree = self._wants_tree()
+        active_tree = (
+            self.tree_model is not None and window.table.model() is self.tree_model
+        )
+        if target_tree == active_tree:
+            return
+
+        def identity(index: QModelIndex) -> tuple[str, Any] | None:
+            source = window._source_table_index(index)
+            if not source.isValid():
+                return None
+            record = window.model.record_at(source.row())
+            if record is None:
+                return None
+            location_id = record.get("location_id")
+            root = record.get("root")
+            if location_id is None or root is None:
+                return None
+            return str(root), location_id
+
+        selected_indexes = [
+            (
+                key,
+                QPersistentModelIndex(
+                    window._source_table_index(index).siblingAtColumn(0)
+                ),
+            )
+            for index in window._selected_view_rows()
+            if (key := identity(index)) is not None
+        ]
+        selected = {key for key, _index in selected_indexes}
+        current_source = window._source_table_index(window.table.currentIndex())
+        if current_source.isValid():
+            current_source = current_source.siblingAtColumn(0)
+        current = identity(window.table.currentIndex())
+        current_persistent = QPersistentModelIndex(current_source)
+        table = window.table
+        sorting_enabled = table.isSortingEnabled()
+        table.setSortingEnabled(False)
+        try:
+            self.sync_tree_mode()
+        finally:
+            window._sync_table_sort_indicator(query=window.model.query)
+            table.setSortingEnabled(sorting_enabled)
+
+        # Keep surviving source indexes. Scan loaded rows only after a reset
+        # invalidates an index. Do not fetch pages to restore a selection.
+        needed = selected | ({current} if current is not None else set())
+        by_identity: dict[tuple[str, Any], QModelIndex] = {}
+        ambiguous: set[tuple[str, Any]] = set()
+        for key, persistent in selected_indexes:
+            if persistent.isValid() and identity(QModelIndex(persistent)) == key:
+                index = QModelIndex(persistent)
+                previous = by_identity.setdefault(key, index)
+                if previous.row() != index.row():
+                    ambiguous.add(key)
+        if (
+            current is not None
+            and current_persistent.isValid()
+            and identity(QModelIndex(current_persistent)) == current
+        ):
+            by_identity.setdefault(current, QModelIndex(current_persistent))
+        unresolved = needed - by_identity.keys()
+        if unresolved:
+            for row in range(window.model.rowCount()):
+                record = window.model.record_at(row)
+                if record is None:
+                    continue
+                location_id = record.get("location_id")
+                root = record.get("root")
+                if location_id is None or root is None:
+                    continue
+                key = (str(root), location_id)
+                if key not in unresolved:
+                    continue
+                index = window.model.index(row, 0)
+                if key in by_identity and by_identity[key] != index:
+                    ambiguous.add(key)
+                else:
+                    by_identity[key] = index
+        for key in ambiguous:
+            by_identity.pop(key, None)
+
+        selection = window.table.selectionModel()
+        if self.tree_model is not None and window.table.model() is self.tree_model:
+            self._tree_pending_selection = {
+                ("file", root, location_id)
+                for root, location_id in selected
+                if (root, location_id) in by_identity
+            }
+            self._tree_pending_current = (
+                ("file", *current) if current in by_identity else None
+            )
+            self._restore_tree_state(reveal_current=True)
+            return
+
+        restored_indexes: list[QModelIndex] = []
+        current_index = QModelIndex()
+        for key in dict.fromkeys(selected):
+            source_index = by_identity.get(key)
+            if source_index is None:
+                continue
+            index = window._view_table_index(source_index)
+            if index.isValid():
+                restored_indexes.append(index)
+        if current in by_identity:
+            current_index = window._view_table_index(by_identity[current])
+        restored = _selection_ranges(restored_indexes)
+        if not restored.isEmpty():
+            selection.select(
+                restored, QItemSelectionModel.Select | QItemSelectionModel.Rows
+            )
+        if current_index.isValid():
+            selection.setCurrentIndex(current_index, QItemSelectionModel.NoUpdate)
+        window._sync_detail_and_selection_actions()
+
+    def _set_tree_enabled(self, enabled: bool) -> None:
+        """Switch the table between flat and grouped library models.
+
+        The combined tree has one top-level node for each library. The tree of
+        one library starts at that library's folders and files.
+        """
+        window = self.window
+        if (
+            enabled
+            and self.tree_model is not None
+            and self.tree_model.root_nodes != self.enabled
+        ):
+            self._set_tree_enabled(False)
         if enabled and self.tree_model is None:
-            tree = CombinedTreeProxyModel(window.model, self, root_labels=self.labels())
+            tree = CombinedTreeProxyModel(
+                window.model,
+                self,
+                root_labels=self.labels(),
+                root_nodes=self.enabled,
+            )
             tree.file_icon = self._pdf_icon()
             self.tree_model = tree
             tree.modelAboutToBeReset.connect(self._capture_tree_selection)
@@ -384,7 +525,7 @@ class CombinedViewController(QObject):
         else:
             self._tree_expanded.discard(key)
 
-    def _restore_tree_state(self, *_args: Any) -> None:
+    def _restore_tree_state(self, *_args: Any, reveal_current: bool = False) -> None:
         """Restore expanded groups and selected nodes as pages become available."""
         tree = self.tree_model
         if tree is None or self.window.table.model() is not tree:
@@ -396,6 +537,9 @@ class CombinedViewController(QObject):
             self.sync_tree_column()
             for row in range(tree.rowCount()):
                 index = tree.index(row, 0)
+                if tree.node_kind(index) != "root":
+                    # One library has no library nodes. Its folders start closed.
+                    continue
                 key = tree.key_for_index(index)
                 if key is not None and key not in self._tree_seen_roots:
                     self._tree_seen_roots.add(key)
@@ -405,12 +549,13 @@ class CombinedViewController(QObject):
                 if index.isValid():
                     self.window.table.setExpanded(index, True)
             selection = self.window.table.selectionModel()
-            restored = QItemSelection()
+            restored_indexes: list[QModelIndex] = []
             for key in tuple(self._tree_pending_selection):
                 index = tree.index_for_key(key)
                 if index.isValid():
-                    restored.select(index, index)
+                    restored_indexes.append(index)
                     self._tree_pending_selection.discard(key)
+            restored = _selection_ranges(restored_indexes)
             changed = not restored.isEmpty()
             if changed:
                 # One select call emits one selectionChanged signal.
@@ -420,6 +565,11 @@ class CombinedViewController(QObject):
             if self._tree_pending_current is not None:
                 index = tree.index_for_key(self._tree_pending_current)
                 if index.isValid():
+                    if reveal_current:
+                        parent = index.parent()
+                        while parent.isValid():
+                            self.window.table.setExpanded(parent, True)
+                            parent = parent.parent()
                     selection.setCurrentIndex(index, QItemSelectionModel.NoUpdate)
                     self._tree_pending_current = None
                     changed = True
@@ -595,7 +745,9 @@ class CombinedViewController(QObject):
                     candidate is not None
                     and candidate.get("location_id") == location_id
                 ):
-                    self.window.table.setCurrentIndex(model.index(row, 0))
+                    index = self.window._view_table_index(model.index(row, 0))
+                    self.window.table.setCurrentIndex(index)
+                    self.window.table.scrollTo(index)
                     return
             if not model.canFetchMore():
                 self.window.status.showMessage("PDF not found. Refresh its library.")

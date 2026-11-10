@@ -119,6 +119,8 @@ class CombinedTreeProxyModel(QAbstractProxyModel):
     folder retain their source order. The source model handles sorting.
     Missing or unsafe paths stay as file nodes directly under their root.
     Records with an invalid root share an unknown-library node.
+    With ``root_nodes=False``, there are no library nodes. Folders and files
+    of each library are then top-level rows. Use this for one library only.
 
     `loading_finished` fires after all snapshot pages load. `loading_failed`
     fires if the source cannot advance or raises during pagination. Loading a
@@ -137,9 +139,11 @@ class CombinedTreeProxyModel(QAbstractProxyModel):
         parent: QObject | None = None,
         *,
         root_labels: Mapping[str, str] | None = None,
+        root_nodes: bool = True,
     ) -> None:
         super().__init__(parent)
         self._root_labels = dict(root_labels or {})
+        self._root_nodes = root_nodes
         # Icon for file rows in the tree column, or `None` for no icon.
         self.file_icon: QIcon | None = None
         self._virtual_root = _Node("virtual", None, "")
@@ -176,6 +180,11 @@ class CombinedTreeProxyModel(QAbstractProxyModel):
                     self.dataChanged.emit(index, index, [])
 
     @property
+    def root_nodes(self) -> bool:
+        """Return whether each library has its own top-level folder node."""
+        return self._root_nodes
+
+    @property
     def is_loading(self) -> bool:
         """Return whether page loading is pending or active."""
         return self._loading
@@ -187,6 +196,8 @@ class CombinedTreeProxyModel(QAbstractProxyModel):
             return
         self._root_labels = updated
         for node in self._virtual_root.children:
+            if not isinstance(node, _Node) or node.kind != "root":
+                continue
             node.name = self._root_label(node.key[1])
             index = self._node_index(node, self._folder_column)
             if index.isValid():
@@ -306,11 +317,18 @@ class CombinedTreeProxyModel(QAbstractProxyModel):
     def _ensure_parent(
         self, root: str | None, directories: tuple[str, ...], notify: bool
     ) -> _Node:
-        root_key = ("root", root)
-        parent = self._groups.get(root_key)
-        if parent is None:
-            parent = _Node("root", root_key, self._root_label(root))
-            self._append_node(self._virtual_root, parent, notify)
+        if directories:
+            existing = self._groups.get(("directory", root, directories))
+            if existing is not None:
+                return existing
+        if self._root_nodes:
+            root_key = ("root", root)
+            parent = self._groups.get(root_key)
+            if parent is None:
+                parent = _Node("root", root_key, self._root_label(root))
+                self._append_node(self._virtual_root, parent, notify)
+        else:
+            parent = self._virtual_root
         for depth, name in enumerate(directories, 1):
             key = ("directory", root, directories[:depth])
             child = self._groups.get(key)

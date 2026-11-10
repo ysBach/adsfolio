@@ -66,3 +66,70 @@ def test_click_keeps_horizontal_position(monkeypatch, qtbot, tmp_path, key, widt
     qtbot.wait(QApplication.doubleClickInterval() + 400)
     assert table.currentIndex().row() == target.row()
     assert scrollbar.value() == offset
+
+
+def _scrolled_right(window) -> int:
+    """Select a row, then scroll until logical column 0 is fully hidden.
+
+    Qt scrolls to the current cell, which is in column 0, after a reload.
+    """
+    table = window.table
+    header = table.header()
+    table.setColumnWidth(0, 150)
+    wide = next(
+        column
+        for column in range(header.count())
+        if column != 0 and not table.isColumnHidden(column)
+    )
+    table.setColumnWidth(wide, 3000)
+    table.setCurrentIndex(window._view_table_index(window.model.index(3, 0)))
+    QApplication.processEvents()
+    scrollbar = table.horizontalScrollBar()
+    target = header.sectionPosition(0) + header.sectionSize(0) + 200
+    if header.sectionPosition(0) > header.sectionPosition(wide):
+        # Column 0 is right of the wide column: hide it on the right side.
+        target = max(0, header.sectionPosition(0) - table.viewport().width() - 200)
+    scrollbar.setValue(target)
+    QApplication.processEvents()
+    left = header.sectionViewportPosition(0)
+    assert left + header.sectionSize(0) <= 0 or left >= table.viewport().width()
+    return scrollbar.value()
+
+
+def test_reload_with_a_selected_pdf_keeps_horizontal_position(
+    monkeypatch, qtbot, tmp_path
+):
+    window = _library_window(monkeypatch, qtbot, tmp_path)
+    offset = _scrolled_right(window)
+
+    window.refresh()
+    qtbot.wait(50)
+
+    assert window.table.currentIndex().isValid()
+    assert window.table.horizontalScrollBar().value() == offset
+
+
+def test_library_click_in_combined_view_keeps_horizontal_position(
+    monkeypatch, qtbot, tmp_path
+):
+    window = _library_window(monkeypatch, qtbot, tmp_path)
+    window.combined.set_enabled(True)
+    # Start from a view, so the library click below changes the selection.
+    window.sidebar.setCurrentItem(window.views_item.child(0))
+    QApplication.processEvents()
+    offset = _scrolled_right(window)
+    root_item = next(
+        window.libraries_item.child(i)
+        for i in range(window.libraries_item.childCount())
+        if window.libraries_item.child(i).data(0, Qt.UserRole + 1) == "root"
+    )
+    resets = []
+    window.model.modelReset.connect(lambda: resets.append(1))
+
+    window.sidebar.setCurrentItem(root_item)
+    qtbot.wait(50)
+
+    assert resets, "the library click must reload the table"
+
+    assert window.table.currentIndex().isValid()
+    assert window.table.horizontalScrollBar().value() == offset

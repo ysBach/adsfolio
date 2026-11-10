@@ -52,6 +52,30 @@ Times come from offscreen tests with a copy of a 3,982-PDF catalog.
   Settings. **View → Sort Priorities…** now opens the **Sorting** section.
   Select **Save Appearance** or **Save Sorting** to apply changes.
 
+### Folders and selection
+
+- **View → Show Folders** now keeps selected PDFs and the current PDF when it
+  switches between the folder tree and the flat list. It also keeps multiple
+  selected PDFs in closed folders. Repeated switches also dispose of replaced
+  table selection models. A folder selection cannot carry to the flat list
+  because it has no matching row.
+- **View → Show Folders** previously had no shortcut. Now
+  **Command+Shift+O** (**Ctrl+Shift+O**) and a folder button in the toolbar
+  switch between folders and one flat list.
+- **Select All** previously selected only the rows that the table loaded,
+  and in a folder tree only rows in open folders. In a 3,124-PDF library, it
+  selected about 500 PDFs. An action on the selection then skipped the rest
+  without notice. Now **Select All** selects every PDF of the view. With
+  **Identify & Rename N Selected PDFs**, you can now identify and rename a
+  whole library at once.
+
+### Table position
+
+- With a PDF selected, a click on a library previously scrolled the table
+  sideways to the first column of that PDF. Now the table keeps its
+  horizontal position after a click, a library change, or a reload. Only you
+  scroll sideways.
+
 ### Library sidebar
 
 - Clearing **Combine libraries** previously removed the library checkboxes.
@@ -65,6 +89,15 @@ Times come from offscreen tests with a copy of a 3,982-PDF catalog.
   ADSfolio has no limit on the number of watched libraries.
 - With **Combine libraries**, a new library tooltip or watch icon previously
   reloaded the whole combined table. Now only a checkbox click reloads it.
+
+### Folders in the table
+
+- Selecting one library previously showed a flat list. Only **Combine
+  libraries** showed folders. Now one library also shows its folders.
+  **View → Show Folders** turns folders off, or on again, for both views. The
+  **Duplicates** view stays flat.
+- A view change that kept the sort order previously reloaded the whole table
+  one more time. Now ADSfolio keeps the loaded rows.
 
 ### Settings
 

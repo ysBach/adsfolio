@@ -61,10 +61,12 @@ def test_status_click_reveals_selected_pdf_recovery_controls(
         for column, definition in enumerate(window.columns)
         if definition.key == "status"
     )
-    index = window.model.index(row, column)
+    index = window._view_table_index(window.model.index(row, column))
     other_row = next(other for other in range(window.model.rowCount()) if other != row)
     window.table.setCurrentIndex(
-        index if selection_state == "current" else window.model.index(other_row, column)
+        index
+        if selection_state == "current"
+        else window._view_table_index(window.model.index(other_row, column))
     )
     if selection_state == "multiple":
         window.table.selectionModel().select(
@@ -79,6 +81,9 @@ def test_status_click_reveals_selected_pdf_recovery_controls(
         window.splitter.setSizes([200, 800, 0])
         window.config.splitter_sizes = list(window.splitter.sizes())
     qtbot.waitUntil(lambda: window.splitter.sizes()[2] == 0)
+    # Only the user scrolls sideways. Scroll to the status marker as a user does.
+    header = window.table.header()
+    window.table.horizontalScrollBar().setValue(header.sectionPosition(column))
 
     QTest.mouseClick(
         window.table.viewport(),
@@ -148,7 +153,9 @@ def test_modified_status_click_keeps_detail_pane_hidden(
         for column, definition in enumerate(window.columns)
         if definition.key == "status"
     )
-    window.table.setCurrentIndex(window.model.index(0, column))
+    window.table.setCurrentIndex(
+        window._view_table_index(window.model.index(0, column))
+    )
     window.detail_action.setChecked(False)
     window._toggle_detail(False)
     qtbot.waitUntil(lambda: window.splitter.sizes()[2] == 0)
@@ -159,7 +166,9 @@ def test_modified_status_click_keeps_detail_pane_hidden(
             window.table.viewport(),
             Qt.LeftButton,
             modifier,
-            pos=window.table.visualRect(window.model.index(1, column)).center(),
+            pos=window.table.visualRect(
+                window._view_table_index(window.model.index(1, column))
+            ).center(),
         )
 
         assert not window.detail.isVisible()

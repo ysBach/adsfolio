@@ -545,10 +545,17 @@ def _expanded_tree(window):
 
 def test_combined_tree_uses_half_indentation_and_restores_it(combined_window):
     window, _roots = combined_window
+    window._toggle_folders(False)
     default = window.table.indentation()
+    window._toggle_folders(True)
     _expanded_tree(window)
     assert window.table.indentation() == default // 2
     window.combined.set_enabled(False)
+    # One library also shows its folders, with the same compact indentation.
+    assert window.combined.tree_model is not None
+    assert window.table.indentation() == default // 2
+    window._toggle_folders(False)
+    assert window.combined.tree_model is None
     assert window.table.indentation() == default
 
 
@@ -585,10 +592,55 @@ def test_click_on_moved_file_icon_selects_the_file(combined_window, qtbot):
     window, _roots = combined_window
     tree = _expanded_tree(window)
     column = window.table.treePosition()
-    window.table.scrollTo(tree.index(0, column))
+    # Only the user scrolls sideways. Show the tree column the same way.
+    window.table.horizontalScrollBar().setValue(
+        window.table.header().sectionPosition(column)
+    )
     file_index = tree.index(0, column, tree.index(0, 0))
     rect = window.table.visualRect(file_index)
     point = QPoint(rect.left() - window.table.indentation() // 2, rect.center().y())
     qtbot.mouseClick(window.table.viewport(), Qt.LeftButton, pos=point)
     assert window.table.currentIndex().row() == file_index.row()
     assert tree.node_kind(window.table.currentIndex()) == "file"
+
+
+def test_show_folders_off_gives_a_flat_combined_list(combined_window):
+    window, roots = combined_window
+    window.combined.set_enabled(True)
+
+    window._toggle_folders(False)
+
+    assert window.table.model() is window.model
+    libraries = {
+        window.model.record_at(row)["root"] for row in range(window.model.rowCount())
+    }
+    assert libraries == {str(root) for root in roots}
+
+    window._toggle_folders(True)
+
+    assert window.table.model() is window.combined.tree_model
+    assert window.combined.tree_model.root_nodes
+
+
+def test_show_folders_preserves_same_named_pdfs_from_combined_roots(combined_window):
+    window, roots = combined_window
+    window.combined.set_enabled(True)
+    indices = [_view_index_for_root(window, root) for root in roots]
+    selection = window.table.selectionModel()
+    for index in indices:
+        selection.select(index, QItemSelectionModel.Select | QItemSelectionModel.Rows)
+    selection.setCurrentIndex(indices[1], QItemSelectionModel.NoUpdate)
+
+    window._toggle_folders(False)
+    assert {
+        (record["root"], record["current_path"])
+        for record in window._selected_record_refs()
+    } == {(str(root), "same.pdf") for root in roots}
+    assert window._selected_record()["root"] == str(roots[1])
+
+    window._toggle_folders(True)
+    assert {
+        (record["root"], record["current_path"])
+        for record in window._selected_record_refs()
+    } == {(str(root), "same.pdf") for root in roots}
+    assert window._selected_record()["root"] == str(roots[1])

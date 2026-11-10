@@ -492,5 +492,7 @@ def test_clicking_a_partly_hidden_column_keeps_the_horizontal_position(qtbot):
     assert view.verticalScrollBar().value() > 0
     assert scrollbar.value() == 300
 
+    # A call from code, such as a restored selection, also keeps the position.
     view.scrollTo(model.index(0, 1))
-    assert scrollbar.value() == 100
+    assert scrollbar.value() == 300
+    assert view.verticalScrollBar().value() == 0

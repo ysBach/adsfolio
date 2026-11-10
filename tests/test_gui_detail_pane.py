@@ -829,7 +829,7 @@ def test_generated_table_cell_copies_display_text_and_shows_feedback(
     )
     QApplication.clipboard().setText("old clipboard")
 
-    window._table_clicked(window.model.index(0, column))
+    window._table_clicked(window._view_table_index(window.model.index(0, column)))
 
     assert QApplication.clipboard().text() == "2024ApJ...900..100S"
     assert window.status.currentMessage() == "Copied"
@@ -858,7 +858,7 @@ def test_empty_generated_table_cell_keeps_clipboard_content(
     )
     QApplication.clipboard().setText("keep clipboard")
 
-    window._table_clicked(window.model.index(0, column))
+    window._table_clicked(window._view_table_index(window.model.index(0, column)))
 
     assert QApplication.clipboard().text() == "keep clipboard"
     window.close()
@@ -984,7 +984,7 @@ def test_main_window_persists_detail_metadata(
     window._select_root(root)
     window.show()
     application.processEvents()
-    window.table.setCurrentIndex(window.model.index(0, 0))
+    window.table.setCurrentIndex(window._view_table_index(window.model.index(0, 0)))
 
     window._save_detail_metadata({"title": ["Corrected"]})
 

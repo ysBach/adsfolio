@@ -41,7 +41,7 @@ def test_update_by_id_accepts_the_users_identifier_without_an_extra_warning(
         qtbot,
         GuiConfig(roots=[RootEntry(str(root))]),
     )
-    window.table.setCurrentIndex(window.model.index(0, 0))
+    window.table.setCurrentIndex(window._view_table_index(window.model.index(0, 0)))
     monkeypatch.setattr(
         QInputDialog, "getText", lambda *args, **kwargs: ("arXiv:2401.00001", True)
     )

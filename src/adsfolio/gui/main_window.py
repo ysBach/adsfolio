@@ -728,7 +728,20 @@ class MainWindow(QMainWindow):
         self._toolbar_icons.bind(self.search_highlight_action, "highlight")
         self._toolbar_icons.bind(self.search_exact_action, "match_case")
         self._toolbar_icons.bind(self.search_wildcards_action, "wildcard")
-        for action in (self.refresh_action, self.identify_action, self.rename_action):
+        self._toolbar_icons.bind(self.folders_action, "folder")
+        self._set_action_tooltip(
+            self.folders_action,
+            "Show Folders: group the table by folder, or show one flat list",
+            "The Duplicates view always uses a flat list.",
+        )
+        toolbar.addAction(self.folders_action)
+        toolbar.addSeparator()
+        for action in (
+            self.refresh_action,
+            self.identify_action,
+            self.rename_action,
+            self.folders_action,
+        ):
             # Menus keep their text-only labels.
             action.setIconVisibleInMenu(False)
         self._set_action_tooltip(
@@ -1008,6 +1021,13 @@ class MainWindow(QMainWindow):
         self.detail_action.setShortcut("Ctrl+Shift+D")
         self.detail_action.triggered.connect(self._toggle_detail)
         view.addAction(self.detail_action)
+        self.folders_action = QAction("Show Folders", self)
+        self.folders_action.setCheckable(True)
+        self.folders_action.setChecked(self.config.show_folders)
+        self.folders_action.setShortcut("Ctrl+Shift+O")
+        self.folders_action.triggered.connect(self._toggle_folders)
+        view.addAction(self.folders_action)
+        # These open the same pages as Settings, so each setting has one editor.
         self.appearance_action = QAction("Appearance…", self)
         self.appearance_action.triggered.connect(
             lambda: self._open_preferences("Appearance")
@@ -1262,6 +1282,11 @@ class MainWindow(QMainWindow):
         self.sidebar.setVisible(visible)
         if visible and self.splitter.sizes()[0] == 0:
             self.splitter.setSizes(self.config.splitter_sizes)
+
+    def _toggle_folders(self, visible: bool) -> None:
+        """Show or hide the folder tree and retain the preference."""
+        self.config.show_folders = visible
+        self.combined.sync_tree_mode_preserving_selection()
 
     def _toggle_detail(self, visible: bool) -> None:
         """Show or hide metadata and retain the preference."""
@@ -3261,7 +3286,9 @@ class MainWindow(QMainWindow):
                 continue
             rec_path = str(rec.get("current_path") or rec.get("relative_path") or "")
             if rec_path in paths:
-                idx = self.model.index(row, 0)
+                idx = self._view_table_index(self.model.index(row, 0))
+                if not idx.isValid():
+                    continue
                 selection.select(
                     idx, QItemSelectionModel.Select | QItemSelectionModel.Rows
                 )
@@ -3809,6 +3836,9 @@ class MainWindow(QMainWindow):
     def _set_table_model(self, model: Any) -> None:
         """Replace the visible table model and reconnect selection signals."""
         old_selection = self.table.selectionModel()
+        old_selection_is_table_owned = (
+            old_selection is not None and old_selection.parent() == self.table
+        )
         if old_selection is not None:
             for signal, callback in (
                 (old_selection.currentChanged, self._current_changed),
@@ -3820,6 +3850,8 @@ class MainWindow(QMainWindow):
                     pass
         self.table.setModel(model)
         selection = self.table.selectionModel()
+        if old_selection_is_table_owned and old_selection is not selection:
+            old_selection.deleteLater()
         selection.currentChanged.connect(self._current_changed)
         selection.selectionChanged.connect(self._table_selection_changed)
         self._sync_table_sort_indicator()
@@ -4612,21 +4644,20 @@ class MainWindow(QMainWindow):
         self._update_status()
         return saved
 
-    def _sync_table_sort_indicator(self) -> None:
+    def _sync_table_sort_indicator(self, *, query: Any | None = None) -> None:
         """Show the current primary sort without starting another sort."""
+        query = self.current_query if query is None else query
         logical_index = next(
             (
                 index
                 for index, column in enumerate(self.columns)
-                if column.key == self.current_query.order_by and column.sortable
+                if column.key == query.order_by and column.sortable
             ),
             None,
         )
         if logical_index is None:
             return
-        order = (
-            Qt.DescendingOrder if self.current_query.descending else Qt.AscendingOrder
-        )
+        order = Qt.DescendingOrder if query.descending else Qt.AscendingOrder
         header = self.table.header()
         blocker = QSignalBlocker(header)
         header.setSortIndicator(logical_index, order)

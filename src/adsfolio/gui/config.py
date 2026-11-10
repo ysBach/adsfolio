@@ -85,6 +85,8 @@ class GuiConfig:
     detail_compact_rows: bool = True
     sidebar_visible: bool = True
     detail_visible: bool = True
+    # Group the table by folder, for one library and for combined libraries.
+    show_folders: bool = True
     check_updates_automatically: bool = True
     skipped_update_version: str | None = None
     # ADSfolio version whose remembered-recheck prompt the user answered.
@@ -458,6 +460,7 @@ def _from_mapping(payload: Mapping[str, Any]) -> GuiConfig:
         detail_compact_rows=_as_bool(payload.get("detail_compact_rows"), True),
         sidebar_visible=_as_bool(payload.get("sidebar_visible"), True),
         detail_visible=_as_bool(payload.get("detail_visible"), True),
+        show_folders=_as_bool(payload.get("show_folders"), True),
         check_updates_automatically=_as_bool(
             payload.get("check_updates_automatically"), True
         ),
