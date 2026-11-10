@@ -6,7 +6,6 @@ Live edits apply at once; Cancel restores the earlier settings.
 from __future__ import annotations
 
 import os
-from copy import deepcopy
 
 import pytest
 
@@ -255,54 +254,30 @@ def test_appearance_dialog_uses_runtime_columns_and_returns_generated_preference
     dialog.close()
 
 
-def test_appearance_cancel_restores_after_live_edit(
+def test_appearance_entry_points_open_settings_appearance(
     application: QApplication,
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,
 ) -> None:
-    """Cancel restores settings changed while the dialog was open."""
+    """View > Appearance and the header menu open the Settings section."""
+    from adsfolio.gui.preferences import PreferencesDialog
+
     monkeypatch.setattr(Config, "get_config_dir", classmethod(lambda cls: tmp_path))
     window = MainWindow()
-    original = deepcopy(window.config)
-    observed: dict[str, object] = {}
+    pages: list[str] = []
 
-    def edit_and_cancel() -> None:
+    def record_and_close() -> None:
         dialog = QApplication.activeModalWidget()
-        assert isinstance(dialog, AppearanceDialog)
-        dialog.table_row_height_spin.setValue(80)
-        observed["live_height"] = window.config.table_row_height
+        assert isinstance(dialog, PreferencesDialog)
+        pages.append(dialog.categories.currentItem().text())
         dialog.reject()
 
-    QTimer.singleShot(0, edit_and_cancel)
-    window._edit_appearance()
+    header_menu = window._create_header_context_menu()
+    for action in (window.appearance_action, header_menu.actions()[0]):
+        QTimer.singleShot(0, record_and_close)
+        action.trigger()
 
-    assert observed["live_height"] == 80
-    assert window.config == original
-    window.close()
-
-
-def test_appearance_accept_keeps_live_edit(
-    application: QApplication,
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path,
-) -> None:
-    """Accepting Appearance keeps the setting already applied live."""
-    monkeypatch.setattr(Config, "get_config_dir", classmethod(lambda cls: tmp_path))
-    window = MainWindow()
-    observed: dict[str, object] = {}
-
-    def edit_and_accept() -> None:
-        dialog = QApplication.activeModalWidget()
-        assert isinstance(dialog, AppearanceDialog)
-        dialog.table_row_height_spin.setValue(80)
-        observed["live_height"] = window.config.table_row_height
-        dialog.accept()
-
-    QTimer.singleShot(0, edit_and_accept)
-    window._edit_appearance()
-
-    assert observed["live_height"] == 80
-    assert window.config.table_row_height == 80
+    assert pages == ["Appearance", "Appearance"]
     window.close()
 
 

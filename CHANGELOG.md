@@ -44,6 +44,14 @@ Times come from offscreen tests with a copy of a 3,982-PDF catalog.
   sequence. A column-header click still sorts the table. **View → Clear Find**
   still clears at once.
 
+### One place for each setting
+
+- **View → Appearance…** and the **Appearance…** item of the column header
+  menu previously opened a separate Appearance window. Settings had the same
+  controls in **Appearance**. Now both open the **Appearance** section of
+  Settings. **View → Sort Priorities…** now opens the **Sorting** section.
+  Select **Save Appearance** or **Save Sorting** to apply changes.
+
 ### Settings
 
 - On macOS, Settings previously kept text boxes narrow. It also cut a long

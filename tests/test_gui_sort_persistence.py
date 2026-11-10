@@ -11,7 +11,7 @@ pytest.importorskip("PySide6")
 pytest.importorskip("pytestqt")
 
 from PySide6.QtCore import QPoint, Qt, QTimer
-from PySide6.QtWidgets import QApplication, QComboBox, QDialog
+from PySide6.QtWidgets import QApplication
 
 from adsfolio.citations import CitationStyle
 from adsfolio.config import Config
@@ -229,20 +229,34 @@ def test_unsortable_header_keeps_selection_and_indicator(qtbot, fictional_librar
     window.close()
 
 
+def _save_sorting_in_settings(window, keys=None) -> str:
+    """Open View > Sort Priorities, which shows Settings > Sorting, and save."""
+    from adsfolio.gui.preferences import PreferencesDialog
+
+    seen: dict[str, str] = {}
+
+    def save() -> None:
+        dialog = QApplication.activeModalWidget()
+        assert isinstance(dialog, PreferencesDialog)
+        seen["page"] = dialog.categories.currentItem().text()
+        assert dialog.sort_primary.findData(None) == -1
+        selectors = (dialog.sort_primary, dialog.sort_secondary, dialog.sort_tertiary)
+        for selector, key in zip(selectors, keys or ()):
+            selector.setCurrentIndex(selector.findData(key))
+        dialog._save_sorting()
+        seen["feedback"] = dialog.sort_feedback.text()
+        dialog.reject()
+
+    QTimer.singleShot(0, save)
+    window.sort_priorities_action.trigger()
+    assert seen["page"] == "Sorting"
+    return seen["feedback"]
+
+
 def test_sort_priorities_update_header_and_save_immediately(qtbot, fictional_libraries):
     window = _window(qtbot)
 
-    def accept_dialog():
-        dialog = QApplication.activeModalWidget()
-        assert isinstance(dialog, QDialog)
-        selectors = dialog.findChildren(QComboBox)
-        assert selectors[0].findText("(none)") == -1
-        for selector, value in zip(selectors, ("title", "year", "author")):
-            selector.setCurrentText(value)
-        dialog.accept()
-
-    QTimer.singleShot(0, accept_dialog)
-    window._edit_sort_priorities()
+    _save_sorting_in_settings(window, ("title", "year", "author"))
     expected = ("title", False, "year", "author")
     _assert_sort(window, expected)
     assert _filenames(window) == ["b.pdf", "c.pdf", "a.pdf"]
@@ -302,14 +316,11 @@ def test_failed_sort_save_reports_failure_and_preserves_session_sort(
         window.refresh(fictional_libraries[0])
         _assert_sort(window, expected)
 
-    def accept_unchanged_dialog():
-        dialog = QApplication.activeModalWidget()
-        assert isinstance(dialog, QDialog)
-        dialog.accept()
-
-    QTimer.singleShot(0, accept_unchanged_dialog)
-    window._edit_sort_priorities()
-    assert _saved_sort() == expected
+    # Saving again after the failure writes the sort that Settings shows.
+    assert _save_sorting_in_settings(window, ("title", "year", "author")) == (
+        "Sorting saved."
+    )
+    assert _saved_sort() == ("title", expected[1], "year", "author")
     assert not any(
         notice.key == "sort-preference" for notice in window.notice_bar.queued_notices()
     )
@@ -325,13 +336,7 @@ def test_unchanged_sort_priorities_do_not_write_config(
         "adsfolio.gui.main_window.save_config", lambda config: saves.append(config)
     )
 
-    def accept_dialog():
-        dialog = QApplication.activeModalWidget()
-        assert isinstance(dialog, QDialog)
-        dialog.accept()
-
-    QTimer.singleShot(0, accept_dialog)
-    window._edit_sort_priorities()
+    _save_sorting_in_settings(window)
     assert saves == []
     window.close()
 

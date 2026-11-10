@@ -96,6 +96,12 @@ class PreferencesDialog(QDialog):
         self.categories.currentRowChanged.connect(self._select_page)
         self.categories.setCurrentRow(0)
 
+    def show_page(self, label: str) -> None:
+        """Show the section whose name is `label`, such as ``"Appearance"``."""
+        items = self.categories.findItems(label, Qt.MatchExactly)
+        if items:
+            self.categories.setCurrentRow(self.categories.row(items[0]))
+
     def _select_page(self, index: int) -> None:
         if not 0 <= index < len(self._builders):
             return

@@ -24,7 +24,6 @@ from PySide6.QtCore import (
 from PySide6.QtGui import QAction, QActionGroup, QColor, QFont, QKeySequence
 from PySide6.QtWidgets import (
     QApplication,
-    QComboBox,
     QDialog,
     QDialogButtonBox,
     QDockWidget,
@@ -827,7 +826,7 @@ class MainWindow(QMainWindow):
                 preferences_shortcuts.append(shortcut)
         self.preferences_action.setShortcuts(preferences_shortcuts)
         self.preferences_action.setShortcutContext(Qt.WindowShortcut)
-        self.preferences_action.triggered.connect(self._open_preferences)
+        self.preferences_action.triggered.connect(lambda: self._open_preferences())
         self.quit_action = QAction("Quit", self)
         self.add_action.triggered.connect(self._add_root)
         self.remove_action.triggered.connect(self._remove_root)
@@ -1000,9 +999,13 @@ class MainWindow(QMainWindow):
         self.detail_action.triggered.connect(self._toggle_detail)
         view.addAction(self.detail_action)
         self.appearance_action = QAction("Appearance…", self)
-        self.appearance_action.triggered.connect(self._edit_appearance)
+        self.appearance_action.triggered.connect(
+            lambda: self._open_preferences("Appearance")
+        )
         self.sort_priorities_action = QAction("Sort Priorities…", self)
-        self.sort_priorities_action.triggered.connect(self._edit_sort_priorities)
+        self.sort_priorities_action.triggered.connect(
+            lambda: self._open_preferences("Sorting")
+        )
         view.addAction(self.appearance_action)
         view.addAction(self.sort_priorities_action)
         self.open_selected_action = QAction(self.table)
@@ -4990,28 +4993,13 @@ class MainWindow(QMainWindow):
         self._sync_detail_and_selection_actions()
         self.table.verticalScrollBar().setValue(context.scroll)
 
-    def _edit_appearance(self) -> None:
-        """Configure table and detail-pane appearance preferences."""
-        original_config = deepcopy(self.config)
-        dialog = AppearanceDialog(
-            self.config,
-            self.columns,
-            self.detail.available_rows(),
-            self,
-        )
-        dialog.settings_changed.connect(lambda: self._apply_appearance_dialog(dialog))
-        result = dialog.exec()
-        if result == QDialog.DialogCode.Accepted:
-            self._apply_appearance_dialog(dialog)
-            return
-        self.config = original_config
-        self._apply_appearance_config()
-
-    def _open_preferences(self) -> None:
-        """Open the unified settings window."""
+    def _open_preferences(self, page: str = "") -> None:
+        """Open the settings window, optionally at the section named `page`."""
         from .preferences import PreferencesDialog
 
         dialog = PreferencesDialog(self)
+        if page:
+            dialog.show_page(page)
         dialog.exec()
         dialog.deleteLater()
 
@@ -5193,49 +5181,6 @@ class MainWindow(QMainWindow):
         self.detail.set_link_activation(self.config.link_activation)
         self._apply_table_appearance()
         self._current_changed(self.table.currentIndex(), QModelIndex())
-
-    def _edit_sort_priorities(self) -> None:
-        """Configure persisted primary, secondary, and tertiary sort keys."""
-        choices = [
-            "(none)",
-            *(column.key for column in self.columns if column.sortable is True),
-        ]
-        dialog = QDialog(self)
-        dialog.setWindowTitle("Sort Priorities")
-        layout = QVBoxLayout(dialog)
-        selectors: list[QComboBox] = []
-        for label, current in (
-            ("Primary sort", self.current_query.order_by),
-            ("Secondary sort", self.current_query.secondary_order_by),
-            ("Tertiary sort", self.current_query.tertiary_order_by),
-        ):
-            selector = QComboBox(dialog)
-            selector.addItems(choices[1:] if label == "Primary sort" else choices)
-            selector.setCurrentText(current if current in choices else "(none)")
-            layout.addWidget(QLabel(label, dialog))
-            layout.addWidget(selector)
-            selectors.append(selector)
-        buttons = QDialogButtonBox(
-            QDialogButtonBox.Ok | QDialogButtonBox.Cancel, dialog
-        )
-        buttons.accepted.connect(dialog.accept)
-        buttons.rejected.connect(dialog.reject)
-        layout.addWidget(buttons)
-        if dialog.exec() != QDialog.DialogCode.Accepted:
-            return
-        selected = [
-            None if selector.currentText() == "(none)" else selector.currentText()
-            for selector in selectors
-        ]
-        primary = selected[0] or self.current_query.order_by
-        secondary = selected[1]
-        tertiary = selected[2]
-        self.apply_sort(
-            primary,
-            self.current_query.descending,
-            secondary,
-            tertiary,
-        )
 
     def _apply_table_appearance(self) -> None:
         """Apply persisted typography and timestamp display to the table."""

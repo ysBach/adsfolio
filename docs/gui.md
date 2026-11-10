@@ -1609,6 +1609,8 @@ A pending link can still have a bibcode or complete metadata. Use
 The amber triangle means that the PDF changed and needs Identify again.
 
 Right-click a main-table column heading to open **Appearance…** or change visible columns.
+**Appearance…** opens the **Appearance** section of Settings.
+**View → Sort Priorities…** opens the **Sorting** section of Settings.
 The sidebar uses less indentation. Hover over a truncated library name to see its full path.
 
 ## Keyboard navigation

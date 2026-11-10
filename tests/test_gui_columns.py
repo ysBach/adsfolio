@@ -22,7 +22,6 @@ from PySide6.QtWidgets import QApplication, QMenu, QStyleOptionViewItem
 
 from adsfolio.citations import CitationStyle
 from adsfolio.config import Config
-from adsfolio.gui.appearance import AppearanceDialog
 from adsfolio.gui.config import GuiConfig, config_path, load_config, save_config
 from adsfolio.gui.library import FileQuery, build_columns
 from adsfolio.gui.main_window import MainWindow
@@ -32,6 +31,7 @@ from adsfolio.gui.models import (
     LinkDelegate,
     ResolutionDelegate,
 )
+from adsfolio.gui.preferences import PreferencesDialog
 
 
 @pytest.fixture(autouse=True)
@@ -105,14 +105,15 @@ def test_column_first_header_drag_survives_appearance_and_restart(qtbot, tmp_pat
     assert window.current_query == initial_sort
     observed = {}
 
-    def accept_appearance() -> None:
+    def save_appearance() -> None:
         dialog = QApplication.activeModalWidget()
-        assert isinstance(dialog, AppearanceDialog)
-        observed["order"] = dialog.table_column_order
-        dialog.accept()
+        assert isinstance(dialog, PreferencesDialog)
+        observed["order"] = dialog.appearance.table_column_order
+        dialog._save_appearance()
+        dialog.reject()
 
-    QTimer.singleShot(0, accept_appearance)
-    window._edit_appearance()
+    QTimer.singleShot(0, save_appearance)
+    window.appearance_action.trigger()
     assert observed["order"] == reordered
     assert _visual_order(window) == reordered
     window._set_column_alignment("title", "center")
