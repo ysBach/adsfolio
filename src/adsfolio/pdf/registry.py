@@ -225,6 +225,8 @@ SORTABLE_COLUMNS = {
         "status",
         "source",
         "filename",
+        # The library of each PDF. All PDFs of one root share it.
+        "library",
         "relative_path",
         "size_bytes",
         "mtime_ns",
@@ -1101,6 +1103,8 @@ class CentralPdfRegistry:
             return resolved, str(record.get("current_path") or "")
         if key == "filename":
             value = record.get("current_path")
+        elif key == "library":
+            value = record.get("root")
         elif key == "relative_path":
             value = record.get("relative_path")
         elif key == "sha256":

@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### Library column
+
+- In the combined view, one **Library / Filename** column previously showed
+  the library and the path together. You could not sort by path alone. Now
+  **View → Appearance… → Table → Show Library as its own column** shows a
+  **Library** column and a **Filename** column. **Library** sorts by library
+  name. **Filename** sorts by the path inside the library. The option is off
+  by default. One library does not show the **Library** column.
+
 ### Rename
 
 - **Apply** uses the source and target paths from the confirmed preview.

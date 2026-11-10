@@ -33,6 +33,7 @@ from ..pdf.identify_settings import IdentifySettings
 from ..pdf.registry import CentralPdfRegistryState
 from ..pdf.rename_settings import RenameSettings
 from .appearance import AppearanceDialog
+from .combined_library import with_library_column
 from .config import save_config
 from .dialogs import IdentifyDialog, RenameDialog
 from .form_help import add_form_help, grow_form_fields
@@ -209,7 +210,8 @@ class PreferencesDialog(QDialog):
         )
         self.appearance = AppearanceDialog(
             self.window.config,
-            self.window.columns,
+            # Always list Library, so its settings stay while it is off.
+            with_library_column(self.window.columns, {}),
             self.window.detail.available_rows(),
             page,
         )

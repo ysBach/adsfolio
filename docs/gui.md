@@ -220,6 +220,18 @@ Each checked library appears as a collapsible folder group. Its subfolders
 appear as nested groups. Each PDF shows the system PDF icon and starts under
 its folder icon. The filename tooltip shows its library and full path.
 
+In a flat list, the **Library / Filename** column shows the library and the
+path of each PDF. To show the library in its own column:
+
+1. Open **View → Appearance…**.
+2. On the **Table** tab, check **Show Library as its own column**.
+3. Select **Save Appearance**.
+
+The **Library** column then sorts by library name. **Filename** shows the path
+inside the library and sorts by that path. One library does not show the
+**Library** column. If you clear the option while the table sorts by
+**Library**, the table sorts by **Library / Filename**.
+
 When **Combine libraries** is clear, the library checkboxes stay in place but
 are gray. They show which libraries the combined view includes. To change
 them, check **Combine libraries** first.

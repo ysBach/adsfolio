@@ -122,3 +122,50 @@ def test_combined_details_remain_readable_without_edit_actions(qtbot, tmp_path):
     assert pane.update_button.isEnabled()
     assert pane.manual_metadata_button.isEnabled()
     assert pane._row_widgets["title"]._editable is True
+
+
+def test_split_library_column_shows_library_and_path_apart(libraries):
+    roots, registries = libraries
+    add_pdf(registries[str(roots[0])], roots[0], "same.pdf", b"one", "One")
+    row = CombinedLibrary(registries).query_files()[0]
+    columns = combined_columns(
+        BASE_COLUMNS, {str(roots[0]): "Reading"}, split_library=True
+    )
+    keys = [column.key for column in columns]
+    library = columns[keys.index("library")]
+    filename = columns[keys.index("filename")]
+
+    assert keys.index("library") == keys.index("filename") - 1
+    assert library.header == "Library"
+    assert library.getter(row) == "Reading"
+    assert filename.header == "Filename"
+    assert filename.getter(row) == "same.pdf"
+
+
+def test_split_library_sorts_filename_by_path_and_library_by_label(libraries):
+    roots, registries = libraries
+    add_pdf(registries[str(roots[0])], roots[0], "a.pdf", b"one", "One")
+    add_pdf(registries[str(roots[1])], roots[1], "b.pdf", b"two", "Two")
+    labels = {str(roots[0]): "Zeta", str(roots[1]): "Alpha"}
+
+    def names(combined, key):
+        return [row["current_path"] for row in combined.query_files(order_by=key)]
+
+    joined = CombinedLibrary(registries, labels)
+    split = CombinedLibrary(registries, labels, split_library=True)
+
+    # One column sorts "Alpha / b.pdf" before "Zeta / a.pdf".
+    assert names(joined, "filename") == ["b.pdf", "a.pdf"]
+    assert names(split, "filename") == ["a.pdf", "b.pdf"]
+    assert names(split, "library") == ["b.pdf", "a.pdf"]
+
+
+def test_library_sort_in_one_library_keeps_the_next_sort_key(libraries):
+    roots, registries = libraries
+    registry = registries[str(roots[0])]
+    add_pdf(registry, roots[0], "one.pdf", b"one", "Zulu")
+    add_pdf(registry, roots[0], "two.pdf", b"two", "Alpha")
+
+    rows = registry.query_files(order_by="library", secondary_order_by="title")
+
+    assert [row["current_path"] for row in rows] == ["two.pdf", "one.pdf"]

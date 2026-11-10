@@ -16,12 +16,20 @@ from ..pdf.registry import (
 )
 from .library import Column
 
+# Key of the optional table column that shows each PDF's library.
+LIBRARY_COLUMN = "library"
+
+
+def _library_label(record: Mapping[str, Any], labels: Mapping[str, str]) -> str:
+    """Return the library label of `record`, or its folder name."""
+    root = str(record.get("root") or "")
+    return labels.get(root, Path(root).name or root)
+
 
 def _combined_filename(record: Mapping[str, Any], labels: Mapping[str, str]) -> str:
     """Return the library label and the full root-relative path."""
-    root = str(record.get("root") or "")
     path = str(record.get("current_path") or "")
-    label = labels.get(root, Path(root).name or root)
+    label = _library_label(record, labels)
     return f"{label} / {path}" if label else path
 
 
@@ -36,9 +44,13 @@ class CombinedLibrary:
         self,
         registries: Mapping[str, PdfRegistry],
         labels: Mapping[str, str] | None = None,
+        *,
+        split_library: bool = False,
     ) -> None:
         self.registries = dict(registries)
         self.labels = dict(labels or {})
+        # With a separate Library column, Filename sorts by path only.
+        self.split_library = split_library
 
     @property
     def unavailable_roots(self) -> tuple[str, ...]:
@@ -121,10 +133,15 @@ class CombinedLibrary:
             raise ValueError(f"Unsortable column: {invalid!r}")
 
         def sort_value(record: dict[str, Any], key: str) -> tuple[bool, str | int]:
+            if key == LIBRARY_COLUMN:
+                label = _library_label(record, self.labels)
+                return not label, label
             if key == "filename":
                 name = str(record.get("current_path") or "")
                 if not name:
                     return True, ""
+                if self.split_library:
+                    return False, name
                 return False, _combined_filename(record, self.labels)
             return PdfRegistry._sort_value(record, key)
 
@@ -205,14 +222,66 @@ class CombinedLibrary:
         )
 
 
-def combined_columns(
+def library_column(labels: Mapping[str, str]) -> Column:
+    """Return the Library column, which shows the library label of each PDF."""
+
+    def library(record: dict[str, Any]) -> str:
+        return _library_label(record, labels)
+
+    return Column(LIBRARY_COLUMN, "Library", 140, library)
+
+
+def with_library_column(
     columns: Sequence[Column], labels: Mapping[str, str]
 ) -> tuple[Column, ...]:
-    """Show each file's library and root-relative path in the combined view."""
+    """Insert the Library column before Filename, once."""
+    if any(column.key == LIBRARY_COLUMN for column in columns):
+        return tuple(columns)
+    result: list[Column] = []
+    for column in columns:
+        if column.key == "filename":
+            result.append(library_column(labels))
+        result.append(column)
+    if len(result) == len(columns):
+        result.append(library_column(labels))
+    return tuple(result)
+
+
+def combined_columns(
+    columns: Sequence[Column],
+    labels: Mapping[str, str],
+    *,
+    split_library: bool = False,
+) -> tuple[Column, ...]:
+    """Show each file's library and root-relative path in the combined view.
+
+    Parameters
+    ----------
+    columns : sequence of Column
+        Columns of one library.
+    labels : mapping of str to str
+        Library label of each root.
+    split_library : bool, optional
+        Show the library in its own column. Filename then shows the
+        root-relative path. By default, one column shows both.
+
+    Returns
+    -------
+    tuple of Column
+        Columns of the combined view.
+    """
 
     def filename(record: dict[str, Any]) -> str:
         return _combined_filename(record, labels)
 
+    def path(record: dict[str, Any]) -> str:
+        return str(record.get("current_path") or "")
+
+    if split_library:
+        return tuple(
+            replace(column, getter=path) if column.key == "filename" else column
+            for column in with_library_column(columns, labels)
+        )
     return tuple(
         replace(column, header="Library / Filename", getter=filename)
         if column.key == "filename"

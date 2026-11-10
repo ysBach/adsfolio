@@ -111,7 +111,7 @@ from .bibtex_export import (
     fetch_ads_bibtex_now,
 )
 from .citation_styles import CitationStylesDialog
-from .combined_library import CombinedLibrary
+from .combined_library import LIBRARY_COLUMN, CombinedLibrary, with_library_column
 from .combined_view import (
     CombinedRefreshRetry,
     CombinedViewController,
@@ -433,6 +433,8 @@ class MainWindow(QMainWindow):
         self._startup_watchers_started = False
         self._startup_unavailable_roots: set[str] = set()
         self.columns = build_columns(self.config.citation_styles)
+        if self.config.split_library_column:
+            self.columns = with_library_column(self.columns, {})
         self.registries: dict[str, PdfRegistry] = {}
         self.root_entries: dict[str, RootEntry] = {}
         self.current_root: Path | None = None
@@ -4982,8 +4984,9 @@ class MainWindow(QMainWindow):
         for visual in range(header.count()):
             logical = header.logicalIndex(visual)
             column = self.columns[logical]
-            if column.key == DUPLICATE_COLUMN:
-                # The Duplicates view shows this column by itself.
+            if column.key == DUPLICATE_COLUMN or self._view_hides_column(column.key):
+                # The Duplicates view shows this column by itself. One library
+                # does not show the Library column.
                 continue
             label = column.header or "Resolution marker"
             action = menu.addAction(label)
@@ -5210,17 +5213,13 @@ class MainWindow(QMainWindow):
             if visible_count <= 1:
                 return
         self.table.setColumnHidden(logical, not visible)
-        self.config.hidden_table_columns = [
-            column.key
-            for index, column in enumerate(self.columns)
-            if self.table.isColumnHidden(index)
-        ]
+        self.config.hidden_table_columns = self._saved_hidden_columns()
         self.combined.sync_tree_column()
 
     def _show_all_columns(self) -> None:
         """Make every table column visible and update persisted preferences."""
-        for index in range(len(self.columns)):
-            self.table.setColumnHidden(index, False)
+        for index, column in enumerate(self.columns):
+            self.table.setColumnHidden(index, self._view_hides_column(column.key))
         self.config.hidden_table_columns = []
         self.combined.sync_tree_column()
 
@@ -5417,7 +5416,11 @@ class MainWindow(QMainWindow):
                     raise RuntimeError(f"{label} is not connected.")
                 registries[root_key] = registry
             if combined_mode:
-                export_source = CombinedLibrary(registries, labels=root_labels)
+                export_source = CombinedLibrary(
+                    registries,
+                    labels=root_labels,
+                    split_library=self.config.split_library_column,
+                )
             else:
                 export_source = registries.get(root_keys[0]) if root_keys else None
             if export_source is None:
@@ -5839,7 +5842,7 @@ class MainWindow(QMainWindow):
     def _apply_citation_styles(self, styles: Sequence[CitationStyle]) -> None:
         """Apply accepted citation styles and update all dependent UI state."""
         prior_widths = {
-            column.key: self.table.columnWidth(index)
+            column.key: self._live_column_width(index, column)
             for index, column in enumerate(self.columns)
         }
         current_index = self.table.currentIndex()
@@ -5949,10 +5952,12 @@ class MainWindow(QMainWindow):
         self.config.web_browser_command = dialog.web_browser_command
         self.config.detail_row_order = list(dialog.detail_row_order)
         self.config.detail_hidden_rows = list(dialog.detail_hidden_rows)
+        self.config.split_library_column = dialog.split_library_column
         self._apply_appearance_config()
 
     def _apply_appearance_config(self) -> None:
         """Apply all table and detail appearance settings to the live UI."""
+        self._sync_library_column_setting()
         self.detail.set_row_order(self.config.detail_row_order)
         self.detail.set_hidden_rows(self.config.detail_hidden_rows)
         self.detail.set_compact_rows(self.config.detail_compact_rows)
@@ -6077,11 +6082,116 @@ class MainWindow(QMainWindow):
                     or (
                         key == DUPLICATE_COLUMN
                         and self.current_view is not LibraryView.DUPLICATES
-                    ),
+                    )
+                    or self._view_hides_column(key),
                 )
         finally:
             self._applying_table_layout = False
         self.combined.sync_tree_column()
+
+    def _view_hides_column(self, key: str) -> bool:
+        """Return whether the current view hides column `key` by itself.
+
+        The Library column shows only in the combined view. All PDFs of one
+        library have the same library.
+        """
+        return key == LIBRARY_COLUMN and not self.combined.enabled
+
+    def _live_column_width(self, index: int, column: Column) -> int:
+        """Return the width to save for one column.
+
+        A hidden section has width 0. A column that the view hides keeps its
+        saved width, so it returns at that width.
+        """
+        if self._view_hides_column(column.key):
+            return self.config.column_widths.get(column.key, column.width)
+        return self.table.columnWidth(index)
+
+    def _saved_hidden_columns(self) -> list[str]:
+        """Return the columns that the user hid.
+
+        A column that the view hides keeps its saved visibility.
+        """
+        hidden = []
+        for index, column in enumerate(self.columns):
+            if self._view_hides_column(column.key):
+                if column.key in self.config.hidden_table_columns:
+                    hidden.append(column.key)
+            elif self.table.isColumnHidden(index):
+                hidden.append(column.key)
+        return hidden
+
+    def sync_library_column_visibility(self) -> None:
+        """Show the Library column in the combined view, and hide it elsewhere."""
+        for index, column in enumerate(self.columns):
+            if column.key != LIBRARY_COLUMN:
+                continue
+            hide = self._view_hides_column(column.key)
+            if hide and not self.table.isColumnHidden(index):
+                # Keep the width of the visible column for its next display.
+                self.config.column_widths[column.key] = self.table.columnWidth(index)
+            self._applying_table_layout = True
+            try:
+                self.table.setColumnHidden(
+                    index, hide or column.key in self.config.hidden_table_columns
+                )
+                if not hide:
+                    width = self.config.column_widths.get(column.key, column.width)
+                    if self.table.columnWidth(index) <= 0 < width:
+                        self.table.setColumnWidth(index, width)
+            finally:
+                self._applying_table_layout = False
+        self.combined.sync_tree_column()
+
+    def _sync_library_column_setting(self) -> None:
+        """Add or remove the Library column to match the saved setting."""
+        wanted = self.config.split_library_column
+        if wanted == any(column.key == LIBRARY_COLUMN for column in self.columns):
+            return
+        sort_keys = (
+            self.config.sort_column,
+            self.config.secondary_sort_column,
+            self.config.tertiary_sort_column,
+        )
+        if not wanted:
+            # The single Library / Filename column sorts by library first.
+            mapped = list(
+                dict.fromkeys(
+                    "filename" if key == LIBRARY_COLUMN else key
+                    for key in sort_keys
+                    if key is not None
+                )
+            )
+            mapped += [None] * (3 - len(mapped))
+            self.config.sort_column = mapped[0] or "first_seen_at"
+            self.config.secondary_sort_column = mapped[1]
+            self.config.tertiary_sort_column = mapped[2]
+        elif (
+            LIBRARY_COLUMN not in self.config.table_column_order
+            and "filename" in self.config.table_column_order
+        ):
+            order = self.config.table_column_order
+            order.insert(order.index("filename"), LIBRARY_COLUMN)
+        self.current_query = replace(
+            self.current_query,
+            order_by=self.config.sort_column,
+            descending=self.config.sort_descending,
+            secondary_order_by=self.config.secondary_sort_column,
+            tertiary_order_by=self.config.tertiary_sort_column,
+        )
+        prior_widths = {
+            column.key: self._live_column_width(index, column)
+            for index, column in enumerate(self.columns)
+        }
+        self.combined.update_columns()
+        self._rebuild_table_delegates(prior_widths)
+        self._apply_table_layout()
+        self.sync_library_column_visibility()
+        self._sync_table_sort_indicator()
+        if self.combined.enabled:
+            self.combined.refresh()
+        elif self.model.query != self.current_query:
+            self.model.set_query(self.current_query)
 
     def _sync_duplicate_column(self) -> None:
         """Show the Duplicate column only in the Duplicates view."""
@@ -6368,6 +6478,7 @@ class MainWindow(QMainWindow):
                 staged_registry = CombinedLibrary(
                     candidate_registries,
                     labels=self.combined.labels(),
+                    split_library=self.config.split_library_column,
                 )
                 try:
                     for selected, registered in candidate_registries.items():
@@ -8800,18 +8911,14 @@ class MainWindow(QMainWindow):
         self.config.window_geometry = bytes(self.saveGeometry().toBase64()).decode()
         self.config.window_state = bytes(self.saveState().toBase64()).decode()
         self.config.column_widths = {
-            column.key: self.table.columnWidth(index)
+            column.key: self._live_column_width(index, column)
             for index, column in enumerate(self.columns)
         }
         self.config.table_column_order = [
             self.columns[self.table.header().logicalIndex(index)].key
             for index in range(self.table.header().count())
         ]
-        self.config.hidden_table_columns = [
-            column.key
-            for index, column in enumerate(self.columns)
-            if self.table.isColumnHidden(index)
-        ]
+        self.config.hidden_table_columns = self._saved_hidden_columns()
         self.config.sort_column = self.current_query.order_by
         self.config.sort_descending = self.current_query.descending
         self.config.secondary_sort_column = self.current_query.secondary_order_by

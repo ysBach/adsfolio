@@ -29,6 +29,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from .combined_library import LIBRARY_COLUMN
 from .config import MAX_ROW_HEIGHT, MAX_ROW_SPACING, GuiConfig
 from .library import ISO8601_TIMESTAMP_FORMAT, Column, format_mtime
 
@@ -100,12 +101,22 @@ class AppearanceDialog(QDialog):
     @property
     def table_column_order(self) -> list[str]:
         """Return table-column keys in their configured visual order."""
-        return self._visual_key_order(self.font_table, self._table_row_keys)
+        return self._shown_column_keys(
+            self._visual_key_order(self.font_table, self._table_row_keys)
+        )
 
     @property
     def hidden_table_columns(self) -> list[str]:
         """Return table-column keys configured as hidden."""
-        return self._unchecked_keys(self.font_table, self._table_row_keys)
+        return self._shown_column_keys(
+            self._unchecked_keys(self.font_table, self._table_row_keys)
+        )
+
+    def _shown_column_keys(self, keys: list[str]) -> list[str]:
+        """Leave out the Library column while it is off."""
+        if self.split_library_checkbox.isChecked():
+            return keys
+        return [key for key in keys if key != LIBRARY_COLUMN]
 
     @property
     def column_alignments(self) -> dict[str, str]:
@@ -125,6 +136,11 @@ class AppearanceDialog(QDialog):
     def expand_abstracts(self) -> bool:
         """Return whether abstracts should start expanded."""
         return self.expand_abstracts_checkbox.isChecked()
+
+    @property
+    def split_library_column(self) -> bool:
+        """Return whether the combined view shows a separate Library column."""
+        return self.split_library_checkbox.isChecked()
 
     @property
     def table_row_height(self) -> int | None:
@@ -196,7 +212,11 @@ class AppearanceDialog(QDialog):
             )
             for column in self._table_columns
         ]
-        rows = list(self._ordered_rows(labels, config.table_column_order))
+        order = list(config.table_column_order)
+        if LIBRARY_COLUMN not in order and "filename" in order:
+            # Library starts directly before Filename.
+            order.insert(order.index("filename"), LIBRARY_COLUMN)
+        rows = list(self._ordered_rows(labels, order))
         self._table_row_keys = [key for key, _label in rows]
         self.font_table = QTableWidget(len(rows), 6, tab)
         self.font_table.setHorizontalHeaderLabels(
@@ -233,6 +253,19 @@ class AppearanceDialog(QDialog):
         self.font_table.horizontalHeader().setSectionResizeMode(
             2, QHeaderView.ResizeMode.Stretch
         )
+        self.split_library_checkbox = QCheckBox("Show Library as its own column", tab)
+        self.split_library_checkbox.setToolTip(
+            "In the combined view, show the library of each PDF in a Library "
+            "column. Filename then shows the path inside the library. The "
+            "column does not show for one library."
+        )
+        self.split_library_checkbox.setChecked(config.split_library_column)
+        self.split_library_checkbox.toggled.connect(self._show_library_row)
+        self.split_library_checkbox.toggled.connect(self._emit_settings_changed)
+        self._show_library_row(config.split_library_column)
+        options = QFormLayout()
+        options.addRow(self.split_library_checkbox)
+        layout.addLayout(options)
         layout.addWidget(
             QLabel("Drag the row handles to reorder; uncheck to hide", tab)
         )
@@ -243,6 +276,13 @@ class AppearanceDialog(QDialog):
         )
         self.table_row_height_spin.valueChanged.connect(self._emit_settings_changed)
         return tab
+
+    def _show_library_row(self, shown: bool) -> None:
+        """Show the Library row only while the Library column is on."""
+        if LIBRARY_COLUMN in self._table_row_keys:
+            self.font_table.setRowHidden(
+                self._table_row_keys.index(LIBRARY_COLUMN), not shown
+            )
 
     @staticmethod
     def _ordered_rows(
