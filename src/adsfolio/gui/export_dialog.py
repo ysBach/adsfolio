@@ -46,6 +46,7 @@ from .bibtex_export import (
     save_text_file,
 )
 from .cv_dialog import CVDialog
+from .form_help import add_form_help, grow_form_fields
 
 FORMAT_BIBTEX = "bibtex"
 FORMAT_CITATION = "citation"
@@ -79,7 +80,8 @@ AUTHOR_FORMATS = (
 KEY_TEMPLATE_FIELDS = (
     "Fields: {authors}, {first_author_surname}, {first_author_initials}, "
     "{year}, {bibcode}, {title}, {journal}, {bibstem}, {pub}, {volume}, "
-    "{page}. Hover for details. Characters that keys cannot hold become _."
+    "{page}. Click ? next to a Custom box for details. Characters that keys "
+    "cannot hold become _."
 )
 
 
@@ -375,6 +377,8 @@ class ExportPapersDialog(QDialog):
         self.format_choice.currentIndexChanged.connect(self._format_changed)
         self._format_changed()
         self._scope_changed()
+        grow_form_fields(self)
+        add_form_help(self)
         self.resize(760, 760)
 
     # Layout -------------------------------------------------------------

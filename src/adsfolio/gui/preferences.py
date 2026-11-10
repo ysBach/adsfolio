@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QScrollArea,
+    QSizePolicy,
     QStackedWidget,
     QTabWidget,
     QVBoxLayout,
@@ -34,6 +35,7 @@ from ..pdf.rename_settings import RenameSettings
 from .appearance import AppearanceDialog
 from .config import save_config
 from .dialogs import IdentifyDialog, RenameDialog
+from .form_help import add_form_help, grow_form_fields
 from .watch_sounds import WatchSoundChoice
 
 
@@ -77,7 +79,7 @@ class PreferencesDialog(QDialog):
                 "Libraries and Watching",
                 "Identify and Rename",
                 "Citations",
-                "Account",
+                "Account & Profile",
                 "CV and Export",
             ]
         )
@@ -99,6 +101,8 @@ class PreferencesDialog(QDialog):
             return
         if index not in self._built:
             page = self._builders[index]()
+            grow_form_fields(page)
+            add_form_help(page)
             old = self.pages.widget(index)
             self.pages.removeWidget(old)
             old.deleteLater()
@@ -320,14 +324,29 @@ class PreferencesDialog(QDialog):
         self.library_target = self._root_combo(page)
         form.addRow("Library", self.library_target)
         self.library_path = self._message("", page)
+        self.library_path.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self.library_path.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred
+        )
         form.addRow("Folder", self.library_path)
         self.watch_now = QCheckBox("Watch this library now", page)
+        self.watch_now.setToolTip(
+            "Find new PDFs in this folder while ADSfolio runs. "
+            "Watching stops when ADSfolio closes."
+        )
         self.watch_on_start = QCheckBox("Start watching when ADSfolio opens", page)
+        self.watch_on_start.setToolTip(
+            "Start watching this folder each time ADSfolio opens."
+        )
         self.watch_auto = QCheckBox("Automatically identify and rename new PDFs", page)
         self.watch_auto.setToolTip(
             "Future watched arrivals can be identified and renamed using saved settings."
         )
         self.watch_recursive = QCheckBox("Include subdirectories", page)
+        self.watch_recursive.setToolTip(
+            "Also catalog and watch PDFs in the subfolders of this library. "
+            "Stop watching before you change this setting."
+        )
         for control in (
             self.watch_now,
             self.watch_on_start,
@@ -546,6 +565,8 @@ class PreferencesDialog(QDialog):
         for index, (name, dialog) in enumerate(
             (("Identify", identify), ("Rename", rename))
         ):
+            grow_form_fields(dialog)
+            add_form_help(dialog)
             old = self.defaults_tabs.widget(index)
             self.defaults_tabs.removeTab(index)
             old.deleteLater()

@@ -40,6 +40,7 @@ from ..config import Config
 from ..cv import render_cv
 from ..cv.config import DEFAULT_EXCLUDE_BIBSTEMS, DEFAULT_ME_FMT, config_from_mapping
 from ..cv.template import ENTRY_FIELDS, FIELD_HELP, TEMPLATE_PRESETS, CVTemplate
+from .form_help import add_form_help, grow_form_fields
 from .jobs import CommandJob, cli_argv
 from .osint import open_url
 
@@ -292,6 +293,8 @@ class CVDialog(QDialog):
         self._preview_timer.timeout.connect(self._render_sample)
         self._build()
         self._load_settings()
+        grow_form_fields(self)
+        add_form_help(self)
 
     @property
     def local_mode(self) -> bool:
@@ -313,7 +316,8 @@ class CVDialog(QDialog):
                 "Make a publication list from your NASA ADS records. Choose a "
                 "built-in LaTeX or Markdown style, or write your own template for "
                 "LaTeX, HTML, Markdown, plain text, or any other text format. "
-                "Hover over any item for an explanation."
+                "Click ? next to an item, or hover over the item, for an "
+                "explanation."
             )
         intro = QLabel(text, self)
         intro.setWordWrap(True)

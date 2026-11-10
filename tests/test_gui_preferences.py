@@ -515,3 +515,37 @@ def test_cv_file_changed_during_load_cannot_be_overwritten(
     assert changed
     assert path.read_bytes() == external
     assert "Reopen Settings" in cv.status.text()
+
+
+def test_every_settings_form_lets_text_fields_use_the_row_width(
+    preferences_window, monkeypatch
+):
+    """The macOS style otherwise keeps fields narrow and clips wrapped labels."""
+    from PySide6.QtWidgets import QFormLayout
+
+    policy = QFormLayout.FieldGrowthPolicy
+    original = QFormLayout.__init__
+
+    def mac_default(self, *args):
+        original(self, *args)
+        self.setFieldGrowthPolicy(policy.FieldsStayAtSizeHint)
+
+    # The test style already grows fields. Use the macOS default instead.
+    monkeypatch.setattr(QFormLayout, "__init__", mac_default)
+    _window, dialog, root, _pdf = preferences_window
+    for row in range(dialog.categories.count()):
+        dialog.categories.setCurrentRow(row)
+        page = dialog.pages.currentWidget()
+        forms = page.findChildren(QFormLayout)
+        assert forms, dialog.categories.item(row).text()
+        assert all(
+            form.fieldGrowthPolicy() != policy.FieldsStayAtSizeHint for form in forms
+        )
+    _open_page(dialog, "Libraries and Watching")
+    assert dialog.library_path.text() == str(root.resolve())
+
+
+def test_account_category_names_the_profile(preferences_window):
+    _window, dialog, _root, _pdf = preferences_window
+    _open_page(dialog, "Account & Profile")
+    assert dialog.pages.currentIndex() == 6

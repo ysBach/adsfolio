@@ -44,6 +44,22 @@ Times come from offscreen tests with a copy of a 3,982-PDF catalog.
   sequence. A column-header click still sorts the table. **View → Clear Find**
   still clears at once.
 
+### Settings
+
+- On macOS, Settings previously kept text boxes narrow. It also cut a long
+  folder path after its first lines. Now text boxes use the row width, and
+  **Libraries and Watching** shows the whole folder path. Export Papers and
+  Citation Keys use the same layout.
+- The **Account** section is now **Account & Profile**.
+
+### Help buttons
+
+- An explanation previously appeared only after you held the pointer over an
+  item. Now a **?** button sits next to each explained setting in Settings,
+  Export Papers, Citation Keys, and the CV Generator. Click it to read the
+  explanation at once. Hover tooltips still work.
+- The watch checkboxes in **Libraries and Watching** now have explanations.
+
 ### Citation keys
 
 - The key style **My template** is now **Custom**.

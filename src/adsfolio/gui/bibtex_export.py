@@ -27,6 +27,7 @@ from ..citations import CITATION_FIELD_HELP
 from ..citekeys import KeyPolicy, KeyStyle, citation_key
 from ..config import ADSError, AuthenticationError, Config
 from ..references import CitationKeyError, LocalReferences
+from .form_help import add_form_help, grow_form_fields
 
 _KEY_COLUMN = 3
 _FORBIDDEN_KEY_CHARACTERS = set(' \t,{}()=\\#%"')
@@ -255,6 +256,8 @@ class CitationKeySettingsDialog(QDialog):
         for edit in (self.template, self.other_template):
             edit.textChanged.connect(lambda _text: self._update())
         self.setMinimumWidth(560)
+        grow_form_fields(self)
+        add_form_help(self)
         self._update()
 
     def policy(self) -> KeyPolicy:

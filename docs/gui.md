@@ -99,7 +99,10 @@ appears in the application menu. The window groups the desktop settings:
 - **Sorting** selects the sort column, direction, and tie-break columns.
 - **Libraries and Watching** controls each library's watch and scan settings.
 - **Identify and Rename** edits global defaults and library-only overrides.
-- **Citations**, **Account**, and **CV and Export** contain the remaining settings.
+- **Citations**, **Account & Profile**, and **CV and Export** contain the remaining settings.
+
+A **?** button next to a setting shows its explanation when you click it.
+Hovering over the setting also shows the explanation.
 
 Select **Save** in each section to keep its changes. Library watching controls
 apply immediately. Closing Settings discards unsaved edits in the other sections.
@@ -608,7 +611,8 @@ format that you design.
    text as a reader sees it (**Markdown** or **HTML**). LaTeX shows as source.
 4. **Save CV** looks up your publications and writes the output file.
 
-Hover over any control or label for an explanation. **Split into
+Click **?** next to a control, or hover over the control, for an explanation.
+**Split into
 First-authored and Co-authored sections** controls the two sections. Disable it
 for one list in the original order.
 

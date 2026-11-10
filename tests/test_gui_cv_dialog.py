@@ -240,13 +240,24 @@ def test_every_control_and_its_label_explains_itself(qtbot, tmp_path, local):
         if not widget.toolTip().strip()
     ]
     assert missing == []
+    from PySide6.QtWidgets import QLabel
+
+    from adsfolio.gui.form_help import HELP_ROW_NAME, FieldHelpButton
+
     for form in dialog.findChildren(QFormLayout):
         for row in range(form.rowCount()):
             label = form.itemAt(row, QFormLayout.LabelRole)
             if label is not None and label.widget() is not None:
-                text = label.widget().text()
+                widget = label.widget()
+                if widget.objectName() == HELP_ROW_NAME:
+                    # The row label with its "?" button, or the button alone.
+                    assert widget.findChild(FieldHelpButton).explanation()
+                    widget = widget.findChild(QLabel)
+                    if widget is None:
+                        continue
+                text = widget.text()
                 if text:
-                    assert label.widget().toolTip().strip(), text
+                    assert widget.toolTip().strip(), text
     for index in range(dialog.tabs.count()):
         assert dialog.tabs.tabToolTip(index)
 
