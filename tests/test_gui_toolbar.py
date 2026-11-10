@@ -189,6 +189,7 @@ def test_identify_badge_does_not_keep_a_stale_count_when_the_count_is_unavailabl
     root = _open_library(window, tmp_path, ["unresolved", "unresolved"])
     assert window.identify_button.badge_text == "2"
     registry = window.registries[str(root)]
+    registry.catalog.set_meta("test_count_generation", "advanced")
 
     def locked(**filters: object) -> int:
         raise sqlite3.OperationalError("database is locked")

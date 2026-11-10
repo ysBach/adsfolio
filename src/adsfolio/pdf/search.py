@@ -143,12 +143,32 @@ def record_search_text(
     str
         The fields and metadata values, joined by `FIELD_SEPARATOR`.
     """
-    parts: list[str] = [relative_path or ""]
+    decoded: Any = _INVALID
     if metadata_json:
         try:
-            parts.extend(_values(json.loads(metadata_json)))
+            decoded = json.loads(metadata_json)
         except ValueError:
+            pass
+    return _search_text(relative_path, metadata_json, decoded, sha256)
+
+
+# Marks metadata JSON that did not decode.
+_INVALID = object()
+
+
+def _search_text(
+    relative_path: str | None,
+    metadata_json: str | None,
+    decoded: Any,
+    sha256: str | None,
+) -> str:
+    """Return `record_search_text` from already decoded metadata JSON."""
+    parts: list[str] = [relative_path or ""]
+    if metadata_json:
+        if decoded is _INVALID:
             parts.append(metadata_json)
+        else:
+            parts.extend(_values(decoded))
     if sha256:
         parts.append(sha256)
     return FIELD_SEPARATOR.join(part.replace(FIELD_SEPARATOR, " ") for part in parts)
@@ -162,14 +182,13 @@ def record_search_document(
     The `ALL_FIELDS` entry equals `record_search_text`. Each other entry
     holds the values of that field, joined by `FIELD_SEPARATOR`.
     """
-    metadata: Any = {}
+    decoded: Any = _INVALID
     if metadata_json:
         try:
-            metadata = json.loads(metadata_json)
+            decoded = json.loads(metadata_json)
         except ValueError:
-            metadata = {}
-    if not isinstance(metadata, dict):
-        metadata = {}
+            pass
+    metadata = decoded if isinstance(decoded, dict) else {}
 
     def join(values: Iterator[str]) -> str:
         return FIELD_SEPARATOR.join(
@@ -184,13 +203,38 @@ def record_search_document(
     first = authors[0] if isinstance(authors, list) and authors else authors
     document["first_author"] = join(_values(first))
     document["filename"] = (relative_path or "").replace(FIELD_SEPARATOR, " ")
-    document[ALL_FIELDS] = record_search_text(relative_path, metadata_json, sha256)
+    document[ALL_FIELDS] = _search_text(relative_path, metadata_json, decoded, sha256)
     return document
 
 
-def fold_document(document: Mapping[str, str]) -> dict[str, str]:
-    """Return `document` with `fold_text` applied to every field."""
-    return {field: fold_text(text) for field, text in document.items()}
+class FoldedDocument(dict):
+    """A search document with `fold_text` applied to each field when first read.
+
+    A query reads only the fields that it searches, so the other fields are
+    never folded. Read fields with ``document[field]`` or `get`. Iteration
+    and `len` show only the fields read so far.
+    """
+
+    def __init__(self, document: Mapping[str, str]) -> None:
+        super().__init__()
+        self._document = document
+
+    def __missing__(self, field: str) -> str:
+        value = fold_text(self._document[field])
+        self[field] = value
+        return value
+
+    def get(self, field: str, default: Any = None) -> Any:
+        """Return the folded field, or `default` when the document lacks it."""
+        try:
+            return self[field]
+        except KeyError:
+            return default
+
+
+def fold_document(document: Mapping[str, str]) -> FoldedDocument:
+    """Return `document` with `fold_text` applied to each field on first read."""
+    return FoldedDocument(document)
 
 
 def document_matches(
@@ -224,15 +268,33 @@ def document_matches(
     return True
 
 
+class _CombiningMarks(dict):
+    """Map each combining mark to `None` for `str.translate`, others to themselves.
+
+    Entries are added on first use, so `str.translate` finds most characters
+    without a call into Python.
+    """
+
+    def __missing__(self, code: int) -> int | None:
+        value = None if unicodedata.combining(chr(code)) else code
+        self[code] = value
+        return value
+
+
+_COMBINING_MARKS = _CombiningMarks()
+
+
 def fold_text(text: str) -> str:
     """Remove accents and letter case, so ``Dorémont`` becomes ``doremont``.
 
     The text is decomposed (NFKD), combining marks are removed, and the
-    result is case-folded.
+    result is case-folded. NFKD does not change ASCII text, and ASCII has no
+    combining marks, so ASCII text is only case-folded.
     """
+    if text.isascii():
+        return text.casefold()
     decomposed = unicodedata.normalize("NFKD", text)
-    stripped = "".join(char for char in decomposed if not unicodedata.combining(char))
-    return stripped.casefold()
+    return decomposed.translate(_COMBINING_MARKS).casefold()
 
 
 def _pattern(needle: str, wildcards: bool) -> re.Pattern[str]:

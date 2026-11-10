@@ -5,6 +5,8 @@ The tests also check search matching, highlights, completion, and Find bar optio
 
 from __future__ import annotations
 
+import hashlib
+
 import pytest
 
 pytest.importorskip("PySide6")
@@ -16,11 +18,23 @@ import adsfolio.gui.main_window as main_window_module
 from adsfolio.config import Config
 from adsfolio.gui.combined_library import CombinedLibrary
 from adsfolio.gui.config import GuiConfig, RootEntry, save_config
-from adsfolio.gui.library import FileQuery, LibraryView, count_matching
+from adsfolio.gui.library import (
+    FileQuery,
+    LibraryView,
+    count_matching,
+    summarize_counts,
+)
 from adsfolio.gui.main_window import MainWindow
 from adsfolio.gui.models import FileTableModel
 from adsfolio.pdf.catalog import PdfCatalog
-from adsfolio.pdf.registry import PdfRegistry
+from adsfolio.pdf.classification import identification_group
+from adsfolio.pdf.identity import IDENTITY_KEY, target_identity
+from adsfolio.pdf.readiness import (
+    EXTERNAL_METADATA_KEY,
+    METADATA_SHA256_KEY,
+    METADATA_STALE_KEY,
+)
+from adsfolio.pdf.registry import PdfRegistry, pdf_edition
 
 FILES_PER_ROOT = 150
 
@@ -126,9 +140,175 @@ def test_view_counts_match_registry_counts(large_window):
                         count_matching(facts, effective, group=group, search_keys=keys)
                         == expected
                     )
+                    assert (
+                        summarize_counts(
+                            facts,
+                            search_keys=keys,
+                            duplicate_mode=(
+                                "groups"
+                                if effective is LibraryView.DUPLICATES
+                                else "none"
+                            ),
+                        )[(effective, group)]
+                        == expected
+                    )
 
 
-def test_status_and_view_counts_reuse_one_catalog_load(large_window, monkeypatch):
+def test_count_fact_projection_preserves_provenance_and_edition_rules(tmp_path):
+    root = tmp_path / "library"
+    root.mkdir()
+    registry = PdfRegistry(root)
+    bibcode = "2024ApJ...123..456A"
+
+    def add(name, content, *, status="unresolved", metadata=None):
+        path = root / name
+        path.write_bytes(content.encode())
+        digest = hashlib.sha256(content.encode()).hexdigest()
+        registry.catalog.observe_file(
+            root,
+            name,
+            sha256=digest,
+            size_bytes=path.stat().st_size,
+            mtime_ns=path.stat().st_mtime_ns,
+            status=status,
+            metadata=metadata or {},
+        )
+
+    def proof(metadata, digest, own_doi=(), own_arxiv=()):
+        digest = hashlib.sha256(digest.encode()).hexdigest()
+        metadata[METADATA_SHA256_KEY] = digest
+        metadata[EXTERNAL_METADATA_KEY] = True
+        metadata[IDENTITY_KEY] = {
+            "status": "verified",
+            "sha256": digest,
+            "identity": target_identity(metadata).fingerprint,
+            "own_doi": list(own_doi),
+            "own_arxiv": list(own_arxiv),
+        }
+        return metadata
+
+    add(
+        "published-a.pdf",
+        "shared-bytes",
+        status="resolved",
+        metadata=proof(
+            {"bibcode": bibcode, "title": "Paper", "author": "A. Roe", "year": 2024},
+            "shared-bytes",
+            own_doi=("10.5555/published",),
+        ),
+    )
+    add(
+        "preprint.pdf",
+        "preprint-bytes",
+        status="resolved",
+        metadata=proof(
+            {"bibcode": bibcode, "title": "Paper", "author": "A. Roe", "year": 2024},
+            "preprint-bytes",
+            own_doi=("10.48550/arXiv.2401.12345",),
+            own_arxiv=("2401.12345",),
+        ),
+    )
+    add(
+        "published-b.pdf",
+        "other-published-bytes",
+        status="resolved",
+        metadata=proof(
+            {"bibcode": bibcode, "title": "Paper", "author": "A. Roe", "year": 2024},
+            "other-published-bytes",
+            own_doi=("10.5555/published",),
+        ),
+    )
+    add(
+        "external.pdf",
+        "external-bytes",
+        metadata=proof(
+            {"title": "External", "author": "B. Roe", "year": 2023, "source": "arxiv"},
+            "external-bytes",
+            own_arxiv=("2402.12345",),
+        ),
+    )
+    stale = proof(
+        {"title": "Stale", "author": "C. Roe", "year": 2022, "source": "crossref"},
+        "previous-bytes",
+    )
+    stale[METADATA_STALE_KEY] = True
+    add("stale.pdf", "current-stale-bytes", metadata=stale)
+
+    full_records = registry.query_files()
+    expected = {
+        int(record["location_id"]): (
+            identification_group(record),
+            str(record.get("source") or ""),
+            str(record.get("sha256") or ""),
+            record.get("document_id"),
+            pdf_edition(record),
+        )
+        for record in full_records
+    }
+    facts = registry.record_facts()
+    assert {
+        fact.location_id: (
+            fact.group,
+            fact.source,
+            fact.sha256,
+            fact.document_id,
+            fact.edition,
+        )
+        for fact in facts
+    } == expected
+
+    for view in LibraryView:
+        for group in (
+            None,
+            "ads_linked",
+            "identified_without_ads",
+            "needs_identification",
+        ):
+            duplicate_mode = (
+                "all"
+                if view is LibraryView.DUPLICATES and group is None
+                else "groups"
+                if view is LibraryView.DUPLICATES
+                else "none"
+            )
+            assert summarize_counts(facts, duplicate_mode=duplicate_mode)[
+                (view, group)
+            ] == count_matching(facts, view, group=group)
+    assert (
+        summarize_counts(facts, duplicate_mode="all")[(LibraryView.DUPLICATES, None)]
+        == 2
+    )
+    assert sum(fact.source == "arxiv" for fact in facts) == 1
+    assert next(fact.group for fact in facts if fact.source == "arxiv") == (
+        "identified_without_ads"
+    )
+    registry.close()
+
+
+def test_normal_search_summary_skips_duplicate_classification(monkeypatch):
+    import adsfolio.gui.library as library_module
+
+    facts = (
+        library_module.RecordFact("root", 1, "ads_linked", "", "same", 7, "published"),
+        library_module.RecordFact(
+            "root", 2, "needs_identification", "", "same", 7, "published"
+        ),
+    )
+    calls = []
+    original = library_module.duplicate_kinds
+
+    def counted(keys):
+        calls.append(len(keys))
+        return original(keys)
+
+    monkeypatch.setattr(library_module, "duplicate_kinds", counted)
+    summary = summarize_counts(facts, search_keys={("root", 1)})
+    assert summary[(LibraryView.ALL, None)] == 1
+    assert summary[(LibraryView.ALL, "ads_linked")] == 1
+    assert calls == []
+
+
+def test_status_counts_avoid_load_and_search_reuses_snapshot(large_window, monkeypatch):
     window, _roots = large_window
     calls = _count_parses(monkeypatch)
     registry = window.registries[str(window.current_root)]
@@ -136,11 +316,134 @@ def test_status_and_view_counts_reuse_one_catalog_load(large_window, monkeypatch
     for _ in range(5):
         window._update_status()
     assert calls == []
+    # The first search pays for one cold fallback snapshot.
     window.search.setText("Paper 2")
     window._search_changed()
+    assert len(calls) == 1
     window.table.sortByColumn(0, Qt.DescendingOrder)
-    assert calls == []
+    for query in ("Paper 3", "Author2", "Paper 2"):
+        window.search.setText(query)
+        window._search_changed()
+        window.table.sortByColumn(0, Qt.DescendingOrder)
+        assert len(calls) == 1
     assert "need identification" in window.status.currentMessage()
+
+
+def test_repeated_status_counts_cache_until_catalog_change(large_window, monkeypatch):
+    window, _roots = large_window
+    registry = window.registries[str(window.current_root)]
+    calls = []
+    original = main_window_module.summarize_counts
+
+    def counted(*args, **kwargs):
+        calls.append(1)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(main_window_module, "summarize_counts", counted)
+    window._derived_count_cache.clear()
+    for _ in range(5):
+        window._update_status()
+    assert len(calls) == 1
+
+    name = "added-after-cache.pdf"
+    path = registry.directory / name
+    path.write_bytes(b"fictional new unresolved PDF")
+    registry.upsert_file(
+        root=registry.directory,
+        relative_path=name,
+        current_path=name,
+        sha256="new-unresolved-digest",
+        size_bytes=path.stat().st_size,
+        mtime_ns=path.stat().st_mtime_ns,
+        status="unresolved",
+        metadata={"title": "New", "author": "D. Roe", "year": 2025},
+    )
+    window._populate_views(registry)
+    window._update_status()
+    assert len(calls) == 2
+    for _ in range(5):
+        window._update_status()
+    assert len(calls) == 2
+    assert "need identification" in window.status.currentMessage()
+
+
+def test_fresh_combined_adapters_reuse_generation_summary(large_window):
+    window, _roots = large_window
+    first = window.combined.registry()
+    generation = window._safe_count_generation(first)
+    facts = window._safe_facts(first)
+    summary = window._count_summary(generation, facts)
+
+    second = window.combined.registry()
+    assert second is not first
+    assert window._safe_count_generation(second) == generation
+    assert window._cached_count_summary(generation, None, "none") == summary
+
+
+def test_busy_count_generation_preserves_sidebar_rows(large_window, monkeypatch):
+    window, roots = large_window
+    registry = window.registries[str(window.current_root)]
+    window._populate_views(registry)
+    before = [
+        window.views_item.child(index).text(0)
+        for index in range(window.views_item.childCount())
+    ]
+    original_generation = window._safe_count_generation
+    original_facts = window._safe_facts
+
+    monkeypatch.setattr(
+        window,
+        "_safe_count_generation",
+        lambda _registry: main_window_module._COUNT_GENERATION_BUSY,
+    )
+    monkeypatch.setattr(
+        window,
+        "_safe_facts",
+        lambda _registry: pytest.fail("Facts must not load after a busy token read."),
+    )
+    window._populate_views(registry)
+
+    after = [
+        window.views_item.child(index).text(0)
+        for index in range(window.views_item.childCount())
+    ]
+    assert after == before
+
+    monkeypatch.setattr(window, "_safe_count_generation", original_generation)
+    monkeypatch.setattr(window, "_safe_facts", lambda _registry: None)
+    window._populate_views(registry)
+    assert [
+        window.views_item.child(index).text(0)
+        for index in range(window.views_item.childCount())
+    ] == before
+
+    window.current_root = roots[1]
+    window._derived_count_cache.clear()
+    window._populate_views(window.registries[str(roots[1])])
+    assert all(
+        window.views_item.child(index).data(0, Qt.UserRole) == str(roots[1])
+        and window.views_item.child(index).text(0).endswith("(?)")
+        for index in range(window.views_item.childCount())
+    )
+
+    window.current_root = roots[0]
+    monkeypatch.setattr(window, "_safe_facts", original_facts)
+    window._derived_count_cache.clear()
+    first_scope = CombinedLibrary({str(roots[0]): window.registries[str(roots[0])]})
+    window._populate_views(first_scope)
+    monkeypatch.setattr(
+        window,
+        "_safe_count_generation",
+        lambda _registry: main_window_module._COUNT_GENERATION_BUSY,
+    )
+    second_scope = CombinedLibrary(
+        {str(root): window.registries[str(root)] for root in roots}
+    )
+    window._populate_views(second_scope)
+    assert all(
+        window.views_item.child(index).text(0).endswith("(?)")
+        for index in range(window.views_item.childCount())
+    )
 
 
 def test_cached_model_snapshot_equals_a_new_query(large_window):

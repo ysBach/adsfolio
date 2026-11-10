@@ -63,6 +63,9 @@ class FakeRegistry:
         self.calls.append(filters)
         return deepcopy(self.records)
 
+    def prepare_search_documents(self, fields: Any = ()) -> Any:
+        return iter(())
+
     def close(self) -> None:
         pass
 
@@ -395,6 +398,9 @@ def test_add_to_ads_library_reports_busy_registry_without_opening_dialog(
         def query_files(self, **_filters: Any) -> list[dict[str, Any]]:
             raise sqlite3.OperationalError("database is locked")
 
+        def prepare_search_documents(self, fields: Any = ()) -> Any:
+            return iter(())
+
         def close(self) -> None:
             pass
 
@@ -423,6 +429,9 @@ def test_add_to_ads_library_propagates_non_busy_sqlite_errors(
     class BrokenRegistry:
         def query_files(self, **_filters: Any) -> list[dict[str, Any]]:
             raise sqlite3.OperationalError("malformed query")
+
+        def prepare_search_documents(self, fields: Any = ()) -> Any:
+            return iter(())
 
         def close(self) -> None:
             pass

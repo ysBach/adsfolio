@@ -47,7 +47,19 @@ class _Node:
     source_row: int = -1
     record: dict[str, Any] | None = None
     signature: tuple[Any, ...] = ()
-    children: list[_Node] = field(default_factory=list)
+    children: list[_Node | _FileSlot] = field(default_factory=list)
+
+
+@dataclass(slots=True)
+class _FileSlot:
+    """Keep a source row in the outline until Qt requests its file node."""
+
+    source_row: int
+    signature: tuple[Any, ...]
+    key: TreeKey | None
+    parent: _Node
+    row: int
+    node: _Node | None = None
 
 
 def _path_text(value: Any) -> str | None:
@@ -70,6 +82,10 @@ def _directories(record: dict[str, Any]) -> tuple[str, ...]:
     text = _path_text(record.get("current_path"))
     if text is None:
         return ()
+    if "\\" not in text and ":" not in text and not text.startswith("/"):
+        parts = text.split("/")
+        if all(part not in ("", ".", "..") for part in parts):
+            return tuple(parts[:-1])
     path = PurePath(text)
     windows_path = PureWindowsPath(text)
     if path.is_absolute() or windows_path.drive or windows_path.root:
@@ -128,8 +144,8 @@ class CombinedTreeProxyModel(QAbstractProxyModel):
         self.file_icon: QIcon | None = None
         self._virtual_root = _Node("virtual", None, "")
         self._groups: dict[TreeKey, _Node] = {}
-        self._files_by_row: dict[int, _Node] = {}
-        self._keys: dict[TreeKey, list[_Node]] = {}
+        self._files_by_row: dict[int, _FileSlot] = {}
+        self._keys: dict[TreeKey, list[_Node | _FileSlot]] = {}
         self._filename_column = -1
         self._folder_column = -1
         self._resetting = False
@@ -177,8 +193,10 @@ class CombinedTreeProxyModel(QAbstractProxyModel):
                 self.dataChanged.emit(
                     index, index, [Qt.DisplayRole, Qt.AccessibleTextRole]
                 )
-        for node in self._files_by_row.values():
-            index = self._node_index(node, self._filename_column)
+        for slot in self._files_by_row.values():
+            if slot.node is None:
+                continue
+            index = self._node_index(slot.node, self._filename_column)
             if index.isValid():
                 self.dataChanged.emit(
                     index, index, [Qt.ToolTipRole, Qt.AccessibleTextRole]
@@ -281,10 +299,7 @@ class CombinedTreeProxyModel(QAbstractProxyModel):
         parent.children.append(node)
         if node.key is not None:
             self._keys.setdefault(node.key, []).append(node)
-        if node.kind == "file":
-            self._files_by_row[node.source_row] = node
-        else:
-            self._groups[node.key] = node
+        self._groups[node.key] = node
         if notify:
             self.endInsertRows()
 
@@ -312,18 +327,48 @@ class CombinedTreeProxyModel(QAbstractProxyModel):
             return
         root, directories, file_key = _signature(record)
         parent = self._ensure_parent(root, directories, notify)
-        self._append_node(
-            parent,
-            _Node(
-                "file",
-                file_key,
-                "",
-                source_row=row,
-                record=record,
-                signature=(root, directories, file_key),
-            ),
-            notify,
+        self._append_file_slot(parent, row, (root, directories, file_key), notify)
+
+    def _append_file_slot(
+        self,
+        parent: _Node,
+        source_row: int,
+        signature: tuple[Any, ...],
+        notify: bool,
+    ) -> None:
+        """Append one compact file reference below its complete folder path."""
+        row = len(parent.children)
+        if notify:
+            self.beginInsertRows(self._node_index(parent), row, row)
+        slot = _FileSlot(source_row, signature, signature[2], parent, row)
+        parent.children.append(slot)
+        self._files_by_row[source_row] = slot
+        if slot.key is not None:
+            self._keys.setdefault(slot.key, []).append(slot)
+        if notify:
+            self.endInsertRows()
+
+    def _materialize_file(self, slot: _FileSlot) -> _Node | None:
+        """Create a file node only when a model operation requests its index."""
+        if slot.node is not None:
+            return slot.node
+        source = self.sourceModel()
+        record = source.record_at(slot.source_row) if source is not None else None
+        if record is None or _signature(record) != slot.signature:
+            return None
+        node = _Node(
+            "file",
+            slot.key,
+            "",
+            parent=slot.parent,
+            row=slot.row,
+            source_row=slot.source_row,
+            record=record,
+            signature=slot.signature,
         )
+        slot.parent.children[slot.row] = node
+        slot.node = node
+        return node
 
     def _append_source_rows(self, first: int, last: int) -> None:
         """Insert consecutive files in one notification per folder run."""
@@ -338,29 +383,25 @@ class CombinedTreeProxyModel(QAbstractProxyModel):
                 continue
             root, directories, _ = _signature(record)
             parent = self._ensure_parent(root, directories, notify=True)
-            nodes = []
+            slots: list[tuple[int, tuple[Any, ...]]] = []
             while row <= last and record is not None:
                 signature = _signature(record)
                 if signature[:2] != (root, directories):
                     break
-                nodes.append(
-                    _Node(
-                        "file",
-                        signature[2],
-                        "",
-                        source_row=row,
-                        record=record,
-                        signature=signature,
-                    )
-                )
+                slots.append((row, signature))
                 row += 1
                 record = source.record_at(row) if row <= last else None
             start = len(parent.children)
-            self.beginInsertRows(
-                self._node_index(parent), start, start + len(nodes) - 1
-            )
-            for node in nodes:
-                self._append_node(parent, node, notify=False)
+            end = start + len(slots) - 1
+            self.beginInsertRows(self._node_index(parent), start, end)
+            for offset, (source_row, signature) in enumerate(slots):
+                slot = _FileSlot(
+                    source_row, signature, signature[2], parent, start + offset
+                )
+                parent.children.append(slot)
+                self._files_by_row[source_row] = slot
+                if slot.key is not None:
+                    self._keys.setdefault(slot.key, []).append(slot)
             self.endInsertRows()
 
     def _schedule_loading(self) -> None:
@@ -462,13 +503,16 @@ class CombinedTreeProxyModel(QAbstractProxyModel):
         if source is None or top_left.parent().isValid():
             return
         for row in range(top_left.row(), bottom_right.row() + 1):
-            node = self._files_by_row.get(row)
+            slot = self._files_by_row.get(row)
             record = source.record_at(row)
-            if node is None or record is None or _signature(record) != node.signature:
+            if slot is None or record is None or _signature(record) != slot.signature:
                 self._reset_from_changed_source()
                 return
         for row in range(top_left.row(), bottom_right.row() + 1):
-            node = self._files_by_row[row]
+            slot = self._files_by_row[row]
+            node = slot.node
+            if node is None:
+                continue
             node.record = source.record_at(row)
             self.dataChanged.emit(
                 self._node_index(node, top_left.column()),
@@ -481,14 +525,17 @@ class CombinedTreeProxyModel(QAbstractProxyModel):
         if source is None:
             return
         if source.rowCount() != len(self._files_by_row) or any(
-            source.record_at(row) is not node.record
-            or _signature(source.record_at(row)) != node.signature
-            for row, node in self._files_by_row.items()
+            source.record_at(row) is None
+            or _signature(source.record_at(row)) != slot.signature
+            for row, slot in self._files_by_row.items()
         ):
             self._reset_from_changed_source()
             return
         if self.columnCount():
-            for node in self._files_by_row.values():
+            for slot in self._files_by_row.values():
+                node = slot.node
+                if node is None:
+                    continue
                 self.dataChanged.emit(
                     self._node_index(node),
                     self._node_index(node, self.columnCount() - 1),
@@ -509,7 +556,10 @@ class CombinedTreeProxyModel(QAbstractProxyModel):
         parent_node = self._node(parent) if parent.isValid() else self._virtual_root
         if parent_node is None or not 0 <= row < len(parent_node.children):
             return QModelIndex()
-        return self._node_index(parent_node.children[row], column)
+        child = parent_node.children[row]
+        if isinstance(child, _FileSlot):
+            child = self._materialize_file(child)
+        return self._node_index(child, column)
 
     def parent(self, index: QModelIndex) -> QModelIndex:
         node = self._node(index)
@@ -543,8 +593,10 @@ class CombinedTreeProxyModel(QAbstractProxyModel):
             or source_index.parent().isValid()
         ):
             return QModelIndex()
+        slot = self._files_by_row.get(source_index.row())
         return self._node_index(
-            self._files_by_row.get(source_index.row()), source_index.column()
+            self._materialize_file(slot) if slot is not None else None,
+            source_index.column(),
         )
 
     def data(self, index: QModelIndex, role: int = Qt.DisplayRole) -> Any:
@@ -658,4 +710,9 @@ class CombinedTreeProxyModel(QAbstractProxyModel):
             nodes = self._keys.get(key, [])
         except TypeError:
             return QModelIndex()
-        return self._node_index(nodes[0], column) if len(nodes) == 1 else QModelIndex()
+        if len(nodes) != 1:
+            return QModelIndex()
+        node = nodes[0]
+        if isinstance(node, _FileSlot):
+            node = self._materialize_file(node)
+        return self._node_index(node, column)

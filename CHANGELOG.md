@@ -1,5 +1,31 @@
 # Changelog
 
+## Unreleased
+
+### Speed
+
+- Sidebar and status counts read only the catalog fields they need. The app
+  reuses counts until the catalog changes.
+- The folder tree creates file rows only when it needs them. It finds folders
+  without creating every file row.
+- An unfiltered library with a supported sort reads record details one page
+  at a time. Export still includes every record in the chosen scope.
+
+Times come from offscreen tests with a copy of a 3,982-PDF catalog.
+
+- Search previously prepared the accent-free text of every PDF again after
+  any catalog change, such as one new PDF. The first search after that took
+  0.85 s. Now ADSfolio prepares the texts in short idle steps after startup.
+  It prepares a PDF again only when its path, details, or content changes.
+  The first search now takes 0.36 s, including the 0.15 s typing delay.
+- Accent removal for search previously handled the text one character at a
+  time. Now it handles whole texts at once, with identical results. A search
+  also prepares only the fields that it reads.
+- A click on a PDF previously redrew the whole table. Now only the old and
+  the new row redraw. A click took 66 ms. Now it takes 51 ms.
+- Refresh calculates which files are missing once per scan. Duplicate review
+  counts copies once per paper and edition.
+
 ## 0.10.0 (2026-11-09)
 
 ### Identifier recheck

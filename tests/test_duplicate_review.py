@@ -54,6 +54,17 @@ def test_preprint_and_published_editions_are_not_duplicates() -> None:
     ) == ["", DUPLICATE_SAME_PAPER, DUPLICATE_SAME_PAPER]
 
 
+def test_unknown_edition_matches_each_known_edition_without_crossing_them() -> None:
+    assert duplicate_kinds(
+        [
+            ("a", 9, "preprint"),
+            ("b", 9, "published"),
+            ("c", 9, ""),
+        ]
+    ) == [DUPLICATE_SAME_PAPER, DUPLICATE_SAME_PAPER, DUPLICATE_SAME_PAPER]
+    assert duplicate_kinds([("a", 9, "preprint"), ("b", 9, "published")]) == ["", ""]
+
+
 def test_pdf_edition_reads_the_identifiers_that_the_pdf_states() -> None:
     def record(**proof):
         return {"metadata": {"_adsfolio_identity": proof}}

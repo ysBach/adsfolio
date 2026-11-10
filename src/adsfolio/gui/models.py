@@ -41,6 +41,7 @@ from PySide6.QtWidgets import (
     QTreeView,
 )
 
+from ..pdf.catalog_page import TempSnapshotUnavailable
 from ..pdf.classification import current_identity_proof
 from ..pdf.registry import order_duplicate_groups
 from ..pdf.search import parse_query, search_spans
@@ -700,6 +701,8 @@ class FileTableModel(QAbstractTableModel):
         self._query = query
         self._columns: tuple[Column, ...] = tuple(columns)
         self._snapshot: list[dict[str, Any]] = []
+        self._page_snapshot: Any | None = None
+        self._page_snapshot_closed_incomplete = False
         # Records before search and sort, reused while the catalog is unchanged.
         self._natural: list[dict[str, Any]] = []
         self._natural_key: tuple[Any, ...] | None = None
@@ -724,6 +727,22 @@ class FileTableModel(QAbstractTableModel):
     @property
     def records(self) -> tuple[dict[str, Any], ...]:
         """Return every record of the current query, loaded or not, in order."""
+        if self._page_snapshot_closed_incomplete:
+            raise RuntimeError("Catalog snapshot was closed before all records loaded")
+        while self._page_snapshot is not None and len(self._snapshot) < self._total:
+            expected = min(PAGE_SIZE, self._total - len(self._snapshot))
+            try:
+                page = self._page_snapshot.fetch(len(self._snapshot), expected)
+            except sqlite3.Error as exc:
+                self._report_page_read_error(exc)
+                raise
+            if len(page) != expected:
+                self._mark_page_snapshot_incomplete()
+                raise RuntimeError(
+                    "Catalog snapshot ended before its recorded row count"
+                )
+            self._snapshot.extend(page)
+        self._close_page_snapshot()
         return tuple(self._snapshot)
 
     @property
@@ -911,17 +930,39 @@ class FileTableModel(QAbstractTableModel):
 
     def canFetchMore(self, parent: QModelIndex = QModelIndex()) -> bool:
         """Return whether the snapshot holds rows not yet shown."""
-        return not parent.isValid() and len(self._rows) < len(self._snapshot)
+        return (
+            not parent.isValid()
+            and not self._page_snapshot_closed_incomplete
+            and len(self._rows) < self._total
+        )
 
     def fetchMore(self, parent: QModelIndex = QModelIndex()) -> None:
-        """Show the next ``PAGE_SIZE`` snapshot rows without querying."""
+        """Read and insert the next page from the frozen query result."""
         if parent.isValid() or not self.canFetchMore():
             return
         first = len(self._rows)
-        rows = self._snapshot[first : first + PAGE_SIZE]
+        expected = min(PAGE_SIZE, self._total - first)
+        try:
+            if self._page_snapshot is not None:
+                rows = self._page_snapshot.fetch(first, PAGE_SIZE)
+            else:
+                rows = self._snapshot[first : first + PAGE_SIZE]
+        except sqlite3.Error as exc:
+            self._report_page_read_error(exc)
+            return
+        if len(rows) != expected:
+            self._mark_page_snapshot_incomplete()
+            self.query_failed.emit(
+                "Library snapshot ended before all rows loaded. Reload the library."
+            )
+            return
+        if self._page_snapshot is not None:
+            self._snapshot.extend(rows)
         self.beginInsertRows(QModelIndex(), first, first + len(rows) - 1)
         self._rows.extend(rows)
         self.endInsertRows()
+        if len(self._rows) >= self._total:
+            self._close_page_snapshot()
 
     def sort(self, column: int, order: Qt.SortOrder = Qt.AscendingOrder) -> None:
         """Re-query SQLite using the selected sortable column."""
@@ -939,26 +980,129 @@ class FileTableModel(QAbstractTableModel):
         )
 
     def _reload(self) -> None:
-        """Run the query once and reset the model to its first page.
+        """Reset rows and acquire a snapshot for the current query.
 
-        The full sorted result is kept as a snapshot so ``fetchMore`` does not
-        query again. A failed query leaves the model empty instead of showing
-        rows from the previous registry or query.
+        Supported sorts copy raw rows into a TEMP snapshot and hydrate pages as
+        needed. Other queries keep their full result in memory. A failed query
+        leaves the model empty instead of showing rows from the previous query.
         """
         self.beginResetModel()
         try:
+            self._close_page_snapshot()
+            self._page_snapshot_closed_incomplete = False
             self._cell_cache.clear()
             self._snapshot = []
             self._rows = []
             self._total = 0
             if self._registry is not None:
-                snapshot = self._query_snapshot()
-                if snapshot is not None:
-                    self._snapshot = snapshot
-                    self._total = len(snapshot)
-                    self._rows = snapshot[:PAGE_SIZE]
+                if self._can_use_page_snapshot():
+                    try:
+                        self._page_snapshot = self._registry.open_page_snapshot(
+                            order_by=self._query.order_by,
+                            descending=self._query.descending,
+                            secondary_order_by=self._query.secondary_order_by,
+                            tertiary_order_by=self._query.tertiary_order_by,
+                        )
+                        self._total = self._page_snapshot.total
+                        expected = min(PAGE_SIZE, self._total)
+                        first_page = self._page_snapshot.fetch(0, expected)
+                        if len(first_page) != expected:
+                            self._mark_page_snapshot_incomplete()
+                            self._snapshot = []
+                            self._rows = []
+                            self.query_failed.emit(
+                                "Library snapshot ended before all rows loaded. Reload the library."
+                            )
+                        else:
+                            self._snapshot = first_page
+                            self._rows = list(first_page)
+                        if not self._total and self._page_snapshot is not None:
+                            self._close_page_snapshot()
+                    except TempSnapshotUnavailable:
+                        self._close_page_snapshot()
+                        if not bool(
+                            getattr(
+                                getattr(self._registry, "_connection", None),
+                                "in_transaction",
+                                False,
+                            )
+                        ):
+                            snapshot = self._query_snapshot()
+                            if snapshot is not None:
+                                self._snapshot = snapshot
+                                self._total = len(snapshot)
+                                self._rows = snapshot[:PAGE_SIZE]
+                        else:
+                            self.query_failed.emit(
+                                "Could not create a catalog snapshot during a write. Reload the library."
+                            )
+                    except sqlite3.Error as exc:
+                        self._mark_page_snapshot_incomplete()
+                        self._total = 0
+                        self._snapshot = []
+                        self._rows = []
+                        self._report_page_read_error(exc)
+                else:
+                    snapshot = self._query_snapshot()
+                    if snapshot is not None:
+                        self._snapshot = snapshot
+                        self._total = len(snapshot)
+                        self._rows = snapshot[:PAGE_SIZE]
         finally:
             self.endResetModel()
+
+    def _can_use_page_snapshot(self) -> bool:
+        """Return whether this is a supported unfiltered single-root query."""
+        connection = getattr(self._registry, "_connection", None)
+        return (
+            self._query.view.value == "all"
+            and not self._query.search
+            and not bool(getattr(connection, "in_transaction", False))
+            and callable(getattr(self._registry, "open_page_snapshot", None))
+            and all(
+                key in {"first_seen_at", "relative_path", "size_bytes", "mtime_ns"}
+                for key in (
+                    self._query.order_by,
+                    self._query.secondary_order_by,
+                    self._query.tertiary_order_by,
+                )
+                if key is not None
+            )
+        )
+
+    def _close_page_snapshot(self) -> None:
+        """Release the read-only connection and its TEMP snapshot, if open."""
+        snapshot = self._page_snapshot
+        self._page_snapshot = None
+        if snapshot is not None:
+            snapshot.close()
+
+    def _mark_page_snapshot_incomplete(self) -> None:
+        """Stop paging when the frozen row count and stored rows disagree."""
+        self._page_snapshot_closed_incomplete = True
+        self._close_page_snapshot()
+
+    def _report_page_read_error(self, exc: sqlite3.Error) -> None:
+        """Stop paging and report a SQLite error from a frozen page read."""
+        self._mark_page_snapshot_incomplete()
+        message = str(exc)
+        lowered = message.casefold()
+        if "locked" in lowered or "busy" in lowered:
+            self.query_failed.emit("Library is busy; try again in a moment.")
+        else:
+            self.query_failed.emit(
+                f"Could not read the library snapshot: {message}. Reload the library."
+            )
+
+    def close(self) -> None:
+        """Release the catalog snapshot when the owning window closes."""
+        if (
+            not self._page_snapshot_closed_incomplete
+            and self._page_snapshot is not None
+            and len(self._snapshot) < self._total
+        ):
+            self._page_snapshot_closed_incomplete = True
+        self._close_page_snapshot()
 
     def _query_snapshot(self) -> list[dict[str, Any]] | None:
         try:

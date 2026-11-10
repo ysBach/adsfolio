@@ -344,6 +344,8 @@ The table loads records in pages to keep large libraries responsive. The status
 bar reports the loaded and total counts. Scroll or use **File → Load Next Page**
 to load another page.
 
+An export can include every matching PDF, including rows outside the loaded pages.
+
 Bibcode and arXiv columns link to ADS and arXiv, respectively. Double-click a
 cell to open its link, or choose single-click activation in the Appearance
 dialog. ADSfolio never treats a click that only selects or edits as activation.

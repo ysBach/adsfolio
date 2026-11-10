@@ -7,7 +7,7 @@ survive paging, sorting, and source resets.
 from __future__ import annotations
 
 from dataclasses import replace
-from pathlib import Path
+from pathlib import Path, PurePath, PureWindowsPath
 from typing import Any
 
 import pytest
@@ -19,7 +19,7 @@ from PySide6.QtCore import QItemSelectionModel, QModelIndex, QPersistentModelInd
 from PySide6.QtTest import QAbstractItemModelTester, QSignalSpy
 from PySide6.QtWidgets import QTreeView
 
-from adsfolio.gui import models
+from adsfolio.gui import combined_tree, models
 from adsfolio.gui.combined_tree import CombinedTreeProxyModel
 from adsfolio.gui.library import BASE_COLUMNS, FileQuery
 from adsfolio.gui.models import PAGE_SIZE, FileTableModel
@@ -270,6 +270,55 @@ def test_invalid_paths_remain_files_under_their_root(qtbot, path: Any) -> None:
     assert model.mapToSource(leaf) == source.index(0, 0)
 
 
+def test_canonical_relative_paths_skip_path_object_parsing(monkeypatch) -> None:
+    def unexpected_path_parse(_text: str) -> None:
+        raise AssertionError("Canonical paths must use the split fast path")
+
+    monkeypatch.setattr(combined_tree, "PurePath", unexpected_path_parse)
+    monkeypatch.setattr(combined_tree, "PureWindowsPath", unexpected_path_parse)
+    assert combined_tree._directories(_record("/root", "paper.pdf", 1)) == ()
+    assert combined_tree._directories(_record("/root", "papers/2026/paper.pdf", 1)) == (
+        "papers",
+        "2026",
+    )
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        r"C:\papers\paper.pdf",
+        r"\\server\share\paper.pdf",
+        "//server/share/paper.pdf",
+        "papers//paper.pdf",
+        "papers/./paper.pdf",
+        "papers/../paper.pdf",
+        "../outside.pdf",
+        "/root/paper.pdf",
+        "C:paper.pdf",
+        "papers/name:part.pdf",
+        r"papers\paper.pdf",
+        "",
+        None,
+        42,
+    ],
+)
+def test_ambiguous_paths_match_the_previous_path_parser(path: Any) -> None:
+    text = combined_tree._path_text(path)
+    expected: tuple[str, ...] = ()
+    if text is not None:
+        pure_path = PurePath(text)
+        windows_path = PureWindowsPath(text)
+        if (
+            not pure_path.is_absolute()
+            and not windows_path.drive
+            and not windows_path.root
+            and pure_path.parts
+            and ".." not in pure_path.parts
+        ):
+            expected = pure_path.parts[:-1]
+    assert combined_tree._directories(_record("/root", path, 1)) == expected
+
+
 def test_unknown_roots_and_duplicate_ids_never_lose_records(qtbot) -> None:
     records = [
         _record(None, "a/same.pdf", 1),
@@ -344,6 +393,31 @@ def test_pages_preserve_selection_and_expansion_without_a_reset(qtbot, qtlog) ->
     )
     assert len(_files(model)) == len(records)
     assert not [record for record in qtlog.records if "FAIL!" in record.message]
+
+
+def test_collapsed_outline_discovers_late_folder_without_file_nodes(qtbot) -> None:
+    records = [
+        _record("/fiction/library", f"papers/{i:05d}.pdf", i) for i in range(20_000)
+    ]
+    records.append(_record("/fiction/library", "z-late/new.pdf", 20_000))
+    source = FileTableModel(_Registry(records), FileQuery())
+    model = CombinedTreeProxyModel(source)
+    _finish_loading(qtbot, model)
+
+    root = _child(model, QModelIndex(), "/fiction/library")
+    late_folder = _child(model, root, "z-late")
+    assert model.rowCount(late_folder) == 1
+    assert len(model._files_by_row) == len(records)
+    assert sum(slot.node is not None for slot in model._files_by_row.values()) == 0
+
+    source_index = source.index(len(records) - 1, 0)
+    file_index = model.mapFromSource(source_index)
+    persistent = QPersistentModelIndex(file_index)
+    key = model.key_for_index(file_index)
+    assert model.record_for_index(file_index) is records[-1]
+    assert persistent.isValid()
+    assert model.index_for_key(key) == file_index
+    assert sum(slot.node is not None for slot in model._files_by_row.values()) == 1
 
 
 def test_page_boundaries_merge_folders_and_keep_source_order(

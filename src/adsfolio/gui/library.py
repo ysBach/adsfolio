@@ -310,6 +310,72 @@ def count_matching(
     return sum(1 for _fact in rows)
 
 
+def summarize_counts(
+    facts: Iterable[RecordFact],
+    *,
+    search_keys: Collection[tuple[str, int]] | None = None,
+    duplicate_mode: str = "none",
+) -> dict[tuple[LibraryView, str | None], int]:
+    """Count groups in one pass and classify duplicates only for requested views.
+
+    `duplicate_mode` is ``"none"`` for ordinary views, ``"all"`` for the
+    sidebar duplicate total, or ``"groups"`` for status counts after group filters.
+    """
+    if duplicate_mode not in {"none", "all", "groups"}:
+        raise ValueError(f"Unknown duplicate count mode: {duplicate_mode!r}")
+    groups = ("ads_linked", "identified_without_ads", "needs_identification")
+    counts = {group: 0 for group in groups}
+    arxiv_counts = {group: 0 for group in groups}
+    total = arxiv_total = 0
+    all_duplicates: list[RecordFact] = []
+    grouped_duplicates = {group: [] for group in groups}
+    for fact in facts:
+        if search_keys is not None and (fact.root, fact.location_id) not in search_keys:
+            continue
+        total += 1
+        if fact.group in groups:
+            counts[fact.group] += 1
+            if duplicate_mode == "groups":
+                grouped_duplicates[fact.group].append(fact)
+        if fact.source == "arxiv":
+            arxiv_total += 1
+            if fact.group in groups:
+                arxiv_counts[fact.group] += 1
+        if duplicate_mode == "all":
+            all_duplicates.append(fact)
+
+    result: dict[tuple[LibraryView, str | None], int] = {}
+    for view in LibraryView:
+        for group in (None, *groups):
+            wanted_group = group if group is not None else _VIEW_GROUPS.get(view)
+            if view is LibraryView.DUPLICATES:
+                if duplicate_mode == "all" and group is None:
+                    result[(view, group)] = _count_duplicate_facts(all_duplicates)
+                elif duplicate_mode == "groups" and group is not None:
+                    result[(view, group)] = _count_duplicate_facts(
+                        grouped_duplicates[group]
+                    )
+            elif view is LibraryView.ARXIV_ONLY:
+                result[(view, group)] = (
+                    arxiv_total if wanted_group is None else arxiv_counts[wanted_group]
+                )
+            else:
+                result[(view, group)] = (
+                    total if wanted_group is None else counts[wanted_group]
+                )
+    return result
+
+
+def _count_duplicate_facts(facts: Sequence[RecordFact]) -> int:
+    """Count duplicate facts with the shared digest and edition rules."""
+    return sum(
+        bool(kind)
+        for kind in duplicate_kinds(
+            [(fact.sha256, fact.document_id, fact.edition) for fact in facts]
+        )
+    )
+
+
 def _duplicate(record: dict[str, Any]) -> str:
     """Return the group number and kind, for example ``3 · Same paper``."""
     label = DUPLICATE_LABELS.get(str(record.get("duplicate_kind") or ""), "")

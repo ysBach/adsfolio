@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import itertools
 import json
 import logging
 import sqlite3
 import time
+from collections import OrderedDict
 from collections.abc import Callable, Mapping, Sequence
 from copy import deepcopy
 from dataclasses import dataclass, replace
@@ -81,7 +83,7 @@ from ..pdf.registry import (
     RecordFact,
 )
 from ..pdf.rename_settings import RenameSettings
-from ..pdf.search import FIELD_SEPARATOR, SEARCH_FIELDS
+from ..pdf.search import ALL_FIELDS, FIELD_SEPARATOR, SEARCH_FIELDS
 from ..pdf.watch_session import FileSnapshot, WatchEvent, WatchOutcome, WatchState
 from ..pdf.watcher import WatchIdentifyPolicy
 from ..references import LocalReferences
@@ -130,7 +132,7 @@ from .library import (
     ads_url,
     arxiv_url,
     build_columns,
-    count_matching,
+    summarize_counts,
     verification_stale,
 )
 from .models import (
@@ -339,6 +341,13 @@ class _ConflictReviewContext:
     location_id: int
 
 
+# Longest search-preparation step: half of one 60 Hz frame, so the window
+# still draws every frame while it prepares.
+SEARCH_PREPARATION_STEP_S = 1 / 120
+# Sidebar item data: the watch state that the library icon shows.
+WATCH_ICON_ROLE = Qt.UserRole + 3
+VIEW_COUNT_SCOPE_ROLE = Qt.UserRole + 4
+_COUNT_GENERATION_BUSY = object()
 COMBINED_VIEW_REASON = (
     "Unavailable while Combine libraries is checked. "
     "Clear Combine libraries in the sidebar to use it."
@@ -412,6 +421,10 @@ class MainWindow(QMainWindow):
         self._ads_library_dialog: AdsLibraryDialog | None = None
         self._ads_library_export_dialog: ExportAdsLibraryDialog | None = None
         self._close_requested = False
+        # Idle-time search preparation: steps, start time, and PDF count.
+        self._search_preparation: tuple[Any, float, int] | None = None
+        # Last error that stopped or blocked each library watcher, by root.
+        self._watch_root_errors: dict[str, str] = {}
         self._refresh_selection_id: int | None = None
         self._candidate_update_notice: Notice | None = None
         self._ads_match_candidates: list[dict[str, str]] = []
@@ -1940,6 +1953,52 @@ class MainWindow(QMainWindow):
                 self._start_root_watch(Path(entry.path))
         self._sync_watch_actions()
         QTimer.singleShot(0, self._queue_startup_ads_rechecks)
+        QTimer.singleShot(0, self._prepare_search)
+
+    def _prepare_search(self) -> None:
+        """Prepare the search text of every library in short idle steps.
+
+        The first search then does not prepare thousands of texts at once.
+        Each step stops after `SEARCH_PREPARATION_STEP_S`, so the window
+        keeps responding. A search during preparation prepares the rest.
+        """
+        fields = tuple(self.config.search_fields) or (ALL_FIELDS,)
+        registries = tuple(self.registries.values())
+        self._search_preparation = (
+            itertools.chain.from_iterable(
+                registry.prepare_search_documents(fields) for registry in registries
+            ),
+            time.perf_counter(),
+            0,
+        )
+        QTimer.singleShot(0, self._continue_search_preparation)
+
+    def _continue_search_preparation(self) -> None:
+        """Run one short step of search preparation."""
+        if self._search_preparation is None or self._close_requested:
+            self._search_preparation = None
+            return
+        steps, started, count = self._search_preparation
+        deadline = time.perf_counter() + SEARCH_PREPARATION_STEP_S
+        try:
+            while time.perf_counter() < deadline:
+                next(steps)
+                count += 1
+        except StopIteration:
+            self._search_preparation = None
+            logger.info(
+                "Prepared search text for %d PDFs in %.1f s",
+                count,
+                time.perf_counter() - started,
+            )
+            return
+        except sqlite3.Error as exc:
+            # A refresh can close a registry before its first step.
+            self._search_preparation = None
+            logger.info("Search preparation stopped: %s", exc)
+            return
+        self._search_preparation = (steps, started, count)
+        QTimer.singleShot(0, self._continue_search_preparation)
 
     def _toggle_current_watch(self, checked: bool) -> None:
         if self.current_root is None:
@@ -3286,18 +3345,64 @@ class MainWindow(QMainWindow):
 
     def _populate_views(self, registry: PdfRegistry) -> None:
         """Show virtual-view counts for the selected library root."""
+        scope = self._view_count_scope(registry)
+        generation = self._safe_count_generation(registry)
+        if generation is _COUNT_GENERATION_BUSY:
+            if self._view_items_match_current_root(scope):
+                return
+            counts = None
+        else:
+            counts = self._cached_count_summary(generation, None, "all")
+            if counts is None:
+                facts = self._safe_facts(registry)
+                if facts is None:
+                    if self._view_items_match_current_root(scope):
+                        return
+                else:
+                    counts = self._count_summary(
+                        generation, facts, duplicate_mode="all"
+                    )
         self.views_item.takeChildren()
-        facts = self._safe_facts(registry)
         for view in LibraryView:
-            count = count_matching(facts, view) if facts is not None else None
+            count = counts.get((view, None)) if counts is not None else None
             item = QTreeWidgetItem(
                 [f"{view.label} ({count if count is not None else '?'})"]
             )
             item.setData(0, Qt.UserRole, str(self.current_root))
             item.setData(0, Qt.UserRole + 1, view.value)
+            item.setData(0, VIEW_COUNT_SCOPE_ROLE, scope)
             item.setToolTip(0, view.description)
             self.views_item.addChild(item)
         self.views_item.setExpanded(True)
+
+    @staticmethod
+    def _view_count_scope(registry: Any) -> tuple[Any, ...]:
+        """Return the root selection and availability represented by view counts."""
+        if hasattr(registry, "registries"):
+            return (
+                "combined",
+                tuple(registry.registries),
+                tuple(registry.unavailable_roots),
+                tuple(sorted(registry.labels.items())),
+            )
+        directory = getattr(registry, "directory", None)
+        if directory is not None:
+            return ("root", str(directory))
+        return ("adapter", type(registry), id(registry))
+
+    def _view_items_match_current_root(self, scope: tuple[Any, ...]) -> bool:
+        """Return whether cached sidebar rows match the selected count scope."""
+        expected_root = str(self.current_root)
+        current_items = [
+            self.views_item.child(index)
+            for index in range(self.views_item.childCount())
+        ]
+        return len(current_items) == len(LibraryView) and all(
+            item.data(0, Qt.UserRole) == expected_root
+            and item.data(0, Qt.UserRole + 1) == view.value
+            and item.data(0, VIEW_COUNT_SCOPE_ROLE) == scope
+            for item, view in zip(current_items, LibraryView, strict=True)
+        )
 
     def _safe_facts(self, registry: Any) -> tuple[RecordFact, ...] | None:
         """Return cached count facts, reporting an active SQLite writer safely."""
@@ -3308,6 +3413,80 @@ class MainWindow(QMainWindow):
                 raise
             self.status.showMessage("Library is busy; try again in a moment.")
             return None
+
+    def _safe_count_generation(self, registry: Any) -> tuple[Any, Any] | None | object:
+        """Capture a stable registry identity and generation before count reads."""
+        token_reader = getattr(registry, "change_token", None)
+        if not callable(token_reader):
+            return None
+        if hasattr(registry, "registries"):
+            identity = ("combined", tuple(registry.registries))
+        elif getattr(registry, "directory", None) is not None:
+            identity = ("root", str(registry.directory))
+        else:
+            return None
+        try:
+            return identity, token_reader()
+        except sqlite3.OperationalError as exc:
+            if "locked" not in str(exc).lower() and "busy" not in str(exc).lower():
+                raise
+            self.status.showMessage("Library is busy; try again in a moment.")
+            return _COUNT_GENERATION_BUSY
+
+    def _cached_count_summary(
+        self,
+        generation: tuple[Any, Any] | None,
+        search_signature: tuple[Any, ...] | None,
+        duplicate_mode: str,
+    ) -> dict[tuple[LibraryView, str | None], int] | None:
+        """Return a derived count summary when its generation is still current."""
+        if generation is None:
+            return None
+        cache = getattr(self, "_derived_count_cache", None)
+        if cache is None:
+            return None
+        key = (*generation, search_signature, duplicate_mode)
+        cached = cache.get(key)
+        if cached is None and duplicate_mode == "none":
+            for reusable_mode in ("all", "groups"):
+                cached = cache.get((*generation, search_signature, reusable_mode))
+                if cached is not None:
+                    break
+        if cached is not None:
+            cache.move_to_end(
+                key if key in cache else (*generation, search_signature, reusable_mode)
+            )
+        return cached
+
+    def _count_summary(
+        self,
+        generation: tuple[Any, Any] | None,
+        facts: tuple[RecordFact, ...],
+        *,
+        search_keys: Any = None,
+        search_signature: tuple[Any, ...] | None = None,
+        duplicate_mode: str = "none",
+    ) -> dict[tuple[LibraryView, str | None], int]:
+        """Compute and cache derived counts for a captured catalog generation."""
+        cached = self._cached_count_summary(
+            generation, search_signature, duplicate_mode
+        )
+        if cached is not None:
+            return cached
+        counts = summarize_counts(
+            facts, search_keys=search_keys, duplicate_mode=duplicate_mode
+        )
+        if generation is None:
+            return counts
+        cache: OrderedDict[tuple[Any, ...], dict[tuple[LibraryView, str | None], int]]
+        if not hasattr(self, "_derived_count_cache"):
+            self._derived_count_cache = OrderedDict()
+        cache = self._derived_count_cache
+        key = (*generation, search_signature, duplicate_mode)
+        cache[key] = counts
+        if len(cache) > 32:
+            cache.popitem(last=False)
+        return counts
 
     def _safe_count(self, registry: PdfRegistry, **filters: Any) -> int | None:
         """Return a registry count, reporting an active SQLite writer safely."""
@@ -5482,33 +5661,9 @@ class MainWindow(QMainWindow):
             if self.combined.enabled
             else self.registries[str(self.current_root)]
         )
-        facts = self._safe_facts(registry)
-        library_unresolved = (
-            count_matching(facts, group="needs_identification")
-            if facts is not None
-            else None
-        )
-        self._set_identify_badge(
-            library_unresolved, unavailable=library_unresolved is None
-        )
-        if facts is None:
-            return
-        query = self.current_query
-        try:
-            search_keys = (
-                registry.search_location_keys(
-                    query.search,
-                    exact=query.search_exact,
-                    wildcards=query.search_wildcards,
-                    fields=query.search_fields,
-                )
-                if query.search
-                else None
-            )
-        except sqlite3.OperationalError as exc:
-            if "locked" not in str(exc).lower() and "busy" not in str(exc).lower():
-                raise
-            self.status.showMessage("Library is busy; try again in a moment.")
+        generation = self._safe_count_generation(registry)
+        if generation is _COUNT_GENERATION_BUSY:
+            self._set_identify_badge(None, unavailable=True)
             return
         # A group filter replaces the group of an identification view.
         view = (
@@ -5516,8 +5671,63 @@ class MainWindow(QMainWindow):
             if self.current_view in {LibraryView.ARXIV_ONLY, LibraryView.DUPLICATES}
             else LibraryView.ALL
         )
+        duplicate_mode = "groups" if view is LibraryView.DUPLICATES else "none"
+        unfiltered_counts = self._cached_count_summary(generation, None, duplicate_mode)
+        facts = None
+        if unfiltered_counts is None:
+            facts = self._safe_facts(registry)
+            if facts is None:
+                self._set_identify_badge(None, unavailable=True)
+                return
+            unfiltered_counts = self._count_summary(
+                generation, facts, duplicate_mode=duplicate_mode
+            )
+        library_unresolved = unfiltered_counts[
+            (LibraryView.ALL, "needs_identification")
+        ]
+        self._set_identify_badge(library_unresolved)
+        query = self.current_query
+        search_signature = (
+            (
+                query.search,
+                query.search_exact,
+                query.search_wildcards,
+                query.search_fields,
+            )
+            if query.search
+            else None
+        )
+        counts = unfiltered_counts if search_signature is None else None
+        if counts is None:
+            counts = self._cached_count_summary(
+                generation, search_signature, duplicate_mode
+            )
+        if counts is None:
+            if facts is None:
+                facts = self._safe_facts(registry)
+                if facts is None:
+                    return
+            try:
+                search_keys = registry.search_location_keys(
+                    query.search,
+                    exact=query.search_exact,
+                    wildcards=query.search_wildcards,
+                    fields=query.search_fields,
+                )
+            except sqlite3.OperationalError as exc:
+                if "locked" not in str(exc).lower() and "busy" not in str(exc).lower():
+                    raise
+                self.status.showMessage("Library is busy; try again in a moment.")
+                return
+            counts = self._count_summary(
+                generation,
+                facts,
+                search_keys=search_keys,
+                search_signature=search_signature,
+                duplicate_mode=duplicate_mode,
+            )
         resolved, external, unresolved = (
-            count_matching(facts, view, group=group, search_keys=search_keys)
+            counts[(view, group)]
             for group in (
                 "ads_linked",
                 "identified_without_ads",
@@ -7673,6 +7883,7 @@ class MainWindow(QMainWindow):
             save_config(self.config)
         except OSError as exc:
             logger.warning("Could not save GUI configuration: %s", exc)
+        self.model.close()
         for registry in self.registries.values():
             registry.close()
         super().closeEvent(event)

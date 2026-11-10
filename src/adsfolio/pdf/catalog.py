@@ -1106,6 +1106,28 @@ class PdfCatalog:
         ).fetchall()
         return [self._record_from_row(row) for row in rows]
 
+    def query_count_rows(self, *, root: Path) -> list[sqlite3.Row]:
+        """Return only the catalog fields required to classify count facts."""
+        normalized_root = self._normalize_root(root)
+        return self._connection.execute(
+            """
+            SELECT
+                l.id AS location_id,
+                r.canonical_path AS root,
+                a.document_id,
+                a.status,
+                a.metadata_json,
+                v.sha256
+            FROM file_locations AS l
+            JOIN library_roots AS r ON r.id = l.root_id
+            JOIN attachments AS a ON a.id = l.attachment_id
+            LEFT JOIN content_versions AS v ON v.id = l.current_version_id
+            WHERE r.canonical_path = ? AND l.missing_at IS NULL
+            ORDER BY l.relative_path, l.id
+            """,
+            (normalized_root,),
+        ).fetchall()
+
     def count_files(
         self,
         *,

@@ -23,8 +23,20 @@ from .classification import IDENTIFICATION_GROUPS, identification_group
 from .files import sha256_file
 from .identify_settings import IdentifySettings
 from .identity import IDENTITY_KEY
-from .readiness import METADATA_STALE_KEY, stored_bibcode_matches_file
-from .search import document_matches, fold_document, record_search_document
+from .readiness import (
+    EXTERNAL_METADATA_KEY,
+    LOCKED_FIELDS_KEY,
+    METADATA_SHA256_KEY,
+    METADATA_STALE_KEY,
+    REFERENCE_METADATA_KEY,
+    stored_bibcode_matches_file,
+)
+from .search import (
+    ALL_FIELDS,
+    document_matches,
+    fold_document,
+    record_search_document,
+)
 from .upgrade_utils import is_arxiv_doi
 
 if TYPE_CHECKING:
@@ -96,17 +108,23 @@ def duplicate_kinds(keys: Sequence[tuple[str, int | None, str]]) -> list[str]:
         preprint and its published edition are not duplicates.
     """
     digests = Counter(digest for digest, _document, _edition in keys if digest)
-    editions: dict[int, list[str]] = {}
+    editions: Counter[tuple[int, str]] = Counter()
+    unknown_editions: Counter[int] = Counter()
+    document_counts: Counter[int] = Counter()
     for _digest, document, edition in keys:
         if document is not None:
-            editions.setdefault(document, []).append(edition)
+            document_counts[document] += 1
+            if edition:
+                editions[(document, edition)] += 1
+            else:
+                unknown_editions[document] += 1
 
     def same_paper(document: int | None, edition: str) -> bool:
         if document is None:
             return False
-        others = list(editions[document])
-        others.remove(edition)
-        return any(not edition or not other or other == edition for other in others)
+        if not edition:
+            return document_counts[document] > 1
+        return editions[(document, edition)] > 1 or unknown_editions[document] > 0
 
     return [
         DUPLICATE_SAME_FILE
@@ -335,6 +353,14 @@ def merge_ads_metadata(
     return merged
 
 
+# Search inputs, exact document, and folded document of one location.
+_SearchEntry = tuple[tuple[Any, ...], dict[str, str], dict[str, str]]
+# Search documents by root and location identifier. A refresh replaces the
+# registry object, so these documents outlive it. Each entry is reused only
+# while its search inputs stay the same.
+_SEARCH_DOCUMENTS: dict[str, dict[int, _SearchEntry]] = {}
+
+
 class CentralPdfRegistry:
     """Root-scoped view over the user-wide :class:`PdfCatalog`."""
 
@@ -377,18 +403,42 @@ class CentralPdfRegistry:
         if cached is not None and cached[0] == token:
             return cached[1]
         root = str(self.directory)
-        facts = tuple(
-            RecordFact(
-                root,
-                int(record["location_id"]),
-                identification_group(record),
-                str(record.get("source") or ""),
-                str(record.get("sha256") or ""),
-                record.get("document_id"),
-                pdf_edition(record),
+        facts_list: list[RecordFact] = []
+        for row in self.catalog.query_count_rows(root=self.directory):
+            metadata = json.loads(row["metadata_json"] or "{}")
+            if not isinstance(metadata, dict):
+                metadata = {}
+            record: dict[str, Any] = {
+                "metadata": metadata,
+                "document_id": row["document_id"],
+                "status": row["status"],
+                "sha256": row["sha256"] or "",
+            }
+            for key in (
+                "bibcode",
+                "title",
+                "author",
+                "year",
+                METADATA_STALE_KEY,
+                METADATA_SHA256_KEY,
+                EXTERNAL_METADATA_KEY,
+                REFERENCE_METADATA_KEY,
+                LOCKED_FIELDS_KEY,
+            ):
+                if key in metadata:
+                    record[key] = metadata[key]
+            facts_list.append(
+                RecordFact(
+                    root,
+                    int(row["location_id"]),
+                    identification_group(record),
+                    str(metadata.get("source") or ""),
+                    str(row["sha256"] or ""),
+                    row["document_id"],
+                    pdf_edition(record),
+                )
             )
-            for record in self.catalog.query_files(root=self.directory)
-        )
+        facts = tuple(facts_list)
         # Keep the token from before the query. A concurrent write then
         # invalidates this entry at the next call.
         self._facts_cache = (token, facts)
@@ -444,22 +494,54 @@ class CentralPdfRegistry:
     def _search_documents(
         self, token: tuple[int, ...]
     ) -> tuple[tuple[int, dict[str, str], dict[str, str]], ...]:
-        """Return search documents, cached by change token."""
+        """Return search documents, cached by change token.
+
+        After a catalog change, only locations whose search inputs changed get
+        new documents. A document depends only on the relative path, metadata
+        JSON, and digest, so a reused document always equals a new one.
+        """
         cached = self._haystack_cache
         if cached is not None and cached[0] == token:
             return cached[1]
+        root = str(self.directory)
+        previous = _SEARCH_DOCUMENTS.get(root, {})
+        current: dict[int, _SearchEntry] = {}
         documents = []
-        for (
-            location_id,
-            relative_path,
-            metadata_json,
-            sha256,
-        ) in self.catalog.search_texts(self.directory):
-            document = record_search_document(relative_path, metadata_json, sha256)
-            documents.append((location_id, document, fold_document(document)))
+        for location_id, *inputs in self.catalog.search_texts(self.directory):
+            key = tuple(inputs)
+            entry = previous.get(location_id)
+            if entry is None or entry[0] != key:
+                document = record_search_document(*key)
+                entry = (key, document, fold_document(document))
+            current[location_id] = entry
+            documents.append((location_id, entry[1], entry[2]))
+        _SEARCH_DOCUMENTS[root] = current
         result = tuple(documents)
         self._haystack_cache = (token, result)
         return result
+
+    def prepare_search_documents(
+        self, fields: Collection[str] = (ALL_FIELDS,)
+    ) -> Iterator[None]:
+        """Build missing search documents one at a time, in idle time.
+
+        The generator yields after each location, so the caller can stop
+        between locations. `fields` are folded now, because the default
+        search reads them. A later search reuses each prepared document
+        whose search inputs did not change.
+        """
+        root = str(self.directory)
+        entries = _SEARCH_DOCUMENTS.setdefault(root, {})
+        for location_id, *inputs in self.catalog.search_texts(self.directory):
+            key = tuple(inputs)
+            entry = entries.get(location_id)
+            if entry is None or entry[0] != key:
+                document = record_search_document(*key)
+                entry = (key, document, fold_document(document))
+                entries[location_id] = entry
+            for field in fields:
+                entry[2].get(field)
+            yield
 
     def count_ads_documents(self) -> int:
         """Return the number of shared cached ADS documents."""
@@ -542,10 +624,11 @@ class CentralPdfRegistry:
             record["location_id"] for record in before if not record["missing_at"]
         }
         current = {record["location_id"] for record in after}
+        disappeared_ids = previous - current
         disappeared = Counter(
             record["attachment_id"]
             for record in before
-            if record["location_id"] in previous - current
+            if record["location_id"] in disappeared_ids
         )
         appeared = [record for record in after if record["location_id"] not in previous]
         historical = {
@@ -804,6 +887,26 @@ class CentralPdfRegistry:
         if limit is None:
             return records[offset:]
         return records[offset : offset + int(limit)]
+
+    def open_page_snapshot(
+        self,
+        *,
+        order_by: str,
+        descending: bool,
+        secondary_order_by: str | None = None,
+        tertiary_order_by: str | None = None,
+    ) -> Any:
+        """Open a frozen, read-only snapshot for a simple single-root sort."""
+        from .catalog_page import CatalogPageSnapshot
+
+        return CatalogPageSnapshot(
+            self.catalog.path,
+            str(self.directory),
+            order_by,
+            descending,
+            secondary_order_by,
+            tertiary_order_by,
+        )
 
     def sort_records(
         self,

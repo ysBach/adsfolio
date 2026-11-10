@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from pathlib import Path
 from typing import Any
@@ -18,6 +19,7 @@ from adsfolio.citations import CitationStyle
 from adsfolio.config import Config
 from adsfolio.gui.library import BASE_COLUMNS, COLUMNS, FileQuery, build_columns
 from adsfolio.gui.models import PAGE_SIZE, FileTableModel, LinkDelegate
+from adsfolio.pdf.catalog import PdfCatalog
 from adsfolio.pdf.registry import PdfRegistry
 
 
@@ -73,6 +75,332 @@ def test_model_fetches_pages(qtbot, tmp_path) -> None:
     model.fetchMore()
     assert model.rowCount() == PAGE_SIZE + 3
     assert not model.canFetchMore()
+    registry.close()
+
+
+def test_catalog_page_bounds_hydration_and_records_are_complete(
+    qtbot, tmp_path, monkeypatch
+) -> None:
+    root = tmp_path / "library"
+    registry = PdfRegistry(root)
+    _add_rows(registry, root, PAGE_SIZE + 7)
+    hydrated = 0
+    original = PdfCatalog._record_from_row
+
+    def counted(row):
+        nonlocal hydrated
+        hydrated += 1
+        return original(row)
+
+    monkeypatch.setattr(PdfCatalog, "_record_from_row", staticmethod(counted))
+    model = FileTableModel(
+        registry, FileQuery(order_by="relative_path", descending=False)
+    )
+    assert hydrated == PAGE_SIZE
+    assert model.rowCount() == PAGE_SIZE
+    assert len(model.records) == PAGE_SIZE + 7
+    assert hydrated == PAGE_SIZE + 7
+    assert model.records[-1]["relative_path"] == f"{PAGE_SIZE + 6:04d}.pdf"
+    registry.close()
+
+
+def test_closed_catalog_page_cannot_return_partial_records(qtbot, tmp_path) -> None:
+    root = tmp_path / "library"
+    registry = PdfRegistry(root)
+    _add_rows(registry, root, PAGE_SIZE + 2)
+    model = FileTableModel(
+        registry, FileQuery(order_by="relative_path", descending=False)
+    )
+    snapshot = model._page_snapshot
+    assert snapshot is not None
+    assert not snapshot._connection.in_transaction
+    model.close()
+    model.close()
+    assert snapshot._connection is None
+    with pytest.raises(RuntimeError, match="closed before all records"):
+        _ = model.records
+    registry.close()
+
+
+def test_first_catalog_page_must_match_frozen_total(qtbot, tmp_path, monkeypatch):
+    class ShortSnapshot:
+        total = PAGE_SIZE + 1
+
+        def __init__(self):
+            self.closed = False
+
+        def fetch(self, _offset, _limit):
+            return [{}]
+
+        def close(self):
+            self.closed = True
+
+    root = tmp_path / "library"
+    registry = PdfRegistry(root)
+    snapshot = ShortSnapshot()
+    monkeypatch.setattr(registry, "open_page_snapshot", lambda **_kwargs: snapshot)
+    model = FileTableModel(None, FileQuery(order_by="relative_path", descending=False))
+    with qtbot.waitSignal(model.query_failed) as emitted:
+        model.set_registry(registry)
+    assert "before all rows loaded" in emitted.args[0]
+    assert snapshot.closed
+    assert model.rowCount() == 0
+    assert not model.canFetchMore()
+    with pytest.raises(RuntimeError, match="closed before all records"):
+        _ = model.records
+    registry.close()
+
+
+def test_temp_table_creation_falls_back_but_lock_does_not_retry(
+    qtbot, tmp_path, monkeypatch
+):
+    from adsfolio.pdf.catalog_page import TempSnapshotUnavailable
+
+    root = tmp_path / "library"
+    registry = PdfRegistry(root)
+    _add_rows(registry, root, 3)
+    expected = registry.query_files(order_by="relative_path", descending=False)
+    monkeypatch.setattr(
+        registry,
+        "open_page_snapshot",
+        lambda **_kwargs: (_ for _ in ()).throw(TempSnapshotUnavailable("TEMP full")),
+    )
+    model = FileTableModel(
+        registry, FileQuery(order_by="relative_path", descending=False)
+    )
+    assert list(model.records) == expected
+
+    calls = 0
+    original_query = registry.query_records
+
+    def counted_query(**filters):
+        nonlocal calls
+        calls += 1
+        return original_query(**filters)
+
+    monkeypatch.setattr(registry, "query_records", counted_query)
+    monkeypatch.setattr(
+        registry,
+        "open_page_snapshot",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            sqlite3.OperationalError("database is locked")
+        ),
+    )
+    with qtbot.waitSignal(model.query_failed):
+        model.set_query(FileQuery(order_by="mtime_ns"))
+    assert calls == 0
+    assert not model.canFetchMore()
+    registry.close()
+
+
+def test_page_read_sqlite_error_stops_all_fetch_loops(qtbot, tmp_path):
+    root = tmp_path / "library"
+    registry = PdfRegistry(root)
+    _add_rows(registry, root, PAGE_SIZE + 2)
+    model = FileTableModel(
+        registry, FileQuery(order_by="relative_path", descending=False)
+    )
+    snapshot = model._page_snapshot
+    assert snapshot is not None
+
+    def fail_read(_offset, _limit):
+        raise sqlite3.DatabaseError("synthetic read failure")
+
+    snapshot.fetch = fail_read
+    with qtbot.waitSignal(model.query_failed) as emitted:
+        model.fetchMore()
+    assert "synthetic read failure" in emitted.args[0]
+    assert not model.canFetchMore()
+    attempts = 0
+    while model.canFetchMore():
+        attempts += 1
+        model.fetchMore()
+    assert attempts == 0
+    with pytest.raises(RuntimeError, match="closed before all records"):
+        _ = model.records
+    registry.close()
+
+
+@pytest.mark.parametrize("short_count", [0, 1])
+def test_short_catalog_page_stops_fetch_and_rejects_incomplete_records(
+    qtbot, tmp_path, short_count
+) -> None:
+    root = tmp_path / "library"
+    registry = PdfRegistry(root)
+    _add_rows(registry, root, PAGE_SIZE + 2)
+    model = FileTableModel(
+        registry, FileQuery(order_by="relative_path", descending=False)
+    )
+    snapshot = model._page_snapshot
+    assert snapshot is not None
+    snapshot.fetch = lambda _offset, _limit: [{} for _ in range(short_count)]
+    with qtbot.waitSignal(model.query_failed) as emitted:
+        model.fetchMore()
+    assert "before all rows loaded" in emitted.args[0]
+    assert model.rowCount() == PAGE_SIZE
+    assert not model.canFetchMore()
+    with pytest.raises(RuntimeError, match="closed before all records"):
+        _ = model.records
+    registry.close()
+
+
+def test_catalog_page_is_frozen_across_external_write_and_reloads_cleanly(
+    qtbot, tmp_path
+) -> None:
+    root = tmp_path / "library"
+    registry = PdfRegistry(root)
+    _add_rows(registry, root, PAGE_SIZE + 3)
+    model = FileTableModel(
+        registry, FileQuery(order_by="relative_path", descending=False)
+    )
+    snapshot = model._page_snapshot
+    assert snapshot is not None
+    assert model._snapshot[0]["metadata"]["title"] == ["Title 0"]
+
+    writer = sqlite3.connect(registry.path)
+    try:
+        writer.execute(
+            "UPDATE attachments SET metadata_json = ? WHERE id = ?",
+            (json.dumps({"title": ["Changed"]}), model._snapshot[0]["attachment_id"]),
+        )
+        writer.commit()
+    finally:
+        writer.close()
+
+    model.fetchMore()
+    assert model.record_at(0)["metadata"]["title"] == ["Title 0"]
+    with qtbot.waitSignal(model.modelReset):
+        model.set_query(FileQuery(order_by="relative_path", descending=False))
+    assert snapshot._connection is None
+    assert model._page_snapshot is not None
+    assert model.record_at(0)["metadata"]["title"] == ["Changed"]
+    model._close_page_snapshot()
+    registry.close()
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        FileQuery(order_by="first_seen_at", descending=True),
+        FileQuery(
+            order_by="size_bytes", descending=True, secondary_order_by="mtime_ns"
+        ),
+        FileQuery(order_by="mtime_ns", secondary_order_by="relative_path"),
+    ],
+)
+def test_catalog_page_sort_matches_registry_tie_breaks(qtbot, tmp_path, query) -> None:
+    root = tmp_path / "library"
+    registry = PdfRegistry(root)
+    _add_rows(registry, root, 24)
+    expected = registry.query_files(
+        **query.to_filters(),
+        order_by=query.order_by,
+        descending=query.descending,
+        secondary_order_by=query.secondary_order_by,
+        tertiary_order_by=query.tertiary_order_by,
+    )
+    model = FileTableModel(registry, query)
+    assert list(model.records) == expected
+    model._close_page_snapshot()
+    registry.close()
+
+
+def test_catalog_page_preserves_identity_values_and_legacy_sort_fallback(
+    qtbot, tmp_path
+) -> None:
+    root = tmp_path / "library"
+    registry = PdfRegistry(root)
+    _add_rows(registry, root, 8)
+    legacy_values = [True, False, 0, [], {}, ["2025-01-01"], [None], ""]
+    rows = registry.catalog._connection.execute(
+        "SELECT id, attachment_id FROM file_locations ORDER BY relative_path"
+    ).fetchall()
+    for index, row in enumerate(rows):
+        registry.catalog._connection.execute(
+            "UPDATE file_locations SET device = ?, inode = ?, first_seen_at = '' "
+            "WHERE id = ?",
+            (
+                7 if index == 0 else 0x123456789 + index,
+                11 if index == 0 else 0x23456789A + index,
+                row[0],
+            ),
+        )
+        registry.catalog._connection.execute(
+            "UPDATE attachments SET metadata_json = ? WHERE id = ?",
+            (
+                json.dumps(
+                    {
+                        "title": [f"Title {index}"],
+                        "first_seen_at": legacy_values[index],
+                    }
+                ),
+                row[1],
+            ),
+        )
+    registry.catalog._connection.commit()
+    query = FileQuery(order_by="first_seen_at", descending=False)
+    expected = registry.query_files(
+        **query.to_filters(), order_by=query.order_by, descending=query.descending
+    )
+    model = FileTableModel(registry, query)
+    actual = list(model.records)
+    assert actual == expected
+    assert [(record["device"], record["inode"]) for record in actual] == [
+        (record["device"], record["inode"]) for record in expected
+    ]
+    first_path = next(
+        record for record in actual if record["relative_path"] == "0000.pdf"
+    )
+    assert first_path["device"] == 7
+    assert first_path["inode"] == 11
+    assert max(record["device"] for record in actual) > 2**32
+    model.close()
+    registry.close()
+
+
+def test_records_sqlite_error_closes_snapshot_and_reraises(qtbot, tmp_path) -> None:
+    root = tmp_path / "library"
+    registry = PdfRegistry(root)
+    _add_rows(registry, root, PAGE_SIZE + 2)
+    model = FileTableModel(
+        registry, FileQuery(order_by="relative_path", descending=False)
+    )
+    snapshot = model._page_snapshot
+    assert snapshot is not None
+    snapshot.fetch = lambda _offset, _limit: (_ for _ in ()).throw(
+        sqlite3.DatabaseError("synthetic records read failure")
+    )
+    messages: list[str] = []
+    model.query_failed.connect(messages.append)
+    with pytest.raises(sqlite3.DatabaseError, match="synthetic records read failure"):
+        _ = model.records
+    assert messages and "synthetic records read failure" in messages[0]
+    assert snapshot._connection is None
+    assert not model.canFetchMore()
+    with pytest.raises(RuntimeError, match="closed before all records"):
+        _ = model.records
+    registry.close()
+
+
+def test_catalog_page_uses_registry_connection_with_pending_write(
+    qtbot, tmp_path
+) -> None:
+    root = tmp_path / "library"
+    registry = PdfRegistry(root)
+    _add_rows(registry, root, 2)
+    registry.catalog._connection.execute(
+        "UPDATE attachments SET metadata_json = ? WHERE id = 1",
+        (json.dumps({"title": ["Uncommitted"]}),),
+    )
+    assert registry.catalog._connection.in_transaction
+    model = FileTableModel(
+        registry, FileQuery(order_by="relative_path", descending=False)
+    )
+    assert model._page_snapshot is None
+    assert any(
+        record["metadata"].get("title") == ["Uncommitted"] for record in model.records
+    )
+    registry.catalog._connection.rollback()
     registry.close()
 
 
