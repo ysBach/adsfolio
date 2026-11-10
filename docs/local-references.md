@@ -79,6 +79,7 @@ decides which service receives a DOI. These are separate settings.
 
 Open **Tools → Citation Keys…**. Choose one style for ADS papers and one style
 for papers outside ADS. The preview shows the keys of the selected papers.
+Each preview line starts with **ADS entry** or **Non-ADS entry**.
 
 ![Citation Keys window with Google Scholar style keys in the preview](_static/tutorial/citation-keys.png)
 
@@ -86,7 +87,7 @@ for papers outside ADS. The preview shows the keys of the selected papers.
 | --- | --- |
 | ADS bibcode (ADS papers only) | `2020ApJ...900....1K` |
 | DOI | `10.5555/jex.2019.12.34` |
-| My template | `RoeA2019`, from `{first_author_initials}{year}` |
+| Custom | `RoeA2019`, from `{first_author_initials}{year}` |
 | Google Scholar style | `roe2019grain` |
 | Type each key | You type the key at export. |
 

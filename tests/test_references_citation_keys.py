@@ -166,3 +166,23 @@ def test_cli_keys_shows_and_saves_the_styles(monkeypatch, tmp_path):
     bad = runner.invoke(main, ["reference", "keys", "--template", "{nope}"])
     assert bad.exit_code != 0
     assert Config.load_key_policy() == KeyPolicy(other=KeyStyle.SCHOLAR)
+
+
+def test_cli_keys_sets_one_or_both_custom_templates(monkeypatch, tmp_path):
+    from click.testing import CliRunner
+
+    from adsfolio.cli.commands import main
+
+    monkeypatch.setattr(Config, "get_config_dir", classmethod(lambda cls: tmp_path))
+    runner = CliRunner()
+    both = runner.invoke(main, ["reference", "keys", "--template", "{year}a"])
+    assert both.exit_code == 0, both.output
+    policy = Config.load_key_policy()
+    assert policy.template == policy.other_template == "{year}a"
+
+    one = runner.invoke(main, ["reference", "keys", "--other-template", "{year}b"])
+    assert one.exit_code == 0, one.output
+    policy = Config.load_key_policy()
+    assert (policy.template, policy.other_template) == ("{year}a", "{year}b")
+    assert "ADS template: {year}a" in one.output
+    assert "Outside-ADS template: {year}b" in one.output

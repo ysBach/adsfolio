@@ -83,7 +83,7 @@ class KeyStyle(str, enum.Enum):
         return {
             KeyStyle.BIBCODE: "ADS bibcode",
             KeyStyle.DOI: "DOI",
-            KeyStyle.TEMPLATE: "My template",
+            KeyStyle.TEMPLATE: "Custom",
             KeyStyle.SCHOLAR: "Google Scholar style",
             KeyStyle.MANUAL: "Type each key",
         }[self]
@@ -101,8 +101,12 @@ class KeyPolicy:
         Style for papers without a bibcode. `KeyStyle.BIBCODE` is not
         allowed here.
     template : `str`
-        Template for `KeyStyle.TEMPLATE`, with the placeholders of custom
-        citation styles, for example ``{first_author_initials}{year}``.
+        Custom template for papers with an ADS bibcode, used by
+        `KeyStyle.TEMPLATE`. It takes the placeholders of custom citation
+        styles, for example ``{first_author_initials}{year}``.
+    other_template : `str`
+        Custom template for papers without a bibcode. Settings saved before
+        this field existed use `template` for both groups.
     author_format, max_authors, authors_when_truncated : `str`, `int`, `int`
         How ``{authors}`` writes the author list in a template. The defaults
         match the default Rename filenames: surname and initials, up to three
@@ -115,6 +119,7 @@ class KeyPolicy:
     ads: KeyStyle = KeyStyle.BIBCODE
     other: KeyStyle = KeyStyle.DOI
     template: str = DEFAULT_KEY_TEMPLATE
+    other_template: str = DEFAULT_KEY_TEMPLATE
     author_format: str = "surname_initials"
     max_authors: int = 3
     authors_when_truncated: int = 1
@@ -126,8 +131,9 @@ class KeyPolicy:
         object.__setattr__(self, "other", KeyStyle(self.other))
         if self.other is KeyStyle.BIBCODE:
             raise ValueError("Papers without a bibcode cannot use bibcode keys.")
-        # Validates the template and author settings once, when the policy is made.
-        _template_style(self)
+        # Validates the templates and author settings once, when the policy is made.
+        _template_style(self, ads=True)
+        _template_style(self, ads=False)
 
     @classmethod
     def from_mapping(cls, payload: Mapping[str, Any] | None) -> KeyPolicy:
@@ -147,10 +153,12 @@ class KeyPolicy:
             value = payload.get(name, getattr(defaults, name))
             return value if isinstance(value, str) else getattr(defaults, name)
 
+        template = str(payload.get("template") or DEFAULT_KEY_TEMPLATE)
         return cls(
             ads=KeyStyle(str(payload.get("ads", KeyStyle.BIBCODE.value))),
             other=KeyStyle(str(payload.get("other", KeyStyle.DOI.value))),
-            template=str(payload.get("template") or DEFAULT_KEY_TEMPLATE),
+            template=template,
+            other_template=str(payload.get("other_template") or template),
             author_format=text("author_format"),
             max_authors=number("max_authors"),
             authors_when_truncated=number("authors_when_truncated"),
@@ -164,6 +172,7 @@ class KeyPolicy:
             "ads": self.ads.value,
             "other": self.other.value,
             "template": self.template,
+            "other_template": self.other_template,
             "author_format": self.author_format,
             "max_authors": self.max_authors,
             "authors_when_truncated": self.authors_when_truncated,
@@ -190,12 +199,13 @@ class KeyAssignment:
         return not self.missing and not self.clashes
 
 
-def _template_style(policy: KeyPolicy) -> CitationStyle:
+def _template_style(policy: KeyPolicy, *, ads: bool) -> CitationStyle:
+    """Return the custom key template for ADS papers or for other papers."""
     try:
         return CitationStyle(
             id="citation-key",
             name="Citation key",
-            template=policy.template,
+            template=policy.template if ads else policy.other_template,
             author_format=policy.author_format,
             max_authors=policy.max_authors,
             authors_when_truncated=policy.authors_when_truncated,
@@ -203,7 +213,8 @@ def _template_style(policy: KeyPolicy) -> CitationStyle:
             author_truncation_suffix=policy.author_truncation_suffix,
         )
     except CitationStyleError as exc:
-        raise ValueError(f"Citation key template: {exc}") from exc
+        group = "ADS" if ads else "non-ADS"
+        raise ValueError(f"Custom key template for {group} papers: {exc}") from exc
 
 
 def _first(value: Any) -> str:
@@ -282,7 +293,8 @@ def citation_key(
     elif style is KeyStyle.SCHOLAR:
         key = scholar_key(metadata)
     elif style is KeyStyle.TEMPLATE:
-        key = anyascii(CitationFormatter().render(_template_style(policy), metadata))
+        template = _template_style(policy, ads=bool(bibcode))
+        key = anyascii(CitationFormatter().render(template, metadata))
     else:
         key = ""
     return sanitize_key(key)

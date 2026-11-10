@@ -214,6 +214,7 @@ def test_filename_style_keys_and_left_out_fields(qtbot, records):
     dialog = _dialog(qtbot, registry, rows)
     assert dialog.excluded_fields == ["abstract", "adsnote"]
     assert "abstract" in dialog.present_fields.text()
+    dialog.ads_style.setCurrentIndex(dialog.ads_style.findData(KeyStyle.TEMPLATE))
     dialog.filename_style_button.click()
     dialog._update_preview()
     text = dialog.preview.toPlainText()
@@ -222,6 +223,42 @@ def test_filename_style_keys_and_left_out_fields(qtbot, records):
     dialog.exclude_fields.setText("")
     dialog._update_preview()
     assert "abstract = {A fictional abstract.}" in dialog.preview.toPlainText()
+
+
+def test_each_custom_template_shows_under_its_own_style_list(qtbot, records):
+    registry, rows = records
+    dialog = ExportPapersDialog(
+        None, [ExportScope("all", "All PDFs", rows)], registry.catalog, [STYLE]
+    )
+    qtbot.addWidget(dialog)
+    # Hidden at once, before the delayed preview runs.
+    assert dialog.key_template.isHidden()
+    dialog._update_preview()
+    form = dialog.key_form
+    assert dialog.key_template.isHidden()
+    assert dialog.filename_style_button.isHidden()
+    assert dialog.other_key_template.isHidden()
+    assert form.getLayoutPosition(dialog.ads_custom_row)[0] == (
+        form.getWidgetPosition(dialog.ads_style)[0] + 1
+    )
+    assert form.getWidgetPosition(dialog.other_key_template)[0] == (
+        form.getWidgetPosition(dialog.other_style)[0] + 1
+    )
+
+    dialog.ads_style.setCurrentIndex(dialog.ads_style.findData(KeyStyle.TEMPLATE))
+    assert not dialog.key_template.isHidden()
+    assert not dialog.filename_style_button.isHidden()
+    assert dialog.other_key_template.isHidden()
+    dialog.filename_style_button.click()
+    dialog._update_preview()
+
+    dialog.other_style.setCurrentIndex(dialog.other_style.findData(KeyStyle.TEMPLATE))
+    dialog.other_key_template.setText("{year}-other")
+    dialog._update_preview()
+    assert not dialog.other_key_template.isHidden()
+    policy = dialog.key_policy()
+    assert policy.other_template == "{year}-other"
+    assert policy.template != policy.other_template
 
 
 ADS_ENTRY = """@ARTICLE{2020ApJ...900....1D,

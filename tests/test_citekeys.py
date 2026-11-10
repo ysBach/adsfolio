@@ -206,3 +206,29 @@ def test_saved_author_settings_round_trip_and_old_settings_use_defaults():
     )
     assert KeyPolicy.from_mapping(policy.to_mapping()) == policy
     assert KeyPolicy.from_mapping({"ads": "bibcode", "other": "doi"}) == KeyPolicy()
+
+
+def test_ads_and_other_papers_have_their_own_custom_templates():
+    policy = KeyPolicy(
+        ads=KeyStyle.TEMPLATE,
+        other=KeyStyle.TEMPLATE,
+        template="{year}ads",
+        other_template="{year}other",
+    )
+    assert citation_key(ADS, policy) == "2024ads"
+    assert citation_key(OTHER, policy) == "2020other"
+
+
+def test_settings_saved_with_one_template_use_it_for_both_groups():
+    policy = KeyPolicy.from_mapping(
+        {"ads": "template", "other": "template", "template": "{year}x"}
+    )
+    assert policy.template == policy.other_template == "{year}x"
+    assert policy.to_mapping()["other_template"] == "{year}x"
+
+
+def test_invalid_template_names_its_group():
+    with pytest.raises(ValueError, match="non-ADS papers"):
+        KeyPolicy(other_template="{unknown_field}")
+    with pytest.raises(ValueError, match="for ADS papers"):
+        KeyPolicy(template="{unknown_field}")

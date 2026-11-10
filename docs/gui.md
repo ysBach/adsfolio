@@ -678,8 +678,10 @@ These papers use the details stored in the catalog instead:
 
 #### Citation keys from a template
 
-Choose **My template** as a key style, then type the template. The window
-lists every field below the template. These fields are the same as for
+Choose **Custom** as a key style. A **Custom** box then appears under that
+style list. Type the template in the box. ADS papers and papers outside ADS
+each have their own **Custom** box and template. The window lists every field
+below the boxes. These fields are the same as for
 [custom citation styles](#custom-citation-styles): `{authors}`,
 `{first_author_surname}`, `{first_author_initials}`, `{year}`, `{bibcode}`,
 `{title}`, `{journal}`, `{bibstem}`, `{pub}`, `{volume}`, and `{page}`.
@@ -689,8 +691,9 @@ name format and the number of authors shown in full. It also holds the number
 kept for a longer list, the text between names, and the text after a
 shortened list.
 
-**Filename Style** makes ADS keys like the default PDF filenames. It sets the
-template to `{authors}_{bibcode}` with surname and initials joined by `+`:
+In **Export Papers**, **Filename Style** sits next to the ADS **Custom** box.
+It makes ADS keys like the default PDF filenames. It sets the ADS template to
+`{authors}_{bibcode}` with surname and initials joined by `+`:
 
 | Authors | Key |
 |---|---|

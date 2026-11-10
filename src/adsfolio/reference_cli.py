@@ -309,33 +309,54 @@ def _fetch_ads_bibtex(
 )
 @click.option(
     "--template",
-    help="Template for the 'template' style, such as '{first_author_initials}{year}'.",
+    help="Custom template for both groups, such as '{first_author_initials}{year}'.",
+)
+@click.option(
+    "--ads-template",
+    help="Custom template for papers with an ADS bibcode. Overrides --template.",
+)
+@click.option(
+    "--other-template",
+    help="Custom template for papers without an ADS bibcode. Overrides --template.",
 )
 def citation_keys(
-    ads_style: str | None, other_style: str | None, template: str | None
+    ads_style: str | None,
+    other_style: str | None,
+    template: str | None,
+    ads_template: str | None,
+    other_template: str | None,
 ) -> None:
     """Show or set how BibTeX export makes citation keys.
 
-    Styles: bibcode (ADS papers only), doi, template, scholar (Google Scholar
-    style, such as roe2021theory), and manual (type each key with set-key).
-    A key that you set with set-key, or that came with imported BibTeX,
-    always wins. Without options, this shows the current styles.
+    Styles: bibcode (ADS papers only), doi, template (a custom template),
+    scholar (Google Scholar style, such as roe2021theory), and manual (type
+    each key with set-key). ADS papers and other papers each have their own
+    custom template. A key that you set with set-key, or that came with
+    imported BibTeX, always wins. Without options, this shows the current
+    styles.
     """
     policy = Config.load_key_policy()
-    if ads_style or other_style or template is not None:
+    templates = (template, ads_template, other_template)
+    if ads_style or other_style or any(text is not None for text in templates):
+        ads_text = ads_template if ads_template is not None else template
+        other_text = other_template if other_template is not None else template
         try:
             policy = replace(
                 policy,
                 ads=KeyStyle(ads_style or policy.ads),
                 other=KeyStyle(other_style or policy.other),
-                template=policy.template if template is None else template,
+                template=policy.template if ads_text is None else ads_text,
+                other_template=(
+                    policy.other_template if other_text is None else other_text
+                ),
             )
         except ValueError as exc:
             raise click.ClickException(str(exc)) from exc
         Config.save_key_policy(policy)
     click.echo(f"ADS papers: {policy.ads.value}")
     click.echo(f"Papers outside ADS: {policy.other.value}")
-    click.echo(f"Template: {policy.template}")
+    click.echo(f"ADS template: {policy.template}")
+    click.echo(f"Outside-ADS template: {policy.other_template}")
 
 
 _AUX_CITATION = re.compile(r"\\citation\{([^}]*)\}")

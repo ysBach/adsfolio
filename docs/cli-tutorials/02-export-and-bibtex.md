@@ -123,7 +123,12 @@ adsfolio reference keys
 adsfolio reference keys --other scholar
 # Use a template for ADS papers.
 adsfolio reference keys --ads template --template '{first_author_initials}{year}'
+# Give papers outside ADS their own template.
+adsfolio reference keys --other template --other-template '{first_author_surname}{year}'
 ```
+
+`--template` sets the template for both groups. `--ads-template` and
+`--other-template` set one group and win over `--template`.
 
 The styles are `bibcode` (ADS papers only), `doi`, `template`, `scholar`, and
 `manual`. Export stops when a paper has no key or shares a key. The command

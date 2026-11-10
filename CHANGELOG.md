@@ -44,6 +44,21 @@ Times come from offscreen tests with a copy of a 3,982-PDF catalog.
   sequence. A column-header click still sorts the table. **View → Clear Find**
   still clears at once.
 
+### Citation keys
+
+- The key style **My template** is now **Custom**.
+- ADS papers and papers outside ADS previously shared one template. Its box
+  was below both style lists. Now each style list has its own **Custom** box
+  directly below it. A box shows only while its list selects **Custom**.
+  Saved settings with one template use it for both groups.
+- In **Export Papers**, **Filename Style** previously sat next to the shared
+  template box. Now it sits next to the ADS **Custom** box. Choose **Custom**
+  for ADS papers to see it.
+- The key preview previously listed keys without their group. Now each line
+  starts with **ADS entry** or **Non-ADS entry**.
+- `adsfolio reference keys` has the new options `--ads-template` and
+  `--other-template`. `--template` still sets both templates.
+
 ## 0.10.0 (2026-11-09)
 
 ### Identifier recheck

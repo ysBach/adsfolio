@@ -154,23 +154,39 @@ def test_key_settings_dialog_previews_and_returns_the_policy(qtbot):
     dialog = CitationKeySettingsDialog(None, KeyPolicy())
     qtbot.addWidget(dialog)
     assert dialog.other_style.findData(KeyStyle.BIBCODE) == -1
-    assert "2020ApJ...900....1K" in dialog.preview.text()
-    assert "10.5555/example.2021" in dialog.preview.text()
-    assert not dialog.template.isEnabled()
+    assert "ADS entry: 2020ApJ...900....1K" in dialog.preview.text()
+    assert "Non-ADS entry: 10.5555/example.2021" in dialog.preview.text()
+    form = dialog.form
+    assert dialog.template.isHidden()
+    assert dialog.other_template.isHidden()
+    # Each Custom box is the row under the style list that uses it.
+    assert form.getWidgetPosition(dialog.template)[0] == (
+        form.getWidgetPosition(dialog.ads_style)[0] + 1
+    )
+    assert form.getWidgetPosition(dialog.other_template)[0] == (
+        form.getWidgetPosition(dialog.other_style)[0] + 1
+    )
     dialog.other_style.setCurrentIndex(dialog.other_style.findData(KeyStyle.SCHOLAR))
     assert "roe2021theory" in dialog.preview.text()
     dialog.ads_style.setCurrentIndex(dialog.ads_style.findData(KeyStyle.TEMPLATE))
-    assert dialog.template.isEnabled()
-    assert "KimS2020" in dialog.preview.text()
+    assert not dialog.template.isHidden()
+    assert dialog.other_template.isHidden()
+    assert "ADS entry: KimS2020" in dialog.preview.text()
     dialog.template.setText("{no_such_field}")
     save = dialog.buttons.button(QDialogButtonBox.StandardButton.Save)
     assert not save.isEnabled()
+    assert "ADS papers" in dialog.preview.text()
     dialog.template.setText("{year}{first_author_initials}")
     assert save.isEnabled()
+    dialog.other_style.setCurrentIndex(dialog.other_style.findData(KeyStyle.TEMPLATE))
+    assert not dialog.other_template.isHidden()
+    dialog.other_template.setText("{first_author_initials}-{year}")
+    assert "Non-ADS entry: RoeA-2021" in dialog.preview.text()
     assert dialog.policy() == KeyPolicy(
         ads=KeyStyle.TEMPLATE,
-        other=KeyStyle.SCHOLAR,
+        other=KeyStyle.TEMPLATE,
         template="{year}{first_author_initials}",
+        other_template="{first_author_initials}-{year}",
     )
 
 

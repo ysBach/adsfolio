@@ -430,17 +430,21 @@ class ExportPapersDialog(QDialog):
             "Key style for papers without an ADS bibcode, such as papers from "
             "Crossref, DataCite, or details that you entered"
         )
-        template_row = QHBoxLayout()
+        # Each Custom box sits under the style list that uses it.
         self.key_template = QLineEdit(policy.template, panel)
         self.key_template.setToolTip(CITATION_FIELD_HELP)
-        template_row.addWidget(self.key_template, 1)
+        self.other_key_template = QLineEdit(policy.other_template, panel)
+        self.other_key_template.setToolTip(CITATION_FIELD_HELP)
+        # Filename Style fills the ADS template, so it sits beside that box.
+        self.ads_custom_row = QHBoxLayout()
+        self.ads_custom_row.addWidget(self.key_template, 1)
         self.filename_style_button = QPushButton("Filename Style", panel)
         self.filename_style_button.setToolTip(
             "Make ADS keys like the default PDF filenames, for example "
             "DoeJA+RoeA_2021A&A...650A.123D"
         )
         self.filename_style_button.clicked.connect(self._use_filename_style)
-        template_row.addWidget(self.filename_style_button)
+        self.ads_custom_row.addWidget(self.filename_style_button)
         self.fields_label = QLabel(KEY_TEMPLATE_FIELDS, panel)
         self.fields_label.setWordWrap(True)
         self.fields_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
@@ -492,28 +496,42 @@ class ExportPapersDialog(QDialog):
         )
         self.present_fields = QLabel(panel)
         self.present_fields.setWordWrap(True)
+        self.key_form = form
         form.addRow("ADS papers", self.ads_style)
+        form.addRow("Custom", self.ads_custom_row)
         form.addRow("Other papers", self.other_style)
+        form.addRow("Custom", self.other_key_template)
         form.addRow("", self.key_help)
-        form.addRow("Leave out fields", self.exclude_fields)
-        form.addRow("", self.present_fields)
-        form.addRow("Template", template_row)
         # A wrapped label in a spanning row gets its real height.
         form.addRow(self.fields_label)
         form.addRow("{authors}", authors_row)
+        form.addRow("Leave out fields", self.exclude_fields)
+        form.addRow("", self.present_fields)
         form.addRow("", self.keep_key_styles)
         for combo in (self.ads_style, self.other_style, self.author_format):
             combo.currentIndexChanged.connect(self._settings_changed)
+        for combo in (self.ads_style, self.other_style):
+            combo.currentIndexChanged.connect(self._sync_custom_templates)
+        self._sync_custom_templates()
         for spin in (self.max_authors, self.authors_kept):
             spin.valueChanged.connect(self._settings_changed)
         for edit in (
             self.key_template,
+            self.other_key_template,
             self.author_separator,
             self.author_suffix,
             self.exclude_fields,
         ):
             edit.textChanged.connect(self._settings_changed)
         return panel
+
+    def _sync_custom_templates(self, *_args: object) -> None:
+        """Show each Custom box only while its style list selects Custom."""
+        for combo, row in (
+            (self.ads_style, self.ads_custom_row),
+            (self.other_style, self.other_key_template),
+        ):
+            self.key_form.setRowVisible(row, combo.currentData() == KeyStyle.TEMPLATE)
 
     def _use_filename_style(self) -> None:
         """Set the ADS key style to the default filename pattern."""
@@ -703,6 +721,7 @@ class ExportPapersDialog(QDialog):
             ads=self.ads_style.currentData(),
             other=self.other_style.currentData(),
             template=self.key_template.text().strip(),
+            other_template=self.other_key_template.text().strip(),
             author_format=str(self.author_format.currentData()),
             max_authors=self.max_authors.value(),
             authors_when_truncated=self.authors_kept.value(),
@@ -722,8 +741,8 @@ class ExportPapersDialog(QDialog):
             self.ads_style.currentData(),
             self.other_style.currentData(),
         )
+        self._sync_custom_templates()
         for widget in (
-            self.key_template,
             self.fields_label,
             self.author_format,
             self.max_authors,

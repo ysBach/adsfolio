@@ -149,7 +149,10 @@ _EXAMPLE_PAPERS: tuple[Mapping[str, Any], ...] = (
 STYLE_HELP = {
     KeyStyle.BIBCODE: "The ADS bibcode, for example 2020ApJ...900....1K.",
     KeyStyle.DOI: "The DOI, for example 10.5555/example.2021.",
-    KeyStyle.TEMPLATE: "Your template below, for example {first_author_initials}{year}.",
+    KeyStyle.TEMPLATE: (
+        "Your custom template in the Custom box, for example "
+        "{first_author_initials}{year}."
+    ),
     KeyStyle.SCHOLAR: (
         "Surname, year, and the first title word that is not a short word "
         "such as 'on' or 'the', for example roe2021theory."
@@ -211,7 +214,7 @@ class CitationKeySettingsDialog(QDialog):
         )
         intro.setWordWrap(True)
         layout.addWidget(intro)
-        form = QFormLayout()
+        self.form = form = QFormLayout()
         self.ads_style = key_style_combo(self, policy.ads, include_bibcode=True)
         self.ads_style.setToolTip("Key style for papers with an ADS bibcode")
         self.other_style = key_style_combo(self, policy.other, include_bibcode=False)
@@ -219,11 +222,15 @@ class CitationKeySettingsDialog(QDialog):
             "Key style for papers without an ADS bibcode, such as papers that "
             "ADSfolio found through Crossref or DataCite"
         )
+        # Each Custom box sits under the style list that uses it.
         self.template = QLineEdit(policy.template, self)
         self.template.setToolTip(CITATION_FIELD_HELP)
+        self.other_template = QLineEdit(policy.other_template, self)
+        self.other_template.setToolTip(CITATION_FIELD_HELP)
         form.addRow("ADS papers:", self.ads_style)
+        form.addRow("Custom:", self.template)
         form.addRow("Papers outside ADS:", self.other_style)
-        form.addRow("My template:", self.template)
+        form.addRow("Custom:", self.other_template)
         layout.addLayout(form)
         self.help_label = QLabel(self)
         self.help_label.setWordWrap(True)
@@ -245,7 +252,8 @@ class CitationKeySettingsDialog(QDialog):
         layout.addWidget(self.buttons)
         for combo in (self.ads_style, self.other_style):
             combo.currentIndexChanged.connect(lambda _index: self._update())
-        self.template.textChanged.connect(lambda _text: self._update())
+        for edit in (self.template, self.other_template):
+            edit.textChanged.connect(lambda _text: self._update())
         self.setMinimumWidth(560)
         self._update()
 
@@ -263,14 +271,15 @@ class CitationKeySettingsDialog(QDialog):
             ads=self.ads_style.currentData(),
             other=self.other_style.currentData(),
             template=self.template.text().strip(),
+            other_template=self.other_template.text().strip(),
         )
 
     def _update(self) -> None:
-        uses_template = KeyStyle.TEMPLATE in (
-            self.ads_style.currentData(),
-            self.other_style.currentData(),
-        )
-        self.template.setEnabled(uses_template)
+        for combo, edit in (
+            (self.ads_style, self.template),
+            (self.other_style, self.other_template),
+        ):
+            self.form.setRowVisible(edit, combo.currentData() == KeyStyle.TEMPLATE)
         self.help_label.setText(
             "ADS papers: "
             + STYLE_HELP[self.ads_style.currentData()]
@@ -290,7 +299,14 @@ class CitationKeySettingsDialog(QDialog):
             key = citation_key(sample, policy) or "(you type it at export)"
             title = sample.get("title")
             title = title[0] if isinstance(title, list) and title else title or ""
-            lines.append(f"{key}  —  {title}")
+            metadata = sample.get("metadata")
+            metadata = metadata if isinstance(metadata, Mapping) else sample
+            group = (
+                "ADS entry"
+                if metadata.get("bibcode") or sample.get("bibcode")
+                else "Non-ADS entry"
+            )
+            lines.append(f"{group}: {key}  —  {title}")
         self.preview.setText("Preview:\n" + "\n".join(lines))
         self._fit_height()
 
