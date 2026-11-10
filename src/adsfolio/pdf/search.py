@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import re
 import unicodedata
+from array import array
 from collections.abc import Callable, Collection, Iterator, Mapping
 from dataclasses import dataclass
 from functools import lru_cache
@@ -297,21 +298,163 @@ def fold_text(text: str) -> str:
     return decomposed.translate(_COMBINING_MARKS).casefold()
 
 
-def _pattern(needle: str, wildcards: bool) -> re.Pattern[str]:
-    """Compile a normalized query into a regular expression."""
+def _fixed_pattern(needle: str, wildcards: bool) -> re.Pattern[str]:
+    """Compile a fixed-width query into a regular expression.
+
+    Percent wildcards use the bounded dynamic-programming matcher below.
+    """
     if not wildcards:
         return re.compile(re.escape(needle))
     return re.compile(
         "".join(
-            f"[^{FIELD_SEPARATOR}]*"
-            if char == "%"
-            else f"[^{FIELD_SEPARATOR}]"
-            if char == "_"
-            else re.escape(char)
+            f"[^{FIELD_SEPARATOR}]" if char == "_" else re.escape(char)
             for char in needle
         ),
         re.DOTALL,
     )
+
+
+def _percent_spans(text: str, needle: str) -> tuple[tuple[int, int], ...]:
+    """Find greedy leftmost percent-wildcard matches in O(len(text)*len(needle))."""
+    text_length = len(text)
+    needle_length = len(needle)
+    # Each row stores the furthest end reachable from each text position.
+    following = array("Q", range(1, text_length + 2))
+    for pattern_index in range(needle_length - 1, -1, -1):
+        row = array("Q", [0]) * (text_length + 1)
+        char = needle[pattern_index]
+        if char == "%":
+            row[text_length] = following[text_length]
+            for text_index in range(text_length - 1, -1, -1):
+                row[text_index] = max(
+                    following[text_index],
+                    row[text_index + 1] if text[text_index] != FIELD_SEPARATOR else 0,
+                )
+        else:
+            for text_index in range(text_length - 1, -1, -1):
+                row[text_index] = (
+                    following[text_index + 1]
+                    if (
+                        char == "_"
+                        and text[text_index] != FIELD_SEPARATOR
+                        or text[text_index] == char
+                    )
+                    else 0
+                )
+        following = row
+
+    spans = []
+    cursor = 0
+    starts = following
+    while cursor < text_length:
+        while cursor < text_length and not starts[cursor]:
+            cursor += 1
+        if cursor == text_length:
+            break
+        start = cursor
+        # Regex greediness chooses the furthest valid endpoint at this start.
+        end = starts[start] - 1
+        if end <= start:
+            cursor = start + 1
+            continue
+        if spans and start < spans[-1][1]:
+            spans[-1] = (spans[-1][0], max(end, spans[-1][1]))
+        else:
+            spans.append((start, end))
+        cursor = end
+    return tuple(spans)
+
+
+def _percent_match(
+    text: str,
+    chunks: tuple[str, ...],
+    patterns: tuple[re.Pattern[str] | None, ...],
+) -> bool:
+    """Test a percent pattern with ordered fixed-width chunks when possible."""
+    if all(FIELD_SEPARATOR not in chunk for chunk in chunks):
+        fields = text.split(FIELD_SEPARATOR) if FIELD_SEPARATOR in text else (text,)
+        for field in fields:
+            cursor = 0
+            for chunk, pattern in zip(chunks, patterns, strict=True):
+                if not chunk:
+                    continue
+                if pattern is None:
+                    match_start = field.find(chunk, cursor)
+                    if match_start < 0:
+                        break
+                    cursor = match_start + len(chunk)
+                else:
+                    match = pattern.search(field, cursor)
+                    if match is None:
+                        break
+                    cursor = match.end()
+            else:
+                return True
+        return False
+
+    # Literal separators in a query are uncommon. Keep their exact regex
+    # behavior with a linear-memory suffix DP.
+    needle = "%".join(chunks)
+    possible = bytearray(b"\x01") * (len(text) + 1)
+    for char in reversed(needle):
+        current = bytearray(len(text) + 1)
+        if char == "%":
+            current[len(text)] = possible[len(text)]
+            for index in range(len(text) - 1, -1, -1):
+                current[index] = possible[index] or (
+                    text[index] != FIELD_SEPARATOR and current[index + 1]
+                )
+        else:
+            for index in range(len(text) - 1, -1, -1):
+                current[index] = (
+                    possible[index + 1]
+                    if (
+                        char == FIELD_SEPARATOR
+                        and text[index] == char
+                        or char == "_"
+                        and text[index] != FIELD_SEPARATOR
+                        or char not in ("_", FIELD_SEPARATOR)
+                        and text[index] == char
+                    )
+                    else 0
+                )
+        possible = current
+    return any(possible)
+
+
+def _literal_percent_matcher(chunks: tuple[str, ...]) -> Callable[[str], bool]:
+    """Build an ordered literal-chunk search without per-text setup."""
+    if len(chunks) == 2:
+        first, second = chunks
+
+        def match_two(text: str) -> bool:
+            if FIELD_SEPARATOR not in text:
+                start = text.find(first)
+                return start >= 0 and text.find(second, start + len(first)) >= 0
+            for field in text.split(FIELD_SEPARATOR):
+                start = field.find(first)
+                if start >= 0 and field.find(second, start + len(first)) >= 0:
+                    return True
+            return False
+
+        return match_two
+
+    def match_many(text: str) -> bool:
+        fields = text.split(FIELD_SEPARATOR) if FIELD_SEPARATOR in text else (text,)
+        for field in fields:
+            cursor = 0
+            for chunk in chunks:
+                if not chunk:
+                    continue
+                found = field.find(chunk, cursor)
+                if found < 0:
+                    break
+                cursor = found + len(chunk)
+            else:
+                return True
+        return False
+
+    return match_many
 
 
 @lru_cache(maxsize=4096)
@@ -350,13 +493,19 @@ def search_spans(
         for index, piece in enumerate(pieces):
             origin.extend([index] * len(piece))
         origin.append(len(text))
+    if wildcards and "%" in needle:
+        matches = _percent_spans(haystack, needle)
+    else:
+        matches = tuple(
+            (match.start(), match.end())
+            for match in _fixed_pattern(needle, wildcards).finditer(haystack)
+            if match.end() > match.start()
+        )
     spans: list[tuple[int, int]] = []
-    for match in _pattern(needle, wildcards).finditer(haystack):
-        if match.end() == match.start():
-            continue
-        start = origin[match.start()]
+    for match_start, match_end in matches:
+        start = origin[match_start]
         # The end is after the character that holds the last folded letter.
-        end = origin[match.end() - 1] + 1
+        end = origin[match_end - 1] + 1
         if spans and start < spans[-1][1]:
             spans[-1] = (spans[-1][0], max(end, spans[-1][1]))
         else:
@@ -395,7 +544,20 @@ def search_matcher(
     if not needle:
         return lambda _text: True
     if wildcards and ("%" in needle or "_" in needle):
-        compiled = _pattern(needle, wildcards=True)
+        if "%" in needle:
+            chunks = tuple(needle.split("%"))
+            if not any(chunks):
+                return lambda _text: True
+            if all(
+                "_" not in chunk and FIELD_SEPARATOR not in chunk for chunk in chunks
+            ):
+                return _literal_percent_matcher(chunks)
+            patterns = tuple(
+                _fixed_pattern(chunk, wildcards=True) if "_" in chunk else None
+                for chunk in chunks
+            )
+            return lambda text: _percent_match(text, chunks, patterns)
+        compiled = _fixed_pattern(needle, wildcards=True)
         return lambda text: compiled.search(text) is not None
     return lambda text: needle in text
 

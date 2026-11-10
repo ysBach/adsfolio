@@ -58,6 +58,12 @@ While you type, a list suggests field names. For example, `f` suggests
 `journal:`, or `year:`, the list suggests values from the library. Press
 **Return** or click a suggestion to insert it.
 
+Press **Escape** to close the list. The search text stays. Press **Escape**
+again to clear the search. If you type, click, choose a menu command, or switch
+to another window between presses, the next press starts a new two-press
+sequence. A click on a table column header still sorts the table. With an empty
+search, one press moves to the table.
+
 ### Choose the default fields
 
 A term without a field name searches all fields: the path, every metadata
@@ -1604,7 +1610,7 @@ The View menu shows the shortcuts available on your system.
 | --- | --- |
 | Focus Find and select its query | Command/Ctrl+F |
 | Show or hide the Find bar | Command/Ctrl+Shift+F |
-| Clear Find and focus the table | Escape |
+| Clear Find and focus the table | Escape twice |
 | Show or hide Libraries | Command/Ctrl+Shift+L |
 | Show or hide Details | Command/Ctrl+Shift+D |
 | Show or hide the job log | Command/Ctrl+Shift+J |

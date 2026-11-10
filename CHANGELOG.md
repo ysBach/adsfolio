@@ -26,6 +26,18 @@ Times come from offscreen tests with a copy of a 3,982-PDF catalog.
 - Refresh calculates which files are missing once per scan. Duplicate review
   counts copies once per paper and edition.
 
+### Search
+
+- Patterns with repeated `%` no longer use backtracking in search or
+  highlighting. Wildcard results keep the same rules.
+- Pressing **Escape** in the search box previously cleared the search, even
+  when you only wanted to close the suggestion list. Now the first **Escape**
+  closes the list, and the status bar says "Press Esc again to clear the
+  search." A second **Escape** clears the search. Typing, clicking, a menu
+  command, or a switch to another window between the two presses starts a new
+  sequence. A column-header click still sorts the table. **View → Clear Find**
+  still clears at once.
+
 ## 0.10.0 (2026-11-09)
 
 ### Identifier recheck

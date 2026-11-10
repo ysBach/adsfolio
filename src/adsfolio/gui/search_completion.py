@@ -5,11 +5,20 @@ from __future__ import annotations
 import re
 from collections.abc import Callable, Sequence
 
-from PySide6.QtCore import QObject, QStringListModel, Qt
-from PySide6.QtWidgets import QCompleter, QLineEdit
+from PySide6.QtCore import QEvent, QObject, QStringListModel, Qt
+from PySide6.QtGui import QKeySequence, QShortcut
+from PySide6.QtWidgets import (
+    QApplication,
+    QCompleter,
+    QLineEdit,
+    QStatusBar,
+    QWidget,
+)
 
 from ..pdf.search import SEARCH_FIELDS, resolve_field
 
+# Status-bar text after the first Esc of a search reset.
+ESCAPE_AGAIN_HINT = "Press Esc again to clear the search."
 # Fields whose stored values are useful suggestions.
 VALUE_FIELDS = frozenset({"author", "first_author", "journal", "year"})
 # The token before the cursor: an optional field name, then the value so far.
@@ -111,3 +120,84 @@ class SearchCompleter(QObject):
         updated = text[: self._token_start] + replacement + text[cursor:]
         self._line_edit.setText(updated)
         self._line_edit.setCursorPosition(self._token_start + len(replacement))
+
+
+class SearchEscape(QObject):
+    """Clear the search on the second Esc in a row.
+
+    The first Esc closes the suggestion list and shows `ESCAPE_AGAIN_HINT`.
+    A second Esc runs `clear`. Another key, a mouse click, a text change, or
+    a deactivated window in between cancels the reset. Header clicks cancel
+    the reset and still sort the table. With an empty search, one Esc runs
+    `clear`. Connect menu-bar actions to `cancel`, because a click in the
+    native macOS menu bar sends no mouse event to the application.
+
+    Parameters
+    ----------
+    line_edit : QLineEdit
+        Search field.
+    popup : QWidget
+        Suggestion list of the search field.
+    widgets : sequence of QWidget
+        Widgets in which Esc resets the search.
+    clear : Callable[[], None]
+        Clear the search.
+    status : QStatusBar
+        Status bar for the hint.
+    """
+
+    def __init__(
+        self,
+        line_edit: QLineEdit,
+        popup: QWidget,
+        widgets: Sequence[QWidget],
+        clear: Callable[[], None],
+        status: QStatusBar,
+    ) -> None:
+        super().__init__(line_edit)
+        self._line_edit = line_edit
+        self._popup = popup
+        self._clear = clear
+        self._status = status
+        self._application = QApplication.instance()
+        self.armed = False
+        self.shortcuts: list[QShortcut] = []
+        for widget in widgets:
+            shortcut = QShortcut(QKeySequence(Qt.Key.Key_Escape), widget)
+            shortcut.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
+            shortcut.activated.connect(self.press)
+            self.shortcuts.append(shortcut)
+        line_edit.textChanged.connect(self.cancel)
+
+    def press(self) -> None:
+        """Handle one Esc: close suggestions, then reset on the second Esc."""
+        self._popup.hide()
+        if self.armed or not self._line_edit.text():
+            self.cancel()
+            self._clear()
+            return
+        self.armed = True
+        if self._application is not None:
+            self._application.installEventFilter(self)
+        self._status.showMessage(ESCAPE_AGAIN_HINT)
+
+    def cancel(self, *_args: object) -> None:
+        """Forget a first Esc."""
+        if self.armed and self._status.currentMessage() == ESCAPE_AGAIN_HINT:
+            self._status.clearMessage()
+        if self.armed and self._application is not None:
+            self._application.removeEventFilter(self)
+        self.armed = False
+
+    def eventFilter(self, watched: QObject, event: QEvent) -> bool:
+        """Cancel a first Esc after another key, a mouse click, or a window change."""
+        kind = event.type()
+        if kind in {QEvent.Type.KeyPress, QEvent.Type.ShortcutOverride}:
+            if event.key() != Qt.Key.Key_Escape:
+                self.cancel()
+        elif kind == QEvent.Type.MouseButtonPress or (
+            kind in {QEvent.Type.Close, QEvent.Type.WindowDeactivate}
+            and watched is self._line_edit.window()
+        ):
+            self.cancel()
+        return False

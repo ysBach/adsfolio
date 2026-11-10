@@ -21,7 +21,7 @@ from PySide6.QtCore import (
     Qt,
     QTimer,
 )
-from PySide6.QtGui import QAction, QActionGroup, QColor, QFont, QKeySequence, QShortcut
+from PySide6.QtGui import QAction, QActionGroup, QColor, QFont, QKeySequence
 from PySide6.QtWidgets import (
     QApplication,
     QComboBox,
@@ -148,7 +148,7 @@ from .notifications import Notice, NoticeAction, NotificationButton, Notificatio
 from .osint import open_path, open_url, reveal_in_file_manager
 from .references_dialog import ReferencesDialog
 from .refresh_job import LibraryRefreshJob
-from .search_completion import SearchCompleter
+from .search_completion import SearchCompleter, SearchEscape
 from .token_dialog import TokenDialog
 from .update_dialog import UpdateButton, UpdateDialog, quiet_progress_bar
 from .updates import (
@@ -1014,12 +1014,15 @@ class MainWindow(QMainWindow):
         self.search_focus_action.setShortcut(QKeySequence.StandardKey.Find)
         self.search_focus_action.triggered.connect(self._focus_search)
         self.clear_search_action = QAction("Clear Find", self)
-        self._clear_search_shortcuts = []
-        for widget in (self.search, self.table):
-            shortcut = QShortcut(QKeySequence("Escape"), widget)
-            shortcut.setContext(Qt.WidgetWithChildrenShortcut)
-            shortcut.activated.connect(self._clear_search)
-            self._clear_search_shortcuts.append(shortcut)
+        # Esc first closes the suggestion list. A second Esc clears the search.
+        self.search_escape = SearchEscape(
+            self.search,
+            self.search_completer.completer.popup(),
+            (self.search, self.table),
+            self._clear_search,
+            self.status,
+        )
+        self.menuBar().triggered.connect(self.search_escape.cancel)
         self.clear_search_action.triggered.connect(self._clear_search)
         view.addSeparator()
         view.addAction(self.search_focus_action)
