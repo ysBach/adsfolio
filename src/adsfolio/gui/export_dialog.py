@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from PySide6.QtCore import Qt, QThread, QTimer, Signal
@@ -85,18 +85,59 @@ KEY_TEMPLATE_FIELDS = (
 )
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, init=False)
 class ExportScope:
     """One choice of papers for the export.
 
     `key` is a stable name, for example ``"selected"`` or ``"all"``. `label`
-    is the text of the choice, without the count. `records` holds library
-    table records in export order.
+    is the text of the choice, without the count. `count` is available without
+    loading records. A `loader` can defer records until the user selects the
+    scope.
     """
 
     key: str
     label: str
-    records: Sequence[Mapping[str, Any]]
+    _records: Sequence[Mapping[str, Any]] | None = field(default=None, repr=False)
+    count: int | None = None
+    loader: Callable[[], Sequence[Mapping[str, Any]]] | None = field(
+        default=None, repr=False
+    )
+
+    def __init__(
+        self,
+        key: str,
+        label: str,
+        records: Sequence[Mapping[str, Any]] | None = None,
+        *,
+        count: int | None = None,
+        loader: Callable[[], Sequence[Mapping[str, Any]]] | None = None,
+    ) -> None:
+        object.__setattr__(self, "key", key)
+        object.__setattr__(self, "label", label)
+        object.__setattr__(self, "_records", records)
+        object.__setattr__(
+            self,
+            "count",
+            len(records) if count is None and records is not None else count,
+        )
+        object.__setattr__(self, "loader", loader)
+
+    @property
+    def records(self) -> Sequence[Mapping[str, Any]]:
+        """Load and return records for compatibility with export consumers."""
+        return self.load_records()
+
+    def load_records(self) -> Sequence[Mapping[str, Any]]:
+        """Load this scope once and return its records."""
+        if self._records is None:
+            if self.loader is None:
+                object.__setattr__(self, "_records", ())
+            else:
+                records = tuple(self.loader())
+                object.__setattr__(self, "_records", records)
+                object.__setattr__(self, "count", len(records))
+                object.__setattr__(self, "loader", None)
+        return self._records
 
 
 @dataclass(frozen=True)
@@ -314,6 +355,7 @@ class ExportPapersDialog(QDialog):
         self.summary = summarize_papers(())
         self._fetch: AdsBibtexFetch | None = None
         self._fetch_requests: dict[str, str] = {}
+        self._scope_error: str | None = None
         self._preview_timer = QTimer(self)
         self._preview_timer.setSingleShot(True)
         self._preview_timer.setInterval(200)
@@ -389,8 +431,13 @@ class ExportPapersDialog(QDialog):
         self.scope_group = QButtonGroup(box)
         self.scope_buttons: dict[str, QRadioButton] = {}
         for index, scope in enumerate(self._scopes):
-            button = QRadioButton(f"{scope.label} ({len(scope.records):,} PDFs)", box)
-            button.setEnabled(bool(scope.records))
+            count = (
+                f"{scope.count:,} PDFs"
+                if scope.count is not None
+                else "count unavailable"
+            )
+            button = QRadioButton(f"{scope.label} ({count})", box)
+            button.setEnabled(scope.count != 0)
             self.scope_group.addButton(button, index)
             self.scope_buttons[scope.key] = button
             layout.addWidget(button)
@@ -406,9 +453,6 @@ class ExportPapersDialog(QDialog):
             )
         if start is not None:
             start.setChecked(True)
-        self.scope_group.idToggled.connect(
-            lambda _id, checked: checked and self._scope_changed()
-        )
         self.summary_label = QLabel(box)
         self.summary_label.setWordWrap(True)
         layout.addWidget(self.summary_label)
@@ -421,6 +465,8 @@ class ExportPapersDialog(QDialog):
         self.skipped_button.clicked.connect(self._show_skipped)
         skipped_row.addWidget(self.skipped_button)
         layout.addLayout(skipped_row)
+        for button in self.scope_buttons.values():
+            button.toggled.connect(lambda checked: checked and self._scope_changed())
         return box
 
     def _build_bibtex_panel(self) -> QWidget:
@@ -606,7 +652,39 @@ class ExportPapersDialog(QDialog):
 
     def _scope_changed(self) -> None:
         scope = self._current_scope()
-        self.summary = summarize_papers(scope.records if scope is not None else ())
+        if scope is None:
+            self.summary = summarize_papers(())
+            self._settings_changed()
+            return
+        try:
+            records = scope.load_records()
+        except (sqlite3.Error, RuntimeError, ValueError) as exc:
+            self.summary = summarize_papers(())
+            button = self.scope_buttons[scope.key]
+            button.setToolTip(f"Cannot load this scope: {exc}")
+            # An earlier count can be stale, so do not show it.
+            button.setText(f"{scope.label} (count unavailable)")
+            self.scope_group.setExclusive(False)
+            button.setChecked(False)
+            self.scope_group.setExclusive(True)
+            self.summary_label.setText(
+                "This paper scope is unavailable. You can retry it."
+            )
+            self.skipped_label.setText("")
+            self.skipped_button.setVisible(False)
+            self._scope_error = (
+                f"Cannot load {scope.label}: {exc}. "
+                "Wait for the library or catalog to be available, then select "
+                "this scope again."
+            )
+            self.status.setText(self._scope_error)
+            self._update_preview()
+            return
+        self._scope_error = None
+        self.status.clear()
+        self.scope_buttons[scope.key].setText(f"{scope.label} ({len(records):,} PDFs)")
+        self.scope_buttons[scope.key].setToolTip("")
+        self.summary = summarize_papers(records)
         summary = self.summary
         shared = (
             f" Each paper exports once ({_count(summary.shared_pdfs, 'duplicate PDF')}"
@@ -662,6 +740,8 @@ class ExportPapersDialog(QDialog):
         self._fetch.start()
 
     def _fetch_progressed(self, done: int, total: int) -> None:
+        if self._scope_error is not None:
+            return
         self.status.setText(
             f"Getting ADS BibTeX: {done:,} of {total:,} papers. "
             "ADSfolio saves it on this computer, so this happens once."
@@ -694,6 +774,8 @@ class ExportPapersDialog(QDialog):
                         else ""
                     )
                 )
+        if self._scope_error is not None:
+            self.status.setText(self._scope_error)
         self._update_preview()
 
     def _format_changed(self) -> None:
@@ -769,7 +851,11 @@ class ExportPapersDialog(QDialog):
         try:
             text = self.render(papers[:PREVIEW_PAPERS], preview=True)
         except CitationKeyError:
-            text = self._bibtex_preview_by_paper(papers[:PREVIEW_PAPERS])
+            try:
+                text = self._bibtex_preview_by_paper(papers[:PREVIEW_PAPERS])
+            except (ValueError, sqlite3.Error) as exc:
+                text = f"Cannot render the preview: {exc}"
+                ready = False
         except (ValueError, sqlite3.Error) as exc:
             text = f"Cannot render the preview: {exc}"
             ready = False

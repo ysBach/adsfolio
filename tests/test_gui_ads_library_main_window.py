@@ -758,8 +758,14 @@ def test_follow_up_refreshes_run_in_the_same_job(
 def test_export_selection_opens_export_papers_with_the_selected_rows(
     window: MainWindow, monkeypatch, tmp_path: Path
 ):
+    from adsfolio.pdf.catalog import PdfCatalog
+
     rows = _three_records(tmp_path)
-    _set_current_root(window, tmp_path / "library", FakeRegistry(rows))
+    registry = FakeRegistry(rows)
+    catalog = PdfCatalog()
+    registry.path = catalog.path
+    catalog.close()
+    _set_current_root(window, tmp_path / "library", registry)
     window.model._rows = rows
     window.show()
     QApplication.processEvents()

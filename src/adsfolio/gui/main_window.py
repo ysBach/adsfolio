@@ -9,7 +9,8 @@ import os
 import sqlite3
 import time
 from collections import OrderedDict
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from copy import deepcopy
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -185,6 +186,28 @@ from .watch_sounds import (
 from .welcome import WelcomePanel
 
 logger = logging.getLogger(__name__)
+
+
+@contextmanager
+def _zero_busy_timeout(registries: Iterable[PdfRegistry]) -> Iterator[None]:
+    """Run a synchronous export read without changing borrowed timeouts."""
+    previous: dict[Any, int] = {}
+    for registry in registries:
+        catalog = getattr(registry, "catalog", None)
+        if catalog is None:
+            continue
+        if catalog not in previous:
+            previous[catalog] = int(
+                catalog._connection.execute("PRAGMA busy_timeout").fetchone()[0]
+            )
+    try:
+        for catalog in previous:
+            catalog.set_busy_timeout(0)
+        yield
+    finally:
+        for catalog, timeout in previous.items():
+            catalog.set_busy_timeout(timeout)
+
 
 _SettingsT = TypeVar("_SettingsT")
 DEFAULT_WINDOW_SIZE = (1280, 780)
@@ -4304,9 +4327,21 @@ class MainWindow(QMainWindow):
         """Enable export for the current library and its selected rows."""
         if hasattr(self, "export_selected_action"):
             has_library = self.current_root is not None or self.combined.enabled
-            self.export_selected_action.setEnabled(
-                has_library and self.table.selectionModel().hasSelection()
-            )
+            has_selected_pdf = False
+            selection = self.table.selectionModel()
+            table_model = self.table.model()
+            if selection is not None and table_model is not None:
+                for selected_range in selection.selection():
+                    parent = selected_range.parent()
+                    for row in range(selected_range.top(), selected_range.bottom() + 1):
+                        index = table_model.index(row, 0, parent)
+                        source = self._source_table_index(index)
+                        if source.isValid() and self.model.record_at(source.row()):
+                            has_selected_pdf = True
+                            break
+                    if has_selected_pdf:
+                        break
+            self.export_selected_action.setEnabled(has_library and has_selected_pdf)
             self.export_all_action.setEnabled(has_library)
             self.export_all_action.setToolTip(
                 "Export Papers: write every current PDF in the checked libraries "
@@ -5224,7 +5259,30 @@ class MainWindow(QMainWindow):
             return None
         # Use an own connection to the central catalog. The key window below
         # lets a watcher refresh close and replace the library's connection.
-        catalog = PdfCatalog()
+        try:
+            catalog = PdfCatalog(registry.path, initialized=True, busy_timeout_ms=0)
+        except sqlite3.Error as exc:
+            message = (
+                f"Cannot open the catalog for BibTeX export: {exc}. "
+                "Wait for the catalog to be available, then copy the BibTeX again."
+            )
+            self.status.showMessage(message, 10000)
+            QMessageBox.warning(self, "BibTeX export", message)
+            return None
+        try:
+            _ = catalog.schema_version
+        except sqlite3.Error as exc:
+            catalog.close()
+            message = (
+                f"Cannot read the catalog for BibTeX export: {exc}. "
+                "Wait for the catalog to be available, then copy the BibTeX again."
+            )
+            self.status.showMessage(message, 10000)
+            QMessageBox.warning(self, "BibTeX export", message)
+            return None
+        # The probe above reports a held lock at once. Key and ADS BibTeX
+        # saves then wait out short writes of the watcher or a worker.
+        catalog.set_busy_timeout(5000)
         try:
             service = LocalReferences(catalog, Config.load_key_policy())
             QApplication.setOverrideCursor(Qt.WaitCursor)
@@ -5239,7 +5297,12 @@ class MainWindow(QMainWindow):
             try:
                 return export_bibtex_asking_keys(self, service, ids)
             except (ValueError, sqlite3.Error) as exc:
-                QMessageBox.warning(self, "BibTeX export", str(exc))
+                message = (
+                    f"Cannot export BibTeX: {exc}. "
+                    "Wait for the catalog to be available, then copy the BibTeX again."
+                )
+                self.status.showMessage(message, 10000)
+                QMessageBox.warning(self, "BibTeX export", message)
                 return None
         finally:
             catalog.close()
@@ -5297,46 +5360,158 @@ class MainWindow(QMainWindow):
         """
         if self.current_root is None and not self.combined.enabled:
             return
+        selected = list(records if records is not None else self._selected_records())
+        if not all_papers and not selected:
+            return
         source = self._search_source()
         if source is None:
             return
         query = self.model.query
-        try:
-            everything = source.query_files(
-                order_by=query.order_by,
-                descending=query.descending,
-                secondary_order_by=query.secondary_order_by,
-                tertiary_order_by=query.tertiary_order_by,
-            )
-        except sqlite3.Error as exc:
-            QMessageBox.warning(self, "Export papers", str(exc))
-            return
-        selected = list(records if records is not None else self._selected_records())
         scopes = [ExportScope("selected", "Selected rows", selected)]
         filtered = self.current_view is not LibraryView.ALL or bool(query.search)
         if filtered:
+            try:
+                view_records = tuple(self.model.records)
+            except (sqlite3.Error, RuntimeError) as exc:
+                QMessageBox.warning(self, "Export papers", str(exc))
+                return
             scopes.append(
-                ExportScope(
-                    "view", "Rows in the current table view", self.model.records
+                ExportScope("view", "Rows in the current table view", view_records)
+            )
+        combined_mode = self.combined.enabled
+        if combined_mode:
+            checked_order = tuple(
+                dict.fromkeys(
+                    self._config_root_key(entry.path)
+                    for entry in (*self.config.roots, *self._unrestored_roots)
                 )
             )
+            present = set(source.registries)
+            missing_checked = tuple(
+                key
+                for key in checked_order
+                if key in self.combined.selected and key not in present
+            )
+            missing_checked = tuple(
+                dict.fromkeys(
+                    (*missing_checked, *sorted(self.combined.selected - present))
+                )
+            )
+            root_keys = tuple(source.registries) + missing_checked
+            root_labels = dict(source.labels)
+        else:
+            root_keys = (str(self.current_root),) if self.current_root else ()
+            root_labels = {}
+
+        def load_all_records() -> Sequence[dict[str, Any]]:
+            registries = {}
+            for root_key in root_keys:
+                registry = self.registries.get(root_key)
+                if registry is None:
+                    label = root_labels.get(root_key, root_key)
+                    raise RuntimeError(
+                        f"{label} is still opening or is no longer available."
+                    )
+                if combined_mode and not Path(root_key).is_dir():
+                    label = root_labels.get(root_key, root_key)
+                    raise RuntimeError(f"{label} is not connected.")
+                registries[root_key] = registry
+            if combined_mode:
+                export_source = CombinedLibrary(registries, labels=root_labels)
+            else:
+                export_source = registries.get(root_keys[0]) if root_keys else None
+            if export_source is None:
+                raise RuntimeError("The library is no longer available.")
+            with _zero_busy_timeout(registries.values()):
+                if not combined_mode:
+                    return export_source.query_files(
+                        order_by=query.order_by,
+                        descending=query.descending,
+                        secondary_order_by=query.secondary_order_by,
+                        tertiary_order_by=query.tertiary_order_by,
+                    )
+                rows = []
+                for root_key in root_keys:
+                    rows.extend(registries[root_key].query_files())
+                unavailable = export_source.unavailable_roots
+                if unavailable:
+                    names = ", ".join(root_labels.get(key, key) for key in unavailable)
+                    raise RuntimeError(f"Reconnect {names} and select All again.")
+                export_source.sort_records(
+                    rows,
+                    order_by=query.order_by,
+                    descending=query.descending,
+                    secondary_order_by=query.secondary_order_by,
+                    tertiary_order_by=query.tertiary_order_by,
+                )
+                return rows
+
+        all_scope_ready = all(
+            root_key in self.registries
+            and (not combined_mode or Path(root_key).is_dir())
+            for root_key in root_keys
+        )
+        count_files = getattr(source, "count_files_matching", None)
+        if callable(count_files):
+            if all_scope_ready:
+                try:
+                    with _zero_busy_timeout(
+                        self.registries[key]
+                        for key in root_keys
+                        if key in self.registries
+                    ):
+                        all_count = count_files()
+                except (sqlite3.Error, RuntimeError, ValueError):
+                    all_count = None
+            else:
+                all_count = None
+        else:
+            all_count = None
         scopes.append(
             ExportScope(
                 "all",
                 "All PDFs in the checked libraries"
                 if self.combined.enabled
                 else "All PDFs in this library",
-                everything,
+                count=all_count,
+                loader=load_all_records,
             )
         )
-        registry = self._export_registry(everything)
+        registry_records = selected
+        registry = self._export_registry(registry_records)
         if registry is None:
+            registry = next(iter(source.registries.values()), None)
+        if registry is None:
+            self.status.showMessage("This library has no current PDFs to export.", 5000)
+            return
+        if all_count == 0 and not selected:
             self.status.showMessage("This library has no current PDFs to export.", 5000)
             return
         # The window uses its own connection to the central catalog. A watcher
         # refresh closes and replaces the library's connection while the window
         # is open.
-        catalog = PdfCatalog()
+        try:
+            catalog = PdfCatalog(registry.path, initialized=True, busy_timeout_ms=0)
+        except sqlite3.Error as exc:
+            QMessageBox.warning(
+                self,
+                "Export papers",
+                f"Cannot open the catalog: {exc}. Wait for the catalog to be available, then open Export Papers again.",
+            )
+            return
+        try:
+            _ = catalog.schema_version
+        except sqlite3.Error as exc:
+            catalog.close()
+            QMessageBox.warning(
+                self,
+                "Export papers",
+                f"Cannot read the catalog: {exc}. Wait for the catalog to be available, then open Export Papers again.",
+            )
+            return
+        # The probe above reports a held lock at once. Key and ADS BibTeX
+        # saves then wait out short writes of the watcher or a worker.
+        catalog.set_busy_timeout(5000)
         try:
             dialog = ExportPapersDialog(
                 self,

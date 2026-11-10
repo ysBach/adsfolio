@@ -24,6 +24,19 @@
   **Notifications** after the other catalog operation ends.
 - **View → Show Notifications** opens messages when the Find bar is hidden.
 
+### Export papers
+
+- **Export Selection As…** requires at least one selected PDF.
+  **Export All As…** opens Export Papers so you can choose another scope.
+- Export actions return promptly when a catalog is locked. ADSfolio shows a
+  recovery message and keeps the table selection and current PDF.
+- In the combined view, Export All includes every checked library or reports
+  that a library is still opening or disconnected. Select All again after the
+  library opens or reconnects. Selected rows and the current table view remain
+  available from open libraries.
+- Copy BibTeX reports a catalog lock and leaves the clipboard unchanged. Retry
+  after the other catalog operation finishes.
+
 ### Speed
 
 - Sidebar and status counts read only the catalog fields they need. The app

@@ -272,7 +272,11 @@ To add PDFs to an ADS library from the combined view:
 If the selection contains PDFs from two or more libraries, the action is
 unavailable. Its tooltip gives the reason. **Export Selection As…** accepts
 PDFs from several libraries. **Export All As…** exports every current PDF in
-the checked libraries.
+the checked libraries. Export All captures the checked libraries when the
+dialog opens. If a checked library is still opening or is disconnected, Export
+Papers reports that the All scope is incomplete. Wait for the library to open
+or reconnect it. Then select **All PDFs** again. Selected rows and the current
+table view still use available libraries.
 
 Some **Tools** items apply to one library only. Examples are **Merge
 Annotations…**, the ADS refresh items for all records, and the watch settings.
@@ -353,9 +357,10 @@ The context menu offers these actions:
   **Update and Rename Selected by Identifier…** needs one row, because it asks
   for one identifier.
 - **Add to ADS Library…** adds the selected papers to an ADS library.
-- **Export Selection As…** opens [Export Papers](#export-papers) with the
-  selected rows. **Export All As…** opens it with every current PDF in this
-  library. **Copy BibTeX** copies the selection's BibTeX at once.
+- **Export Selection As…** opens [Export Papers](#export-papers) when the
+  selection contains a PDF. **Export All As…** opens it with every current PDF
+  in this library. Other scopes remain available in the dialog. **Copy BibTeX**
+  copies the selection's BibTeX at once.
 
 ![Context menu for three selected papers](_static/tutorial/selection-menu.png)
 
@@ -664,13 +669,19 @@ as **ADS BibTeX** below explains. Papers outside ADS export too, for
 example papers that Crossref or DataCite identified, or details that you
 entered.
 
-1. Choose **Tools → Export Selection As…** or **Tools → Export All As…**.
-   You can also right-click selected rows.
+1. Select at least one PDF before you choose **Tools → Export Selection As…**.
+   You can also right-click selected rows. Choose **Export All As…** to open
+   other scopes without a PDF selection.
 2. Under **Papers**, choose the selected rows, the rows in the current table
    view, or all PDFs in the library.
 3. Choose a **Format**. The settings below the format change with it.
 4. Check the preview of the first three papers.
 5. Click **Copy** or **Save As…**.
+
+If a catalog lock prevents the dialog from opening, ADSfolio reports the
+problem. Wait for the other catalog operation to finish, then open Export
+Papers again. If the All scope is unavailable, select it again after each
+checked library opens. ADSfolio clears the preview when a scope read fails.
 
 The summary counts ADS papers and other papers. Several PDFs of one paper
 export once. PDFs without paper details cannot export. The window counts

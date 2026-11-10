@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import os
+import sqlite3
+import time
 from pathlib import Path
 from typing import Any
 
@@ -122,6 +124,67 @@ def test_cancel_leaves_the_clipboard_unchanged(window, monkeypatch):
     )
     window._copy_records_bibtex(_records(window))
     assert QApplication.clipboard().text() == "before"
+
+
+def test_copy_bibtex_reports_lock_and_recovers_without_changing_timeout(
+    monkeypatch, qtbot, tmp_path
+):
+    from adsfolio.pdf.registry import PdfRegistry
+
+    monkeypatch.setattr(
+        Config, "get_config_dir", classmethod(lambda cls: tmp_path / "config")
+    )
+    root = tmp_path / "library"
+    root.mkdir()
+    pdf = root / "paper.pdf"
+    pdf.write_bytes(b"fictional paper")
+    seed = PdfRegistry(root)
+    seed.catalog.observe_file(
+        root,
+        pdf.name,
+        sha256="a" * 64,
+        size_bytes=pdf.stat().st_size,
+        mtime_ns=pdf.stat().st_mtime_ns,
+        metadata=_crossref("10.5555/test", "Fictional paper"),
+        status="unresolved",
+    )
+    database = seed.path
+    seed.close()
+    with sqlite3.connect(database) as connection:
+        assert (
+            connection.execute("PRAGMA journal_mode = DELETE").fetchone()[0] == "delete"
+        )
+    window = MainWindow()
+    qtbot.addWidget(window)
+    registry = PdfRegistry(root, initialized=True, catalog_path=database)
+    registry.catalog.set_busy_timeout(5000)
+    window._register_root(root, _initialized_registry=registry)
+    window._select_root(root)
+    registry.catalog.set_busy_timeout(5000)
+    records = [registry.catalog.get_file(root, pdf.name)]
+    warnings = []
+    monkeypatch.setattr(
+        QMessageBox, "warning", lambda *args: warnings.append(str(args[-1]))
+    )
+    QApplication.clipboard().setText("before")
+    writer = sqlite3.connect(registry.path, timeout=0)
+    writer.execute("BEGIN EXCLUSIVE")
+    try:
+        started = time.perf_counter()
+        window._copy_records_bibtex(records)
+        assert time.perf_counter() - started < 1
+        assert QApplication.clipboard().text() == "before"
+        assert warnings and "Wait for the catalog" in warnings[-1]
+        assert (
+            registry.catalog._connection.execute("PRAGMA busy_timeout").fetchone()[0]
+            == 5000
+        )
+    finally:
+        writer.rollback()
+        writer.close()
+
+    window._copy_records_bibtex(records)
+    assert QApplication.clipboard().text() != "before"
 
 
 def test_key_dialog_saves_only_complete_unique_valid_keys(window):

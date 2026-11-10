@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -24,6 +25,7 @@ from adsfolio.gui.export_dialog import (
     summarize_papers,
 )
 from adsfolio.pdf.registry import PdfRegistry
+from adsfolio.references import CitationKeyError
 
 STYLE = CitationStyle(
     id="short", name="Short", template="{first_author_surname} ({year}) {title}"
@@ -207,6 +209,119 @@ def test_opening_the_window_does_not_render_the_whole_list(qtbot, records, monke
     # The hidden list window has no papers of its own to render.
     assert dialog.list_dialog.local_docs == []
     assert all(count <= 3 for count in rendered)
+
+
+def test_scope_counts_do_not_load_records_and_selection_loads_once(qtbot, records):
+    registry, rows = records
+    calls = []
+    selected = ExportScope("selected", "Selected rows", records=rows[:1])
+    all_scope = ExportScope(
+        "all", "All PDFs", count=1, loader=lambda: calls.append(1) or rows
+    )
+    dialog = ExportPapersDialog(
+        None, [selected, all_scope], registry.catalog, [STYLE], initial_scope="selected"
+    )
+    qtbot.addWidget(dialog)
+
+    assert "1 PDFs" in dialog.scope_buttons["all"].text()
+    assert calls == []
+    assert "1 PDFs" in dialog.scope_buttons["selected"].text()
+    dialog.scope_buttons["all"].setChecked(True)
+    assert dialog.scope_buttons["all"].isChecked(), (
+        dialog.scope_group.checkedId(),
+        calls,
+        dialog.scope_buttons["selected"].isChecked(),
+    )
+    assert dialog.scope_group.checkedId() == 1, (calls, all_scope.count)
+    assert calls == [1], all_scope.count
+    assert "3 PDFs" in dialog.scope_buttons["all"].text()
+    assert all_scope.count == 3
+    dialog.scope_buttons["selected"].setChecked(True)
+    dialog.scope_buttons["all"].setChecked(True)
+    assert calls == [1]
+
+
+def test_failed_lazy_scope_clears_summary_and_can_retry(qtbot, records):
+    registry, rows = records
+    calls = []
+
+    def fail():
+        calls.append(1)
+        if len(calls) == 1:
+            raise RuntimeError("fictional catalog lock")
+        return rows
+
+    dialog = ExportPapersDialog(
+        None,
+        [
+            ExportScope("selected", "Selected rows", rows[:1]),
+            ExportScope("all", "All PDFs", count=len(rows), loader=fail),
+        ],
+        registry.catalog,
+        [STYLE],
+        initial_scope="selected",
+        initial_format=FORMAT_CITATION,
+    )
+    qtbot.addWidget(dialog)
+    dialog.scope_buttons["all"].click()
+
+    assert dialog.scope_buttons["all"].isEnabled()
+    assert dialog.scope_group.checkedId() == -1
+    assert dialog.summary.papers == ()
+    assert dialog.preview.toPlainText() == "No papers with details to export."
+    assert not dialog.copy_button.isEnabled()
+    assert not dialog.save_button.isEnabled()
+    assert "fictional catalog lock" in dialog.status.text()
+    assert "select this scope again" in dialog.status.text()
+    assert dialog.scope_buttons["all"].text() == "All PDFs (count unavailable)"
+    assert "fictional catalog lock" in dialog.scope_buttons["all"].toolTip()
+
+    dialog._fetch_finished({}, "fictional ADS request finished late")
+
+    assert "fictional catalog lock" in dialog.status.text()
+    assert "select this scope again" in dialog.status.text()
+    assert not dialog.copy_button.isEnabled()
+    assert not dialog.save_button.isEnabled()
+
+    dialog.scope_buttons["all"].click()
+    dialog._update_preview()
+    qtbot.waitUntil(dialog.copy_button.isEnabled, timeout=1000)
+    assert dialog._scope_error is None
+    assert dialog.summary.papers
+    assert dialog.copy_button.isEnabled()
+    assert dialog.scope_buttons["all"].text() == f"All PDFs ({len(rows):,} PDFs)"
+    assert dialog.scope_buttons["all"].toolTip() == ""
+
+
+def test_sqlite_failure_in_per_paper_preview_fallback_disables_export(
+    qtbot, records, monkeypatch
+):
+    registry, rows = records
+    dialog = _dialog(qtbot, registry, rows)
+    dialog.ads_style.setCurrentIndex(dialog.ads_style.findData(KeyStyle.MANUAL))
+    dialog._references.policy = dialog.key_policy()
+    with pytest.raises(CitationKeyError) as caught:
+        dialog._references.export_bibtex(
+            [int(rows[0]["document_id"])], exclude_fields=dialog.excluded_fields
+        )
+    key_error = caught.value
+    calls = []
+
+    def fail(_ids, **_kwargs):
+        calls.append(1)
+        if len(calls) == 1:
+            raise key_error
+        raise sqlite3.OperationalError("fictional catalog lock")
+
+    monkeypatch.setattr(dialog._references, "export_bibtex", fail)
+    dialog._update_preview()
+
+    assert len(calls) == 2
+    assert dialog.preview.toPlainText() == (
+        "Cannot render the preview: fictional catalog lock"
+    )
+    assert not dialog.copy_button.isEnabled()
+    assert not dialog.save_button.isEnabled()
 
 
 def test_filename_style_keys_and_left_out_fields(qtbot, records):
