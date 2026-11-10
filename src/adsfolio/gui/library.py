@@ -383,6 +383,9 @@ def _duplicate(record: dict[str, Any]) -> str:
     return f"{number} · {label}" if label and number else label
 
 
+# Column that only the Duplicates view shows.
+DUPLICATE_COLUMN = "duplicate_kind"
+
 BASE_COLUMNS: tuple[Column, ...] = (
     Column("title", "Title", 380, _title),
     Column("author", "First author", 160, _author),
@@ -414,7 +417,7 @@ BASE_COLUMNS: tuple[Column, ...] = (
     Column("mtime_ns", "Modified", 140, _mtime),
     # Shown only in the Duplicates view.
     Column(
-        "duplicate_kind",
+        DUPLICATE_COLUMN,
         "Duplicate",
         110,
         _duplicate,

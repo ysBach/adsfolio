@@ -11,6 +11,17 @@
   name. **Filename** sorts by the path inside the library. The option is off
   by default. One library does not show the **Library** column.
 
+### Table columns
+
+- After you closed ADSfolio outside the **Duplicates** view, the
+  **Duplicate** column previously came back at zero width. **Save
+  Appearance**, **Restore Default Column Order**, or **Show Folders** could
+  also hide it in the **Duplicates** view. The header menu could not show it
+  again. Now the **Duplicates** view always shows the column at its saved
+  width. **Show All Columns** does not show it in other views.
+- A column that you hid previously came back at zero width after a restart.
+  Now it comes back at its last width.
+
 ### Rename
 
 - **Apply** uses the source and target paths from the confirmed preview.

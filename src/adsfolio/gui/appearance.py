@@ -31,7 +31,7 @@ from PySide6.QtWidgets import (
 
 from .combined_library import LIBRARY_COLUMN
 from .config import MAX_ROW_HEIGHT, MAX_ROW_SPACING, GuiConfig
-from .library import ISO8601_TIMESTAMP_FORMAT, Column, format_mtime
+from .library import DUPLICATE_COLUMN, ISO8601_TIMESTAMP_FORMAT, Column, format_mtime
 
 _DETAIL_KEY = "detail"
 _DRAG_HANDLE = "≡"
@@ -105,18 +105,22 @@ class AppearanceDialog(QDialog):
             self._visual_key_order(self.font_table, self._table_row_keys)
         )
 
-    @property
-    def hidden_table_columns(self) -> list[str]:
-        """Return table-column keys configured as hidden."""
-        return self._shown_column_keys(
-            self._unchecked_keys(self.font_table, self._table_row_keys)
-        )
-
     def _shown_column_keys(self, keys: list[str]) -> list[str]:
         """Leave out the Library column while it is off."""
         if self.split_library_checkbox.isChecked():
             return keys
         return [key for key in keys if key != LIBRARY_COLUMN]
+
+    @property
+    def hidden_table_columns(self) -> list[str]:
+        """Return table-column keys configured as hidden."""
+        return [
+            key
+            for key in self._shown_column_keys(
+                self._unchecked_keys(self.font_table, self._table_row_keys)
+            )
+            if key != DUPLICATE_COLUMN
+        ]
 
     @property
     def column_alignments(self) -> dict[str, str]:
@@ -224,9 +228,14 @@ class AppearanceDialog(QDialog):
         )
         hidden = set(config.hidden_table_columns)
         for row, (key, name) in enumerate(rows):
-            self.font_table.setItem(
-                row, 0, self._visibility_item(name, key not in hidden)
-            )
+            if key == DUPLICATE_COLUMN:
+                # The Duplicates view shows this column, and no other view.
+                item = self._visibility_item(name, True)
+                item.setFlags(item.flags() & ~Qt.ItemIsUserCheckable)
+                item.setToolTip("Shows only in the Duplicates view.")
+            else:
+                item = self._visibility_item(name, key not in hidden)
+            self.font_table.setItem(row, 0, item)
             self._add_font_controls(
                 self.font_table, row, key, self._font_settings.get(key)
             )

@@ -143,6 +143,7 @@ from .icons import (
 )
 from .jobs import CommandJob, cli_argv
 from .library import (
+    DUPLICATE_COLUMN,
     Column,
     FileQuery,
     LibraryView,
@@ -328,10 +329,6 @@ class _SettingsPersistenceCoordinator(Generic[_SettingsT]):
                     f"{exc}; rollback failed: {'; '.join(rollback_failures)}"
                 ) from exc
             raise _SettingsPersistenceError(str(exc)) from exc
-
-
-# Column that only the Duplicates view shows.
-DUPLICATE_COLUMN = "duplicate_kind"
 
 
 @dataclass(frozen=True)
@@ -1281,7 +1278,8 @@ class MainWindow(QMainWindow):
             self.restoreState(QByteArray.fromBase64(self.config.window_state.encode()))
         for index, column in enumerate(self.columns):
             width = self.config.column_widths.get(column.key)
-            if width is not None:
+            # A column that was hidden at close saved width 0.
+            if width is not None and width > 0:
                 self.table.setColumnWidth(index, width)
         self._apply_table_layout()
         self.sidebar.setVisible(self.config.sidebar_visible)
@@ -6038,7 +6036,8 @@ class MainWindow(QMainWindow):
                 column.key,
                 self.config.column_widths.get(column.key, column.width),
             )
-            self.table.setColumnWidth(index, width)
+            # A column that was hidden at close saved width 0.
+            self.table.setColumnWidth(index, width if width > 0 else column.width)
             self.table.setItemDelegateForColumn(index, default_delegate)
             delegate: RowHeightDelegate | None = None
             if column.key == "author":
@@ -6078,10 +6077,9 @@ class MainWindow(QMainWindow):
                 header.moveSection(header.visualIndex(logical_index), visual_index)
                 self.table.setColumnHidden(
                     logical_index,
-                    key in self.config.hidden_table_columns
-                    or (
-                        key == DUPLICATE_COLUMN
-                        and self.current_view is not LibraryView.DUPLICATES
+                    (
+                        key in self.config.hidden_table_columns
+                        and key != DUPLICATE_COLUMN
                     )
                     or self._view_hides_column(key),
                 )
@@ -6092,19 +6090,23 @@ class MainWindow(QMainWindow):
     def _view_hides_column(self, key: str) -> bool:
         """Return whether the current view hides column `key` by itself.
 
-        The Library column shows only in the combined view. All PDFs of one
+        The Duplicate column shows only in the Duplicates view. The Library
+        column shows only in the combined view, because all PDFs of one
         library have the same library.
         """
+        if key == DUPLICATE_COLUMN:
+            return self.current_view is not LibraryView.DUPLICATES
         return key == LIBRARY_COLUMN and not self.combined.enabled
 
     def _live_column_width(self, index: int, column: Column) -> int:
         """Return the width to save for one column.
 
-        A hidden section has width 0. A column that the view hides keeps its
-        saved width, so it returns at that width.
+        A hidden section has width 0. A hidden column keeps its saved width,
+        so it returns at that width.
         """
-        if self._view_hides_column(column.key):
-            return self.config.column_widths.get(column.key, column.width)
+        if self._view_hides_column(column.key) or self.table.isColumnHidden(index):
+            width = self.config.column_widths.get(column.key, column.width)
+            return width if width > 0 else column.width
         return self.table.columnWidth(index)
 
     def _saved_hidden_columns(self) -> list[str]:
@@ -6114,6 +6116,9 @@ class MainWindow(QMainWindow):
         """
         hidden = []
         for index, column in enumerate(self.columns):
+            if column.key == DUPLICATE_COLUMN:
+                # Only the view shows or hides this column.
+                continue
             if self._view_hides_column(column.key):
                 if column.key in self.config.hidden_table_columns:
                     hidden.append(column.key)
