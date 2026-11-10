@@ -17,6 +17,7 @@ from PySide6.QtCore import (
     QObject,
     QPoint,
     QPointF,
+    QRect,
     QSize,
     Qt,
     Signal,
@@ -36,6 +37,7 @@ from PySide6.QtWidgets import (
     QApplication,
     QStyle,
     QStyledItemDelegate,
+    QStyleOptionHeader,
     QStyleOptionViewItem,
     QTreeView,
 )
@@ -102,11 +104,17 @@ def resolution_tooltip(record: dict[str, Any]) -> str:
 
 
 class LibraryTableView(QTreeView):
-    """Scroll horizontally in smaller steps for discrete wheels and while Shift is held."""
+    """Scroll horizontally in smaller steps for discrete wheels and while Shift is held.
+
+    A click on a header icon emits `header_icon_clicked` instead of sorting.
+    """
+
+    header_icon_clicked = Signal(int)
 
     def __init__(self, parent: Any = None) -> None:
         super().__init__(parent)
         self._shift_wheel_remainder = 0
+        self._icon_press: int | None = None
         # True while a click or key press handles a row change.
         for widget in (
             self.header().viewport(),
@@ -130,8 +138,65 @@ class LibraryTableView(QTreeView):
             )
         )
 
+    def header_icon_rect(self, logical: int) -> QRect:
+        """Return the header-viewport area of the icon of column `logical`.
+
+        The area is empty when the column header has no icon.
+        """
+        model = self.model()
+        header = self.header()
+        if model is None or not 0 <= logical < header.count():
+            return QRect()
+        icon = model.headerData(logical, Qt.Horizontal, Qt.DecorationRole)
+        if icon is None or header.isSectionHidden(logical):
+            return QRect()
+        option = QStyleOptionHeader()
+        option.initFrom(header)
+        option.rect = QRect(
+            header.sectionViewportPosition(logical),
+            0,
+            header.sectionSize(logical),
+            header.height(),
+        )
+        option.section = logical
+        option.text = str(model.headerData(logical, Qt.Horizontal, Qt.DisplayRole))
+        option.icon = icon
+        style = header.style()
+        label = style.subElementRect(QStyle.SubElement.SE_HeaderLabel, option, header)
+        size = style.pixelMetric(QStyle.PixelMetric.PM_SmallIconSize, option, header)
+        icon_rect = QRect(label.x(), label.center().y() - size // 2, size, size)
+        # A small margin makes the icon easier to hit.
+        return icon_rect.adjusted(-3, -3, 3, 3)
+
+    def _header_icon_at(self, position: QPoint) -> int | None:
+        logical = self.header().logicalIndexAt(position)
+        rect = self.header_icon_rect(logical)
+        return logical if rect.contains(position) else None
+
+    def _header_icon_event(self, event: QEvent) -> bool:
+        """Handle a click on a header icon. Return whether it was one."""
+        kind = event.type()
+        if kind in (QEvent.MouseButtonPress, QEvent.MouseButtonDblClick):
+            if event.button() != Qt.LeftButton:
+                return False
+            self._icon_press = self._header_icon_at(event.position().toPoint())
+            return self._icon_press is not None
+        if self._icon_press is None:
+            return False
+        if kind == QEvent.MouseMove:
+            # Do not start a column drag from the icon.
+            return True
+        if kind == QEvent.MouseButtonRelease:
+            pressed, self._icon_press = self._icon_press, None
+            if self._header_icon_at(event.position().toPoint()) == pressed:
+                self.header_icon_clicked.emit(pressed)
+            return True
+        return False
+
     def eventFilter(self, watched: QObject, event: QEvent) -> bool:
         """Apply the same discrete horizontal speed over the header and scrollbars."""
+        if watched is self.header().viewport() and self._header_icon_event(event):
+            return True
         if event.type() == QEvent.Wheel:
             is_shift = bool(event.modifiers() & Qt.ShiftModifier)
             angle = event.angleDelta()
@@ -761,6 +826,8 @@ class FileTableModel(QAbstractTableModel):
         self._column_fonts: dict[str, QFont] = {}
         self._column_colors: dict[str, QColor] = {}
         self._column_alignments: dict[str, str] = {}
+        # Header icon and tooltip of a column, such as the Filename path toggle.
+        self._header_extras: dict[str, tuple[Any, str]] = {}
         self._timestamp_format = ISO8601_TIMESTAMP_FORMAT
         if registry is not None:
             self._reload()
@@ -1037,11 +1104,46 @@ class FileTableModel(QAbstractTableModel):
                 self._column_alignments.get(self._columns[section].key)
             )
             return int(alignment | Qt.AlignVCenter) if alignment is not None else None
+        extra = self._header_extras.get(self._columns[section].key)
+        if role == Qt.DecorationRole:
+            return extra[0] if extra is not None else None
         if role == Qt.ToolTipRole:
+            if extra is not None:
+                return extra[1]
             return COUNT_COLUMN_TOOLTIPS.get(self._columns[section].key)
         if role != Qt.DisplayRole:
             return None
         return self._columns[section].header
+
+    def replace_column_text(self, columns: Sequence[Column]) -> None:
+        """Change how columns show their text, and keep rows and selection.
+
+        Parameters
+        ----------
+        columns : Sequence[Column]
+            Columns with the same keys, in the same order, as now.
+        """
+        normalized = tuple(columns)
+        if [column.key for column in normalized] != [
+            column.key for column in self._columns
+        ]:
+            raise ValueError("Columns must keep their keys and order")
+        self._columns = normalized
+        self._cell_cache.clear()
+        if not normalized:
+            return
+        self.headerDataChanged.emit(Qt.Horizontal, 0, len(normalized) - 1)
+        if self._rows:
+            self.dataChanged.emit(
+                self.index(0, 0),
+                self.index(len(self._rows) - 1, len(normalized) - 1),
+            )
+
+    def set_header_extra(self, key: str, icon: Any, tooltip: str) -> None:
+        """Show `icon` and `tooltip` in the header of column `key`."""
+        self._header_extras[key] = (icon, tooltip)
+        if self._columns:
+            self.headerDataChanged.emit(Qt.Horizontal, 0, len(self._columns) - 1)
 
     def canFetchMore(self, parent: QModelIndex = QModelIndex()) -> bool:
         """Return whether the snapshot holds rows not yet shown."""

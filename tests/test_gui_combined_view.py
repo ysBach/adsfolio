@@ -40,6 +40,8 @@ def combined_window(qtbot, monkeypatch, tmp_path):
             ],
             check_updates_automatically=False,
             citation_styles=[],
+            # These tests check the library and path in one Filename column.
+            filename_shows_path=True,
         )
     )
     window = MainWindow()

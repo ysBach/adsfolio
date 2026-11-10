@@ -89,6 +89,8 @@ class GuiConfig:
     show_folders: bool = True
     # Show the library of each PDF in its own column in the combined view.
     split_library_column: bool = False
+    # Show the path from the library root in the Filename column, not the name.
+    filename_shows_path: bool = False
     check_updates_automatically: bool = True
     skipped_update_version: str | None = None
     # ADSfolio version whose remembered-recheck prompt the user answered.
@@ -464,6 +466,7 @@ def _from_mapping(payload: Mapping[str, Any]) -> GuiConfig:
         detail_visible=_as_bool(payload.get("detail_visible"), True),
         show_folders=_as_bool(payload.get("show_folders"), True),
         split_library_column=_as_bool(payload.get("split_library_column"), False),
+        filename_shows_path=_as_bool(payload.get("filename_shows_path"), False),
         check_updates_automatically=_as_bool(
             payload.get("check_updates_automatically"), True
         ),

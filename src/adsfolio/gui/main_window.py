@@ -51,6 +51,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPlainTextEdit,
     QSplitter,
+    QStyle,
     QToolBar,
     QToolButton,
     QTreeView,
@@ -111,7 +112,7 @@ from .bibtex_export import (
     fetch_ads_bibtex_now,
 )
 from .citation_styles import CitationStylesDialog
-from .combined_library import LIBRARY_COLUMN, CombinedLibrary, with_library_column
+from .combined_library import LIBRARY_COLUMN, CombinedLibrary, table_columns
 from .combined_view import (
     CombinedRefreshRetry,
     CombinedViewController,
@@ -429,9 +430,13 @@ class MainWindow(QMainWindow):
         self._startup_finalization_done = False
         self._startup_watchers_started = False
         self._startup_unavailable_roots: set[str] = set()
-        self.columns = build_columns(self.config.citation_styles)
-        if self.config.split_library_column:
-            self.columns = with_library_column(self.columns, {})
+        self.columns = table_columns(
+            build_columns(self.config.citation_styles),
+            {},
+            combined=False,
+            split_library=self.config.split_library_column,
+            show_path=self.config.filename_shows_path,
+        )
         self.registries: dict[str, PdfRegistry] = {}
         self.root_entries: dict[str, RootEntry] = {}
         self.current_root: Path | None = None
@@ -441,9 +446,7 @@ class MainWindow(QMainWindow):
             else LibraryView.ALL
         )
         self._startup_preferred_view = self.current_view
-        sortable_columns = {
-            column.key for column in self.columns if column.sortable is True
-        }
+        sortable_columns = self._sortable_keys()
         sort_column_is_valid = self.config.sort_column in sortable_columns
         sort_column = (
             self.config.sort_column if sort_column_is_valid else "first_seen_at"
@@ -589,6 +592,7 @@ class MainWindow(QMainWindow):
         self.model.rowsInserted.connect(lambda *_args: self._update_status())
         self.model.query_failed.connect(self.statusBar().showMessage)
         self.table = LibraryTableView(self)
+        self.table.header_icon_clicked.connect(self._header_icon_clicked)
         self.table.setModel(self.model)
         self.table.setRootIsDecorated(False)
         self.table.setUniformRowHeights(True)
@@ -1080,6 +1084,12 @@ class MainWindow(QMainWindow):
         self.folders_action.setShortcut("Ctrl+Shift+O")
         self.folders_action.triggered.connect(self._toggle_folders)
         view.addAction(self.folders_action)
+        self.filename_path_action = QAction("Show Folder Paths in Filename", self)
+        self.filename_path_action.setCheckable(True)
+        self.filename_path_action.setChecked(self.config.filename_shows_path)
+        self.filename_path_action.triggered.connect(self._set_filename_shows_path)
+        view.addAction(self.filename_path_action)
+        self._sync_filename_path_controls()
         # These open the same pages as Settings, so each setting has one editor.
         self.appearance_action = QAction("Appearance…", self)
         self.appearance_action.triggered.connect(
@@ -4322,6 +4332,75 @@ class MainWindow(QMainWindow):
         selection.selectionChanged.connect(self._table_selection_changed)
         self._sync_table_sort_indicator()
         self._apply_table_layout()
+        self._sync_filename_path_controls()
+
+    def _sync_filename_path_controls(self) -> None:
+        """Show the Filename path toggle where it changes the table."""
+        shows_path = self.config.filename_shows_path
+        icon = self.style().standardIcon(
+            QStyle.StandardPixmap.SP_DirOpenIcon
+            if shows_path
+            else QStyle.StandardPixmap.SP_DirClosedIcon
+        )
+        tooltip = (
+            "Shows the path from the library root. Click the folder icon to "
+            "show file names only."
+            if shows_path
+            else "Shows file names only. Click the folder icon to show the path "
+            "from the library root."
+        )
+        self.model.set_header_extra("filename", icon, tooltip)
+        action = getattr(self, "filename_path_action", None)
+        combined = getattr(self, "combined", None)
+        if action is None or combined is None:
+            return
+        in_tree = (
+            combined.tree_model is not None
+            and self.table.model() is combined.tree_model
+        )
+        action.setEnabled(not in_tree)
+        action.setToolTip(
+            "The folder tree shows folders. Turn off View → Show Folders to use this."
+            if in_tree
+            else tooltip
+        )
+        blocker = QSignalBlocker(action)
+        action.setChecked(shows_path)
+        del blocker
+
+    def _header_icon_clicked(self, logical: int) -> None:
+        """Switch Filename between names and paths from its header icon."""
+        if 0 <= logical < len(self.columns) and self.columns[logical].key == "filename":
+            self._set_filename_shows_path(not self.config.filename_shows_path)
+
+    def _set_filename_shows_path(self, shows_path: bool) -> None:
+        """Show file names only, or the path from the library root, in Filename."""
+        if shows_path == self.config.filename_shows_path:
+            self._sync_filename_path_controls()
+            return
+        self.config.filename_shows_path = shows_path
+        columns = table_columns(
+            build_columns(self.config.citation_styles),
+            self.combined.labels(),
+            combined=self.combined.enabled,
+            split_library=self.config.split_library_column,
+            show_path=shows_path,
+        )
+        self.columns = columns
+        # The keys stay, so rows, selection, and widths stay too.
+        self.model.replace_column_text(columns)
+        self._sync_filename_path_controls()
+        self._save_column_preferences()
+
+    def _sortable_keys(self) -> set[str]:
+        """Return the sort keys of the columns.
+
+        Filename sorts by the path ("filename") or by the name ("file_name").
+        """
+        keys = {column.key for column in self.columns if column.sortable is True}
+        if "filename" in keys:
+            keys.add("file_name")
+        return keys
 
     def _sync_export_action(self) -> None:
         """Enable export for the current library and its selected rows."""
@@ -4998,6 +5077,8 @@ class MainWindow(QMainWindow):
             )
 
         menu.addSeparator()
+        if any(column.key == "filename" for column in self.columns):
+            menu.addAction(self.filename_path_action)
         show_all = menu.addAction("Show all columns")
         show_all.triggered.connect(self._show_all_columns)
         resize = menu.addAction("Resize columns to contents")
@@ -5066,8 +5147,12 @@ class MainWindow(QMainWindow):
             self._sync_table_sort_indicator()
             return
         column = self.columns[logical_index]
+        key = column.key
+        if key == "filename" and not self.config.filename_shows_path:
+            # Sort by what the column shows.
+            key = "file_name"
         self.apply_sort(
-            column.key,
+            key,
             order == Qt.DescendingOrder,
             self.current_query.secondary_order_by,
             self.current_query.tertiary_order_by,
@@ -5098,7 +5183,7 @@ class MainWindow(QMainWindow):
             initialization is incomplete, or saving fails. A save failure
             leaves the selection active and shows a notice.
         """
-        sortable = {column.key for column in self.columns if column.sortable}
+        sortable = self._sortable_keys()
         if (
             self._restoring_config
             or primary not in sortable
@@ -5130,7 +5215,11 @@ class MainWindow(QMainWindow):
             (
                 index
                 for index, column in enumerate(self.columns)
-                if column.key == query.order_by and column.sortable
+                if column.sortable
+                and (
+                    column.key == query.order_by
+                    or (query.order_by == "file_name" and column.key == "filename")
+                )
             ),
             None,
         )

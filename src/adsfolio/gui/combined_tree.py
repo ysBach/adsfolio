@@ -678,6 +678,14 @@ class CombinedTreeProxyModel(QAbstractProxyModel):
     def headerData(
         self, section: int, orientation: Qt.Orientation, role: int = Qt.DisplayRole
     ) -> Any:
+        if (
+            orientation == Qt.Horizontal
+            and section == self._filename_column
+            and role in (Qt.DecorationRole, Qt.ToolTipRole)
+        ):
+            # File rows of the tree show the name, and folder groups show the
+            # path. The Filename path toggle does not apply to the tree.
+            return None
         source = self.sourceModel()
         return (
             source.headerData(section, orientation, role)

@@ -262,10 +262,17 @@ class PreferencesDialog(QDialog):
         self.sort_tertiary = QComboBox(page)
         for combo in (self.sort_secondary, self.sort_tertiary):
             combo.addItem("None", None)
+        choices: list[tuple[str, str]] = []
         for column in columns:
-            label = column.header or "Resolution marker"
+            if column.key == "filename":
+                # Filename sorts by its path or by the name alone.
+                choices.append((f"{column.header}: path", "filename"))
+                choices.append((f"{column.header}: name only", "file_name"))
+            else:
+                choices.append((column.header or "Resolution marker", column.key))
+        for label, key in choices:
             for combo in (self.sort_primary, self.sort_secondary, self.sort_tertiary):
-                combo.addItem(label, column.key)
+                combo.addItem(label, key)
         for combo, current in (
             (self.sort_primary, self.window.current_query.order_by),
             (self.sort_secondary, self.window.current_query.secondary_order_by),

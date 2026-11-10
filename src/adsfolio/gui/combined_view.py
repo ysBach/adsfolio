@@ -33,7 +33,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..pdf.registry import PdfRegistry
-from .combined_library import CombinedLibrary, combined_columns, with_library_column
+from .combined_library import CombinedLibrary, table_columns
 from .combined_tree import CombinedTreeProxyModel
 from .library import LibraryView, build_columns
 from .models import FileTableModel
@@ -639,14 +639,15 @@ class CombinedViewController(QObject):
         window = self.window
         if self.tree_model is not None:
             self.tree_model.set_root_labels(self.labels())
-        columns = build_columns(window.config.citation_styles)
-        split = window.config.split_library_column
-        if split:
-            # One library hides the column. Its saved width, position, and
-            # visibility then stay in every view.
-            columns = with_library_column(columns, self.labels())
-        if self.enabled:
-            columns = combined_columns(columns, self.labels(), split_library=split)
+        # One library hides the Library column. Its saved width, position, and
+        # visibility then stay in every view.
+        columns = table_columns(
+            build_columns(window.config.citation_styles),
+            self.labels(),
+            combined=self.enabled,
+            split_library=window.config.split_library_column,
+            show_path=window.config.filename_shows_path,
+        )
         window.columns = columns
         window._applying_table_layout = True
         try:

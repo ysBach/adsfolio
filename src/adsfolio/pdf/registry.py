@@ -225,6 +225,8 @@ SORTABLE_COLUMNS = {
         "status",
         "source",
         "filename",
+        # The file name without its folders.
+        "file_name",
         # The library of each PDF. All PDFs of one root share it.
         "library",
         "relative_path",
@@ -1103,6 +1105,8 @@ class CentralPdfRegistry:
             return resolved, str(record.get("current_path") or "")
         if key == "filename":
             value = record.get("current_path")
+        elif key == "file_name":
+            value = Path(str(record.get("current_path") or "")).name
         elif key == "library":
             value = record.get("root")
         elif key == "relative_path":

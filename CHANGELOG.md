@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+### Filename column
+
+- The **Filename** column previously showed the file name for one library,
+  and the library and path in the combined view. You could not change it. Now
+  it shows the file name only. Click the folder icon in its header to show the
+  path from the library root. **View → Show Folder Paths in Filename** does the
+  same. A header click sorts by what the column shows. **Settings → Sorting**
+  offers **Filename: path** and **Filename: name only**.
+- The combined view now shows file names by default. To show the library and
+  path again, click the folder icon in the **Filename** header.
+
 ### Library column
 
 - In the combined view, one **Library / Filename** column previously showed

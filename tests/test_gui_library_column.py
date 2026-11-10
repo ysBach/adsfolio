@@ -20,6 +20,8 @@ from adsfolio.gui.preferences import PreferencesDialog
 
 def _config(roots, **options) -> GuiConfig:
     options.setdefault("show_folders", False)
+    # Filename shows the path, so the Library / Filename column shows both.
+    options.setdefault("filename_shows_path", True)
     return GuiConfig(
         roots=[
             RootEntry(str(root), label=f"Library {index}", recursive=True)

@@ -247,6 +247,56 @@ def with_library_column(
     return tuple(result)
 
 
+def table_columns(
+    columns: Sequence[Column],
+    labels: Mapping[str, str],
+    *,
+    combined: bool,
+    split_library: bool,
+    show_path: bool,
+) -> tuple[Column, ...]:
+    """Return the table columns for the view and the Filename settings.
+
+    Parameters
+    ----------
+    columns : sequence of Column
+        Columns of one library.
+    labels : mapping of str to str
+        Library label of each root.
+    combined : bool
+        The table shows the combined view.
+    split_library : bool
+        Insert the Library column before Filename.
+    show_path : bool
+        Filename shows the path from the library root. Otherwise it shows the
+        file name only.
+
+    Returns
+    -------
+    tuple of Column
+        Columns of the table.
+    """
+    if split_library:
+        columns = with_library_column(columns, labels)
+    if show_path and combined:
+        return combined_columns(columns, labels, split_library=split_library)
+
+    def path(record: dict[str, Any]) -> str:
+        return str(record.get("current_path") or "")
+
+    def name(record: dict[str, Any]) -> str:
+        current_path = str(record.get("current_path") or "")
+        return Path(current_path).name if current_path else ""
+
+    getter = path if show_path else name
+    return tuple(
+        replace(column, header="Filename", getter=getter)
+        if column.key == "filename"
+        else column
+        for column in columns
+    )
+
+
 def combined_columns(
     columns: Sequence[Column],
     labels: Mapping[str, str],

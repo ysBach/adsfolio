@@ -220,17 +220,18 @@ Each checked library appears as a collapsible folder group. Its subfolders
 appear as nested groups. Each PDF shows the system PDF icon and starts under
 its folder icon. The filename tooltip shows its library and full path.
 
-In a flat list, the **Library / Filename** column shows the library and the
-path of each PDF. To show the library in its own column:
+In a flat list with folder paths shown, the **Library / Filename** column
+shows the library and the path of each PDF. With names only, the column shows
+the file name. To show the library in its own column:
 
 1. Open **View → Appearance…**.
 2. On the **Table** tab, check **Show Library as its own column**.
 3. Select **Save Appearance**.
 
-The **Library** column then sorts by library name. **Filename** shows the path
-inside the library and sorts by that path. One library does not show the
-**Library** column. If you clear the option while the table sorts by
-**Library**, the table sorts by **Library / Filename**.
+The **Library** column then sorts by library name. With folder paths shown,
+**Filename** shows the path inside the library and sorts by that path. One
+library does not show the **Library** column. If you clear the option while the
+table sorts by **Library**, the table sorts by **Library / Filename**.
 
 When **Combine libraries** is clear, the library checkboxes stay in place but
 are gray. They show which libraries the combined view includes. To change
@@ -406,6 +407,14 @@ If a link column is too narrow for its full value, it shows a compact branded
 link badge. Its tooltip and accessible text keep the full value. The Filename
 column follows the configured activation and action: open the PDF or reveal it
 in the file manager.
+
+The **Filename** column shows the file name only. To show the folder path from
+the library root, click the folder icon in the **Filename** header. Click the
+icon again to show names only. **View → Show Folder Paths in Filename** and the
+header right-click menu do the same. A click on the header text sorts by what
+the column shows: the name or the path. To sort by the path while names show,
+choose **Filename: path** in **Settings → Sorting**. The folder tree always
+shows names, because its folder groups show the path.
 
 Right-click the table header to:
 
