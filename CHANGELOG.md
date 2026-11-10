@@ -52,6 +52,20 @@ Times come from offscreen tests with a copy of a 3,982-PDF catalog.
   Settings. **View → Sort Priorities…** now opens the **Sorting** section.
   Select **Save Appearance** or **Save Sorting** to apply changes.
 
+### Library sidebar
+
+- Clearing **Combine libraries** previously removed the library checkboxes.
+  Now the checkboxes stay in place and are gray. They show which libraries the
+  combined view includes. Check **Combine libraries** to change them.
+- A large `●` before a library name previously marked an active watcher. Now
+  an eye icon marks it. A warning icon shows that the watcher stopped or could
+  not start. The library tooltip gives the reason after **Last watch problem**.
+- **Watch Current Library** during a job previously showed the reason only in
+  the status bar. Now a notice also says that watching did not start, and why.
+  ADSfolio has no limit on the number of watched libraries.
+- With **Combine libraries**, a new library tooltip or watch icon previously
+  reloaded the whole combined table. Now only a checkbox click reloads it.
+
 ### Settings
 
 - On macOS, Settings previously kept text boxes narrow. It also cut a long

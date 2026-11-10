@@ -13,16 +13,20 @@ from PySide6.QtCore import (
     QItemSelectionModel,
     QModelIndex,
     QObject,
+    QPersistentModelIndex,
+    QRect,
     QSignalBlocker,
     Qt,
     QTimer,
 )
-from PySide6.QtGui import QIcon
+from PySide6.QtGui import QIcon, QPainter, QPalette
 from PySide6.QtWidgets import (
     QApplication,
     QFileIconProvider,
     QMenu,
     QStyle,
+    QStyledItemDelegate,
+    QStyleOptionViewItem,
     QTreeWidgetItem,
 )
 
@@ -33,6 +37,88 @@ from .notifications import Notice
 
 # The system PDF icon, found once from an existing PDF.
 _PDF_ICON: QIcon | None = None
+# Item data that marks a library checkbox as display-only.
+CHECK_LOCKED_ROLE = Qt.UserRole + 2
+
+
+def _selection_ranges(indexes: Sequence[QModelIndex]) -> QItemSelection:
+    """Group selected rows into contiguous ranges under each parent."""
+    grouped: dict[QPersistentModelIndex, list[QModelIndex]] = {}
+    for index in indexes:
+        if index.isValid():
+            grouped.setdefault(QPersistentModelIndex(index.parent()), []).append(index)
+    selection = QItemSelection()
+    for siblings in grouped.values():
+        siblings.sort(key=lambda index: index.row())
+        start = previous = siblings[0]
+        for index in siblings[1:]:
+            if index.row() == previous.row() + 1:
+                previous = index
+                continue
+            selection.select(start, previous)
+            start = previous = index
+        selection.select(start, previous)
+    return selection
+
+
+class LockedCheckDelegate(QStyledItemDelegate):
+    """Draw a display-only checkbox disabled and the rest of the row normally.
+
+    Qt draws the check indicator, text, and icon of an item in one state. For a
+    row with `CHECK_LOCKED_ROLE`, this delegate draws the row without its
+    indicator, at the same text position. It then draws the indicator in the
+    style's disabled state. The row stays enabled and selectable.
+    """
+
+    def paint(
+        self, painter: QPainter, option: QStyleOptionViewItem, index: QModelIndex
+    ) -> None:
+        """Draw the row, and draw a locked indicator as disabled."""
+        if not index.data(CHECK_LOCKED_ROLE):
+            super().paint(painter, option, index)
+            return
+        full = QStyleOptionViewItem(option)
+        self.initStyleOption(full, index)
+        widget = full.widget
+        style = widget.style() if widget is not None else QApplication.style()
+        rest = QStyleOptionViewItem(full)
+        rest.features &= ~QStyleOptionViewItem.ViewItemFeature.HasCheckIndicator
+        text_left = style.subElementRect(
+            QStyle.SubElement.SE_ItemViewItemText, full, widget
+        ).left()
+        rest_left = style.subElementRect(
+            QStyle.SubElement.SE_ItemViewItemText, rest, widget
+        ).left()
+        rect = QRect(rest.rect)
+        rect.setLeft(rect.left() + text_left - rest_left)
+        rest.rect = rect
+        check = QStyleOptionViewItem(full)
+        check.rect = style.subElementRect(
+            QStyle.SubElement.SE_ItemViewItemCheckIndicator, full, widget
+        )
+        check.state &= ~(
+            QStyle.StateFlag.State_HasFocus | QStyle.StateFlag.State_Enabled
+        )
+        check.state |= {
+            Qt.CheckState.Checked: QStyle.StateFlag.State_On,
+            Qt.CheckState.PartiallyChecked: QStyle.StateFlag.State_NoChange,
+        }.get(full.checkState, QStyle.StateFlag.State_Off)
+        # Some styles, such as Fusion, take colors from the current color group.
+        palette = QPalette(check.palette)
+        palette.setCurrentColorGroup(QPalette.ColorGroup.Disabled)
+        check.palette = palette
+        painter.save()
+        style.drawPrimitive(
+            QStyle.PrimitiveElement.PE_PanelItemViewItem, full, painter, widget
+        )
+        style.drawControl(QStyle.ControlElement.CE_ItemViewItem, rest, painter, widget)
+        style.drawPrimitive(
+            QStyle.PrimitiveElement.PE_IndicatorItemViewItemCheck,
+            check,
+            painter,
+            widget,
+        )
+        painter.restore()
 
 
 class CombinedViewController(QObject):
@@ -68,6 +154,7 @@ class CombinedViewController(QObject):
         )
         self.toggle_item.setFlags(self.toggle_item.flags() | Qt.ItemIsUserCheckable)
         self.toggle_item.setCheckState(0, Qt.Unchecked)
+        window.sidebar.setItemDelegate(LockedCheckDelegate(window.sidebar))
         window.sidebar.itemChanged.connect(self._item_changed)
 
     def register_root(self, item: QTreeWidgetItem, key: str) -> None:
@@ -112,24 +199,35 @@ class CombinedViewController(QObject):
         ]
 
     def _set_root_checkbox(self, item: QTreeWidgetItem, key: str) -> None:
+        """Show the saved choice. Only Combine libraries makes it editable."""
         blocker = QSignalBlocker(self.window.sidebar)
+        item.setCheckState(0, Qt.Checked if key in self.selected else Qt.Unchecked)
         if self.enabled:
             item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
-            item.setCheckState(0, Qt.Checked if key in self.selected else Qt.Unchecked)
+            item.setData(0, CHECK_LOCKED_ROLE, None)
         else:
-            item.setData(0, Qt.CheckStateRole, None)
             item.setFlags(item.flags() & ~Qt.ItemIsUserCheckable)
+            item.setData(0, CHECK_LOCKED_ROLE, True)
         del blocker
 
     def _item_changed(self, item: QTreeWidgetItem, column: int) -> None:
+        """Apply a checkbox click.
+
+        Qt also reports a new text, icon, or tooltip as an item change. Those
+        changes leave the check state as it is, so they reload nothing.
+        """
         if column != 0:
             return
         kind = item.data(0, Qt.UserRole + 1)
+        checked = item.checkState(0) == Qt.Checked
         if kind == "combined-toggle":
-            self.set_enabled(item.checkState(0) == Qt.Checked)
+            if checked != self.enabled:
+                self.set_enabled(checked)
         elif self.enabled and kind == "root":
             key = str(item.data(0, Qt.UserRole))
-            if item.checkState(0) == Qt.Checked:
+            if checked == (key in self.selected):
+                return
+            if checked:
                 self.selected.add(key)
             else:
                 self.selected.discard(key)

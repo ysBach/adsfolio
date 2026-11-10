@@ -15,13 +15,23 @@ from pathlib import Path
 from typing import Any, Generic, TypeVar
 
 from PySide6.QtCore import (
+    QEvent,
     QItemSelectionModel,
     QModelIndex,
     QSignalBlocker,
     Qt,
     QTimer,
 )
-from PySide6.QtGui import QAction, QActionGroup, QColor, QFont, QKeySequence
+from PySide6.QtGui import (
+    QAction,
+    QActionGroup,
+    QColor,
+    QFont,
+    QIcon,
+    QKeySequence,
+    QPalette,
+    QPixmap,
+)
 from PySide6.QtWidgets import (
     QApplication,
     QDialog,
@@ -1414,12 +1424,15 @@ class MainWindow(QMainWindow):
             watching = "Yes" if self.watch_controller.is_watching(Path(key)) else "No"
             autowatch = "On" if entry.watch_on_start else "Off"
             automatic = "On" if entry.auto_process_new_pdfs else "Off"
-            lines = (
+            lines = [
                 key,
                 f"Watching now: {watching}",
                 f"Autowatch at Start: {autowatch}",
                 f"Automatically Identify & Rename: {automatic}",
-            )
+            ]
+            error = self._watch_root_errors.get(key)
+            if watching == "No" and error:
+                lines.append(f"Last watch problem: {error}")
             item.setToolTip(0, "\n".join(lines))
 
     def _sync_ads_library_action(self) -> None:
@@ -1920,7 +1933,19 @@ class MainWindow(QMainWindow):
     def _start_root_watch(self, root: Path) -> bool:
         normalized = root.expanduser().resolve()
         if self._detail_edit_block_reason():
-            self.status.showMessage(self._operation_wait_message("starting a watcher"))
+            message = self._operation_wait_message("starting a watcher")
+            self._watch_root_errors[str(normalized)] = message
+            self.notice_bar.enqueue(
+                Notice(
+                    f"watch-start:{normalized}",
+                    f"Watching {normalized.name or normalized} did not start. "
+                    f"{message} Then choose Watch Current Library.",
+                    severity="warning",
+                    root=normalized,
+                )
+            )
+            self._update_root_watch_labels()
+            self.status.showMessage(message)
             return False
         entry = self.root_entries.get(str(normalized))
         if entry is None:
@@ -2137,6 +2162,11 @@ class MainWindow(QMainWindow):
 
     def _handle_watch_failure(self, failure: WatchFailure) -> None:
         event = failure.event
+        if event is None:
+            # A failure without a PDF concerns the watcher of the whole library.
+            key = str(failure.root.expanduser().resolve())
+            self._watch_root_errors[key] = failure.message
+            self._update_root_watch_labels()
         current = event is not None and self._is_current_watch_event(event)
         self.notice_bar.enqueue(
             Notice(
@@ -3343,13 +3373,54 @@ class MainWindow(QMainWindow):
                 continue
             count = self._safe_count(registry)
             count_text = str(count) if count is not None else "?"
-            marker = "● " if self.watch_controller.is_watching(Path(key)) else ""
-            item.setText(
-                0,
-                f"{marker}{entry.label or Path(key).name or key} ({count_text})",
-            )
+            item.setText(0, f"{entry.label or Path(key).name or key} ({count_text})")
+            self._set_root_watch_icon(item, key)
 
-    def _populate_views(self, registry: PdfRegistry) -> None:
+    def _set_root_watch_icon(
+        self, item: QTreeWidgetItem, key: str, *, redraw: bool = False
+    ) -> None:
+        """Show an eye for a watched library and a warning for a failed watcher.
+
+        A library without either state gets an empty icon of the same size, so
+        all library names stay aligned. Qt cannot compare icons, so every new
+        icon counts as an item change. The icon changes only with the state,
+        or with `redraw` after a palette change.
+        """
+        if self.watch_controller.is_watching(Path(key)):
+            self._watch_root_errors.pop(key, None)
+            state = "watching"
+        elif key in self._watch_root_errors:
+            state = "warning"
+        else:
+            state = ""
+        if not redraw and item.data(0, WATCH_ICON_ROLE) == state:
+            return
+        if state:
+            icon = vector_icon(state, self.sidebar, QPalette.Text)
+        else:
+            blank = QPixmap(ICON_SIZE)
+            blank.fill(Qt.transparent)
+            icon = QIcon(blank)
+        blocker = QSignalBlocker(self.sidebar)
+        item.setData(0, WATCH_ICON_ROLE, state)
+        item.setIcon(0, icon)
+        del blocker
+
+    def _update_root_watch_icons(self) -> None:
+        """Redraw library watch icons, for example after a palette change."""
+        for index in range(self.libraries_item.childCount()):
+            item = self.libraries_item.child(index)
+            if item.data(0, Qt.UserRole + 1) == "root":
+                key = str(item.data(0, Qt.UserRole))
+                self._set_root_watch_icon(item, key, redraw=True)
+
+    def changeEvent(self, event: QEvent) -> None:
+        """Redraw icons that tree items cannot update by themselves."""
+        super().changeEvent(event)
+        if event.type() == QEvent.PaletteChange and hasattr(self, "libraries_item"):
+            self._update_root_watch_icons()
+
+    def _populate_views(self, registry: Any) -> None:
         """Show virtual-view counts for the selected library root."""
         scope = self._view_count_scope(registry)
         generation = self._safe_count_generation(registry)
@@ -5526,11 +5597,11 @@ class MainWindow(QMainWindow):
             item = self.libraries_item.child(index)
             if item.data(0, Qt.UserRole) == key:
                 count = self._safe_count(self.registries[key])
-                marker = "● " if self.watch_controller.is_watching(root) else ""
                 item.setText(
                     0,
-                    f"{marker}{entry.label or root.name or key} ({count if count is not None else '?'})",
+                    f"{entry.label or root.name or key} ({count if count is not None else '?'})",
                 )
+                self._set_root_watch_icon(item, key)
                 break
         if self.combined.enabled and key in self.combined.selected:
             self.combined.refresh()

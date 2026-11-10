@@ -65,6 +65,9 @@ _PATHS = {
     "warning": '<path d="m12 3 10 18H2zM12 9v5M12 17h.01"/>',
     "error": '<circle cx="12" cy="12" r="9"/><path d="m9 9 6 6M15 9l-6 6"/>',
     "success": '<circle cx="12" cy="12" r="9"/><path d="m7 12 3 3 7-7"/>',
+    # Open eye: the library watcher runs (Lucide "eye", ISC license).
+    "watching": '<path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7z"/>'
+    '<circle cx="12" cy="12" r="3"/>',
 }
 
 

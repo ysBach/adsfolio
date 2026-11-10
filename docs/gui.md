@@ -199,6 +199,10 @@ without a question. ADSfolio then asks how to watch the new library:
 Each checked library appears as a collapsible folder group. Its subfolders
 appear as nested groups. Each PDF shows the system PDF icon and starts under
 its folder icon. The filename tooltip shows its library and full path.
+
+When **Combine libraries** is clear, the library checkboxes stay in place but
+are gray. They show which libraries the combined view includes. To change
+them, check **Combine libraries** first.
 Search, sorting, and views use the checked libraries. The combined view does
 not move PDFs. Existing watchers keep running.
 
@@ -1568,8 +1572,11 @@ The watcher recognizes the ``.pdf`` suffix in any letter case, such as
 If a periodic scan cannot read a folder or file, it reports a watch failure and
 leaves the tracked files unchanged. It does not mark them missing.
 
-A ``●`` beside the root label marks the active watcher. You cannot change
-recursive root scope until you stop that root's watcher. Foreground
+An eye icon beside the library name marks the active watcher. A warning icon
+means that the watcher stopped or could not start. The library tooltip gives
+the reason after **Last watch problem**. If a job blocks a new watcher, a
+notice says so. Choose **Watch Current Library** again after the job. You
+cannot change recursive root scope until you stop that root's watcher. Foreground
 **Identify** and **Rename** operations temporarily pause the root's worker
 catalog writes. Filesystem arrivals continue to queue meanwhile. After
 cancellation, failure, or completion, the operations resume the worker.

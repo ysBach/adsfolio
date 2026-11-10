@@ -90,8 +90,8 @@ collision keeps the affected files in place. Review the reported issue and
 retry. See [Watching library roots](gui.md#watching-library-roots).
 
 Each library has its own watch settings. ADSfolio does not watch a library
-until you turn watching on for it. A ``●`` beside the library name shows an
-active watcher. The library tooltip shows all three watch settings. See
+until you turn watching on for it. An eye icon beside the library name shows
+an active watcher. The library tooltip shows all three watch settings. See
 [Watching library roots](gui.md#watching-library-roots) for details. For the
 command line, see [Tutorial 4, step 4](cli-tutorials/04-pdf-workflows.md#4-watch-a-folder-for-new-pdfs).
 
