@@ -814,6 +814,8 @@ class FileTableModel(QAbstractTableModel):
         self._snapshot: list[dict[str, Any]] = []
         self._page_snapshot: Any | None = None
         self._page_snapshot_closed_incomplete = False
+        # The owning window closed. The view must not read more pages.
+        self._closed = False
         # Records before search and sort, reused while the catalog is unchanged.
         self._natural: list[dict[str, Any]] = []
         self._natural_key: tuple[Any, ...] | None = None
@@ -1149,6 +1151,7 @@ class FileTableModel(QAbstractTableModel):
         """Return whether the snapshot holds rows not yet shown."""
         return (
             not parent.isValid()
+            and not self._closed
             and not self._page_snapshot_closed_incomplete
             and len(self._rows) < self._total
         )
@@ -1318,7 +1321,13 @@ class FileTableModel(QAbstractTableModel):
             )
 
     def close(self) -> None:
-        """Release the catalog snapshot when the owning window closes."""
+        """Release the catalog snapshot when the owning window closes.
+
+        The view can still ask for more rows while the window closes. After
+        this call the model has no more rows to load, so it does not insert
+        rows whose display reads closed catalogs.
+        """
+        self._closed = True
         if (
             not self._page_snapshot_closed_incomplete
             and self._page_snapshot is not None

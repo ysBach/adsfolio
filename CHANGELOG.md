@@ -40,6 +40,9 @@
   width. **Show All Columns** does not show it in other views.
 - A column that you hid previously came back at zero width after a restart.
   Now it comes back at its last width.
+- Closing ADSfolio right after a sort, while table rows still loaded,
+  previously logged "Cannot operate on a closed database" errors. Now the
+  table stops loading rows when the window closes.
 
 ### Rename
 
