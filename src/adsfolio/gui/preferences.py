@@ -7,7 +7,8 @@ from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
-from PySide6.QtCore import QSignalBlocker, Qt
+from PySide6.QtCore import QEvent, QObject, QSignalBlocker, Qt
+from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -16,6 +17,7 @@ from PySide6.QtWidgets import (
     QFormLayout,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QListWidget,
     QMessageBox,
     QPushButton,
@@ -37,6 +39,7 @@ from .combined_library import with_library_column
 from .config import save_config
 from .dialogs import IdentifyDialog, RenameDialog
 from .form_help import add_form_help, grow_form_fields
+from .settings_search import Highlighter, find_matches, matches, reveal
 from .watch_sounds import WatchSoundChoice
 
 
@@ -70,6 +73,27 @@ class PreferencesDialog(QDialog):
             )
         )
         content = QHBoxLayout()
+        side = QVBoxLayout()
+        self.search = QLineEdit(self)
+        self.search.setPlaceholderText("Search settings")
+        self.search.setAccessibleName("Search settings")
+        self.search.setClearButtonEnabled(True)
+        self.search.setToolTip(
+            "Type words from a setting, its explanation, or its choices. The "
+            "list keeps the sections that contain them. Return moves to the "
+            "first match. Escape clears the search."
+        )
+        self.search.setMaximumWidth(190)
+        self.search.textChanged.connect(self._search_settings)
+        self.search.returnPressed.connect(self._focus_first_match)
+        self.search.installEventFilter(self)
+        find = QShortcut(QKeySequence.StandardKey.Find, self)
+        find.activated.connect(self._focus_search)
+        self.search_status = QLabel(self)
+        self.search_status.setWordWrap(True)
+        self.search_status.setMaximumWidth(190)
+        self.search_status.hide()
+        self._highlighter = Highlighter()
         self.categories = QListWidget(self)
         self.categories.setAccessibleName("Settings categories")
         self.categories.addItems(
@@ -88,7 +112,10 @@ class PreferencesDialog(QDialog):
         self.pages = QStackedWidget(self)
         for _ in self._builders:
             self.pages.addWidget(QWidget(self.pages))
-        content.addWidget(self.categories)
+        side.addWidget(self.search)
+        side.addWidget(self.search_status)
+        side.addWidget(self.categories, 1)
+        content.addLayout(side)
         content.addWidget(self.pages, 1)
         outer.addLayout(content, 1)
         buttons = QDialogButtonBox(QDialogButtonBox.Close, self)
@@ -106,16 +133,97 @@ class PreferencesDialog(QDialog):
     def _select_page(self, index: int) -> None:
         if not 0 <= index < len(self._builders):
             return
-        if index not in self._built:
-            page = self._builders[index]()
-            grow_form_fields(page)
-            add_form_help(page)
-            old = self.pages.widget(index)
-            self.pages.removeWidget(old)
-            old.deleteLater()
-            self.pages.insertWidget(index, page)
-            self._built.add(index)
+        self._build_page(index)
         self.pages.setCurrentIndex(index)
+        self._mark_matches()
+
+    def _build_page(self, index: int) -> None:
+        if index in self._built:
+            return
+        page = self._builders[index]()
+        grow_form_fields(page)
+        add_form_help(page)
+        old = self.pages.widget(index)
+        self.pages.removeWidget(old)
+        old.deleteLater()
+        self.pages.insertWidget(index, page)
+        self._built.add(index)
+
+    # Search ---------------------------------------------------------------
+
+    def eventFilter(self, watched: QObject, event: QEvent) -> bool:
+        """Clear a search with Escape before Escape closes the window."""
+        if (
+            watched is self.search
+            and event.type() == QEvent.Type.KeyPress
+            and event.key() == Qt.Key.Key_Escape
+            and self.search.text()
+        ):
+            self.search.clear()
+            return True
+        return super().eventFilter(watched, event)
+
+    def _focus_search(self) -> None:
+        self.search.setFocus()
+        self.search.selectAll()
+
+    def _section_matches(self, index: int, query: str) -> bool:
+        if matches(query, self.categories.item(index).text()):
+            return True
+        return bool(find_matches(self.pages.widget(index), query))
+
+    def _search_settings(self, query: str) -> None:
+        """Keep the sections that contain `query`, and mark its matches."""
+        if not query.split():
+            for row in range(self.categories.count()):
+                self.categories.setRowHidden(row, False)
+            self.search_status.hide()
+            self._highlighter.clear()
+            return
+        # A section is searchable only after it is built.
+        for index in range(len(self._builders)):
+            self._build_page(index)
+        shown = [
+            index
+            for index in range(len(self._builders))
+            if self._section_matches(index, query)
+        ]
+        for row in range(self.categories.count()):
+            self.categories.setRowHidden(row, row not in shown)
+        if not shown:
+            self.search_status.setText("No settings match.")
+            self.search_status.show()
+            self._highlighter.clear()
+            return
+        self.search_status.hide()
+        if self.categories.currentRow() in shown:
+            self._mark_matches()
+        else:
+            self.categories.setCurrentRow(shown[0])
+
+    def _current_matches(self) -> list:
+        query = self.search.text()
+        if not query.split():
+            return []
+        return find_matches(self.pages.currentWidget(), query)
+
+    def _mark_matches(self) -> None:
+        """Mark matches in the current section and show the first one."""
+        found = self._current_matches()
+        self._highlighter.mark(found)
+        if found:
+            reveal(found[0])
+
+    def _focus_first_match(self) -> None:
+        found = self._current_matches()
+        if not found:
+            return
+        reveal(found[0])
+        target = found[0].anchor
+        if target is not None and target.focusPolicy() != Qt.FocusPolicy.NoFocus:
+            target.setFocus()
+        if found[0].item is not None:
+            found[0].item.tableWidget().setCurrentItem(found[0].item)
 
     @staticmethod
     def _message(text: str, parent: QWidget) -> QLabel:

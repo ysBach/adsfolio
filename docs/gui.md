@@ -104,6 +104,16 @@ appears in the application menu. The window groups the desktop settings:
 A **?** button next to a setting shows its explanation when you click it.
 Hovering over the setting also shows the explanation.
 
+To find a setting, type in **Search settings** above the section list:
+
+1. Type words from the setting, its explanation, or its choices.
+2. The list keeps the sections that contain all the words. Matching settings
+   have a yellow glow.
+3. Press **Return** to move to the first match.
+4. Press **Escape** to clear the search.
+
+Press **⌘F** (**Ctrl+F**) in Settings to move to the search box.
+
 Select **Save** in each section to keep its changes. Library watching controls
 apply immediately. Closing Settings discards unsaved edits in the other sections.
 The Appearance section applies its changes when you select **Save Appearance**.

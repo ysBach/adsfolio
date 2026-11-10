@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### Settings search
+
+- Settings previously had no search. You had to open each section to find a
+  setting. Now **Search settings** above the section list keeps the sections
+  that contain the typed words, and marks the matching settings. It also
+  searches explanations and choices. **Return** moves to the first match.
+  **Escape** clears the search. **⌘F** (**Ctrl+F**) moves to the search box.
+
 ### Filename column
 
 - The **Filename** column previously showed the file name for one library,
