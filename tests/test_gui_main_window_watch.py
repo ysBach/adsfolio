@@ -23,10 +23,16 @@ from PySide6.QtWidgets import (
 
 from adsfolio.config import Config
 from adsfolio.gui.config import GuiConfig, RootEntry
-from adsfolio.gui.main_window import MainWindow
+from adsfolio.gui.library import LibraryView
+from adsfolio.gui.main_window import MainWindow, _LibraryViewContext
+from adsfolio.gui.models import PAGE_SIZE
 from adsfolio.gui.watch import WatchFailure
 from adsfolio.pdf.identify_settings import IdentifySettings, IdentifyStrategy
-from adsfolio.pdf.registry import LOCKED_METADATA_FIELDS_KEY, CentralPdfRegistryState
+from adsfolio.pdf.registry import (
+    LOCKED_METADATA_FIELDS_KEY,
+    CentralPdfRegistryState,
+    PdfRegistry,
+)
 from adsfolio.pdf.rename_settings import RenameSettings
 from adsfolio.pdf.watch_session import (
     ArrivalIdentity,
@@ -141,6 +147,7 @@ def _window_factory(monkeypatch, qtbot, config: GuiConfig):
     )
     window = MainWindow(watch_controller=controller)
     qtbot.addWidget(window)
+    qtbot.waitUntil(lambda: not window._startup_roots_pending)
     return window, controller, saves
 
 
@@ -255,6 +262,419 @@ def test_local_refresh_waits_for_watcher_and_keeps_origin_root(
     assert window.registries[str(first)].query_files() == []
     assert controller.resume_calls == [first]
     assert window.refresh_action.isEnabled()
+
+
+def test_toolbar_local_refresh_keeps_selection_clicked_during_scan(
+    monkeypatch, qtbot, tmp_path
+) -> None:
+    import adsfolio.gui.refresh_job as refresh_job_module
+
+    monkeypatch.setattr(MainWindow, "_queue_startup_ads_rechecks", lambda self: None)
+    root = tmp_path / "library"
+    root.mkdir()
+    for name in ("alpha.pdf", "beta.pdf"):
+        writer = PdfWriter()
+        writer.add_blank_page(width=300, height=400)
+        writer.write(root / name)
+    window, _controller, _saves = _window_factory(
+        monkeypatch, qtbot, GuiConfig(roots=[RootEntry(str(root))])
+    )
+    entered, release = Event(), Event()
+    refresh = refresh_job_module.PdfRegistry.refresh_local_files
+
+    def paused_refresh(registry, **kwargs):
+        entered.set()
+        assert release.wait(5), "Test worker was not released"
+        return refresh(registry, **kwargs)
+
+    monkeypatch.setattr(
+        refresh_job_module.PdfRegistry, "refresh_local_files", paused_refresh
+    )
+    window.show()
+    qtbot.waitUntil(window.isVisible)
+    alpha = next(
+        window.model.index(row, 0)
+        for row in range(window.model.rowCount())
+        if window.model.record_at(row)["current_path"] == "alpha.pdf"
+    )
+    alpha = window._view_table_index(alpha)
+    window.table.selectionModel().select(
+        alpha, QItemSelectionModel.ClearAndSelect | QItemSelectionModel.Rows
+    )
+    window.table.selectionModel().setCurrentIndex(alpha, QItemSelectionModel.NoUpdate)
+
+    window.refresh_action.trigger()
+    qtbot.waitUntil(entered.is_set)
+    beta = next(
+        window.model.index(row, 0)
+        for row in range(window.model.rowCount())
+        if window.model.record_at(row)["current_path"] == "beta.pdf"
+    )
+    beta = window._view_table_index(beta)
+    qtbot.mouseClick(
+        window.table.viewport(),
+        Qt.LeftButton,
+        pos=window.table.visualRect(beta).center(),
+    )
+    assert [row["current_path"] for row in window._selected_records()] == ["beta.pdf"]
+    try:
+        release.set()
+        qtbot.waitUntil(
+            lambda: (
+                window.job is None
+                and window._local_refresh_context is None
+                and "history retained" in window.status.currentMessage()
+            )
+        )
+    finally:
+        release.set()
+
+    assert [row["current_path"] for row in window._selected_records()] == ["beta.pdf"]
+    assert window._selected_record()["current_path"] == "beta.pdf"
+
+
+def test_toolbar_local_refresh_preserves_user_cleared_selection(
+    monkeypatch, qtbot, tmp_path
+) -> None:
+    import adsfolio.gui.refresh_job as refresh_job_module
+
+    monkeypatch.setattr(MainWindow, "_queue_startup_ads_rechecks", lambda self: None)
+    root = tmp_path / "library"
+    root.mkdir()
+    writer = PdfWriter()
+    writer.add_blank_page(width=300, height=400)
+    writer.write(root / "alpha.pdf")
+    window, _controller, _saves = _window_factory(
+        monkeypatch, qtbot, GuiConfig(roots=[RootEntry(str(root))])
+    )
+    entered, release = Event(), Event()
+    refresh = refresh_job_module.PdfRegistry.refresh_local_files
+
+    def paused_refresh(registry, **kwargs):
+        entered.set()
+        assert release.wait(5), "Test worker was not released"
+        return refresh(registry, **kwargs)
+
+    monkeypatch.setattr(
+        refresh_job_module.PdfRegistry, "refresh_local_files", paused_refresh
+    )
+    window.show()
+    qtbot.waitUntil(window.isVisible)
+    index = window._view_table_index(window.model.index(0, 0))
+    window.table.selectionModel().select(
+        index, QItemSelectionModel.ClearAndSelect | QItemSelectionModel.Rows
+    )
+    window.refresh_action.trigger()
+    qtbot.waitUntil(entered.is_set)
+    window.table.selectionModel().clearSelection()
+    try:
+        release.set()
+        qtbot.waitUntil(
+            lambda: (
+                window.job is None
+                and window._local_refresh_context is None
+                and "history retained" in window.status.currentMessage()
+            )
+        )
+    finally:
+        release.set()
+
+    assert window._selected_records() == ()
+
+
+def test_toolbar_local_refresh_restores_selection_in_nested_folder(
+    monkeypatch, qtbot, tmp_path
+) -> None:
+    import adsfolio.gui.refresh_job as refresh_job_module
+
+    monkeypatch.setattr(MainWindow, "_queue_startup_ads_rechecks", lambda self: None)
+    root = tmp_path / "library"
+    nested = root / "chapter"
+    nested.mkdir(parents=True)
+    writer = PdfWriter()
+    writer.add_blank_page(width=300, height=400)
+    writer.write(nested / "inner.pdf")
+    window, _controller, _saves = _window_factory(
+        monkeypatch,
+        qtbot,
+        GuiConfig(roots=[RootEntry(str(root), recursive=True)], show_folders=True),
+    )
+    tree = window.combined.tree_model
+    while tree is not None and tree.is_loading:
+        tree._load_next_page()
+    entered, release = Event(), Event()
+    refresh = refresh_job_module.PdfRegistry.refresh_local_files
+
+    def paused_refresh(registry, **kwargs):
+        entered.set()
+        assert release.wait(5), "Test worker was not released"
+        return refresh(registry, **kwargs)
+
+    monkeypatch.setattr(
+        refresh_job_module.PdfRegistry, "refresh_local_files", paused_refresh
+    )
+    index = next(
+        window._view_table_index(window.model.index(row, 0))
+        for row in range(window.model.rowCount())
+        if window.model.record_at(row)["current_path"] == "chapter/inner.pdf"
+    )
+    assert index.parent().isValid()
+    window.table.selectionModel().select(
+        index, QItemSelectionModel.ClearAndSelect | QItemSelectionModel.Rows
+    )
+    window.table.selectionModel().setCurrentIndex(index, QItemSelectionModel.NoUpdate)
+    window.show()
+    window.refresh_action.trigger()
+    qtbot.waitUntil(entered.is_set)
+    try:
+        release.set()
+        qtbot.waitUntil(
+            lambda: (
+                window.job is None
+                and window._local_refresh_context is None
+                and "history retained" in window.status.currentMessage()
+            )
+        )
+    finally:
+        release.set()
+
+    assert [record["current_path"] for record in window._selected_records()] == [
+        "chapter/inner.pdf"
+    ]
+    assert window._selected_record()["current_path"] == "chapter/inner.pdf"
+
+
+def test_local_refresh_shows_pdf_moved_into_new_nested_folder(
+    monkeypatch, qtbot, tmp_path
+) -> None:
+    monkeypatch.setattr(MainWindow, "_queue_startup_ads_rechecks", lambda self: None)
+    root = tmp_path / "library"
+    root.mkdir()
+    writer = PdfWriter()
+    writer.add_blank_page(width=300, height=400)
+    writer.write(root / "a.pdf")
+    # More than one page of rows puts the moved PDF far below the old position.
+    for number in range(PAGE_SIZE + 20):
+        (root / f"f{number:05d}.pdf").write_bytes(b"fictional %d" % number)
+    window, _controller, _saves = _window_factory(
+        monkeypatch,
+        qtbot,
+        GuiConfig(roots=[RootEntry(str(root), recursive=True)], show_folders=True),
+    )
+    window.resize(500, 600)
+    window.show()
+    tree = window.combined.tree_model
+    while tree is not None and tree.is_loading:
+        tree._load_next_page()
+    horizontal = window.table.horizontalScrollBar()
+    assert horizontal.maximum() > 0
+    horizontal.setValue(horizontal.maximum() // 2)
+    left = horizontal.value()
+    index = next(
+        window._view_table_index(window.model.index(row, 0))
+        for row in range(window.model.rowCount())
+        if window.model.record_at(row)["current_path"] == "a.pdf"
+    )
+    window.table.selectionModel().select(
+        index, QItemSelectionModel.ClearAndSelect | QItemSelectionModel.Rows
+    )
+    window.table.selectionModel().setCurrentIndex(index, QItemSelectionModel.NoUpdate)
+    destination = root / "zzz" / "deeper" / "a.pdf"
+    destination.parent.mkdir(parents=True)
+    (root / "a.pdf").rename(destination)
+
+    window.refresh_action.trigger()
+    qtbot.waitUntil(
+        lambda: (
+            window.job is None
+            and window._local_refresh_context is None
+            and "history retained" in window.status.currentMessage()
+        ),
+        timeout=20000,
+    )
+
+    assert [record["current_path"] for record in window._selected_records()] == [
+        "zzz/deeper/a.pdf"
+    ]
+    current = window.table.currentIndex()
+    parent = current.parent()
+    while parent.isValid():
+        assert window.table.isExpanded(parent)
+        parent = parent.parent()
+    row_rect = window.table.visualRect(current)
+    assert not row_rect.isEmpty()
+    viewport = window.table.viewport().rect()
+    assert viewport.top() <= row_rect.top() and row_rect.bottom() <= viewport.bottom()
+    assert horizontal.value() == left
+
+
+def test_local_refresh_keeps_scroll_for_unmoved_selection(
+    monkeypatch, qtbot, tmp_path
+) -> None:
+    monkeypatch.setattr(MainWindow, "_queue_startup_ads_rechecks", lambda self: None)
+    root = tmp_path / "library"
+    root.mkdir()
+    for number in range(PAGE_SIZE + 20):
+        (root / f"f{number:05d}.pdf").write_bytes(b"fictional %d" % number)
+    window, _controller, _saves = _window_factory(
+        monkeypatch, qtbot, GuiConfig(roots=[RootEntry(str(root))])
+    )
+    window.resize(1000, 600)
+    window.show()
+    while window.model.canFetchMore():
+        window.model.fetchMore()
+    last = window.model.rowCount() - 1
+    index = window._view_table_index(window.model.index(last, 0))
+    window.table.selectionModel().select(
+        index, QItemSelectionModel.ClearAndSelect | QItemSelectionModel.Rows
+    )
+    window.table.selectionModel().setCurrentIndex(index, QItemSelectionModel.NoUpdate)
+    selected = window._selected_record()["current_path"]
+    # The user scrolled away from the selected PDF before Refresh.
+    window.table.verticalScrollBar().setValue(0)
+
+    window.refresh_action.trigger()
+    qtbot.waitUntil(
+        lambda: (
+            window.job is None
+            and window._local_refresh_context is None
+            and "history retained" in window.status.currentMessage()
+        ),
+        timeout=20000,
+    )
+
+    assert window._selected_record()["current_path"] == selected
+    assert window.table.verticalScrollBar().value() == 0
+
+
+def test_local_refresh_does_not_restore_selection_after_view_change(
+    monkeypatch, qtbot, tmp_path
+) -> None:
+    import adsfolio.gui.refresh_job as refresh_job_module
+
+    monkeypatch.setattr(MainWindow, "_queue_startup_ads_rechecks", lambda self: None)
+    root = tmp_path / "library"
+    root.mkdir()
+    for name in ("alpha.pdf", "beta.pdf"):
+        writer = PdfWriter()
+        writer.add_blank_page(width=300, height=400)
+        writer.write(root / name)
+    window, _controller, _saves = _window_factory(
+        monkeypatch, qtbot, GuiConfig(roots=[RootEntry(str(root))])
+    )
+    entered, release = Event(), Event()
+    refresh = refresh_job_module.PdfRegistry.refresh_local_files
+
+    def paused_refresh(registry, **kwargs):
+        entered.set()
+        assert release.wait(5), "Test worker was not released"
+        return refresh(registry, **kwargs)
+
+    monkeypatch.setattr(
+        refresh_job_module.PdfRegistry, "refresh_local_files", paused_refresh
+    )
+    window.show()
+    qtbot.waitUntil(window.isVisible)
+    alpha = window._view_table_index(window.model.index(0, 0))
+    window.table.selectionModel().select(
+        alpha, QItemSelectionModel.ClearAndSelect | QItemSelectionModel.Rows
+    )
+    window.refresh_action.trigger()
+    qtbot.waitUntil(entered.is_set)
+    window._select_view(LibraryView.UNRESOLVED)
+    assert window.current_query.view is LibraryView.UNRESOLVED
+    beta = next(
+        window.model.index(row, 0)
+        for row in range(window.model.rowCount())
+        if window.model.record_at(row)["current_path"] == "beta.pdf"
+    )
+    beta = window._view_table_index(beta)
+    window.table.selectionModel().select(
+        beta, QItemSelectionModel.ClearAndSelect | QItemSelectionModel.Rows
+    )
+    try:
+        release.set()
+        qtbot.waitUntil(
+            lambda: (
+                window.job is None
+                and window._local_refresh_context is None
+                and "history retained" in window.status.currentMessage()
+            )
+        )
+    finally:
+        release.set()
+
+    assert window.current_query.view is LibraryView.UNRESOLVED
+    assert [record["current_path"] for record in window._selected_records()] == [
+        "beta.pdf"
+    ]
+
+
+def test_local_refresh_selection_restore_scans_each_loaded_page_once(
+    monkeypatch, qtbot, tmp_path
+) -> None:
+    root = tmp_path / "library"
+    root.mkdir()
+    total = PAGE_SIZE * 2 + 3
+    registry = PdfRegistry(root)
+    for index in range(total):
+        name = f"paper-{index:05d}.pdf"
+        path = root / name
+        path.write_bytes(b"synthetic pdf")
+        registry.upsert_file(
+            root=root,
+            relative_path=name,
+            current_path=name,
+            sha256=f"synthetic-{index}",
+            size_bytes=path.stat().st_size,
+            mtime_ns=path.stat().st_mtime_ns,
+            status="unresolved",
+            metadata={},
+        )
+    registry.close()
+    window, _controller, _saves = _window_factory(
+        monkeypatch, qtbot, GuiConfig(roots=[RootEntry(str(root))])
+    )
+    while window.model.canFetchMore():
+        window.model.fetchMore()
+    selected = deepcopy(window.model.record_at(total - 1))
+    context = _LibraryViewContext(
+        root=root.resolve(),
+        selected=(selected,),
+        current=selected,
+        query=window.current_query,
+        loaded=total,
+        scroll=0,
+        view_model=window.table.model(),
+    )
+    assert window.refresh(root)
+    calls = 0
+    registry_queries = 0
+    record_at = window.model.record_at
+    query_files = window.registries[str(root)].query_files
+
+    def counted_record_at(row):
+        nonlocal calls
+        calls += 1
+        return record_at(row)
+
+    def counted_query_files(*args, **kwargs):
+        nonlocal registry_queries
+        registry_queries += 1
+        return query_files(*args, **kwargs)
+
+    monkeypatch.setattr(window.model, "record_at", counted_record_at)
+    monkeypatch.setattr(
+        window.registries[str(root)], "query_files", counted_query_files
+    )
+    window._restore_library_selection(context)
+
+    assert calls <= total * 2
+    assert registry_queries == 0
+    assert window.model.rowCount() == total
+    assert [record["location_id"] for record in window._selected_records()] == [
+        selected["location_id"]
+    ]
 
 
 def test_failed_local_refresh_keeps_history_and_restores_controls(

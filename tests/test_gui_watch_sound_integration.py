@@ -68,6 +68,7 @@ def sound_window(qtbot, monkeypatch, tmp_path):
     controller = Controller(root)
     window = MainWindow(watch_controller=controller)
     qtbot.addWidget(window)
+    qtbot.waitUntil(lambda: not window._startup_roots_pending)
     yield window, controller, root, existing
     window.close()
 

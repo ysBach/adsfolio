@@ -92,6 +92,7 @@ def large_window(qtbot, monkeypatch, tmp_path):
     )
     window = MainWindow()
     qtbot.addWidget(window)
+    qtbot.waitUntil(lambda: not window._startup_roots_pending)
     window.show()
     yield window, [root.resolve() for root in roots]
     window.close()

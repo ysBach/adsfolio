@@ -138,6 +138,7 @@ def _click_header(qtbot, window: MainWindow, key: str) -> None:
 def _window(qtbot) -> MainWindow:
     window = MainWindow()
     qtbot.addWidget(window)
+    qtbot.waitUntil(lambda: not window._startup_roots_pending)
     window.resize(1800, 800)
     window.show()
     for index in range(len(window.columns)):

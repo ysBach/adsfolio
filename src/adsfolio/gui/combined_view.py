@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import sqlite3
 from collections import Counter
 from collections.abc import Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -30,10 +32,20 @@ from PySide6.QtWidgets import (
     QTreeWidgetItem,
 )
 
+from ..pdf.registry import PdfRegistry
 from .combined_library import CombinedLibrary, combined_columns
 from .combined_tree import CombinedTreeProxyModel
 from .library import LibraryView, build_columns
-from .notifications import Notice
+from .models import FileTableModel
+from .notifications import Notice, NoticeAction
+
+
+@dataclass(frozen=True)
+class CombinedRefreshRetry:
+    """Identify the checked libraries for one failed combined refresh."""
+
+    roots: tuple[str, ...]
+
 
 # The system PDF icon, found once from an existing PDF.
 _PDF_ICON: QIcon | None = None
@@ -658,56 +670,188 @@ class CombinedViewController(QObject):
             for key, label in labels.items()
         }
 
-    def refresh(self) -> None:
+    def refresh(self, prepared_model: FileTableModel | None = None) -> None:
         """Reload selected libraries and report unavailable folders."""
         if not self.enabled:
             return
         window = self.window
+        requested_roots = tuple(sorted(self.selected))
         selected = {
-            (str(record.get("root") or ""), record.get("location_id"))
+            (str(record.get("root") or ""), int(record["location_id"]))
             for record in window._selected_record_refs()
             if record.get("location_id") is not None
         }
-        registry = self.registry()
-        window.model.set_registry(registry, window.current_query)
-        selected = {identity for identity in selected if identity[0] in self.selected}
-        if selected:
-            selection = window.table.selectionModel()
-            seen = 0
-            while selected:
-                for row in range(seen, window.model.rowCount()):
-                    record = window.model.record_at(row)
-                    identity = (
-                        str(record.get("root") or ""),
-                        record.get("location_id"),
-                    )
-                    if identity in selected:
-                        index = window._view_table_index(window.model.index(row, 0))
-                        if not index.isValid():
-                            continue
-                        selection.select(
-                            index, QItemSelectionModel.Select | QItemSelectionModel.Rows
-                        )
-                        selection.setCurrentIndex(index, QItemSelectionModel.NoUpdate)
-                        selected.discard(identity)
-                seen = window.model.rowCount()
-                if not selected or not window.model.canFetchMore(QModelIndex()):
-                    break
-                window.model.fetchMore(QModelIndex())
-        window._populate_views(registry)
-        if registry.unavailable_roots:
-            paths = "\n".join(registry.unavailable_roots)
-            window.notice_bar.enqueue(
-                Notice(
-                    "combined-unavailable",
-                    f"These libraries are unavailable:\n{paths}\n"
-                    "Reconnect them and refresh the view.",
-                    severity="warning",
+        current_record = window._selected_record()
+        current = (
+            (str(current_record.get("root") or ""), int(current_record["location_id"]))
+            if current_record is not None
+            and current_record.get("location_id") is not None
+            else None
+        )
+        targets = selected | ({current} if current is not None else set())
+        active_registry = getattr(window.model, "_registry", None)
+        active_roots = set(getattr(active_registry, "registries", ()))
+        preserve_view_on_failure = False
+        original_timeouts: dict[PdfRegistry, int] = {}
+        errors: list[str] = []
+        owns_prepared_model = prepared_model is None
+        try:
+            try:
+                registry = self.registry()
+                preserve_view_on_failure = (
+                    active_roots == set(registry.registries)
+                    and window.model.query == window.current_query
                 )
+                for existing in registry.registries.values():
+                    original_timeouts[existing] = int(
+                        existing.catalog._connection.execute(
+                            "PRAGMA busy_timeout"
+                        ).fetchone()[0]
+                    )
+                    existing.catalog.set_busy_timeout(0)
+                if prepared_model is None:
+                    prepared_model, errors = window.model.prepare_registry(
+                        registry, window.current_query
+                    )
+                else:
+                    prepared_model.query_failed.connect(errors.append)
+                if errors:
+                    raise RuntimeError(errors[0])
+
+                remaining = set(targets)
+                seen = 0
+                while remaining:
+                    for row in range(seen, prepared_model.rowCount()):
+                        record = prepared_model.record_at(row)
+                        if record is None or record.get("location_id") is None:
+                            continue
+                        remaining.discard(
+                            (
+                                str(record.get("root") or ""),
+                                int(record["location_id"]),
+                            )
+                        )
+                    seen = prepared_model.rowCount()
+                    if not remaining or not prepared_model.canFetchMore(QModelIndex()):
+                        break
+                    previous_rows = prepared_model.rowCount()
+                    prepared_model.fetchMore(QModelIndex())
+                    if errors:
+                        raise RuntimeError(errors[0])
+                    if prepared_model.rowCount() == previous_rows:
+                        raise RuntimeError(
+                            "The candidate view did not load another page."
+                        )
+            except (OSError, ValueError, RuntimeError, sqlite3.Error) as exc:
+                if (
+                    owns_prepared_model
+                    and prepared_model is not None
+                    and prepared_model is not window.model
+                ):
+                    prepared_model.close()
+                if not preserve_view_on_failure:
+                    window.model.set_registry(None, window.current_query)
+                    selection_model = window.table.selectionModel()
+                    selection_model.clearSelection()
+                    selection_model.setCurrentIndex(
+                        QModelIndex(), QItemSelectionModel.NoUpdate
+                    )
+                    window._populate_views(registry)
+                    window._update_status()
+                detail = str(exc).rstrip(". ")
+                state_message = (
+                    "The current view stays open."
+                    if preserve_view_on_failure
+                    else "The checked view is unavailable until Refresh succeeds."
+                )
+                window.status.showMessage(
+                    f"Could not refresh the checked libraries: {detail}. "
+                    f"{state_message} Select Retry to try again."
+                )
+                window.notice_bar.enqueue(
+                    Notice(
+                        "combined-refresh",
+                        f"Could not refresh the checked libraries. {state_message}",
+                        severity="warning",
+                        action=NoticeAction.RETRY,
+                        payload=CombinedRefreshRetry(requested_roots),
+                        details=str(exc),
+                    )
+                )
+                return
+
+            if prepared_model is not None:
+                window.model.adopt_prepared(prepared_model)
+            self._restore_table_selection(selected, current, targets)
+            window._populate_views(registry)
+            if registry.unavailable_roots:
+                paths = "\n".join(registry.unavailable_roots)
+                window.notice_bar.enqueue(
+                    Notice(
+                        "combined-unavailable",
+                        f"These libraries are unavailable:\n{paths}\n"
+                        "Reconnect them and refresh the view.",
+                        severity="warning",
+                    )
+                )
+            else:
+                window.notice_bar.dismiss("combined-unavailable")
+            window._update_status()
+            window.notice_bar.dismiss("combined-refresh")
+        finally:
+            for existing, timeout in original_timeouts.items():
+                existing.catalog.set_busy_timeout(timeout)
+
+    def _restore_table_selection(
+        self,
+        selected: set[tuple[str, int]],
+        current: tuple[str, int] | None,
+        targets: set[tuple[str, int]],
+    ) -> None:
+        """Restore selected rows and current PDF by root and location ID."""
+        window = self.window
+        selection = window.table.selectionModel()
+        selection.clearSelection()
+        remaining = set(targets)
+        current_index = None
+        selected_indexes = []
+        seen = 0
+        while remaining:
+            for row in range(seen, window.model.rowCount()):
+                record = window.model.record_at(row)
+                if record is None or record.get("location_id") is None:
+                    continue
+                identity = (str(record.get("root") or ""), int(record["location_id"]))
+                if identity not in remaining:
+                    continue
+                index = window._view_table_index(window.model.index(row, 0))
+                if not index.isValid():
+                    continue
+                if identity in selected:
+                    selected_indexes.append(index)
+                if identity == current:
+                    current_index = index
+                remaining.discard(identity)
+            seen = window.model.rowCount()
+            if not remaining or not window.model.canFetchMore(QModelIndex()):
+                break
+            previous_rows = window.model.rowCount()
+            window.model.fetchMore(QModelIndex())
+            if window.model.rowCount() == previous_rows:
+                break
+        if selected_indexes:
+            selection.select(
+                _selection_ranges(selected_indexes),
+                QItemSelectionModel.Select | QItemSelectionModel.Rows,
             )
-        else:
-            window.notice_bar.dismiss("combined-unavailable")
-        window._update_status()
+        if current_index is not None:
+            selection.setCurrentIndex(current_index, QItemSelectionModel.NoUpdate)
+
+    def retry(self, request: CombinedRefreshRetry) -> None:
+        """Retry only when the checked libraries still match the failed request."""
+        if not self.enabled or tuple(sorted(self.selected)) != request.roots:
+            return
+        self.refresh()
 
     def root_for(self, record: dict[str, Any]) -> Path | None:
         """Return a selected, registered root for one combined record."""

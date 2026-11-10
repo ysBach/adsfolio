@@ -30,7 +30,11 @@ from adsfolio.pdf.doi_providers import DoiProvider
 from adsfolio.pdf.files import sha256_file
 from adsfolio.pdf.identifier import PdfIdentifier
 from adsfolio.pdf.identify_settings import IdentifySettings
-from adsfolio.pdf.registry import CentralPdfRegistryState, open_registry_state
+from adsfolio.pdf.registry import (
+    CentralPdfRegistryState,
+    PdfRegistry,
+    open_registry_state,
+)
 from adsfolio.pdf.rename_settings import RenameSettings
 
 
@@ -159,15 +163,27 @@ def backend(monkeypatch):
     )
 
 
-def _window(monkeypatch, qtbot, config, *, controller=None, accept_offer=True):
+def _window(
+    monkeypatch,
+    qtbot,
+    config,
+    *,
+    controller=None,
+    accept_offer=True,
+    deferred_offer=None,
+):
     controller = controller or FakeWatchController()
     monkeypatch.setattr(main_window, "load_config", lambda: deepcopy(config))
     monkeypatch.setattr(main_window, "save_config", lambda _config: None)
     if accept_offer:
         # These tests check cycle mechanics. Answer the start question with yes.
-        monkeypatch.setattr(
-            MainWindow, "_offer_ads_recheck", lambda self: self._queue_ads_rechecks()
-        )
+        def offer(self):
+            if deferred_offer is not None:
+                deferred_offer.append(lambda: self._queue_ads_rechecks())
+            else:
+                self._queue_ads_rechecks()
+
+        monkeypatch.setattr(MainWindow, "_offer_ads_recheck", offer)
     window = MainWindow(watch_controller=controller)
     qtbot.addWidget(window)
     return window, controller
@@ -191,8 +207,21 @@ def test_startup_periodic_settings_and_late_root(monkeypatch, qtbot, tmp_path, b
     local_identify = IdentifySettings(
         allow_ads=False, skip_unresolved_directory=True, output_unresolved="excluded"
     )
+    external_identify = IdentifySettings(providers=(DoiProvider.CROSSREF,))
     Config.save_identify_settings(global_identify)
     Config.save_rename_settings(global_rename)
+    for root, identify, rename in (
+        (unwatched, local_identify, local_rename),
+        (external, external_identify, None),
+    ):
+        registry = PdfRegistry(root)
+        try:
+            state = CentralPdfRegistryState(registry)
+            state.set_identify_settings(identify)
+            if rename is not None:
+                state.set_rename_settings(rename)
+        finally:
+            registry.close()
     config = GuiConfig(
         roots=[
             RootEntry(str(watched), recursive=True, watch_on_start=True),
@@ -204,16 +233,7 @@ def test_startup_periodic_settings_and_late_root(monkeypatch, qtbot, tmp_path, b
         rename_scopes={str(unwatched): "library"},
     )
     window, controller = _window(monkeypatch, qtbot, config)
-    external_identify = IdentifySettings(providers=(DoiProvider.CROSSREF,))
-    CentralPdfRegistryState(window.registries[str(external)]).set_identify_settings(
-        external_identify
-    )
-    CentralPdfRegistryState(window.registries[str(unwatched)]).set_identify_settings(
-        local_identify
-    )
-    CentralPdfRegistryState(window.registries[str(unwatched)]).set_rename_settings(
-        local_rename
-    )
+    qtbot.waitUntil(lambda: not window._startup_roots_pending, timeout=5000)
 
     qtbot.waitUntil(lambda: len(backend.calls) == 3, timeout=5000)
     _wait_for_cycle(qtbot, window)
@@ -275,8 +295,17 @@ def test_root_added_before_startup_is_checked_once(
     first, late = tmp_path / "first", tmp_path / "late"
     first.mkdir()
     late.mkdir()
-    window, _ = _window(monkeypatch, qtbot, GuiConfig(roots=[RootEntry(str(first))]))
+    deferred_offer = []
+    window, _ = _window(
+        monkeypatch,
+        qtbot,
+        GuiConfig(roots=[RootEntry(str(first))]),
+        deferred_offer=deferred_offer,
+    )
+    qtbot.waitUntil(lambda: not window._startup_roots_pending, timeout=5000)
     window._register_root(late)
+    qtbot.waitUntil(lambda: len(deferred_offer) == 1, timeout=5000)
+    deferred_offer.pop()()
     qtbot.waitUntil(lambda: len(backend.calls) == 2, timeout=5000)
     _wait_for_cycle(qtbot, window)
     qtbot.wait(30)
@@ -375,6 +404,7 @@ def test_settings_saves_wait_until_recheck_stops(
 
     backend.handler.run = run
     window, _ = _window(monkeypatch, qtbot, GuiConfig(roots=[RootEntry(str(root))]))
+    qtbot.waitUntil(lambda: str(root) in window.registries, timeout=5000)
     identify_before = Config.load_identify_settings()
     rename_before = Config.load_rename_settings()
     identify_scopes = dict(window.config.identify_scopes)
@@ -590,14 +620,18 @@ def test_missing_token_skips_ads_only_roots_and_runs_external_providers(
         identify_scopes={str(ads_only): "library", str(external): "library"},
         last_root=str(external),
     )
+    for root, settings_for_root in (
+        (ads_only, IdentifySettings(providers=(DoiProvider.ADS,))),
+        (external, IdentifySettings(providers=(provider,))),
+    ):
+        registry = PdfRegistry(root)
+        try:
+            CentralPdfRegistryState(registry).set_identify_settings(settings_for_root)
+        finally:
+            registry.close()
     window, controller = _window(monkeypatch, qtbot, config)
-    CentralPdfRegistryState(window.registries[str(ads_only)]).set_identify_settings(
-        IdentifySettings(providers=(DoiProvider.ADS,))
-    )
+    qtbot.waitUntil(lambda: not window._startup_roots_pending, timeout=5000)
     external_settings = IdentifySettings(providers=(provider,))
-    CentralPdfRegistryState(window.registries[str(external)]).set_identify_settings(
-        external_settings
-    )
     qtbot.waitUntil(lambda: len(backend.calls) == 2, timeout=5000)
     _wait_for_cycle(qtbot, window)
     assert token_checks == [True]

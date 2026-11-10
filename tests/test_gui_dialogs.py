@@ -1117,7 +1117,7 @@ def test_rename_apply_constructor_failure_does_not_register_job(
 
 
 def test_main_window_passes_independent_rename_scope_settings(
-    application, monkeypatch, tmp_path
+    application, monkeypatch, qtbot, tmp_path
 ):
     import adsfolio.gui.main_window as main_window_module
 
@@ -1158,6 +1158,8 @@ def test_main_window_passes_independent_rename_scope_settings(
         classmethod(lambda cls: tmp_path / "config"),
     )
     window = MainWindow()
+    qtbot.addWidget(window)
+    qtbot.waitUntil(lambda: not window._startup_roots_pending)
     CentralPdfRegistryState(window.registries[str(root.resolve())]).set_rename_settings(
         library_settings
     )

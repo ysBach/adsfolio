@@ -44,6 +44,7 @@ def combined_window(qtbot, monkeypatch, tmp_path):
     )
     window = MainWindow()
     qtbot.addWidget(window)
+    qtbot.waitUntil(lambda: not window._startup_roots_pending)
     window.show()
     yield window, roots
     window.close()
@@ -95,6 +96,7 @@ def test_checkbox_combines_libraries_and_persists_selection(combined_window, qtb
 
     reopened = MainWindow()
     qtbot.addWidget(reopened)
+    qtbot.waitUntil(lambda: not reopened._startup_roots_pending)
     assert reopened.combined.enabled
     assert reopened.model.total == 1
     assert reopened.model.record_at(0)["root"] == str(roots[1])
@@ -367,6 +369,15 @@ def _fail_root_registration(monkeypatch, failed_roots):
     monkeypatch.setattr(MainWindow, "_register_root", register)
 
 
+def _window_with_failed_startup(qtbot, monkeypatch, failed_roots):
+    with monkeypatch.context() as patch:
+        _fail_root_registration(patch, failed_roots)
+        window = MainWindow()
+        qtbot.addWidget(window)
+        qtbot.waitUntil(lambda: not window._startup_roots_pending)
+    return window
+
+
 def _save_combined_config(roots, selected, *, enabled=True):
     save_config(
         GuiConfig(
@@ -386,10 +397,7 @@ def test_failed_restore_keeps_selection_through_settings_sort_and_restart(
     paths = [root / "same.pdf" for root in roots]
     hashes = [hashlib.sha256(path.read_bytes()).hexdigest() for path in paths]
     _save_combined_config(roots, [str(root) for root in roots])
-    with monkeypatch.context() as patch:
-        _fail_root_registration(patch, {roots[1]})
-        window = MainWindow()
-    qtbot.addWidget(window)
+    window = _window_with_failed_startup(qtbot, monkeypatch, {roots[1]})
 
     assert window.combined.enabled
     assert window.combined.selected == {str(root) for root in roots}
@@ -408,6 +416,7 @@ def test_failed_restore_keeps_selection_through_settings_sort_and_restart(
 
     restored = MainWindow()
     qtbot.addWidget(restored)
+    qtbot.waitUntil(lambda: not restored._startup_roots_pending)
     assert restored.combined.enabled
     assert _root_item(restored, roots[0]).checkState(0) == Qt.Unchecked
     assert _root_item(restored, roots[1]).checkState(0) == Qt.Checked
@@ -422,10 +431,7 @@ def test_all_failed_roots_keep_mode_and_selection_through_settings_and_restart(
 ):
     roots = restore_roots
     _save_combined_config(roots, [str(roots[1])])
-    with monkeypatch.context() as patch:
-        _fail_root_registration(patch, set(roots))
-        window = MainWindow()
-    qtbot.addWidget(window)
+    window = _window_with_failed_startup(qtbot, monkeypatch, set(roots))
     assert not window.combined.enabled
 
     settings = PreferencesDialog(window)
@@ -442,6 +448,7 @@ def test_all_failed_roots_keep_mode_and_selection_through_settings_and_restart(
 
     restored = MainWindow()
     qtbot.addWidget(restored)
+    qtbot.waitUntil(lambda: not restored._startup_roots_pending)
     assert restored.combined.enabled
     assert _root_item(restored, roots[0]).checkState(0) == Qt.Unchecked
     assert _root_item(restored, roots[1]).checkState(0) == Qt.Checked
@@ -455,10 +462,7 @@ def test_default_selection_includes_a_root_that_failed_to_restore(
 ):
     roots = restore_roots
     _save_combined_config(roots, None, enabled=enabled)
-    with monkeypatch.context() as patch:
-        _fail_root_registration(patch, {roots[1]})
-        window = MainWindow()
-    qtbot.addWidget(window)
+    window = _window_with_failed_startup(qtbot, monkeypatch, {roots[1]})
     if not enabled:
         window.combined.set_enabled(True)
     assert window.combined.selected == {str(root) for root in roots}
@@ -467,6 +471,7 @@ def test_default_selection_includes_a_root_that_failed_to_restore(
 
     restored = MainWindow()
     qtbot.addWidget(restored)
+    qtbot.waitUntil(lambda: not restored._startup_roots_pending)
     assert restored.combined.enabled
     assert all(_root_item(restored, root).checkState(0) == Qt.Checked for root in roots)
     assert restored.model.total == 2
@@ -478,10 +483,7 @@ def test_explicit_removal_keeps_other_unrestored_selection(
 ):
     roots = restore_roots
     _save_combined_config(roots, [str(root) for root in roots])
-    with monkeypatch.context() as patch:
-        _fail_root_registration(patch, {roots[1]})
-        window = MainWindow()
-    qtbot.addWidget(window)
+    window = _window_with_failed_startup(qtbot, monkeypatch, {roots[1]})
     window._remove_root(roots[0])
     assert window.combined.selected == {str(roots[1])}
     assert window.config.combined_roots == [str(roots[1])]
@@ -492,6 +494,7 @@ def test_explicit_removal_keeps_other_unrestored_selection(
 
     restored = MainWindow()
     qtbot.addWidget(restored)
+    qtbot.waitUntil(lambda: not restored._startup_roots_pending)
     restored.combined.set_enabled(True)
     assert _root_item(restored, roots[1]).checkState(0) == Qt.Checked
     assert restored.model.total == 1
@@ -521,10 +524,7 @@ def test_recovered_root_retains_its_previous_check_state(
     if was_selected:
         selected.append(str(roots[1]))
     _save_combined_config(roots, selected)
-    with monkeypatch.context() as patch:
-        _fail_root_registration(patch, {roots[1]})
-        window = MainWindow()
-    qtbot.addWidget(window)
+    window = _window_with_failed_startup(qtbot, monkeypatch, {roots[1]})
 
     window._register_root(roots[1])
     expected = Qt.Checked if was_selected else Qt.Unchecked

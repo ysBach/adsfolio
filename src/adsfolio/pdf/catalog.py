@@ -113,7 +113,13 @@ class LegacyMigrationReport:
 class PdfCatalog:
     """Store PDF attachment identity independently of filesystem paths."""
 
-    def __init__(self, path: Path | None = None) -> None:
+    def __init__(
+        self,
+        path: Path | None = None,
+        *,
+        initialized: bool = False,
+        busy_timeout_ms: int = 5000,
+    ) -> None:
         """Open the central catalog database.
 
         Parameters
@@ -127,20 +133,39 @@ class PdfCatalog:
             if path is not None
             else Config.get_config_dir() / CATALOG_FILENAME
         )
-        self.path.parent.mkdir(parents=True, exist_ok=True)
+        if busy_timeout_ms < 0:
+            raise ValueError("busy_timeout_ms must be non-negative")
+        if not initialized:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
         self._serial = next(_CATALOG_SERIALS)
-        self._connection = sqlite3.connect(self.path, timeout=5.0)
+        if initialized:
+            self._connection = sqlite3.connect(
+                f"{self.path.resolve().as_uri()}?mode=rw",
+                uri=True,
+                timeout=busy_timeout_ms / 1000,
+            )
+        else:
+            self._connection = sqlite3.connect(
+                self.path, timeout=busy_timeout_ms / 1000
+            )
         self._connection.row_factory = sqlite3.Row
         self._connection.create_function(
             "adsfolio_search_match", 7, sql_search_match, deterministic=True
         )
         self._connection.execute("PRAGMA foreign_keys = ON")
-        self._connection.execute("PRAGMA busy_timeout = 5000")
-        try:
-            self._connection.execute("PRAGMA journal_mode = WAL")
-        except sqlite3.OperationalError:
-            pass
-        self._initialize_schema()
+        self._connection.execute(f"PRAGMA busy_timeout = {busy_timeout_ms}")
+        if not initialized:
+            try:
+                self._connection.execute("PRAGMA journal_mode = WAL")
+            except sqlite3.OperationalError:
+                pass
+            self._initialize_schema()
+
+    def set_busy_timeout(self, milliseconds: int) -> None:
+        """Set the wait time for SQLite locks on this connection."""
+        if milliseconds < 0:
+            raise ValueError("milliseconds must be non-negative")
+        self._connection.execute(f"PRAGMA busy_timeout = {milliseconds}")
 
     @property
     def schema_version(self) -> int:

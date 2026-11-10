@@ -5,6 +5,7 @@ from __future__ import annotations
 import itertools
 import json
 import logging
+import os
 import sqlite3
 import time
 from collections import OrderedDict
@@ -21,6 +22,7 @@ from PySide6.QtCore import (
     QSignalBlocker,
     Qt,
     QTimer,
+    Slot,
 )
 from PySide6.QtGui import (
     QAction,
@@ -108,7 +110,12 @@ from .bibtex_export import (
     fetch_ads_bibtex_now,
 )
 from .citation_styles import CitationStylesDialog
-from .combined_view import CombinedViewController
+from .combined_library import CombinedLibrary
+from .combined_view import (
+    CombinedRefreshRetry,
+    CombinedViewController,
+    _selection_ranges,
+)
 from .config import RootEntry, load_config, save_config
 from .cv_dialog import CVDialog
 from .detail_pane import DetailPane
@@ -158,6 +165,7 @@ from .osint import open_path, open_url, reveal_in_file_manager
 from .references_dialog import ReferencesDialog
 from .refresh_job import LibraryRefreshJob
 from .search_completion import SearchCompleter, SearchEscape
+from .startup_discovery import StartupDiscoveryThread
 from .token_dialog import TokenDialog
 from .update_dialog import UpdateButton, UpdateDialog, quiet_progress_bar
 from .updates import (
@@ -323,6 +331,7 @@ class _LibraryViewContext:
     query: FileQuery
     loaded: int
     scroll: int
+    view_model: Any | None = None
 
 
 @dataclass(frozen=True)
@@ -385,6 +394,21 @@ class MainWindow(QMainWindow):
         self._saved_sort_roots = deepcopy(self.config.roots)
         self._restoring_config = True
         self._unrestored_roots: list[RootEntry] = []
+        self._startup_queue: list[RootEntry] = []
+        self._startup_thread: StartupDiscoveryThread | None = None
+        self._startup_active_entry: RootEntry | None = None
+        self._startup_retry_keys: set[str] = set()
+        self._startup_no_wait_registries: dict[str, PdfRegistry] = {}
+        self._startup_selection_key = (
+            self._config_root_key(self.config.last_root)
+            if self.config.last_root
+            else None
+        )
+        self._startup_user_selected = False
+        self._startup_roots_pending = False
+        self._startup_finalization_done = False
+        self._startup_watchers_started = False
+        self._startup_unavailable_roots: set[str] = set()
         self.columns = build_columns(self.config.citation_styles)
         self.registries: dict[str, PdfRegistry] = {}
         self.root_entries: dict[str, RootEntry] = {}
@@ -394,6 +418,7 @@ class MainWindow(QMainWindow):
             if self.config.last_view in {view.value for view in LibraryView}
             else LibraryView.ALL
         )
+        self._startup_preferred_view = self.current_view
         sortable_columns = {
             column.key for column in self.columns if column.sortable is True
         }
@@ -502,11 +527,13 @@ class MainWindow(QMainWindow):
         self._build_ui()
         self._connect_watch_controller()
         self._restore_config()
-        self.combined.finish_restoring()
+        if not self._startup_queue:
+            self._finalize_startup()
         self._restoring_config = False
         self._sync_welcome()
         self._ads_recheck_timer.start()
-        QTimer.singleShot(0, self._start_configured_watchers)
+        if self._startup_queue:
+            QTimer.singleShot(0, self._start_startup_discovery)
 
     def _build_ui(self) -> None:
         self.sidebar = QTreeWidget(self)
@@ -1015,6 +1042,10 @@ class MainWindow(QMainWindow):
         self.search_toolbar.toggleViewAction().setText("Show Find Bar")
         self.search_toolbar.toggleViewAction().setShortcut("Ctrl+Shift+F")
         view.addAction(self.search_toolbar.toggleViewAction())
+        self.notifications_action = QAction("Show Notifications", self)
+        self.notifications_action.setShortcut("Ctrl+Shift+N")
+        self.notifications_action.triggered.connect(self._toggle_notifications)
+        view.addAction(self.notifications_action)
         self.detail_action = QAction("Show Detail Pane", self)
         self.detail_action.setCheckable(True)
         self.detail_action.setChecked(self.config.detail_visible)
@@ -1211,24 +1242,14 @@ class MainWindow(QMainWindow):
             self.splitter.setSizes(self.config.splitter_sizes)
         else:
             self.splitter.setSizes(list(DEFAULT_SPLITTER_SIZES))
-        for entry in self.config.roots:
-            try:
-                self._register_root(
-                    Path(entry.path),
-                    entry.label,
-                    entry.recursive,
-                    watch_on_start=entry.watch_on_start,
-                    auto_process_new_pdfs=entry.auto_process_new_pdfs,
-                )
-            except (OSError, ValueError) as exc:
-                self._unrestored_roots.append(entry)
-                self.notice_bar.enqueue(
-                    Notice(
-                        f"root-restore:{entry.path}",
-                        f"Could not restore library root {entry.path}: {exc}",
-                        severity="error",
-                    )
-                )
+        self._startup_queue = list(self.config.roots)
+        self._startup_initial_keys = {
+            self._config_root_key(entry.path) for entry in self._startup_queue
+        }
+        self._startup_roots_pending = bool(self._startup_queue)
+        for entry in self._startup_queue:
+            self._retain_unrestored_root(entry)
+            self._add_pending_root_item(entry)
         if self.config.window_state:
             from PySide6.QtCore import QByteArray
 
@@ -1238,25 +1259,321 @@ class MainWindow(QMainWindow):
             if width is not None:
                 self.table.setColumnWidth(index, width)
         self._apply_table_layout()
-        last_view = self.current_view
-        if self.config.last_root:
-            try:
-                self._select_root(Path(self.config.last_root))
-            except (OSError, ValueError) as exc:
-                self.notice_bar.enqueue(
-                    Notice(
-                        "last-root-restore",
-                        f"Could not restore the last selected root: {exc}",
-                        severity="error",
-                    )
-                )
-        if self.current_root is None and self.root_entries:
-            self._select_root(Path(next(iter(self.root_entries))))
-        if self.current_root is not None and last_view is not LibraryView.ALL:
-            self._select_view(last_view)
         self.sidebar.setVisible(self.config.sidebar_visible)
         self.detail.setVisible(self.config.detail_visible)
         self._sync_watch_actions()
+
+    def _start_startup_discovery(self) -> None:
+        """Start one saved-root scan without blocking the GUI event loop."""
+        if self._close_requested or self._startup_thread is not None:
+            return
+        if not self._startup_queue:
+            self._finalize_startup()
+            return
+        entry = self._startup_queue.pop(0)
+        thread = StartupDiscoveryThread(Path(entry.path), entry.recursive, self)
+        self._startup_active_entry = entry
+        self._startup_thread = thread
+        thread.succeeded.connect(self._startup_discovery_succeeded)
+        thread.failed.connect(self._startup_discovery_failed)
+        thread.finished.connect(self._startup_thread_finished)
+        self.add_action.setEnabled(False)
+        self.status.showMessage("Loading saved libraries…")
+        thread.start()
+
+    def _finalize_startup(self) -> None:
+        """Finish one restore cycle without saving transient sort signals."""
+        was_restoring = self._restoring_config
+        if not self._startup_finalization_done:
+            self._restoring_config = True
+        try:
+            if not self._startup_finalization_done:
+                self.combined.finish_restoring()
+                self._startup_finalization_done = True
+            self._startup_roots_pending = False
+            self.add_action.setEnabled(True)
+            if not self._startup_watchers_started:
+                self._startup_watchers_started = True
+                if not self._startup_user_selected and self.current_root is None:
+                    selected_key = (
+                        self._startup_selection_key
+                        if self._startup_selection_key in self.registries
+                        else next(iter(self.registries), None)
+                    )
+                    if selected_key is not None:
+                        preferred_view = self._startup_preferred_view
+                        self._select_root(Path(selected_key))
+                        if preferred_view is not LibraryView.ALL:
+                            self._select_view(preferred_view)
+                if self.root_entries:
+                    self._start_configured_watchers()
+                else:
+                    self._sync_watch_actions()
+            else:
+                self._sync_watch_actions()
+        finally:
+            self._restoring_config = was_restoring
+        if self._startup_no_wait_registries:
+            QTimer.singleShot(0, self._restore_registry_timeouts)
+        self.status.clearMessage()
+
+    def _queue_root_retry(self, entry: RootEntry) -> None:
+        """Retry a saved root through the background startup worker."""
+        key = self._config_root_key(entry.path)
+        self._startup_retry_keys.add(key)
+        if all(self._config_root_key(item.path) != key for item in self._startup_queue):
+            self._startup_queue.append(entry)
+        item = self._root_item(key)
+        if item is not None:
+            item.setText(0, f"{entry.label or Path(entry.path).name} (Retrying…)")
+        self._startup_roots_pending = True
+        self.add_action.setEnabled(False)
+        self._start_startup_discovery()
+
+    def _startup_root_ready(
+        self, entry: RootEntry, root: str, available: bool, catalog_path: str
+    ) -> None:
+        """Bind a discovered root with a no-wait, initialized catalog handle."""
+        if self._close_requested:
+            return
+        initial_restore = (
+            not self._startup_finalization_done
+            and self._config_root_key(entry.path) in self._startup_initial_keys
+        )
+        was_restoring = self._restoring_config
+        newly_registered = str(Path(root)) not in self.registries
+        if initial_restore:
+            self._restoring_config = True
+        try:
+            registry = PdfRegistry(
+                Path(root),
+                initialized=True,
+                catalog_path=Path(catalog_path),
+            )
+            canonical_entry = replace(entry, path=root)
+            previous_key = self._config_root_key(entry.path)
+            existing = self.registries.get(root)
+            if existing is None:
+                self._register_root(
+                    Path(root),
+                    entry.label,
+                    entry.recursive,
+                    watch_on_start=entry.watch_on_start,
+                    auto_process_new_pdfs=entry.auto_process_new_pdfs,
+                    _initialized_registry=registry,
+                    _startup_entry=entry,
+                )
+            else:
+                self.registries[root] = registry
+                existing.close()
+                self.root_entries[root] = canonical_entry
+                self._unrestored_roots = [
+                    saved
+                    for saved in self._unrestored_roots
+                    if self._config_root_key(saved.path) not in {root, previous_key}
+                ]
+                item = self._root_item(previous_key) or self._root_item(root)
+                if item is not None:
+                    count = self._safe_count(registry)
+                    item.setText(
+                        0,
+                        f"{entry.label or Path(root).name} "
+                        f"({count if count is not None else '?'})",
+                    )
+                    item.setToolTip(0, root)
+                    item.setData(0, Qt.UserRole, root)
+                    item.setData(0, Qt.UserRole + 1, "root")
+                    item.setFlags(item.flags() | Qt.ItemIsSelectable)
+                    self._set_root_watch_icon(item, root)
+                    self.combined.register_root(item, root)
+                if self.combined.enabled:
+                    self.combined.update_columns()
+                    self.combined.refresh()
+                elif self.current_root is not None and str(self.current_root) == root:
+                    self.model.set_registry(registry, self.current_query)
+                    self._populate_views(registry)
+                    self._update_status()
+        except (OSError, ValueError, sqlite3.Error) as exc:
+            if "registry" in locals():
+                registry.close()
+            self._startup_root_failed(entry, str(exc))
+            return
+        finally:
+            self._restoring_config = was_restoring
+        self._startup_no_wait_registries[root] = registry
+        if (
+            newly_registered
+            and self.combined.enabled
+            and root in self.combined.selected
+        ):
+            self.combined.refresh()
+        self.notice_bar.dismiss(f"root-restore:{entry.path}")
+        self.notice_bar.dismiss(f"root-restore:{root}")
+        if available:
+            self._startup_unavailable_roots.discard(root)
+        else:
+            self._startup_unavailable_roots.add(root)
+            cached_count = self._safe_count(registry)
+            item = self._root_item(root)
+            if item is not None:
+                label = entry.label or Path(root).name
+                if cached_count == 0:
+                    state = "Unavailable"
+                    detail = (
+                        "The folder is missing or offline. No cached records exist."
+                    )
+                else:
+                    state = (
+                        f"Offline, {cached_count} cached"
+                        if cached_count is not None
+                        else "Offline, count unavailable"
+                    )
+                    detail = (
+                        "The folder is offline. Cached records remain available."
+                        if cached_count is not None
+                        else "The folder is offline. Catalog access is busy. Retry later."
+                    )
+                item.setText(0, f"{label} ({state})")
+                item.setToolTip(0, f"{root}\n{detail}")
+            if cached_count == 0:
+                message = (
+                    f"Library folder does not exist or is unavailable. "
+                    f"No cached records are available: {root}"
+                )
+                severity = "error"
+            elif cached_count is None:
+                message = f"Library folder is offline. Catalog access is busy: {root}"
+                severity = "warning"
+            else:
+                message = f"Library folder is offline. Cached records remain available: {root}"
+                severity = "warning"
+            self.notice_bar.enqueue(
+                Notice(
+                    f"root-restore:{root}",
+                    message,
+                    severity=severity,
+                    action=NoticeAction.RETRY,
+                    payload=canonical_entry,
+                )
+            )
+        saved_key = self._config_root_key(entry.path)
+        was_restoring = self._restoring_config
+        if initial_restore:
+            self._restoring_config = True
+        try:
+            if self.current_root is not None and self._current_root_key() in {
+                root,
+                saved_key,
+            }:
+                self.current_root = Path(root)
+                self._sidebar_changed()
+            elif not self._startup_user_selected and self._startup_selection_key in {
+                root,
+                saved_key,
+            }:
+                preferred_view = self._startup_preferred_view
+                self._select_root(Path(root))
+                if preferred_view is not LibraryView.ALL:
+                    self._select_view(preferred_view)
+        finally:
+            self._restoring_config = was_restoring
+        self._sync_config_roots()
+        if self._startup_finalization_done:
+            if not self._startup_user_selected and self.current_root is None:
+                preferred_view = self._startup_preferred_view
+                self._select_root(Path(root))
+                if preferred_view is not LibraryView.ALL:
+                    self._select_view(preferred_view)
+            if self.config.combined_view and not self.combined.enabled:
+                self.combined.set_enabled(True)
+            if available and canonical_entry.watch_on_start:
+                self._start_root_watch(Path(root))
+            if self._ads_recheck_startup_pending:
+                QTimer.singleShot(0, self._queue_startup_ads_rechecks)
+            elif available:
+                self._queue_added_ads_recheck(Path(root))
+        retry_key = self._config_root_key(entry.path)
+        if retry_key in self._startup_retry_keys:
+            self._startup_retry_keys.discard(retry_key)
+            self._sync_config_roots()
+            try:
+                save_config(self.config)
+            except OSError as exc:
+                self.notice_bar.enqueue(
+                    Notice(
+                        f"root-save:{root}",
+                        f"Library restored, but its settings could not be saved: {exc}",
+                        severity="error",
+                    )
+                )
+
+    def _current_root_key(self) -> str | None:
+        if self.current_root is None:
+            return None
+        return self._config_root_key(str(self.current_root))
+
+    def _startup_root_failed(self, entry: RootEntry, error: str) -> None:
+        """Keep a failed saved root visible and offer an asynchronous retry."""
+        if self._close_requested:
+            return
+        key = self._config_root_key(entry.path)
+        item = self._root_item(key)
+        if item is not None:
+            item.setText(0, f"{entry.label or Path(entry.path).name} (Retry needed)")
+            item.setToolTip(0, f"{entry.path}\nDiscovery failed: {error}")
+        if self._is_database_busy(sqlite3.OperationalError(error)):
+            self._show_root_retry(entry, sqlite3.OperationalError(error))
+        else:
+            self.notice_bar.enqueue(
+                Notice(
+                    f"root-restore:{entry.path}",
+                    f"Could not restore library root {entry.path}: {error}",
+                    severity="error",
+                    action=NoticeAction.RETRY,
+                    payload=entry,
+                )
+            )
+
+    @Slot(str, bool, str)
+    def _startup_discovery_succeeded(
+        self, root: str, available: bool, catalog_path: str
+    ) -> None:
+        entry = self._startup_active_entry
+        if entry is not None:
+            self._startup_root_ready(entry, root, available, catalog_path)
+
+    @Slot(str)
+    def _startup_discovery_failed(self, error: str) -> None:
+        entry = self._startup_active_entry
+        if entry is not None:
+            self._startup_root_failed(entry, error)
+
+    @Slot()
+    def _startup_thread_finished(self) -> None:
+        thread = self._startup_thread
+        if thread is None:
+            return
+        self._startup_thread = None
+        self._startup_active_entry = None
+        thread.deleteLater()
+        if self._close_requested:
+            self.close()
+            return
+        QTimer.singleShot(0, self._start_startup_discovery)
+
+    def _restore_registry_timeouts(self) -> None:
+        """Restore normal lock waits after initial startup reads complete."""
+        if self._close_requested:
+            return
+        pending = tuple(self._startup_no_wait_registries.items())
+        self._startup_no_wait_registries.clear()
+        for key, registry in pending:
+            if self.registries.get(key) is not registry:
+                continue
+            try:
+                registry.catalog.set_busy_timeout(5000)
+            except (AttributeError, sqlite3.Error):
+                logger.debug("Could not restore catalog lock timeout", exc_info=True)
 
     def _set_detail_label_width(self, width: int | None) -> None:
         """Retain the user's shared label-column width."""
@@ -1310,6 +1627,27 @@ class MainWindow(QMainWindow):
         self.search.setFocus()
         self.search.selectAll()
 
+    def _add_pending_root_item(self, entry: RootEntry) -> QTreeWidgetItem:
+        """Show a saved root before its catalog is ready."""
+        key = self._config_root_key(entry.path)
+        name = entry.label or Path(entry.path).name or entry.path
+        item = QTreeWidgetItem([f"{name} (Loading…)"])
+        item.setToolTip(0, f"{entry.path}\nLibrary discovery is pending.")
+        item.setData(0, Qt.UserRole, key)
+        item.setData(0, Qt.UserRole + 1, "root-pending")
+        item.setFlags(item.flags() & ~Qt.ItemIsSelectable)
+        self.libraries_item.addChild(item)
+        self.combined.register_root(item, key)
+        self.libraries_item.setExpanded(True)
+        return item
+
+    def _root_item(self, key: str) -> QTreeWidgetItem | None:
+        for index in range(self.libraries_item.childCount()):
+            item = self.libraries_item.child(index)
+            if item.data(0, Qt.UserRole) == key:
+                return item
+        return None
+
     def _register_root(
         self,
         path: Path,
@@ -1318,45 +1656,75 @@ class MainWindow(QMainWindow):
         *,
         watch_on_start: bool = False,
         auto_process_new_pdfs: bool = False,
+        _initialized_registry: PdfRegistry | None = None,
+        _startup_entry: RootEntry | None = None,
     ) -> None:
         if "\0" in str(path):
             raise ValueError("Library root contains a null character")
-        path = path.expanduser().resolve()
+        path = path.expanduser()
+        if _initialized_registry is None:
+            path = path.resolve()
         key = str(path)
         if key not in self.registries:
-            registry = PdfRegistry(path)
-            if path.is_dir():
-                registry.catalog.discover_root(path, recursive=recursive)
+            registry = _initialized_registry or PdfRegistry(path)
+            if _initialized_registry is None:
+                try:
+                    if path.is_dir():
+                        registry.catalog.discover_root(path, recursive=recursive)
+                except Exception:
+                    registry.close()
+                    raise
             self.registries[key] = registry
-            self.root_entries[key] = RootEntry(
+            self.root_entries[key] = _startup_entry or RootEntry(
                 path=key,
                 label=label,
                 recursive=recursive,
                 watch_on_start=watch_on_start,
                 auto_process_new_pdfs=auto_process_new_pdfs,
             )
+            if _startup_entry is not None:
+                self.root_entries[key] = replace(_startup_entry, path=key)
         else:
             return
+        previous_key = (
+            self._config_root_key(_startup_entry.path)
+            if _startup_entry is not None
+            else key
+        )
         self._unrestored_roots = [
             entry
             for entry in self._unrestored_roots
-            if self._config_root_key(entry.path) != key
+            if self._config_root_key(entry.path) not in {key, previous_key}
         ]
         count = self._safe_count(self.registries[key])
         count_text = str(count) if count is not None else "?"
-        root_item = QTreeWidgetItem(
-            [f"{label or path.name or str(path)} ({count_text})"]
-        )
+        root_item = self._root_item(previous_key)
+        if root_item is None and previous_key != key:
+            root_item = self._root_item(key)
+        if root_item is None:
+            root_item = QTreeWidgetItem()
+            self.libraries_item.addChild(root_item)
+        root_item.setText(0, f"{label or path.name or str(path)} ({count_text})")
         root_item.setToolTip(0, key)
         root_item.setData(0, Qt.UserRole, key)
         root_item.setData(0, Qt.UserRole + 1, "root")
-        self.libraries_item.addChild(root_item)
+        root_item.setFlags(root_item.flags() | Qt.ItemIsSelectable)
+        self._set_root_watch_icon(root_item, key)
+        if previous_key != key:
+            was_selected = previous_key in self.combined.selected
+            self.combined.selected.discard(previous_key)
+            if was_selected:
+                self.combined.selected.add(key)
+            self.combined._known_roots.discard(previous_key)
         self.combined.register_root(root_item, key)
         if self.combined.enabled:
             self.combined.update_columns()
         self.libraries_item.setExpanded(True)
-        if not self._restoring_config and not self._ads_recheck_startup_pending:
-            self._queue_added_ads_recheck(path)
+        if _startup_entry is None and not self._restoring_config:
+            if self._ads_recheck_startup_pending:
+                QTimer.singleShot(0, self._queue_startup_ads_rechecks)
+            else:
+                self._queue_added_ads_recheck(path)
 
     def _connect_watch_controller(self) -> None:
         """Connect controller events after the notice surface exists."""
@@ -1393,11 +1761,27 @@ class MainWindow(QMainWindow):
                 self.config.roots.append(entry)
                 registered_paths.add(key)
 
+    def _retain_unrestored_root(self, entry: RootEntry) -> RootEntry:
+        """Keep one saved entry for a root that could not be opened."""
+        key = self._config_root_key(entry.path)
+        existing = next(
+            (
+                item
+                for item in self._unrestored_roots
+                if self._config_root_key(item.path) == key
+            ),
+            None,
+        )
+        if existing is not None:
+            return existing
+        self._unrestored_roots.append(entry)
+        return entry
+
     @staticmethod
     def _config_root_key(path: str) -> str:
         """Normalize a saved root for comparison, retaining invalid paths."""
         try:
-            return str(Path(path).expanduser().resolve())
+            return os.path.normcase(os.path.normpath(os.path.expanduser(path)))
         except (OSError, RuntimeError, ValueError):
             return path
 
@@ -1956,7 +2340,10 @@ class MainWindow(QMainWindow):
         dialog.show()
 
     def _start_root_watch(self, root: Path) -> bool:
-        normalized = root.expanduser().resolve()
+        expanded = root.expanduser()
+        normalized = (
+            expanded if str(expanded) in self.root_entries else expanded.resolve()
+        )
         if self._detail_edit_block_reason():
             message = self._operation_wait_message("starting a watcher")
             self._watch_root_errors[str(normalized)] = message
@@ -2005,7 +2392,11 @@ class MainWindow(QMainWindow):
         for entry in tuple(self.root_entries.values()):
             if self._close_requested:
                 return
-            if entry.watch_on_start:
+            if (
+                entry.watch_on_start
+                and self._config_root_key(entry.path)
+                not in self._startup_unavailable_roots
+            ):
                 self._start_root_watch(Path(entry.path))
         self._sync_watch_actions()
         QTimer.singleShot(0, self._queue_startup_ads_rechecks)
@@ -2268,6 +2659,12 @@ class MainWindow(QMainWindow):
         self._continue_ads_rechecks()
 
     def _queue_startup_ads_rechecks(self) -> None:
+        if (
+            self._close_requested
+            or not self.root_entries
+            or not self._ads_recheck_startup_pending
+        ):
+            return
         self._ads_recheck_startup_pending = False
         self._offer_ads_recheck()
 
@@ -3301,6 +3698,16 @@ class MainWindow(QMainWindow):
         self._sync_detail_and_selection_actions()
 
     def _handle_notice_action(self, payload: object) -> None:
+        if isinstance(payload, RootEntry):
+            self._retry_root_restore(payload)
+            return
+        if isinstance(payload, CombinedRefreshRetry):
+            self.combined.retry(payload)
+            return
+        if isinstance(payload, Path):
+            self.notice_bar.dismiss(f"refresh:{payload}")
+            self.refresh(payload)
+            return
         if isinstance(payload, RenameConflictRequest):
             self._review_conflict(payload)
             return
@@ -3365,14 +3772,16 @@ class MainWindow(QMainWindow):
         self._pending_watch_refresh_roots.clear()
         selection_id = self._watch_refresh_selection_id
         self._watch_refresh_selection_id = None
+        failed_roots: set[Path] = set()
         for root in roots:
-            if str(root) in self.registries:
-                self.refresh(root)
+            if str(root) in self.registries and self.refresh(root) is False:
+                failed_roots.add(root)
         if (
             selection_id is not None
             and not self.combined.enabled
             and self.current_root is not None
             and self.current_root.resolve() in roots
+            and self.current_root.resolve() not in failed_roots
         ):
             registry = self.registries[str(self.current_root)]
             if registry.find_location_by_id(selection_id) is None:
@@ -3603,10 +4012,10 @@ class MainWindow(QMainWindow):
             return None
 
     def _select_root(self, path: Path) -> None:
-        key = str(path.expanduser().resolve())
+        key = self._config_root_key(str(path))
         for index in range(self.libraries_item.childCount()):
             item = self.libraries_item.child(index)
-            if item.data(0, Qt.UserRole) == key:
+            if self._config_root_key(str(item.data(0, Qt.UserRole) or "")) == key:
                 self.sidebar.setCurrentItem(item)
                 return
 
@@ -3623,19 +4032,53 @@ class MainWindow(QMainWindow):
         if item is None:
             return
         kind = item.data(0, Qt.UserRole + 1)
-        if kind == "root":
+        if kind == "root-pending":
+            blocker = QSignalBlocker(self.sidebar)
+            ready_item = (
+                self._root_item(str(self.current_root))
+                if self.current_root is not None
+                else None
+            )
+            self.sidebar.setCurrentItem(ready_item)
+            del blocker
+            return
+        if kind in {"root", "root-pending"}:
             key = item.data(0, Qt.UserRole)
             view = LibraryView.ALL
         elif kind in {view.value for view in LibraryView}:
+            if (
+                self.current_root is None
+                or str(self.current_root) not in self.registries
+            ):
+                blocker = QSignalBlocker(self.sidebar)
+                ready_item = (
+                    self._root_item(str(self.current_root))
+                    if self.current_root is not None
+                    else None
+                )
+                self.sidebar.setCurrentItem(ready_item)
+                del blocker
+                return
             key = item.data(0, Qt.UserRole)
             view = LibraryView(str(kind))
         else:
             return
+        if not self._restoring_config and kind in {"root", "root-pending"}:
+            self._startup_user_selected = True
         self.current_root = Path(str(key))
         self.current_view = view
         self.current_query = replace(
             self.current_query, view=self.current_view, search=self.search.text()
         )
+        if str(self.current_root) not in self.registries:
+            self._startup_user_selected = True
+            self._sync_welcome()
+            self.status.showMessage(
+                "Loading saved library. Cached records are not ready yet."
+            )
+            self._sync_watch_actions()
+            self._sync_ads_library_action()
+            return
         registry = (
             self.combined.registry()
             if self.combined.enabled
@@ -5009,6 +5452,7 @@ class MainWindow(QMainWindow):
             query=self.current_query,
             loaded=self.model.rowCount(),
             scroll=self.table.verticalScrollBar().value(),
+            view_model=self.table.model(),
         )
         self._request_foreground_dialog("local_refresh", root)
         self._sync_refresh_actions()
@@ -5036,41 +5480,65 @@ class MainWindow(QMainWindow):
             self.combined.enabled
             or self.current_root != context.root
             or self.current_query != context.query
+            or (
+                context.view_model is not None
+                and self.table.model() is not context.view_model
+            )
         ):
             return
-        records = self.registries[str(context.root)].query_files(
-            **self.current_query.to_filters()
-        )
-        by_id = {record["location_id"]: record for record in records}
-        by_attachment: dict[int, list[int]] = {}
-        for record in records:
-            by_attachment.setdefault(record["attachment_id"], []).append(
-                record["location_id"]
-            )
-        targets: dict[int, int] = {}
-        for record in (
-            *context.selected,
-            *((context.current,) if context.current else ()),
-        ):
-            old_id = record["location_id"]
-            if old_id in by_id:
-                targets[old_id] = old_id
-            else:
-                matches = by_attachment.get(record["attachment_id"], [])
-                if len(matches) == 1:
-                    targets[old_id] = matches[0]
-        needed = set(targets.values())
-        while self.model.canFetchMore():
-            loaded = {
-                self.model.record_at(row)["location_id"]
-                for row in range(self.model.rowCount())
-            }
-            if self.model.rowCount() >= context.loaded and needed <= loaded:
+        records = (*context.selected, *((context.current,) if context.current else ()))
+        records_by_id = {int(record["location_id"]): record for record in records}
+        wanted_ids = set(records_by_id)
+        wanted_attachments = {
+            int(record["attachment_id"]) for record in records_by_id.values()
+        }
+        found_rows: dict[int, int] = {}
+        attachment_rows: dict[int, list[tuple[int, int]]] = {}
+        scanned = 0
+        loaded_depth = min(context.loaded, self.model.total)
+        snapshot_complete = False
+        while True:
+            loaded = self.model.rowCount()
+            for row in range(scanned, loaded):
+                record = self.model.record_at(row)
+                if record is None:
+                    continue
+                location_id = int(record["location_id"])
+                if location_id in wanted_ids:
+                    found_rows[location_id] = row
+                attachment_id = int(record["attachment_id"])
+                if attachment_id in wanted_attachments:
+                    candidates = attachment_rows.setdefault(attachment_id, [])
+                    if len(candidates) < 2:
+                        candidates.append((location_id, row))
+            scanned = loaded
+            if scanned >= loaded_depth and wanted_ids <= found_rows.keys():
                 break
-            previous = self.model.rowCount()
+            if not self.model.canFetchMore():
+                snapshot_complete = (
+                    loaded == self.model.total
+                    and not self.model._page_snapshot_closed_incomplete
+                )
+                break
+            previous = loaded
             self.model.fetchMore()
             if self.model.rowCount() == previous:
+                snapshot_complete = (
+                    previous == self.model.total
+                    and not self.model._page_snapshot_closed_incomplete
+                )
                 break
+
+        targets = {location_id: location_id for location_id in found_rows}
+        if snapshot_complete:
+            for old_id, record in records_by_id.items():
+                if old_id in targets:
+                    continue
+                matches = attachment_rows.get(int(record["attachment_id"]), [])
+                if len(matches) == 1:
+                    targets[old_id] = matches[0][0]
+                    found_rows[matches[0][0]] = matches[0][1]
+
         selection = self.table.selectionModel()
         selection.clearSelection()
         selected_ids = {
@@ -5082,18 +5550,52 @@ class MainWindow(QMainWindow):
             targets.get(context.current["location_id"]) if context.current else None
         )
         current_index = QModelIndex()
-        for row in range(self.model.rowCount()):
-            location_id = self.model.record_at(row)["location_id"]
-            index = self.model.index(row, 0)
-            if location_id in selected_ids:
-                selection.select(
-                    index, QItemSelectionModel.Select | QItemSelectionModel.Rows
-                )
-            if location_id == current_id:
-                current_index = index
+        selected_indexes: list[QModelIndex] = []
+        for location_id in selected_ids:
+            row = found_rows.get(location_id)
+            if row is None:
+                continue
+            index = self._view_table_index(self.model.index(row, 0))
+            if index.isValid():
+                selected_indexes.append(index)
+        if selected_indexes:
+            selection.select(
+                _selection_ranges(selected_indexes),
+                QItemSelectionModel.Select | QItemSelectionModel.Rows,
+            )
+        if current_id is not None and current_id in found_rows:
+            current_index = self._view_table_index(
+                self.model.index(found_rows[current_id], 0)
+            )
         selection.setCurrentIndex(current_index, QItemSelectionModel.NoUpdate)
         self._sync_detail_and_selection_actions()
         self.table.verticalScrollBar().setValue(context.scroll)
+        # A moved PDF can have a new row far from the old scroll position.
+        # Keep the old position for PDFs that did not move.
+        moved_ids = {new for old, new in targets.items() if new != old}
+        shown = QModelIndex()
+        if current_id in moved_ids:
+            shown = current_index
+        else:
+            moved_rows = sorted(
+                found_rows[location_id]
+                for location_id in selected_ids & moved_ids
+                if location_id in found_rows
+            )
+            if moved_rows:
+                shown = self._view_table_index(self.model.index(moved_rows[0], 0))
+        if shown.isValid():
+            row_rect = self.table.visualRect(shown)
+            viewport = self.table.viewport().rect()
+            if (
+                row_rect.isEmpty()
+                or row_rect.top() < viewport.top()
+                or row_rect.bottom() > viewport.bottom()
+            ):
+                horizontal = self.table.horizontalScrollBar()
+                left = horizontal.value()
+                self.table.scrollTo(shown)
+                horizontal.setValue(left)
 
     def _open_preferences(self, page: str = "") -> None:
         """Open the settings window, optionally at the section named `page`."""
@@ -5419,6 +5921,9 @@ class MainWindow(QMainWindow):
                     self._applying_table_layout = False
 
     def _add_root(self) -> None:
+        if self._startup_roots_pending or self._startup_thread is not None:
+            self.status.showMessage("Wait for saved library discovery to finish.")
+            return
         selected = QFileDialog.getExistingDirectory(self, "Add Library Root")
         if not selected:
             return
@@ -5432,12 +5937,36 @@ class MainWindow(QMainWindow):
                 return
             recursive = choice
             watch, auto_process = self._ask_watch_new_library(path)
-        self._register_root(
-            path,
+        entry = RootEntry(
+            path=str(path.expanduser().resolve()),
             recursive=recursive,
             watch_on_start=watch,
             auto_process_new_pdfs=auto_process,
         )
+        try:
+            self._register_root(
+                path,
+                recursive=recursive,
+                watch_on_start=watch,
+                auto_process_new_pdfs=auto_process,
+            )
+        except sqlite3.OperationalError as exc:
+            if not self._is_database_busy(exc):
+                raise
+            retained = self._retain_unrestored_root(entry)
+            self._sync_config_roots()
+            self._show_root_retry(retained, exc)
+            try:
+                save_config(self.config)
+            except OSError as save_exc:
+                self.notice_bar.enqueue(
+                    Notice(
+                        f"watch-save:{path}",
+                        f"Could not save the new library settings: {save_exc}",
+                        severity="error",
+                    )
+                )
+            return
         if is_new:
             self._sync_config_roots()
             try:
@@ -5615,38 +6144,191 @@ class MainWindow(QMainWindow):
         self._sync_watch_actions()
         self._sync_ads_library_action()
 
-    def refresh(self, root: Path | None = None) -> None:
+    def refresh(self, root: Path | None = None) -> bool:
         """Reload the current registry and sidebar counts."""
         root = root or self.current_root
         if root is None:
-            return
-        key = str(root)
-        self.registries[key].close()
-        self.registries[key] = PdfRegistry(root)
+            return False
+        normalized = self._config_root_key(str(root))
+        key = next(
+            (
+                registered
+                for registered in self.registries
+                if self._config_root_key(registered) == normalized
+            ),
+            None,
+        )
+        if key is None:
+            self.status.showMessage(
+                "Library is still loading. Try again when it is ready."
+            )
+            return False
+        root = Path(key)
+        current = self.registries[key]
+        replacement: PdfRegistry | None = None
+        prepared_model: FileTableModel | None = None
+        prepared_errors: list[str] = []
+        combined_selection: set[tuple[str, int]] = set()
+        try:
+            replacement = PdfRegistry(
+                root,
+                initialized=True,
+                catalog_path=current.catalog.path,
+            )
+            count = replacement.count_files()
+            if self.combined.enabled and key in self.combined.selected:
+                combined_selection = {
+                    (str(record.get("root") or ""), int(record["location_id"]))
+                    for record in self._selected_record_refs()
+                    if record.get("location_id") is not None
+                }
+                candidate_registries = {
+                    selected: (
+                        replacement if selected == key else self.registries[selected]
+                    )
+                    for selected, registered in self.registries.items()
+                    if selected in self.combined.selected
+                }
+                previous_timeouts: dict[PdfRegistry, int] = {}
+                staged_registry = CombinedLibrary(
+                    candidate_registries,
+                    labels=self.combined.labels(),
+                )
+                try:
+                    for selected, registered in candidate_registries.items():
+                        if selected == key:
+                            continue
+                        connection = registered.catalog._connection
+                        previous_timeouts[registered] = int(
+                            connection.execute("PRAGMA busy_timeout").fetchone()[0]
+                        )
+                        registered.catalog.set_busy_timeout(0)
+                    prepared_model, prepared_errors = self.model.prepare_registry(
+                        staged_registry, self.current_query
+                    )
+                    remaining = set(combined_selection)
+                    seen = 0
+                    while remaining and prepared_model.canFetchMore(QModelIndex()):
+                        for row in range(seen, prepared_model.rowCount()):
+                            record = prepared_model.record_at(row)
+                            if (
+                                record is not None
+                                and record.get("location_id") is not None
+                            ):
+                                remaining.discard(
+                                    (
+                                        str(record.get("root") or ""),
+                                        int(record["location_id"]),
+                                    )
+                                )
+                        seen = prepared_model.rowCount()
+                        if remaining:
+                            prepared_model.fetchMore(QModelIndex())
+                        if prepared_errors:
+                            break
+                finally:
+                    for registered, timeout in previous_timeouts.items():
+                        registered.catalog.set_busy_timeout(timeout)
+                if prepared_errors:
+                    raise RuntimeError(prepared_errors[0])
+            elif not self.combined.enabled and self.current_root == root:
+                replacement.record_facts()
+                prepared_model, prepared_errors = self.model.prepare_registry(
+                    replacement, self.current_query
+                )
+                if prepared_errors:
+                    raise RuntimeError(prepared_errors[0])
+        except (OSError, ValueError, RuntimeError, sqlite3.Error) as exc:
+            if prepared_model is not None:
+                prepared_model.close()
+            if replacement is not None:
+                replacement.close()
+            self.status.showMessage(
+                f"Could not refresh {root.name or key}: {exc}. "
+                "The current library stays open. Select Refresh to try again."
+            )
+            self.notice_bar.enqueue(
+                Notice(
+                    f"refresh:{key}",
+                    f"Could not refresh {root.name or key}. The current library stays open.",
+                    severity="warning",
+                    action=NoticeAction.RETRY,
+                    payload=root,
+                    details=str(exc),
+                )
+            )
+            return False
+
+        self.registries[key] = replacement
+        current.close()
         entry = self.root_entries[key]
         for index in range(self.libraries_item.childCount()):
             item = self.libraries_item.child(index)
             if item.data(0, Qt.UserRole) == key:
-                count = self._safe_count(self.registries[key])
                 item.setText(
                     0,
                     f"{entry.label or root.name or key} ({count if count is not None else '?'})",
                 )
                 self._set_root_watch_icon(item, key)
                 break
-        if self.combined.enabled and key in self.combined.selected:
-            self.combined.refresh()
-        elif not self.combined.enabled and self.current_root == root:
-            self.model.set_registry(self.registries[key], self.current_query)
-            self._populate_views(self.registries[key])
-            self._update_status()
+        try:
+            if self.combined.enabled and key in self.combined.selected:
+                self.combined.refresh(prepared_model=prepared_model)
+            elif not self.combined.enabled and self.current_root == root:
+                self.model.adopt_prepared(prepared_model)
+                self._populate_views(self.registries[key])
+                self._update_status()
+        finally:
+            replacement.catalog.set_busy_timeout(5000)
+        self.notice_bar.dismiss(f"refresh:{key}")
+        return True
 
     def _toggle_notifications(self) -> None:
         """Open or close notifications without resizing the main panes."""
         if self.notification_panel.isVisible():
             self.notification_panel.hide()
         else:
-            self.notification_panel.show_for(self.notifications_button)
+            anchor = (
+                self.notifications_button
+                if self.notifications_button.isVisible()
+                else self.menuBar()
+                if self.menuBar().isVisible()
+                else self.statusBar()
+            )
+            self.notification_panel.show_for(anchor)
+
+    @staticmethod
+    def _is_database_busy(exc: sqlite3.OperationalError) -> bool:
+        error_name = getattr(exc, "sqlite_errorname", "")
+        if error_name.startswith(("SQLITE_BUSY", "SQLITE_LOCKED")):
+            return True
+        message = str(exc).strip().lower()
+        return message.startswith(
+            (
+                "database is locked",
+                "database table is locked",
+                "database schema is locked",
+                "database is busy",
+            )
+        )
+
+    def _show_root_retry(self, entry: RootEntry, exc: Exception) -> None:
+        self.notice_bar.enqueue(
+            Notice(
+                f"root-restore:{entry.path}",
+                f"Could not open library {entry.path} because its catalog is busy. "
+                "Your saved library options are retained. Select Retry after the other "
+                "catalog operation finishes.",
+                severity="warning",
+                action=NoticeAction.RETRY,
+                payload=entry,
+                details=str(exc),
+            )
+        )
+
+    def _retry_root_restore(self, entry: RootEntry) -> None:
+        self.notice_bar.dismiss(f"root-restore:{entry.path}")
+        self._queue_root_retry(entry)
 
     def _sync_notifications(self) -> None:
         """Update the permanent notification indicator without opening its panel."""
@@ -6230,7 +6912,7 @@ class MainWindow(QMainWindow):
 
     def _sync_welcome(self) -> None:
         """Show the welcome guide instead of empty panes when no library exists."""
-        empty = self.current_root is None
+        empty = self.current_root is None and not self._unrestored_roots
         self.welcome.setVisible(empty)
         self.splitter.setVisible(not empty)
         if not empty:
@@ -7695,6 +8377,20 @@ class MainWindow(QMainWindow):
         self._guided_identify_commands.clear()
         local_context = self._local_refresh_context
         local_result = self._local_refresh_result
+        if (
+            local_context is not None
+            and self.current_root == local_context.root
+            and not self.combined.enabled
+        ):
+            local_context = replace(
+                local_context,
+                selected=self._selected_records(),
+                current=deepcopy(self._selected_record()),
+                query=self.current_query,
+                loaded=self.model.rowCount(),
+                scroll=self.table.verticalScrollBar().value(),
+                view_model=self.table.model(),
+            )
         self._local_refresh_context = None
         self._local_refresh_result = None
         candidates = self._ads_match_candidates
@@ -7729,11 +8425,13 @@ class MainWindow(QMainWindow):
         self._sync_job_indicator()
         self._sync_ads_library_action()
         self._resume_foreground_watch()
+        refresh_succeeded = True
         if refresh_root is None or str(refresh_root) in self.registries:
-            self.refresh(refresh_root)
+            refresh_succeeded = self.refresh(refresh_root) is not False
         if (
             identify_rename_context is not None
             and str(identify_rename_context.root) in self.registries
+            and refresh_succeeded
         ):
             self._restore_library_selection(identify_rename_context)
             self.status.showMessage(
@@ -7742,7 +8440,8 @@ class MainWindow(QMainWindow):
                 else "Identify and rename stopped. See the job log for details."
             )
         if local_context is not None and str(local_context.root) in self.registries:
-            self._restore_library_selection(local_context)
+            if refresh_succeeded:
+                self._restore_library_selection(local_context)
             if local_result is not None:
                 summary = (
                     f"Refreshed {local_context.root.name}: {local_result.added} added, "
@@ -7759,6 +8458,7 @@ class MainWindow(QMainWindow):
         if (
             identify_context is not None
             and str(identify_context.root) in self.registries
+            and refresh_succeeded
         ):
             self._restore_library_selection(identify_context)
             if code == 0:
@@ -7795,6 +8495,7 @@ class MainWindow(QMainWindow):
             and refresh_root is not None
             and str(refresh_root) in self.registries
             and self._refresh_selection_id is not None
+            and refresh_succeeded
         ):
             saved = self.registries[str(refresh_root)].find_location_by_id(
                 self._refresh_selection_id
@@ -7812,6 +8513,7 @@ class MainWindow(QMainWindow):
             not self.combined.enabled
             and self._refresh_selection_id is not None
             and (refresh_root is None or refresh_root == self.current_root)
+            and refresh_succeeded
         ):
             self._select_file_id(self._refresh_selection_id)
         self._refresh_selection_id = None
@@ -7845,6 +8547,13 @@ class MainWindow(QMainWindow):
         self._ads_recheck_roots = None
         self._ads_recheck_again = False
         self._pending_priority_edit = None
+        if self._startup_thread is not None and self._startup_thread.isRunning():
+            self._close_requested = True
+            self._startup_queue.clear()
+            self._startup_thread.requestInterruption()
+            self.status.showMessage("Closing after saved library discovery stops…")
+            event.ignore()
+            return
         if (
             self._pending_watch_dialog is not None
             and self._pending_watch_dialog[0] == "ads_recheck"
@@ -7906,7 +8615,11 @@ class MainWindow(QMainWindow):
         self._guided_identify_context = None
         self._guided_identify_commands.clear()
         self._sync_config_roots()
-        self.config.last_root = str(self.current_root) if self.current_root else None
+        self.config.last_root = (
+            str(self.current_root)
+            if self.current_root is not None
+            else self._startup_selection_key
+        )
         self.config.last_view = self.current_view.value
         self._remember_splitter_sizes()
         self.config.window_geometry = bytes(self.saveGeometry().toBase64()).decode()

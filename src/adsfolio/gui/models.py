@@ -832,6 +832,75 @@ class FileTableModel(QAbstractTableModel):
             self._query = query
         self._reload()
 
+    def prepare_registry(
+        self, registry: Any, query: FileQuery | None = None
+    ) -> tuple[FileTableModel, list[str]]:
+        """Load a candidate registry into a detached model.
+
+        Parameters
+        ----------
+        registry
+            Registry for the candidate view.
+        query
+            Query to prepare. The current query is used when omitted.
+
+        Returns
+        -------
+        prepared : FileTableModel
+            Detached model state for the candidate registry.
+        errors : list of str
+            Query failures emitted while the model loads.
+        """
+        prepared = FileTableModel(
+            None,
+            query or self._query,
+            columns=self._columns,
+        )
+        prepared._column_fonts = self._column_fonts.copy()
+        prepared._column_colors = self._column_colors.copy()
+        prepared._column_alignments = self._column_alignments.copy()
+        prepared._timestamp_format = self._timestamp_format
+        errors: list[str] = []
+        prepared.query_failed.connect(errors.append)
+        try:
+            prepared.set_registry(registry, query or self._query)
+        except sqlite3.Error as exc:
+            errors.append(str(exc))
+        return prepared, errors
+
+    def adopt_prepared(self, prepared: FileTableModel) -> None:
+        """Replace this model's query state without another registry read.
+
+        Parameters
+        ----------
+        prepared
+            Detached model produced by `prepare_registry`.
+        """
+        old_page_snapshot = self._page_snapshot
+        self.beginResetModel()
+        self._registry = prepared._registry
+        self._query = prepared._query
+        self._snapshot = prepared._snapshot
+        self._page_snapshot = prepared._page_snapshot
+        self._page_snapshot_closed_incomplete = (
+            prepared._page_snapshot_closed_incomplete
+        )
+        self._rows = prepared._rows
+        self._total = prepared._total
+        self._cell_cache = prepared._cell_cache
+        self._natural = prepared._natural
+        self._natural_key = prepared._natural_key
+        prepared._registry = None
+        prepared._page_snapshot = None
+        prepared._snapshot = []
+        prepared._rows = []
+        prepared._total = 0
+        prepared._natural = []
+        prepared._natural_key = None
+        self.endResetModel()
+        if old_page_snapshot is not None:
+            old_page_snapshot.close()
+
     def set_query(self, query: FileQuery) -> None:
         """Replace the query and reload the model."""
         self._query = query

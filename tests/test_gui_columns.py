@@ -122,6 +122,7 @@ def test_column_first_header_drag_survives_appearance_and_restart(qtbot, tmp_pat
 
     restored = MainWindow()
     qtbot.addWidget(restored)
+    qtbot.waitUntil(lambda: not restored._startup_roots_pending)
     assert _visual_order(restored) == reordered
     assert restored.config.column_alignments == {"title": "center"}
     assert restored.model.rowCount() == 1

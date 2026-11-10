@@ -88,6 +88,7 @@ def combined_editing(qtbot, monkeypatch, tmp_path):
     )
     window = MainWindow()
     qtbot.addWidget(window)
+    qtbot.waitUntil(lambda: not window._startup_roots_pending)
     window.combined.set_enabled(True)
     assert window.model.total == 4
     try:

@@ -38,6 +38,7 @@ def preferences_window(qtbot, monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     )
     window = MainWindow()
     qtbot.addWidget(window)
+    qtbot.waitUntil(lambda: not window._startup_roots_pending)
     dialog = PreferencesDialog(window)
     qtbot.addWidget(dialog)
     yield window, dialog, root, pdf

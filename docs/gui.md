@@ -178,6 +178,11 @@ for their operating system instead. The About copyright shows `@ysBach`.
 
 ## Library roots and missing PDFs
 
+At startup, ADSfolio checks saved libraries in the background. Wait for a
+library to open before selecting it. If the catalog is busy, wait for the
+other operation to finish. Then select **Retry** in **Notifications**.
+If a folder is offline, you can browse its saved records once the catalog opens.
+
 Add a root from **File → Add Library Root…**, or from **Add PDF Folder…** on the
 welcome page that appears while no library exists. The welcome page also offers
 the optional ADS token and publication profile. It also lists the services that
@@ -279,7 +284,9 @@ an item to read its reason. Clear **Combine libraries** to use them.
 
 If a checked folder is unavailable, **Notifications** names the folder. Reconnect
 the folder and choose **Refresh** to reload the combined table. Combined refresh
-reads the catalog. To scan a folder for new or missing PDFs, clear **Combine
+reads the catalog. If another process locks a catalog, the current table,
+selection, and current PDF stay available. After the lock ends, choose **Retry**
+in **Notifications**. To scan a folder for new or missing PDFs, clear **Combine
 libraries**. Select the library. Choose **Refresh**.
 
 To change the scope later:
@@ -451,9 +458,15 @@ runs the same scan.
 
 Refresh preserves existing metadata and local edits. Moved files retain their
 metadata when their filesystem identity matches. The status bar and job log
-report added, modified, moved, restored, and missing counts. Refresh keeps
-selection, search, and sort settings when the originating view is still active.
-Watcher writes pause during the scan.
+report added, modified, moved, restored, and missing counts. Refresh keeps the
+newest selection, current PDF, search, and sort when the originating view is
+still active. This includes selections made while Refresh runs. Watcher writes
+pause during the scan.
+
+Refresh opens and checks the catalog before it replaces the current connection.
+If another process locks the catalog, the table, selection, and current PDF
+remain available. Select **Retry** in **Notifications** after that operation
+ends. A successful refresh reloads the current library.
 
 The toolbar **ADS Refresh ▾ → Look Up Stored Bibcodes…** repairs pending ADS
 links. It uses cached records first and queries uncached bibcodes in batches.
@@ -1527,10 +1540,13 @@ Sounds also play for new PDFs in watched folders that Identify skips.
 
 ![Notifications with a fictional candidate awaiting review](_static/tutorial/notifications.png)
 
-Choose the permanent **Notifications** toolbar icon to open pending messages
-and help for the selected sidebar group. Its badge counts pending messages.
-Its symbol indicates errors or warnings. New messages update this indicator
-without opening the panel or moving the library panes.
+Choose **View → Show Notifications** or select **Notifications** in the toolbar.
+The panel shows pending messages and help for the selected sidebar group.
+The toolbar badge counts pending messages. Its symbol indicates errors or
+warnings. New messages update the badge without opening the panel.
+
+If ADSfolio reports a busy catalog, wait for the other catalog operation to
+finish. Then select **Retry** on the library's notification.
 
 The panel shows every queued message with its own action icons.
 It scrolls long lists and keeps the full message text available for copying.

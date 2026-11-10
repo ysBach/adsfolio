@@ -8,6 +8,22 @@
   If you edit the options, generate a new preview. Pressing **Return** does
   not apply an old preview.
 
+### Library recovery
+
+- If **Refresh** cannot open a locked catalog, ADSfolio keeps the current table,
+  selection, current PDF, and connection available. Select **Retry** in
+  **Notifications** after the other catalog operation ends.
+- Local **Refresh** keeps the newest selection and current PDF after the scan.
+  This includes changes made while the scan runs.
+- A PDF that moved to another folder previously stayed selected after local
+  **Refresh**, but a large library could show it out of view. Now the table
+  scrolls to it. If the PDF did not move, the table keeps its scroll position.
+- ADSfolio checks saved library folders in the background at startup. A busy
+  catalog no longer stops the window from opening or responding.
+- If a catalog is busy when ADSfolio opens a library, use **Retry** in
+  **Notifications** after the other catalog operation ends.
+- **View → Show Notifications** opens messages when the Find bar is hidden.
+
 ### Speed
 
 - Sidebar and status counts read only the catalog fields they need. The app

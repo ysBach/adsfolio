@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import json
+import sqlite3
 from collections import Counter
 from collections.abc import Callable, Collection, Iterator, Mapping, Sequence
 from dataclasses import dataclass
@@ -364,11 +365,42 @@ _SEARCH_DOCUMENTS: dict[str, dict[int, _SearchEntry]] = {}
 class CentralPdfRegistry:
     """Root-scoped view over the user-wide :class:`PdfCatalog`."""
 
-    def __init__(self, directory: Path) -> None:
-        self.directory = Path(directory).expanduser().resolve()
-        self.catalog = PdfCatalog()
-        self.root_id = self.catalog.ensure_root(self.directory)
-        self.catalog.migrate_legacy_root(self.directory)
+    def __init__(
+        self,
+        directory: Path,
+        *,
+        initialized: bool = False,
+        catalog_path: Path | None = None,
+    ) -> None:
+        self.directory = Path(directory).expanduser()
+        if not initialized:
+            self.directory = self.directory.resolve()
+        if initialized or catalog_path is not None:
+            self.catalog = PdfCatalog(
+                path=catalog_path,
+                initialized=initialized,
+                busy_timeout_ms=0 if initialized else 5000,
+            )
+        else:
+            self.catalog = PdfCatalog()
+        if initialized:
+            try:
+                row = self.catalog._connection.execute(
+                    "SELECT id FROM library_roots WHERE canonical_path = ?",
+                    (str(self.directory),),
+                ).fetchone()
+            except sqlite3.Error:
+                self.catalog.close()
+                raise
+            if row is None:
+                self.catalog.close()
+                raise FileNotFoundError(
+                    f"Initialized catalog has no library root: {self.directory}"
+                )
+            self.root_id = int(row["id"])
+        else:
+            self.root_id = self.catalog.ensure_root(self.directory)
+            self.catalog.migrate_legacy_root(self.directory)
         self.path = self.catalog.path
         self._connection = self.catalog._connection
         self._facts_cache: tuple[tuple[int, ...], tuple[RecordFact, ...]] | None = None
