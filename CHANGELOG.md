@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.11.0 (2026-11-16)
 
 ### Settings search
 
@@ -12,23 +12,26 @@
 
 ### Filename column
 
-- The **Filename** column previously showed the file name for one library,
-  and the library and path in the combined view. You could not change it. Now
-  it shows the file name only. Click the folder icon in its header to show the
-  path from the library root. **View → Show Folder Paths in Filename** does the
-  same. A header click sorts by what the column shows. **Settings → Sorting**
-  offers **Filename: path** and **Filename: name only**.
-- The combined view now shows file names by default. To show the library and
-  path again, click the folder icon in the **Filename** header.
+- The **Filename** column previously showed the file name for one library, and
+  the library and path in the combined view. You could not change it.
+- **Filename** now shows the file name by default. Click the folder icon in the
+  flat list to show the path from the library root.
+- **View → Show Folder Paths in Filename** and the header menu do the same. A
+  header click sorts by the name or path shown.
+- **Settings → Sorting** offers **Filename: path** and **Filename: name only**.
+- In the flat combined view, paths include the library label when the separate
+  **Library** column is off.
 
 ### Library column
 
-- In the combined view, one **Library / Filename** column previously showed
-  the library and the path together. You could not sort by path alone. Now
-  **View → Appearance… → Table → Show Library as its own column** shows a
-  **Library** column and a **Filename** column. **Library** sorts by library
-  name. **Filename** sorts by the path inside the library. The option is off
-  by default. One library does not show the **Library** column.
+- In the combined view, one **Library / Filename** column previously showed the
+  library and the path together. You could not sort by path alone.
+- Now **View → Appearance… → Table → Show Library as its own column** shows a
+  **Library** column and a **Filename** column.
+- **Library** sorts by library label. **Filename** shows names or relative
+  paths. Click its header to sort by what it shows.
+- The option is off by default. One library does not show the **Library**
+  column.
 
 ### Table columns
 

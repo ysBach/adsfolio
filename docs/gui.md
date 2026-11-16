@@ -230,18 +230,18 @@ Each checked library appears as a collapsible folder group. Its subfolders
 appear as nested groups. Each PDF shows the system PDF icon and starts under
 its folder icon. The filename tooltip shows its library and full path.
 
-In a flat list with folder paths shown, the **Library / Filename** column
-shows the library and the path of each PDF. With names only, the column shows
-the file name. To show the library in its own column:
+The flat list shows file names by default. If you show folder paths,
+**Library / Filename** shows the library label and path together. To show the
+library in its own column:
 
 1. Open **View → Appearance…**.
 2. On the **Table** tab, check **Show Library as its own column**.
 3. Select **Save Appearance**.
 
-The **Library** column then sorts by library name. With folder paths shown,
-**Filename** shows the path inside the library and sorts by that path. One
-library does not show the **Library** column. If you clear the option while the
-table sorts by **Library**, the table sorts by **Library / Filename**.
+The **Library** column then sorts by library label. **Filename** shows names or
+paths from each library root. Click its header to sort by what it shows. One
+library does not show the **Library** column. If you turn the option off while
+the table sorts by **Library**, the sort key changes to **Filename: path**.
 
 When **Combine libraries** is clear, the library checkboxes stay in place but
 are gray. They show which libraries the combined view includes. To change
@@ -293,13 +293,16 @@ To add PDFs to an ADS library from the combined view:
 2. Choose **Tools → Add to ADS Library…**, or right-click the selection.
 
 If the selection contains PDFs from two or more libraries, the action is
-unavailable. Its tooltip gives the reason. **Export Selection As…** accepts
-PDFs from several libraries. **Export All As…** exports every current PDF in
-the checked libraries. Export All captures the checked libraries when the
-dialog opens. If a checked library is still opening or is disconnected, Export
-Papers reports that the All scope is incomplete. Wait for the library to open
-or reconnect it. Then select **All PDFs** again. Selected rows and the current
-table view still use available libraries.
+unavailable. Its tooltip gives the reason.
+
+**Export Selection As…** accepts PDFs from several libraries. **Export All
+As…** opens **Export Papers** with the **All** scope selected. The **All**
+scope captures every checked library when the dialog opens.
+
+If a checked library is unavailable, **Export Papers** reports which library
+it cannot include. ADSfolio does not export a partial **All** scope. Wait for
+the library to open or reconnect it. Then select **All PDFs** again. Selected
+rows and the current table view still use available libraries.
 
 Some **Tools** items apply to one library only. Examples are **Merge
 Annotations…**, the ADS refresh items for all records, and the watch settings.
@@ -418,13 +421,16 @@ link badge. Its tooltip and accessible text keep the full value. The Filename
 column follows the configured activation and action: open the PDF or reveal it
 in the file manager.
 
-The **Filename** column shows the file name only. To show the folder path from
-the library root, click the folder icon in the **Filename** header. Click the
-icon again to show names only. **View → Show Folder Paths in Filename** and the
-header right-click menu do the same. A click on the header text sorts by what
-the column shows: the name or the path. To sort by the path while names show,
-choose **Filename: path** in **Settings → Sorting**. The folder tree always
-shows names, because its folder groups show the path.
+The **Filename** column shows the file name by default. In the flat list, click
+the folder icon in the **Filename** header. It shows the path from the library
+root. Click the icon again to show names only. **View → Show Folder Paths in
+Filename** and the header menu do the same.
+
+Click the header text to sort by the name or path shown. **Settings → Sorting**
+offers **Filename: path** and **Filename: name only**, even when you show the
+other value.
+
+The folder tree shows folder paths in its groups. The PDF rows show file names.
 
 Right-click the table header to:
 
@@ -721,7 +727,7 @@ window and shows the PDFs to identify.
 
 | Format | Settings |
 |---|---|
-| **BibTeX (.bib)** | Citation key style for ADS papers and for other papers, an optional key template, and the fields to leave out. **Keep these key styles as default** saves the key settings for later exports. |
+| **BibTeX (.bib)** | Separate [citation key styles and templates](#citation-keys-from-a-template) for ADS papers and other papers. You can also choose which fields to omit. **Keep these key styles as default** saves the key settings for later exports. |
 | **Citation text (custom style)** | One of your [custom citation styles](#custom-citation-styles). Each paper gets one line. |
 | **Publication list** | Your name and the list format, as in the [CV Generator](#cv-generator). The settings stay in `cv-selection.yaml`, so they do not change your CV settings. |
 
@@ -755,6 +761,7 @@ These papers use the details stored in the catalog instead:
 - Papers without a saved entry when ADSfolio cannot reach ADS or has no token.
   The status line names the cause.
 
+(citation-keys-from-a-template)=
 #### Citation keys from a template
 
 Choose **Custom** as a key style. A **Custom** box then appears under that
@@ -827,12 +834,12 @@ after **Bibcode** by default, in the order shown in the editor. Generated
 table columns are display-only and are not sortable. Generated detail rows are
 computed, read-only, and not lockable. They do not become ADS metadata fields.
 
-Use **View → Appearance…** to reorder or hide generated columns and detail rows.
-You can also set their optional table/detail font, size, and color there. Use
-**OK** in the Appearance dialog to keep those live settings for configuration
-saving. **Cancel** restores the prior appearance. New generated items are
-visible by default. These appearance settings, the style definitions, and their
-order persist the next time the application starts.
+Open **View → Appearance…**. In **Settings**, reorder or hide the generated
+columns and detail rows. You can also set their font, size, and color. Select
+**Save Appearance** to apply your changes. Closing **Settings** discards any
+unsaved edits. New generated items are visible by default. These appearance
+settings, the style definitions, and their order persist the next time the
+application starts.
 
 Click a non-empty generated table cell or detail value to copy its complete
 rendered text. The table status bar or detail tooltip reports **Copied**. An
