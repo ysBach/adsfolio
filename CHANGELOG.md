@@ -1,6 +1,8 @@
 # Changelog
 
-## 0.11.0 (2026-11-16)
+## 0.11.1 (2026-11-16)
+
+The 0.11.0 build did not publish because the Windows checks failed.
 
 ### Settings search
 
@@ -55,6 +57,9 @@
 
 ### Library recovery
 
+- On Windows, a pending folder and its recovered folder could have paths
+  with different capitalization. ADSfolio now keeps one entry and preserves
+  its checkbox state.
 - If **Refresh** cannot open a locked catalog, ADSfolio keeps the current table,
   selection, current PDF, and connection available. Select **Retry** in
   **Notifications** after the other catalog operation ends.

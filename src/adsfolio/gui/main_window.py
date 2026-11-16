@@ -1418,6 +1418,7 @@ class MainWindow(QMainWindow):
                     item.setData(0, Qt.UserRole + 1, "root")
                     item.setFlags(item.flags() | Qt.ItemIsSelectable)
                     self._set_root_watch_icon(item, root)
+                    self.combined.replace_root_key(previous_key, root)
                     self.combined.register_root(item, root)
                 if self.combined.enabled:
                     self.combined.update_columns()
@@ -1489,21 +1490,26 @@ class MainWindow(QMainWindow):
                     payload=canonical_entry,
                 )
             )
-        saved_key = self._config_root_key(entry.path)
+        root_identities = {
+            self._root_path_identity(entry.path),
+            self._root_path_identity(root),
+        }
         was_restoring = self._restoring_config
         if initial_restore:
             self._restoring_config = True
         try:
-            if self.current_root is not None and self._current_root_key() in {
-                root,
-                saved_key,
-            }:
+            if (
+                self.current_root is not None
+                and self._root_path_identity(str(self.current_root)) in root_identities
+            ):
                 self.current_root = Path(root)
                 self._sidebar_changed()
-            elif not self._startup_user_selected and self._startup_selection_key in {
-                root,
-                saved_key,
-            }:
+            elif (
+                not self._startup_user_selected
+                and self._startup_selection_key is not None
+                and self._root_path_identity(self._startup_selection_key)
+                in root_identities
+            ):
                 preferred_view = self._startup_preferred_view
                 self._select_root(Path(root))
                 if preferred_view is not LibraryView.ALL:
@@ -1539,11 +1545,6 @@ class MainWindow(QMainWindow):
                         severity="error",
                     )
                 )
-
-    def _current_root_key(self) -> str | None:
-        if self.current_root is None:
-            return None
-        return self._config_root_key(str(self.current_root))
 
     def _startup_root_failed(self, entry: RootEntry, error: str) -> None:
         """Keep a failed saved root visible and offer an asynchronous retry."""
@@ -1679,6 +1680,17 @@ class MainWindow(QMainWindow):
             item = self.libraries_item.child(index)
             if item.data(0, Qt.UserRole) == key:
                 return item
+        target = self._root_path_identity(key)
+        for index in range(self.libraries_item.childCount()):
+            item = self.libraries_item.child(index)
+            if item.data(0, Qt.UserRole + 1) not in {"root", "root-pending"}:
+                continue
+            item_key = item.data(0, Qt.UserRole)
+            if (
+                isinstance(item_key, str)
+                and self._root_path_identity(item_key) == target
+            ):
+                return item
         return None
 
     def _register_root(
@@ -1719,15 +1731,29 @@ class MainWindow(QMainWindow):
                 self.root_entries[key] = replace(_startup_entry, path=key)
         else:
             return
-        previous_key = (
-            self._config_root_key(_startup_entry.path)
+        key_identity = self._root_path_identity(key)
+        pending_entry = (
+            _startup_entry
             if _startup_entry is not None
+            else next(
+                (
+                    entry
+                    for entry in self._unrestored_roots
+                    if self._root_path_identity(entry.path) == key_identity
+                ),
+                None,
+            )
+        )
+        previous_key = (
+            self._config_root_key(pending_entry.path)
+            if pending_entry is not None
             else key
         )
+        target_identities = {key_identity, self._root_path_identity(previous_key)}
         self._unrestored_roots = [
             entry
             for entry in self._unrestored_roots
-            if self._config_root_key(entry.path) not in {key, previous_key}
+            if self._root_path_identity(entry.path) not in target_identities
         ]
         count = self._safe_count(self.registries[key])
         count_text = str(count) if count is not None else "?"
@@ -1743,12 +1769,7 @@ class MainWindow(QMainWindow):
         root_item.setData(0, Qt.UserRole + 1, "root")
         root_item.setFlags(root_item.flags() | Qt.ItemIsSelectable)
         self._set_root_watch_icon(root_item, key)
-        if previous_key != key:
-            was_selected = previous_key in self.combined.selected
-            self.combined.selected.discard(previous_key)
-            if was_selected:
-                self.combined.selected.add(key)
-            self.combined._known_roots.discard(previous_key)
+        self.combined.replace_root_key(previous_key, key)
         self.combined.register_root(root_item, key)
         if self.combined.enabled:
             self.combined.update_columns()
@@ -1787,21 +1808,23 @@ class MainWindow(QMainWindow):
             for key in self.registries
             if key in self.root_entries
         ]
-        registered_paths = set(self.registries)
+        registered_identities = {
+            self._root_path_identity(key) for key in self.registries
+        }
         for entry in self._unrestored_roots:
-            key = self._config_root_key(entry.path)
-            if key not in registered_paths:
+            identity = self._root_path_identity(entry.path)
+            if identity not in registered_identities:
                 self.config.roots.append(entry)
-                registered_paths.add(key)
+                registered_identities.add(identity)
 
     def _retain_unrestored_root(self, entry: RootEntry) -> RootEntry:
         """Keep one saved entry for a root that could not be opened."""
-        key = self._config_root_key(entry.path)
+        identity = self._root_path_identity(entry.path)
         existing = next(
             (
                 item
                 for item in self._unrestored_roots
-                if self._config_root_key(item.path) == key
+                if self._root_path_identity(item.path) == identity
             ),
             None,
         )
@@ -1812,11 +1835,16 @@ class MainWindow(QMainWindow):
 
     @staticmethod
     def _config_root_key(path: str) -> str:
-        """Normalize a saved root for comparison, retaining invalid paths."""
+        """Normalize a saved root without changing its case."""
         try:
-            return os.path.normcase(os.path.normpath(os.path.expanduser(path)))
+            return os.path.normpath(os.path.expanduser(path))
         except (OSError, RuntimeError, ValueError):
             return path
+
+    @staticmethod
+    def _root_path_identity(path: str) -> str:
+        """Apply the operating system's case rules to a root comparison."""
+        return os.path.normcase(MainWindow._config_root_key(path))
 
     def _sync_watch_actions(self) -> None:
         root = self.current_root.resolve() if self.current_root is not None else None
@@ -4045,12 +4073,9 @@ class MainWindow(QMainWindow):
             return None
 
     def _select_root(self, path: Path) -> None:
-        key = self._config_root_key(str(path))
-        for index in range(self.libraries_item.childCount()):
-            item = self.libraries_item.child(index)
-            if self._config_root_key(str(item.data(0, Qt.UserRole) or "")) == key:
-                self.sidebar.setCurrentItem(item)
-                return
+        item = self._root_item(self._config_root_key(str(path)))
+        if item is not None:
+            self.sidebar.setCurrentItem(item)
 
     def _select_view(self, view: LibraryView) -> None:
         """Select `view` for the current root after populating the sidebar."""
@@ -6528,15 +6553,19 @@ class MainWindow(QMainWindow):
         root = root or self.current_root
         if root is None:
             return False
-        normalized = self._config_root_key(str(root))
-        key = next(
-            (
-                registered
-                for registered in self.registries
-                if self._config_root_key(registered) == normalized
-            ),
-            None,
-        )
+        exact = str(root)
+        if exact in self.registries:
+            key = exact
+        else:
+            normalized = self._root_path_identity(exact)
+            key = next(
+                (
+                    registered
+                    for registered in self.registries
+                    if self._root_path_identity(registered) == normalized
+                ),
+                None,
+            )
         if key is None:
             self.status.showMessage(
                 "Library is still loading. Try again when it is ready."

@@ -192,6 +192,8 @@ At startup, ADSfolio checks saved libraries in the background. Wait for a
 library to open before selecting it. If the catalog is busy, wait for the
 other operation to finish. Then select **Retry** in **Notifications**.
 If a folder is offline, you can browse its saved records once the catalog opens.
+On Windows, **Retry** keeps the library's checkbox state if the path returns
+with different capitalization.
 
 Add a root from **File → Add Library Root…**, or from **Add PDF Folder…** on the
 welcome page that appears while no library exists. The welcome page also offers

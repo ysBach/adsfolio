@@ -296,11 +296,14 @@ def test_retry_save_failure_is_visible(
     window.close()
 
 
-def test_retry_adds_selected_root_to_active_combined_table(
+@pytest.mark.parametrize(("selected", "use_alias"), [(True, False), (False, True)])
+def test_retry_preserves_combined_root_choice(
     application: QApplication,
     monkeypatch: pytest.MonkeyPatch,
     qtbot: Any,
     tmp_path: Path,
+    selected: bool,
+    use_alias: bool,
 ) -> None:
     first = tmp_path / "first"
     second = tmp_path / "second"
@@ -308,8 +311,15 @@ def test_retry_adds_selected_root_to_active_combined_table(
     second.mkdir()
     (first / "one.pdf").write_bytes(b"one")
     (second / "two.pdf").write_bytes(b"two")
+    saved_second = second
+    if use_alias:
+        saved_second = tmp_path / "alias"
+        try:
+            saved_second.symlink_to(second, target_is_directory=True)
+        except OSError as exc:
+            pytest.skip(f"Cannot create a directory symlink: {exc}")
     first_entry = RootEntry(str(first))
-    second_entry = RootEntry(str(second))
+    second_entry = RootEntry(str(saved_second))
     _configure(
         monkeypatch,
         tmp_path,
@@ -317,7 +327,7 @@ def test_retry_adds_selected_root_to_active_combined_table(
             roots=[first_entry, second_entry],
             last_root=str(first),
             combined_view=True,
-            combined_roots=[str(first), str(second)],
+            combined_roots=[str(first), *([str(saved_second)] if selected else [])],
             show_folders=False,
         ),
     )
@@ -326,7 +336,7 @@ def test_retry_adds_selected_root_to_active_combined_table(
 
     def fail_second_once(thread: StartupDiscoveryThread) -> None:
         nonlocal failed_second
-        if Path(thread.root) == second and not failed_second:
+        if thread.root == saved_second and not failed_second:
             failed_second = True
             thread.failed.emit("database is locked")
         else:
@@ -347,16 +357,22 @@ def test_retry_adds_selected_root_to_active_combined_table(
     assert window.combined.enabled
     assert window.current_root == first.resolve()
     assert window.table.model().rowCount() == 1
+    assert (str(saved_second) in window.combined.selected) == selected
     window._retry_root_restore(second_entry)
     qtbot.waitUntil(
         lambda: (
             str(second.resolve()) in window.registries
             and window._startup_thread is None
-            and window.table.model().rowCount() == 2
+            and not window._startup_roots_pending
         ),
         timeout=10000,
     )
 
     assert window.current_root == first.resolve()
-    assert second.resolve().as_posix() in window.combined.selected
+    second_key = str(second.resolve())
+    assert (second_key in window.combined.selected) == selected
+    assert window.table.model().rowCount() == (2 if selected else 1)
+    item = window._root_item(second_key)
+    assert item is not None
+    assert item.checkState(0) == (Qt.Checked if selected else Qt.Unchecked)
     window.close()

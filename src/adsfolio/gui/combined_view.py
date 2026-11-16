@@ -152,11 +152,17 @@ class CombinedViewController(QObject):
         self._tree_restore_timer = QTimer(self)
         self._tree_restore_timer.setSingleShot(True)
         self._tree_restore_timer.timeout.connect(self._restore_tree_state)
-        self.selected = {
-            window._config_root_key(path) for path in window.config.combined_roots or []
+        known_by_identity = {
+            window._root_path_identity(entry.path): window._config_root_key(entry.path)
+            for entry in window.config.roots
         }
-        self._known_roots = {
-            window._config_root_key(entry.path) for entry in window.config.roots
+        self._known_roots = set(known_by_identity.values())
+        self.selected = {
+            known_by_identity.get(
+                window._root_path_identity(path),
+                window._config_root_key(path),
+            )
+            for path in window.config.combined_roots or []
         }
         self.toggle_item = QTreeWidgetItem(window.libraries_item, ["Combine libraries"])
         self.toggle_item.setData(0, Qt.UserRole + 1, "combined-toggle")
@@ -179,6 +185,15 @@ class CombinedViewController(QObject):
         self._set_root_checkbox(item, key)
         if not self.restoring:
             self._save_selection()
+
+    def replace_root_key(self, previous: str, current: str) -> None:
+        """Keep the checkbox choice when discovery changes a root key."""
+        if previous == current:
+            return
+        for roots in (self.selected, self._known_roots):
+            if previous in roots:
+                roots.remove(previous)
+                roots.add(current)
 
     def finish_restoring(self) -> None:
         """Restore the saved combined-view state after registering roots."""
